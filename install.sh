@@ -13,7 +13,13 @@
 #   ~/Library/Application Support/JARVIS
 #
 # What it does (staged):
-#   1. PREFLIGHT  — macOS + arm64, Xcode CLT, Rust, Python 3.11, Node/npm
+#   1. PREFLIGHT  — macOS + arm64, Xcode CLT, Rust, Python 3.11, Node/npm.
+#                   AUTO-PROVISIONS the installable build prereqs (Rust via
+#                   rustup; Python 3.11 + Node via Homebrew, bootstrapping
+#                   Homebrew itself if absent) so a fresh Mac just works.
+#                   Opt out with --no-provision (then a missing dep is fatal).
+#                   macOS / arm64 / Xcode CLT remain HONEST hard checks (CLT
+#                   needs the GUI installer; it cannot be installed unattended).
 #   2. PLACE      — copy the project tree into the install home (excluding
 #                   built/fetched dirs: target .venv node_modules .build state models)
 #   3. PYTHON ENV — python3.11 -m venv, upgrade pip, install the FULL dep set
@@ -24,7 +30,13 @@
 #
 # Flags:
 #   --check / --dry-run   print the full plan and run only READ-ONLY detection
-#   --yes / -y            assume "yes" to consent prompts (rustup install, etc.)
+#                         (prereq provisioning is PLANNED, never executed)
+#   --yes / -y            assume "yes" to consent prompts (the JARVIS-actuation
+#                         confirm()s — build-prereq provisioning is NOT gated on
+#                         this; it runs by default, see --no-provision)
+#   --no-provision        DO NOT auto-install build prereqs. Revert to detect +
+#                         instruct + fatal-if-missing (Rust/Python3.11/Node).
+#                         Provisioning is ON by default; use this to opt out.
 #   --no-models           skip the model pre-download stage (build everything else)
 #   --help / -h           this help
 #
@@ -150,16 +162,18 @@ EXCLUDE_DIRS=(target .venv node_modules .build .git state models dist gen)
 MODE="install"
 ASSUME_YES=0
 DO_MODELS=1
+DO_PROVISION=1   # auto-provision missing build prereqs (Rust/Python3.11/Node + Homebrew); --no-provision opts out
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --check|--dry-run) MODE="check" ;;
         -y|--yes)          ASSUME_YES=1 ;;
+        --no-provision)    DO_PROVISION=0 ;;
         --no-models)       DO_MODELS=0 ;;
         -h|--help)
             # Print the header comment block (the doc lines above `set -euo
             # pipefail`) as the help text, stripping the leading "# ".
-            sed -n '2,38p' "${BASH_SOURCE[0]:-$SRC_ROOT/install.sh}" | sed 's/^# \{0,1\}//'
+            sed -n '2,50p' "${BASH_SOURCE[0]:-$SRC_ROOT/install.sh}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -212,6 +226,62 @@ read_model_id() {
 
 # Plan-only printer for --check: describe a command instead of running it.
 plan() { ui_note "would run: $*"; }
+
+# ----------------------------------------------------------------------------
+# Build-prereq provisioning helpers (STAGE 1).
+#
+# These auto-install the INSTALLABLE build prereqs (Rust via rustup; Python 3.11
+# + Node via Homebrew, bootstrapping Homebrew itself if absent) so a fresh Mac
+# just works. They are NOT gated on the JARVIS consequential confirm() — a build
+# toolchain is a prerequisite, not JARVIS actuation. They run only when
+# DO_PROVISION=1 and MODE=install; --check only PLANS them and --no-provision
+# disables them (reverting to detect + instruct + fatal). Everything is
+# idempotent: anything already present is detected and skipped.
+# ----------------------------------------------------------------------------
+
+# Locate the Homebrew binary if it exists; echo its path, or empty if none.
+find_brew() {
+    if command -v brew >/dev/null 2>&1; then command -v brew; return 0; fi
+    if [ -x /opt/homebrew/bin/brew ]; then echo /opt/homebrew/bin/brew; return 0; fi
+    if [ -x /usr/local/bin/brew ];  then echo /usr/local/bin/brew;  return 0; fi
+    return 0
+}
+
+# Ensure Homebrew is available + on PATH for the rest of THIS process. Called
+# LAZILY — only when python3.11 OR node is missing (never on a fully-provisioned
+# machine). Returns 0 if brew is usable, 1 if it could not be made available.
+#
+#   - If brew is already present -> eval its shellenv (puts brew + its installs
+#     on PATH for this process) and return 0.
+#   - MODE=check  -> plan the NONINTERACTIVE bootstrap, return 0 (no install).
+#   - MODE=install -> run the official NONINTERACTIVE installer (macOS may prompt
+#     ONCE for the login password; sudo inside the script reads it from /dev/tty,
+#     so it works even though our own stdin is a curl pipe — we do NOT feed it),
+#     then re-locate brew + eval shellenv. Return 0 on success, 1 on failure.
+ensure_homebrew() {
+    local brew
+    brew="$(find_brew)"
+    if [ -n "$brew" ]; then
+        eval "$("$brew" shellenv)"
+        return 0
+    fi
+
+    if [ "$MODE" = "check" ]; then
+        plan "NONINTERACTIVE=1 /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"   # install Homebrew (NONINTERACTIVE)"
+        return 0
+    fi
+
+    ui_info "Homebrew not found — installing Homebrew (macOS may prompt once for your login password)."
+    ui_spin "installing Homebrew (NONINTERACTIVE)" -- bash -c \
+        'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+    brew="$(find_brew)"
+    if [ -n "$brew" ]; then
+        eval "$("$brew" shellenv)"
+        ui_ok "Homebrew installed: $("$brew" --version 2>/dev/null | head -1)"
+        return 0
+    fi
+    return 1
+}
 
 # FUTURISTIC NEXT-STEPS — the five honest "directive" panels (cohesive HUD cards).
 # Defined ONCE so the real-install finish and the --check preview render the SAME
@@ -302,44 +372,118 @@ else
     PREFLIGHT_FATAL=1
 fi
 
-# --- Rust toolchain ---
+# --- Rust toolchain (auto-provisioned via rustup when missing) ---
+# Idempotent: a present cargo is detected + reused, never reinstalled.
 if [ -x "$CARGO" ] || command -v cargo >/dev/null 2>&1; then
     [ -x "$CARGO" ] || CARGO="$(command -v cargo)"
     ui_ok "Rust toolchain: $("$CARGO" --version 2>/dev/null || echo cargo)"
-else
+elif [ "$MODE" = "check" ]; then
     ui_warn "Rust toolchain (cargo) not found."
-    if [ "$MODE" = "check" ]; then
-        plan "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
-    elif confirm "install Rust via rustup (no sudo, into ~/.rustup + ~/.cargo)?"; then
-        ui_spin "installing rustup" -- bash -c \
-            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path"
-        CARGO="$HOME/.cargo/bin/cargo"
-        if [ -x "$CARGO" ]; then ui_ok "Rust installed: $("$CARGO" --version)"; else ui_err "rustup install did not produce $CARGO"; PREFLIGHT_FATAL=1; fi
+    if [ "$DO_PROVISION" -eq 1 ]; then
+        plan "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path   # install Rust (no fatal in a normal install)"
     else
-        ui_err "Rust is required to build the daemon + app crates."
+        ui_note "--no-provision: install with:  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y   (then re-run)"
+        PREFLIGHT_FATAL=1
+    fi
+elif [ "$DO_PROVISION" -eq 0 ]; then
+    # Opt-out: revert to the old detect + instruct + fatal behavior.
+    ui_warn "Rust toolchain (cargo) not found."
+    ui_note "--no-provision: install with:  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y   (then re-run)"
+    ui_err "Rust is required to build the daemon + app crates."
+    PREFLIGHT_FATAL=1
+else
+    # MODE=install + provisioning ON: install via rustup, no confirm() gate (a
+    # build toolchain is a prerequisite, not JARVIS actuation).
+    ui_info "Rust toolchain not found — installing Rust via rustup (no sudo, into ~/.rustup + ~/.cargo)."
+    ui_spin "installing Rust (rustup)" -- bash -c \
+        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path"
+    CARGO="$HOME/.cargo/bin/cargo"
+    # Propagate PATH for the rest of THIS process (build stages run cargo).
+    case ":$PATH:" in *":$HOME/.cargo/bin:"*) : ;; *) PATH="$HOME/.cargo/bin:$PATH"; export PATH ;; esac
+    [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+    if [ -x "$CARGO" ] && "$CARGO" --version >/dev/null 2>&1; then
+        ui_ok "Rust installed: $("$CARGO" --version)"
+    else
+        ui_err "rustup install did not produce a working $CARGO"
         PREFLIGHT_FATAL=1
     fi
 fi
 
-# --- Python 3.11 ---
+# --- Python 3.11 (auto-provisioned via Homebrew when missing) ---
+# Idempotent: a present 3.11 is detected + reused, never reinstalled.
 PY311="$(find_py311)"
 if [ -n "$PY311" ]; then
     ui_ok "Python 3.11: $PY311 ($("$PY311" --version 2>&1))"
-else
+elif [ "$MODE" = "check" ]; then
     ui_warn "Python 3.11 not found (MLX has no wheels for 3.12+/3.14 — 3.11 is required)."
-    ui_note "install with:  brew install python@3.11   (then re-run)"
+    if [ "$DO_PROVISION" -eq 1 ]; then
+        ensure_homebrew   # plans the Homebrew bootstrap if brew is also absent
+        plan "brew install python@3.11   # (no fatal in a normal install)"
+    else
+        ui_note "--no-provision: install with:  brew install python@3.11   (then re-run)"
+        PREFLIGHT_FATAL=1
+    fi
+elif [ "$DO_PROVISION" -eq 0 ]; then
+    ui_warn "Python 3.11 not found (MLX has no wheels for 3.12+/3.14 — 3.11 is required)."
+    ui_note "--no-provision: install with:  brew install python@3.11   (then re-run)"
     PREFLIGHT_FATAL=1
+else
+    # MODE=install + provisioning ON: ensure Homebrew, then brew install.
+    ui_info "Python 3.11 not found — provisioning via Homebrew."
+    if ensure_homebrew; then
+        ui_spin "installing python@3.11" -- brew install python@3.11
+        PY311="$(find_py311)"
+        if [ -n "$PY311" ]; then
+            ui_ok "Python 3.11 installed: $PY311 ($("$PY311" --version 2>&1))"
+        else
+            ui_err "brew install python@3.11 did not produce a usable python3.11"
+            PREFLIGHT_FATAL=1
+        fi
+    else
+        ui_err "could not make Homebrew available — cannot install python@3.11"
+        PREFLIGHT_FATAL=1
+    fi
 fi
 
-# --- Node + npm (HUD / Tauri) ---
+# --- Node + npm (HUD / Tauri) — auto-provisioned via Homebrew when missing ---
+# Idempotent: present node+npm are detected + reused, never reinstalled.
 if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
     ui_ok "Node $(node --version) / npm $(npm --version)"
-else
+elif [ "$MODE" = "check" ]; then
     ui_warn "Node + npm not found (needed for the HUD / Tauri build)."
-    ui_note "install with:  brew install node   (then re-run)"
+    if [ "$DO_PROVISION" -eq 1 ]; then
+        ensure_homebrew   # plans the Homebrew bootstrap if brew is also absent
+        plan "brew install node   # (no fatal in a normal install)"
+    else
+        ui_note "--no-provision: install with:  brew install node   (then re-run)"
+        PREFLIGHT_FATAL=1
+    fi
+elif [ "$DO_PROVISION" -eq 0 ]; then
+    ui_warn "Node + npm not found (needed for the HUD / Tauri build)."
+    ui_note "--no-provision: install with:  brew install node   (then re-run)"
     PREFLIGHT_FATAL=1
+else
+    # MODE=install + provisioning ON: ensure Homebrew, then brew install.
+    ui_info "Node + npm not found — provisioning via Homebrew."
+    if ensure_homebrew; then
+        ui_spin "installing node" -- brew install node
+        if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+            ui_ok "Node installed: $(node --version) / npm $(npm --version)"
+        else
+            ui_err "brew install node did not produce a usable node + npm"
+            PREFLIGHT_FATAL=1
+        fi
+    else
+        ui_err "could not make Homebrew available — cannot install node"
+        PREFLIGHT_FATAL=1
+    fi
 fi
 
+# PREFLIGHT_FATAL is now set ONLY for genuinely-unrecoverable gaps: non-macOS,
+# non-arm64, a missing Xcode CLT (the GUI-only installer cannot run unattended),
+# a --no-provision run with a real missing dep, or a provisioning step that
+# actually FAILED. Missing-but-installable deps are auto-provisioned above in a
+# normal install and are NOT fatal.
 if [ "$PREFLIGHT_FATAL" -ne 0 ]; then
     if [ "$MODE" = "check" ]; then
         ui_warn "Preflight reported gaps (above). Resolve them, then run a real install."
