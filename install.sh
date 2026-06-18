@@ -40,9 +40,74 @@
 set -euo pipefail
 
 # ----------------------------------------------------------------------------
+# Self-bootstrap (curl | bash) — fetch the whole source tree, then re-run.
+#
+# The installer needs the ENTIRE repo (it copies the tree into the install home
+# and builds every artifact fresh, sourcing scripts/ui.sh + reading config/
+# inference/daemon/hud/...). When piped via `curl ... | bash` there is nothing
+# local: BASH_SOURCE[0] is unset and scripts/ui.sh is absent. So if we are not
+# running from a real clone we fetch one (tarball first, git fallback), then
+# re-run THIS script from inside it. A local `./install.sh` skips all of this
+# and behaves exactly as before.
+# ----------------------------------------------------------------------------
+
+# SAFE SELF-LOCATION (set -u clean): never reference ${BASH_SOURCE[0]} bare.
+_self="${BASH_SOURCE[0]:-}"
+_src_root=""
+[ -n "$_self" ] && _src_root="$(cd "$(dirname "$_self")" 2>/dev/null && pwd)"
+
+# We are a real clone iff this script's dir exists AND has scripts/ui.sh next to
+# it. If not (piped / standalone) AND we have not already bootstrapped, fetch.
+if [ -z "${JARVIS_BOOTSTRAPPED:-}" ] && { [ -z "$_src_root" ] || [ ! -f "$_src_root/scripts/ui.sh" ]; }; then
+    echo "  J.A.R.V.I.S. installer — fetching source…" >&2
+
+    _tmp="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-install.XXXXXX")"
+    # Remove the temp tree on ANY exit of THIS (bootstrap) shell. The child
+    # install.sh runs in a SEPARATE process with its own ui.sh cursor traps, so
+    # this EXIT/INT/TERM trap is independent of (does not clobber) the child's.
+    trap 'rm -rf "$_tmp"' EXIT INT TERM
+
+    _fetched=""
+    # Tarball FIRST — no git / Xcode CLT needed. Extracts as jarvis-main/.
+    if curl -fsSL "https://codeload.github.com/darwin-capani/jarvis/tar.gz/refs/heads/main" \
+        | tar -xz -C "$_tmp" 2>/dev/null; then
+        _fetched=1
+    elif command -v git >/dev/null 2>&1 \
+        && git clone --depth 1 "https://github.com/darwin-capani/jarvis" "$_tmp/jarvis-main" >/dev/null 2>&1; then
+        _fetched=1
+    fi
+
+    if [ -z "$_fetched" ]; then
+        echo "error: could not fetch the JARVIS source." >&2
+        echo "       Need network access plus curl (or git)." >&2
+        echo "       Manual: git clone https://github.com/darwin-capani/jarvis && cd jarvis && ./install.sh" >&2
+        exit 1
+    fi
+
+    # Resolve the fetched dir (the jarvis* dir under $_tmp holding install.sh).
+    _dir=""
+    for _cand in "$_tmp"/jarvis-main "$_tmp"/jarvis-* "$_tmp"/jarvis; do
+        if [ -f "$_cand/install.sh" ] && [ -f "$_cand/scripts/ui.sh" ]; then
+            _dir="$_cand"; break
+        fi
+    done
+    if [ -z "$_dir" ]; then
+        echo "error: fetched archive is missing install.sh or scripts/ui.sh." >&2
+        exit 1
+    fi
+
+    # Re-run from the real tree, passing ALL args through. RUN (not exec) so the
+    # EXIT trap above can remove $_tmp after the child finishes; capture the
+    # child's exit code so set -e does not abort before we propagate it.
+    JARVIS_BOOTSTRAPPED=1 bash "$_dir/install.sh" "$@"
+    rc=$?
+    exit "$rc"
+fi
+
+# ----------------------------------------------------------------------------
 # Locate the source tree (this script's dir) and source the UI library.
 # ----------------------------------------------------------------------------
-SRC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC_ROOT="$_src_root"
 
 # shellcheck source=scripts/ui.sh
 if [ -f "$SRC_ROOT/scripts/ui.sh" ]; then
@@ -94,7 +159,7 @@ while [ "$#" -gt 0 ]; do
         -h|--help)
             # Print the header comment block (the doc lines above `set -euo
             # pipefail`) as the help text, stripping the leading "# ".
-            sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,38p' "${BASH_SOURCE[0]:-$SRC_ROOT/install.sh}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
