@@ -61,9 +61,11 @@ jobs:
       - name: Set up the Rust toolchain (Apple Silicon target)
         uses: dtolnay/rust-toolchain@stable
         with:
-          # The HUD ships for Apple Silicon (minimumSystemVersion targets it); the
-          # universal target also produces an x86_64 slice for older Intel Macs.
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          # JARVIS is Apple-Silicon-only (arm64 + Metal/MLX/ANE), so we build for
+          # aarch64 ONLY — a universal/x86_64 slice can't run the OS and breaks the
+          # updater's latest.json signature matching (the renamed _universal artifact
+          # doesn't match the .sig, so tauri-action skips latest.json).
+          targets: aarch64-apple-darwin
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -158,8 +160,9 @@ jobs:
           releaseName: "JARVIS ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
-          # Build the universal binary so one bundle runs on Apple Silicon + Intel.
-          args: --target universal-apple-darwin
+          # Apple-Silicon-only build (matches the OS); the aarch64 artifact name and
+          # its .sig line up, so tauri-action generates + uploads latest.json.
+          args: --target aarch64-apple-darwin
 
       # ─────────────────────────────── cleanup ───────────────────────────────
       # Always delete the temporary signing keychain (best effort), even on failure,
