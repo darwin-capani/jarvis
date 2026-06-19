@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import SystemSettingsPanel from "../components/SystemSettingsPanel";
+import SystemSettingsPanel, { VoiceIdBadge } from "../components/SystemSettingsPanel";
+import { voiceIdInitial, type VoiceIdStatus } from "../core/events";
 import {
   AUTONOMY_IDS,
   AUTONOMY_OPTIONS,
@@ -13,6 +14,7 @@ import {
   entryById,
   isDangerousChange,
   pendingChanges,
+  sameValue,
   valueMapFromStates,
 } from "../core/systemSettings";
 import type { Change, SettingState, SettingValue } from "../tauri/configSettings";
@@ -55,7 +57,9 @@ const BACKEND_WHITELIST_IDS: string[] = [
   "screen_context.enabled",
   "screen_context.interval_secs",
   "vision.enabled",
+  "vision.model",
   "image.enabled",
+  "image.model",
   "audio.sound_monitor",
   "interpret.live",
   "interpret.speak",
@@ -68,6 +72,7 @@ const BACKEND_WHITELIST_IDS: string[] = [
   "voice.whisper_auto",
   "voice.diarize",
   "speech.engine",
+  "speech.model",
   "speech.instant_opener",
   // CAPABILITIES
   "shell.enabled",
@@ -76,8 +81,10 @@ const BACKEND_WHITELIST_IDS: string[] = [
   "webhooks.enabled",
   "plugin_sdk.enabled",
   "docsearch.enabled",
+  "docsearch.roots",
   "docsearch.build_graph",
   "code.enabled",
+  "code.roots",
   "local_tools.enabled",
   "report.enabled",
   "chart.enabled",
@@ -89,7 +96,11 @@ const BACKEND_WHITELIST_IDS: string[] = [
   // PERFORMANCE & MODELS
   "power.adaptive",
   "inference.speculative",
+  "inference.draft_model",
   "inference.quant",
+  "models.classifier",
+  "models.local_warm",
+  "models.local_budget_gib",
   "router.conversation_route",
   // AUTONOMY 3-way (bare section ids — AUTONOMY_SECTIONS)
   "self_heal",
@@ -167,6 +178,105 @@ describe("control kinds match the catalog requirements", () => {
     expect(entryById("screen_context.interval_secs")?.control).toBe("number");
     expect(entryById("proactive.quiet_start")?.control).toBe("number");
     expect(entryById("proactive.quiet_end")?.control).toBe("number");
+  });
+
+  it("the model-id fields are freeform string controls", () => {
+    for (const id of [
+      "vision.model",
+      "image.model",
+      "speech.model",
+      "inference.draft_model",
+      "models.classifier",
+    ]) {
+      const e = entryById(id);
+      expect(e?.control).toBe("string");
+      // Each hint honestly states empty = inert/disabled.
+      expect(e?.hint.toLowerCase()).toMatch(/empty/);
+    }
+  });
+
+  it("the path-array fields are folder-picker pathlists; local_warm is a plain strlist", () => {
+    for (const id of ["docsearch.roots", "code.roots"]) {
+      expect(entryById(id)?.control).toBe("pathlist");
+    }
+    expect(entryById("models.local_warm")?.control).toBe("strlist");
+    // local_budget_gib is a bounded number with a GiB unit.
+    const budget = entryById("models.local_budget_gib");
+    expect(budget?.control).toBe("number");
+    expect(budget?.unit).toBe("GiB");
+  });
+
+  it("the path-array hints are honest: on-device, nothing read until a folder is added", () => {
+    for (const id of ["docsearch.roots", "code.roots"]) {
+      const hint = entryById(id)!.hint.toLowerCase();
+      // The exact honesty the prompt requires: contents stay on-device and
+      // nothing is read until the user adds a folder.
+      expect(hint).toContain("on-device");
+      expect(hint).toMatch(/nothing is read until/);
+    }
+  });
+});
+
+/* ------------------------------------------------------ string + array model */
+
+describe("string + array value model", () => {
+  it("sameValue compares arrays by order + element, scalars by identity", () => {
+    expect(sameValue(["/a", "/b"], ["/a", "/b"])).toBe(true);
+    expect(sameValue(["/a", "/b"], ["/b", "/a"])).toBe(false); // a reorder is a change
+    expect(sameValue(["/a"], ["/a", "/b"])).toBe(false); // add is a change
+    expect(sameValue([], [])).toBe(true);
+    expect(sameValue("x", "x")).toBe(true);
+    expect(sameValue("x", "y")).toBe(false);
+    // A scalar vs an array is never equal.
+    expect(sameValue("x", ["x"])).toBe(false);
+  });
+
+  it("pendingChanges emits a Change when an array gains/loses/reorders an element", () => {
+    const live: Record<string, SettingValue> = {
+      "docsearch.roots": ["/a"],
+      "vision.model": "",
+    };
+    const draft: Record<string, SettingValue> = {
+      "docsearch.roots": ["/a", "/b"], // added /b
+      "vision.model": "mlx-community/x", // set a model id
+    };
+    const changes = pendingChanges(live, draft);
+    const byId = Object.fromEntries(changes.map((c) => [c.id, c.value]));
+    expect(byId["docsearch.roots"]).toEqual(["/a", "/b"]);
+    expect(byId["vision.model"]).toBe("mlx-community/x");
+  });
+
+  it("an unchanged array (same order + elements) is NOT a pending change", () => {
+    const live: Record<string, SettingValue> = { "code.roots": ["/p", "/q"] };
+    const draft: Record<string, SettingValue> = { "code.roots": ["/p", "/q"] };
+    expect(pendingChanges(live, draft)).toEqual([]);
+  });
+
+  it("setting a model id back to empty (honest disabled) round-trips through valueMapFromStates", () => {
+    const map = valueMapFromStates([
+      { id: "vision.model", section: "vision", key: "model", kind: "string", value: "" },
+      { id: "docsearch.roots", section: "docsearch", key: "roots", kind: "pathlist", value: [] },
+    ]);
+    expect(map["vision.model"]).toBe("");
+    expect(map["docsearch.roots"]).toEqual([]);
+  });
+
+  it("the model-id / array fields are never marked dangerous (no confirm gate)", () => {
+    for (const id of [
+      "vision.model",
+      "image.model",
+      "speech.model",
+      "inference.draft_model",
+      "models.classifier",
+      "docsearch.roots",
+      "code.roots",
+      "models.local_warm",
+    ]) {
+      const e = entryById(id)!;
+      expect(e.danger).toBeFalsy();
+      expect(isDangerousChange(e, "anything")).toBe(false);
+      expect(isDangerousChange(e, ["/x"])).toBe(false);
+    }
   });
 });
 
@@ -308,6 +418,65 @@ describe("group coverage", () => {
   });
 });
 
+/* ------------------------------------- voice-id enrollment badge (GAP 3) */
+
+/* The badge is UI-ONLY: it REFLECTS the voice-id telemetry the HUD already
+ * receives (App.tsx state.voiceId, threaded through SettingsModal into the
+ * panel) and adds NO authority — no enroll button, no config write. It shows
+ * ENROLLED (green) vs NOT ENROLLED (amber) vs an AWAITING note before telemetry
+ * arrives, and every variant carries the honest "gates nothing until you enroll,
+ * even when On" reassurance. These pin the three states + the honest copy from
+ * the telemetry's `enrolled` field (the source the prompt names). */
+describe("voice-id enrollment badge", () => {
+  function badge(voiceId: VoiceIdStatus | null): string {
+    return renderToStaticMarkup(createElement(VoiceIdBadge, { voiceId }));
+  }
+  const enrolled: VoiceIdStatus = { ...voiceIdInitial(), enabled: true, enrolled: true };
+  const notEnrolled: VoiceIdStatus = { ...voiceIdInitial(), enabled: true, enrolled: false };
+
+  it("shows ENROLLED (green class) when a profile is on file", () => {
+    const html = badge(enrolled);
+    expect(html).toContain("ENROLLED");
+    expect(html).not.toContain("NOT ENROLLED");
+    expect(html).toContain("syscfg-vid-badge enrolled");
+  });
+
+  it("shows NOT ENROLLED (amber class) + the spoken enroll phrase when no profile", () => {
+    const html = badge(notEnrolled);
+    expect(html).toContain("NOT ENROLLED");
+    // The honest spoken-flow copy (renderToStaticMarkup encodes the quotes).
+    expect(html).toContain("enroll my voice");
+    expect(html).toContain("syscfg-vid-badge not-enrolled");
+  });
+
+  it("reads ONLY the telemetry's `enrolled` flag, independent of `enabled`", () => {
+    // Enabled but not enrolled is still NOT ENROLLED — voice-id gates nothing
+    // until a profile exists, even when On. And enrolled-but-disabled still
+    // honestly reflects the on-file profile.
+    expect(badge({ ...voiceIdInitial(), enabled: true, enrolled: false })).toContain("NOT ENROLLED");
+    expect(badge({ ...voiceIdInitial(), enabled: false, enrolled: true })).toContain("ENROLLED");
+  });
+
+  it("surfaces an honest AWAITING note before any telemetry frame (null)", () => {
+    const html = badge(null);
+    expect(html).toContain("AWAITING");
+    expect(html).toContain("syscfg-vid-badge awaiting");
+  });
+
+  it("every badge variant reinforces that voice-id gates nothing until enrolled", () => {
+    for (const html of [badge(enrolled), badge(notEnrolled), badge(null)]) {
+      // The reassurance rides in each variant's title attribute.
+      expect(html.toLowerCase()).toContain("gates nothing");
+    }
+  });
+
+  it("never offers an enroll button (enrollment is the spoken flow, not a click)", () => {
+    for (const html of [badge(enrolled), badge(notEnrolled), badge(null)]) {
+      expect(html).not.toContain("<button");
+    }
+  });
+});
+
 /* ------------------------------------------------------ component render */
 
 describe("SystemSettingsPanel render (no daemon)", () => {
@@ -316,6 +485,15 @@ describe("SystemSettingsPanel render (no daemon)", () => {
     // still pending on first paint — the panel shows the loading note. This
     // proves the component mounts cleanly with no daemon present.
     const html = renderToStaticMarkup(createElement(SystemSettingsPanel));
+    expect(html).toContain("Reading config/jarvis.toml");
+  });
+
+  it("mounts cleanly when fed the live voice-id telemetry prop", () => {
+    // The panel accepts the voiceId telemetry threaded from SettingsModal/App
+    // (used only for the enrollment badge once loaded). Mounting with it present
+    // must not throw — it stays on the loading note until config_get resolves.
+    const voiceId: VoiceIdStatus = { ...voiceIdInitial(), enabled: true, enrolled: true };
+    const html = renderToStaticMarkup(createElement(SystemSettingsPanel, { voiceId }));
     expect(html).toContain("Reading config/jarvis.toml");
   });
 });

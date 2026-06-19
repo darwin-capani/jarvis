@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer } from "react";
+import { useCallback, useEffect, useReducer, useState } from "react";
 import {
   AUTONOMY_OPTIONS,
   CatalogEntry,
@@ -8,6 +8,7 @@ import {
   entriesForGroup,
   isDangerousChange,
   pendingChanges,
+  sameValue,
   valueMapFromStates,
 } from "../core/systemSettings";
 import {
@@ -17,7 +18,9 @@ import {
   configGet,
   configSet,
   daemonRestart,
+  pickFolder,
 } from "../tauri/configSettings";
+import type { VoiceIdStatus } from "../core/events";
 
 /**
  * SYSTEM SETTINGS — the dedicated config surface for config/jarvis.toml. On open
@@ -122,7 +125,18 @@ function reduce(state: PanelState, action: Action): PanelState {
 
 /* ------------------------------------------------------------------ panel */
 
-export default function SystemSettingsPanel() {
+export interface SystemSettingsPanelProps {
+  /** The live voice-id telemetry the HUD already receives (App.tsx state.voiceId,
+   *  threaded through SettingsModal). Used ONLY to render an enrollment BADGE next
+   *  to the voice_id.enabled toggle — never to change config. Optional so the
+   *  existing render test can mount the panel without telemetry; null = the honest
+   *  "telemetry not yet seen" state (the badge reflects enabled + a note). */
+  voiceId?: VoiceIdStatus | null;
+}
+
+export default function SystemSettingsPanel({
+  voiceId = null,
+}: SystemSettingsPanelProps) {
   const [state, dispatch] = useReducer(reduce, undefined, initial);
 
   // On mount, read the live config values into the controls.
@@ -224,6 +238,7 @@ export default function SystemSettingsPanel() {
           live={state.live}
           pendingIds={pendingIds}
           onEdit={onEdit}
+          voiceId={voiceId}
         />
       ))}
 
@@ -286,12 +301,14 @@ function SettingsGroup({
   live,
   pendingIds,
   onEdit,
+  voiceId,
 }: {
   group: GroupName;
   draft: Record<string, SettingValue>;
   live: Record<string, SettingValue>;
   pendingIds: Set<string>;
   onEdit: (id: string, value: SettingValue) => void;
+  voiceId: VoiceIdStatus | null;
 }) {
   const entries = entriesForGroup(group);
   return (
@@ -305,6 +322,7 @@ function SettingsGroup({
           liveValue={live[entry.id]}
           pending={pendingIds.has(entry.id)}
           onEdit={onEdit}
+          voiceId={voiceId}
         />
       ))}
     </section>
@@ -319,20 +337,27 @@ function SettingRow({
   liveValue,
   pending,
   onEdit,
+  voiceId,
 }: {
   entry: CatalogEntry;
   draftValue: SettingValue | undefined;
   liveValue: SettingValue | undefined;
   pending: boolean;
   onEdit: (id: string, value: SettingValue) => void;
+  voiceId: VoiceIdStatus | null;
 }) {
   const dangerousNow =
-    draftValue !== undefined && isDangerousChange(entry, draftValue) && draftValue !== liveValue;
+    draftValue !== undefined &&
+    isDangerousChange(entry, draftValue) &&
+    !sameValue(draftValue, liveValue ?? draftValue);
 
   return (
     <div className={`syscfg-row${pending ? " pending" : ""}${dangerousNow ? " danger" : ""}`}>
       <div className="syscfg-row-head">
         <span className="syscfg-label">{entry.label}</span>
+        {/* The voice-id enrollment BADGE sits next to the voice_id.enabled toggle.
+            It is UI-ONLY (reflects telemetry; gates nothing) — see VoiceIdBadge. */}
+        {entry.id === "voice_id.enabled" && <VoiceIdBadge voiceId={voiceId} />}
         <span className="syscfg-control">
           <SettingControl entry={entry} value={draftValue} onEdit={onEdit} />
         </span>
@@ -345,6 +370,44 @@ function SettingRow({
       <div className="syscfg-hint">{entry.hint}</div>
       {dangerousNow && entry.danger && <div className="syscfg-warn">⚠ {entry.danger}</div>}
     </div>
+  );
+}
+
+/** The VOICE-ID ENROLLMENT BADGE (GAP 3 — UI-only). It REFLECTS the voice-id
+ *  telemetry the HUD already receives; it adds NO authority and offers NO enroll
+ *  button (enrollment is the spoken "enroll my voice" flow). Honest copy:
+ *    - ENROLLED (green) when a profile is on file.
+ *    - NOT ENROLLED (amber) otherwise, naming the spoken enroll phrase.
+ *    - When telemetry has not arrived yet (null), an AWAITING note (we say so).
+ *  Always reinforces that voice-id gates NOTHING until enrolled, even when On. */
+export function VoiceIdBadge({ voiceId }: { voiceId: VoiceIdStatus | null }) {
+  if (voiceId === null) {
+    return (
+      <span
+        className="syscfg-vid-badge awaiting"
+        title="voice-id telemetry not seen yet — voice-id gates nothing until you enroll, even when On"
+      >
+        ENROLLMENT — AWAITING TELEMETRY
+      </span>
+    );
+  }
+  if (voiceId.enrolled) {
+    return (
+      <span
+        className="syscfg-vid-badge enrolled"
+        title="A voice profile is on file. Voice-id gates nothing until you enroll, even when On."
+      >
+        ENROLLED
+      </span>
+    );
+  }
+  return (
+    <span
+      className="syscfg-vid-badge not-enrolled"
+      title="No profile on file. Voice-id gates nothing until you enroll, even when On."
+    >
+      NOT ENROLLED — say &quot;enroll my voice&quot;
+    </span>
   );
 }
 
@@ -368,9 +431,194 @@ function SettingControl({
       return <SelectControl entry={entry} value={typeof value === "string" ? value : ""} onEdit={onEdit} />;
     case "number":
       return <NumberControl entry={entry} value={typeof value === "number" ? value : NaN} onEdit={onEdit} />;
+    case "string":
+      return <StringControl entry={entry} value={typeof value === "string" ? value : ""} onEdit={onEdit} />;
+    case "strlist":
+    case "pathlist":
+      return (
+        <ListControl
+          entry={entry}
+          value={Array.isArray(value) ? (value as string[]) : []}
+          onEdit={onEdit}
+        />
+      );
     default:
       return null;
   }
+}
+
+/** A freeform single-line text field (a HuggingFace model id). The backend
+ *  re-validates (trim, length cap, control-char reject, TOML-escape on write);
+ *  empty is the HONEST "feature inert / disabled" value, so we keep it editable
+ *  to empty. Trimmed on edit so trailing spaces never read as a pending change. */
+function StringControl({
+  entry,
+  value,
+  onEdit,
+}: {
+  entry: CatalogEntry;
+  value: string;
+  onEdit: (id: string, value: SettingValue) => void;
+}) {
+  return (
+    <input
+      type="text"
+      className="syscfg-text-input"
+      value={value}
+      placeholder={entry.placeholder ?? ""}
+      aria-label={entry.label}
+      autoComplete="off"
+      autoCorrect="off"
+      autoCapitalize="off"
+      spellCheck={false}
+      onChange={(e) => onEdit(entry.id, e.target.value)}
+    />
+  );
+}
+
+/** A string-ARRAY list editor: each current entry on its own row with a Remove
+ *  (✕) button, plus an "Add" affordance. For a "pathlist" the add affordance is a
+ *  native folder PICKER ("Add folder…") AND a validated manual absolute-path
+ *  text-add (the always-works baseline); for a "strlist" it is a manual repo-id
+ *  text-add only. All validation is mirrored from the backend (absolute-path
+ *  shape, non-empty, no dup) so a bad add is rejected in-UI before it is ever
+ *  drafted — and the backend re-validates + TOML-escapes on write regardless. */
+function ListControl({
+  entry,
+  value,
+  onEdit,
+}: {
+  entry: CatalogEntry;
+  value: string[];
+  onEdit: (id: string, value: SettingValue) => void;
+}) {
+  const isPaths = entry.control === "pathlist";
+  const [text, setText] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+
+  // Validate a candidate against the backend's element rules (kept in lockstep
+  // with config_settings.rs validate_element): trim, non-empty, no control char,
+  // length cap, absolute path for a pathlist, and no duplicate.
+  const validate = useCallback(
+    (raw: string): { ok: true; value: string } | { ok: false; error: string } => {
+      const v = raw.trim();
+      if (!v) return { ok: false, error: "enter a value" };
+      if (v.length > 200) return { ok: false, error: "too long (max 200 chars)" };
+      // Reject any control character (U+0000..U+001F or U+007F) — mirrors the
+      // backend's validate_element. Computed by code point, never an embedded raw
+      // control byte in the source.
+      const hasControl = [...v].some((c) => {
+        const code = c.charCodeAt(0);
+        return code < 0x20 || code === 0x7f;
+      });
+      if (hasControl) return { ok: false, error: "contains a control character" };
+      if (isPaths && !v.startsWith("/")) return { ok: false, error: "path must be absolute (start with /)" };
+      if (value.includes(v)) return { ok: false, error: "already added" };
+      return { ok: true, value: v };
+    },
+    [isPaths, value],
+  );
+
+  const add = useCallback(
+    (raw: string) => {
+      const r = validate(raw);
+      if (!r.ok) {
+        setErr(r.error);
+        return;
+      }
+      onEdit(entry.id, [...value, r.value]);
+      setText("");
+      setErr(null);
+    },
+    [validate, onEdit, entry.id, value],
+  );
+
+  const removeAt = useCallback(
+    (idx: number) => {
+      onEdit(
+        entry.id,
+        value.filter((_, i) => i !== idx),
+      );
+      setErr(null);
+    },
+    [onEdit, entry.id, value],
+  );
+
+  // Open the native folder picker (pathlist only). On a real selection the
+  // returned absolute path is validated + appended; cancel / no-picker is a
+  // silent no-op (the manual input below is the baseline that always works).
+  const browse = useCallback(async () => {
+    const picked = await pickFolder();
+    if (picked) add(picked);
+  }, [add]);
+
+  return (
+    <div className="syscfg-list">
+      {value.length === 0 ? (
+        <div className="syscfg-list-empty">None — nothing is indexed until you add one.</div>
+      ) : (
+        <ul className="syscfg-list-items">
+          {value.map((item, idx) => (
+            <li key={`${item}-${idx}`} className="syscfg-list-item">
+              <code className="syscfg-list-path">{item}</code>
+              <button
+                type="button"
+                className="icon-btn syscfg-list-remove"
+                aria-label={`remove ${item}`}
+                title="remove"
+                onClick={() => removeAt(idx)}
+              >
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="syscfg-list-add">
+        {isPaths && (
+          <button
+            type="button"
+            className="icon-btn syscfg-list-browse"
+            onClick={() => void browse()}
+            title="open the native folder picker"
+          >
+            Add folder…
+          </button>
+        )}
+        <input
+          type="text"
+          className="syscfg-text-input syscfg-list-input"
+          value={text}
+          placeholder={entry.placeholder ?? (isPaths ? "/absolute/path" : "model/repo-id")}
+          aria-label={`${entry.label} — add entry`}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          onChange={(e) => {
+            setText(e.target.value);
+            if (err) setErr(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add(text);
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="icon-btn syscfg-list-add-btn"
+          disabled={text.trim().length === 0}
+          onClick={() => add(text)}
+        >
+          Add
+        </button>
+      </div>
+      {err && <div className="syscfg-list-err">{err}</div>}
+    </div>
+  );
 }
 
 /** A two-state On/Off toggle (the bulk of the catalog). */

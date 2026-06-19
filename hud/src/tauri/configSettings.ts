@@ -22,9 +22,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "./bridge";
 
 /** A typed setting value crossing the IPC boundary — the untagged
- *  `SettingValue` the Rust side accepts (Bool | Int | Float | Str). The 3-way
- *  autonomy control is a string ("off" | "propose" | "auto"). */
-export type SettingValue = boolean | number | string;
+ *  `SettingValue` the Rust side accepts (Bool | Int | Float | Str | StrList).
+ *  The 3-way autonomy control is a string ("off" | "propose" | "auto"); a
+ *  freeform model-id field is a string; a roots/warm-set field is a string[]. */
+export type SettingValue = boolean | number | string | string[];
 
 /** One setting's live value + descriptor, exactly as `config_get` returns it.
  *  `kind` drives which control the UI renders; `options`/`min`/`max` bound it.
@@ -35,7 +36,10 @@ export interface SettingState {
   section: string;
   /** "" for a 3-way autonomy control (it spans enabled+mode). */
   key: string;
-  /** "bool" | "int" | "float" | "enum" | "autonomy". */
+  /** "bool" | "int" | "float" | "enum" | "autonomy" | "string" | "strlist"
+   *  | "pathlist". "string" is a freeform model-id field; "pathlist" is an
+   *  absolute-folder array (folder picker); "strlist" is a repo-id array
+   *  (manual add only). */
   kind: string;
   value: SettingValue;
   /** Present for enum + autonomy kinds — the allowed string options. */
@@ -100,5 +104,23 @@ export async function daemonRestart(): Promise<RestartResult> {
       ok: false,
       detail: typeof e === "string" ? e : "restart failed",
     };
+  }
+}
+
+/** Open the NATIVE macOS folder picker (the backend's `pick_folder` command,
+ *  which shells the canonical `choose folder` chooser — no new dependency). It
+ *  returns the chosen ABSOLUTE path, or `null` when the user cancels OR when no
+ *  picker is available (no GUI session / plain browser). The returned path is
+ *  RE-VALIDATED by `config_set` on write exactly like a manually typed path —
+ *  the picker is a convenience, never a trust shortcut. Callers MUST keep the
+ *  manual text-add input as the always-works baseline. Never throws: a picker
+ *  failure resolves to null so the manual path stays usable. */
+export async function pickFolder(): Promise<string | null> {
+  if (!inTauri()) return null;
+  try {
+    const picked = await invoke<string | null>("pick_folder");
+    return picked ?? null;
+  } catch {
+    return null;
   }
 }

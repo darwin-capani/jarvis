@@ -51,9 +51,13 @@ export interface CatalogEntry {
   group: GroupName;
   /** Short control label (the human name). */
   label: string;
-  /** Control kind: a plain toggle, a 3-way autonomy segment, an enum select, or
-   *  a bounded number. */
-  control: "toggle" | "autonomy" | "select" | "number";
+  /** Control kind: a plain toggle, a 3-way autonomy segment, an enum select, a
+   *  bounded number, a freeform text field (a model id), or a string-array list
+   *  editor — "pathlist" adds a native folder picker (absolute paths), "strlist"
+   *  is manual-add only (repo ids). */
+  control: "toggle" | "autonomy" | "select" | "number" | "string" | "strlist" | "pathlist";
+  /** For "string" / list controls — the placeholder shown in the (empty) input. */
+  placeholder?: string;
   /** Honest one-to-three-line hint, lifted/condensed from the toml comment. */
   hint: string;
   /** When set, this setting's risky direction requires an explicit confirm; the
@@ -303,12 +307,30 @@ export const CATALOG: CatalogEntry[] = [
       "On-device vision-language describe path. INERT WITHOUT A MODEL — with the vision model empty it returns honest vlm_unavailable (never fabricates). Needs an on-device Qwen2-VL-class checkpoint + RAM; pixels stay on-device.",
   },
   {
+    id: "vision.model",
+    group: "Perception",
+    label: "Vision model id",
+    control: "string",
+    placeholder: "mlx-community/Qwen2-VL-… (empty = disabled)",
+    hint:
+      "HuggingFace repo id for the on-device VLM (e.g. a Qwen2-VL-class mlx-vlm model); empty = feature inert / disabled (honest vlm_unavailable, never fabricates). Needs the model downloaded + RAM; pixels stay on-device.",
+  },
+  {
     id: "image.enabled",
     group: "Perception",
     label: "Image generation",
     control: "toggle",
     hint:
       "On-device text->image (MLX diffusion, 100% on-device; no cloud image API). INERT WITHOUT A MODEL — with the image model empty it returns honest image_model_unavailable. Needs a FLUX.1-schnell-class checkpoint + RAM.",
+  },
+  {
+    id: "image.model",
+    group: "Perception",
+    label: "Image model id",
+    control: "string",
+    placeholder: "mlx-community/… diffusion repo (empty = disabled)",
+    hint:
+      "HuggingFace repo id for the on-device diffusion model (e.g. a FLUX.1-schnell-class checkpoint); empty = feature inert / disabled (honest image_model_unavailable). Needs the model downloaded + RAM.",
   },
   {
     id: "audio.sound_monitor",
@@ -408,6 +430,15 @@ export const CATALOG: CatalogEntry[] = [
       "On-device TTS engine. Adoption gate: warm RTF <= 0.5 + clean load. Per the shipped eval, kokoro PASSES; csm and orpheus FAIL the RTF gate on this hardware (and share the GPU with the 4B LLM), so kokoro is the default.",
   },
   {
+    id: "speech.model",
+    group: "Voice & Speech",
+    label: "TTS model id",
+    control: "string",
+    placeholder: "empty = engine default (e.g. Kokoro-82M-bf16)",
+    hint:
+      "HuggingFace repo id overriding the chosen engine's default checkpoint; empty = engine default (kokoro: mlx-community/Kokoro-82M-bf16, csm: mlx-community/csm-1b-8bit, orpheus: mlx-community/orpheus-3b-0.1-ft-4bit).",
+  },
+  {
     id: "speech.instant_opener",
     group: "Voice & Speech",
     label: "Instant opener",
@@ -475,6 +506,15 @@ export const CATALOG: CatalogEntry[] = [
       "On-device file RAG — contents + embeddings NEVER leave the device. INERT WITHOUT ROOTS: the folder allowlist ships empty, so even enabled it indexes nothing until you allowlist a folder (set roots in jarvis.toml). Text-like files only.",
   },
   {
+    id: "docsearch.roots",
+    group: "Capabilities",
+    label: "File-search folders",
+    control: "pathlist",
+    placeholder: "/Users/you/Documents",
+    hint:
+      "Folders JARVIS may index for file/code search; contents stay on-device; nothing is read until a folder is added. Each entry is an ABSOLUTE path. Use Add folder… (native picker) or type an absolute path.",
+  },
+  {
     id: "docsearch.build_graph",
     group: "Capabilities",
     label: "Knowledge-graph build",
@@ -489,6 +529,15 @@ export const CATALOG: CatalogEntry[] = [
     control: "toggle",
     hint:
       "code_explain (grounded, CITED answers over the on-device code index) + code_propose_diff (PROPOSE-ONLY reviewable unified diff — never edits your code). INERT WITHOUT ROOTS. The only path that touches your code is the human-reviewed apply script, confined to the allowlisted root.",
+  },
+  {
+    id: "code.roots",
+    group: "Capabilities",
+    label: "Code-intelligence roots",
+    control: "pathlist",
+    placeholder: "/Users/you/project",
+    hint:
+      "Folders JARVIS may index for file/code search; contents stay on-device; nothing is read until a folder is added. The apply script writes ONLY under a root here. Also add the same root under file-search folders so the code is retrievable.",
   },
   {
     id: "local_tools.enabled",
@@ -573,6 +622,43 @@ export const CATALOG: CatalogEntry[] = [
       "Master gate for speculative/draft decoding. INERT WITHOUT A DRAFT MODEL — also needs a loadable draft_model (ships empty); absent that, generate falls back to normal gen and honestly reports speculative=false (never faked).",
   },
   {
+    id: "inference.draft_model",
+    group: "Performance & Models",
+    label: "Draft model id",
+    control: "string",
+    placeholder: "mlx-community/Qwen3-0.6B-… (empty = inert)",
+    hint:
+      "HuggingFace repo id of the small DRAFT checkpoint mlx_lm uses to propose tokens; empty = feature inert / disabled (speculative reports false even when its gate is on). Set a real downloadable checkpoint to engage; on-device only.",
+  },
+  {
+    id: "models.classifier",
+    group: "Performance & Models",
+    label: "Classifier model id",
+    control: "string",
+    placeholder: "empty = reuse the main llm",
+    hint:
+      "HuggingFace repo id of a dedicated small resident model for op=classify; empty = reuse the main llm. Every shipped small candidate failed the 7-utterance accuracy gate (main 4B = 7/7) — only set this after a candidate passes >=6/7.",
+  },
+  {
+    id: "models.local_warm",
+    group: "Performance & Models",
+    label: "Warm-set model ids",
+    control: "strlist",
+    placeholder: "mlx-community/Qwen3-0.6B-Instruct-4bit",
+    hint:
+      "Extra local model ids kept warm beside the base llm (multi-resident) so the LOCAL tier can swap instantly with no reload. Empty = single-resident (today's behavior). RAM-bounded by the budget below; ~2x RAM per warm model — the swap-speed benefit is device-gated, not a measured claim.",
+  },
+  {
+    id: "models.local_budget_gib",
+    group: "Performance & Models",
+    label: "Warm-set RAM budget",
+    control: "number",
+    unit: "GiB",
+    step: 0.5,
+    hint:
+      "RAM budget (GiB) the warm-set may occupy. 0 (default) or any non-positive value = single-resident (only the base llm warm). A positive budget admits extras up to that estimated total; if the base llm alone exceeds it, single-resident is kept. Set conservatively for the Mac's actual free unified memory.",
+  },
+  {
     id: "inference.quant",
     group: "Performance & Models",
     label: "Local model quantization",
@@ -608,8 +694,15 @@ export function entriesForGroup(group: GroupName): CatalogEntry[] {
 
 /* --------------------------------------------------------------- diff model */
 
-/** Compare two setting values for equality across the bool/number/string union. */
+/** Compare two setting values for equality across the bool/number/string/array
+ *  union. Arrays compare by ORDER + element (a reorder or an add/remove counts as
+ *  a change); scalars compare by identity. */
 export function sameValue(a: SettingValue, b: SettingValue): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    return a.every((v, i) => v === b[i]);
+  }
   return a === b;
 }
 

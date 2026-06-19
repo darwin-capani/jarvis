@@ -228,7 +228,7 @@ export default function SettingsModal({
 
           {tab === "system" ? (
             <div className="body" role="tabpanel" aria-label="System Settings">
-              <SystemSettingsPanel />
+              <SystemSettingsPanel voiceId={voiceId} />
               <div className="field-row" style={{ justifyContent: "flex-end" }}>
                 <button className="icon-btn" onClick={onClose}>
                   Close

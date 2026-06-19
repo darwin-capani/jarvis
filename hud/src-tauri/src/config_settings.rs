@@ -56,6 +56,20 @@ pub enum Kind {
     Float { min: f64, max: f64 },
     /// A string that MUST be one of the listed options (exact match).
     Enum(&'static [&'static str]),
+    /// A FREEFORM string (e.g. a HuggingFace repo id). The empty string is the
+    /// HONEST "feature inert / disabled" value and is always allowed. A non-empty
+    /// value is trimmed, length-capped, and rejected if it contains a newline /
+    /// control char / NUL (which could break out of the value token); on write it
+    /// is emitted as a properly-ESCAPED TOML basic string so a quote/backslash can
+    /// never inject a second key. NO options constraint — repo ids are open.
+    Str,
+    /// A single-line ARRAY of strings. `paths` = true means each element MUST be
+    /// an ABSOLUTE path (starts with `/`); false admits any non-empty repo-id
+    /// string. Every element is trimmed, deduped, length-capped, rejected for a
+    /// newline / control char / NUL, and emitted as an ESCAPED TOML basic string;
+    /// the array is written on ONE line (`key = ["a", "b"]`, empty => `[]`),
+    /// preserving the trailing comment. NO element can break out of its token.
+    StrArray { paths: bool },
 }
 
 /// One whitelisted setting: which `[section]` + `key` line it edits, and how it
@@ -122,7 +136,11 @@ pub const SETTINGS: &[Setting] = &[
     // hostile huge value. (>=1 is the real floor; the upper bound is a guard.)
     Setting { section: "screen_context", key: "interval_secs", kind: Kind::Int { min: 1, max: 86_400 } },
     Setting { section: "vision", key: "enabled", kind: Kind::Bool },
+    // vision.model: freeform on-device VLM repo id; "" = honest vlm_unavailable.
+    Setting { section: "vision", key: "model", kind: Kind::Str },
     Setting { section: "image", key: "enabled", kind: Kind::Bool },
+    // image.model: freeform on-device diffusion repo id; "" = honest unavailable.
+    Setting { section: "image", key: "model", kind: Kind::Str },
     Setting { section: "audio", key: "sound_monitor", kind: Kind::Bool },
     Setting { section: "interpret", key: "live", kind: Kind::Bool },
     Setting { section: "interpret", key: "speak", kind: Kind::Bool },
@@ -136,6 +154,8 @@ pub const SETTINGS: &[Setting] = &[
     Setting { section: "voice", key: "whisper_auto", kind: Kind::Bool },
     Setting { section: "voice", key: "diarize", kind: Kind::Bool },
     Setting { section: "speech", key: "engine", kind: Kind::Enum(&["kokoro", "csm", "orpheus"]) },
+    // speech.model: freeform HF repo for the chosen engine; "" = engine default.
+    Setting { section: "speech", key: "model", kind: Kind::Str },
     Setting { section: "speech", key: "instant_opener", kind: Kind::Bool },
 
     // ---- CAPABILITIES ----
@@ -145,8 +165,12 @@ pub const SETTINGS: &[Setting] = &[
     Setting { section: "webhooks", key: "enabled", kind: Kind::Bool },
     Setting { section: "plugin_sdk", key: "enabled", kind: Kind::Bool },
     Setting { section: "docsearch", key: "enabled", kind: Kind::Bool },
+    // docsearch.roots: ABSOLUTE folder allowlist JARVIS may index; ships empty.
+    Setting { section: "docsearch", key: "roots", kind: Kind::StrArray { paths: true } },
     Setting { section: "docsearch", key: "build_graph", kind: Kind::Bool },
     Setting { section: "code", key: "enabled", kind: Kind::Bool },
+    // code.roots: ABSOLUTE codebase-root allowlist (enable + apply confinement).
+    Setting { section: "code", key: "roots", kind: Kind::StrArray { paths: true } },
     Setting { section: "local_tools", key: "enabled", kind: Kind::Bool },
     Setting { section: "report", key: "enabled", kind: Kind::Bool },
     Setting { section: "chart", key: "enabled", kind: Kind::Bool },
@@ -159,7 +183,15 @@ pub const SETTINGS: &[Setting] = &[
     // ---- PERFORMANCE & MODELS ----
     Setting { section: "power", key: "adaptive", kind: Kind::Bool },
     Setting { section: "inference", key: "speculative", kind: Kind::Bool },
+    // inference.draft_model: freeform small DRAFT repo id; "" = speculative inert.
+    Setting { section: "inference", key: "draft_model", kind: Kind::Str },
     Setting { section: "inference", key: "quant", kind: Kind::Enum(&["auto", "fp16", "int8", "int4"]) },
+    // models.classifier: freeform dedicated classify repo id; "" = reuse llm.
+    Setting { section: "models", key: "classifier", kind: Kind::Str },
+    // models.local_warm: extra local repo ids kept warm beside `llm` (no paths).
+    Setting { section: "models", key: "local_warm", kind: Kind::StrArray { paths: false } },
+    // models.local_budget_gib: RAM budget (GiB) the warm-set may occupy; 0 = single.
+    Setting { section: "models", key: "local_budget_gib", kind: Kind::Float { min: 0.0, max: 8.0 } },
     Setting { section: "router", key: "conversation_route", kind: Kind::Enum(&["cloud_heavy", "cloud_fast", "local"]) },
 ];
 
@@ -185,6 +217,10 @@ pub enum SettingValue {
     Int(i64),
     Float(f64),
     Str(String),
+    /// A string array (model-id list / absolute-path allowlist). serde(untagged)
+    /// places this BEFORE Str so a JSON `[]` / `["a"]` lands here, never coerced
+    /// to a string. The JS side sends a plain `["/Users/x"]`.
+    StrList(Vec<String>),
 }
 
 /* ----------------------------------------------------------- GET (parse) */
@@ -210,7 +246,10 @@ pub struct SettingState {
 
 /// Strip a TOML inline `# comment` from a value region, respecting a single-/
 /// double-quoted string so a `#` INSIDE a quoted value is not treated as a
-/// comment. Returns the trimmed value text (no surrounding whitespace).
+/// comment. A `\` inside a DOUBLE-quoted (basic) string escapes the next byte, so
+/// an escaped `\"` does NOT close the string — without this, a value we ourselves
+/// wrote (with an escaped quote) would be mis-truncated on read. A single-quoted
+/// (literal) string has no escapes. Returns the trimmed value text.
 fn strip_inline_comment(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut in_str: Option<u8> = None;
@@ -220,6 +259,11 @@ fn strip_inline_comment(raw: &str) -> String {
         let b = bytes[i];
         match in_str {
             Some(q) => {
+                // In a basic ("..") string a backslash escapes the next byte.
+                if q == b'"' && b == b'\\' {
+                    i += 2;
+                    continue;
+                }
                 if b == q {
                     in_str = None;
                 }
@@ -238,6 +282,10 @@ fn strip_inline_comment(raw: &str) -> String {
     raw[..end].trim().to_string()
 }
 
+/// The per-element / per-string length cap (chars). A HuggingFace repo id or an
+/// absolute path is well under this; the cap guards against a hostile huge value.
+const MAX_STR_LEN: usize = 200;
+
 /// Parse a raw TOML value token into a typed [`SettingValue`] under a known
 /// [`Kind`]. Returns None when the token does not match the kind (a malformed
 /// file value) so GET can fall back to the file's verbatim text rather than lie.
@@ -254,7 +302,202 @@ fn coerce_value(kind: Kind, token: &str) -> Option<SettingValue> {
             let unq = unquote(token)?;
             Some(SettingValue::Str(unq))
         }
+        // A freeform string: read the quoted basic/literal string back into its
+        // inner text. The empty token "" reads as an empty string (honest "unset").
+        Kind::Str => parse_toml_basic_string(token).map(SettingValue::Str),
+        // An array: parse the single-line `["a", "b"]` (tolerating spaces) into a
+        // list. An empty `[]` reads as an empty list.
+        Kind::StrArray { .. } => parse_toml_string_array(token).map(SettingValue::StrList),
     }
+}
+
+/// Parse a TOML BASIC string token (`"..."` with escapes) OR a literal string
+/// (`'...'`, no escapes) into its inner text. We interpret the common escapes
+/// (`\\`, `\"`, `\n`, `\t`, `\r`, `\uXXXX`, `\UXXXXXXXX`) so a value we ourselves
+/// wrote with `escape_toml_basic` round-trips exactly. Returns None if the token
+/// is not a well-formed quoted string. (On WRITE we always emit a basic string;
+/// literal-string parsing is here only to read a hand-edited file faithfully.)
+fn parse_toml_basic_string(token: &str) -> Option<String> {
+    let b = token.as_bytes();
+    if b.len() < 2 {
+        return None;
+    }
+    let quote = b[0];
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    if b[b.len() - 1] != quote {
+        return None;
+    }
+    let inner = &token[1..token.len() - 1];
+    // Literal string: no escape processing (a backslash is literal).
+    if quote == b'\'' {
+        // A literal string cannot itself contain a single quote, so a stray one
+        // means the token was malformed (e.g. `'a'b'`).
+        if inner.contains('\'') {
+            return None;
+        }
+        return Some(inner.to_string());
+    }
+    // Basic string: process escapes.
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            // A raw double-quote inside a basic string is illegal (it would have
+            // closed the string); reject so we never mis-read a malformed token.
+            if c == '"' {
+                return None;
+            }
+            out.push(c);
+            continue;
+        }
+        match chars.next()? {
+            '"' => out.push('"'),
+            '\\' => out.push('\\'),
+            'n' => out.push('\n'),
+            't' => out.push('\t'),
+            'r' => out.push('\r'),
+            'b' => out.push('\u{0008}'),
+            'f' => out.push('\u{000C}'),
+            'u' => {
+                let hex: String = (0..4).map(|_| chars.next().unwrap_or('\0')).collect();
+                let cp = u32::from_str_radix(&hex, 16).ok()?;
+                out.push(char::from_u32(cp)?);
+            }
+            'U' => {
+                let hex: String = (0..8).map(|_| chars.next().unwrap_or('\0')).collect();
+                let cp = u32::from_str_radix(&hex, 16).ok()?;
+                out.push(char::from_u32(cp)?);
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Parse a SINGLE-LINE TOML array of strings (`[ "a", "b" ]`, tolerating spaces
+/// and a trailing comma) into a list. Each element is a basic/literal string we
+/// unquote via [`parse_toml_basic_string`]. Returns None if the token is not a
+/// well-formed single-line string array. Empty `[]` (any inner whitespace) =>
+/// empty list. We scan respecting quotes so a `,` or `]` INSIDE a quoted string
+/// is not treated as a separator/terminator.
+fn parse_toml_string_array(token: &str) -> Option<Vec<String>> {
+    let t = token.trim();
+    let inner = t.strip_prefix('[')?.strip_suffix(']')?;
+    if inner.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    let mut out: Vec<String> = Vec::new();
+    let bytes = inner.as_bytes();
+    let mut i = 0;
+    loop {
+        // Skip leading whitespace before an element.
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let quote = bytes[i];
+        if quote != b'"' && quote != b'\'' {
+            return None; // an element must be a quoted string
+        }
+        // Find the matching closing quote, honoring `\"`/`\\` escapes in a basic
+        // string (a literal string `'...'` has no escapes, so the first `'` ends it).
+        let start = i;
+        i += 1;
+        let mut closed = false;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if quote == b'"' && b == b'\\' {
+                i += 2; // skip the escaped char
+                continue;
+            }
+            if b == quote {
+                closed = true;
+                i += 1;
+                break;
+            }
+            i += 1;
+        }
+        if !closed {
+            return None;
+        }
+        let elem_token = &inner[start..i];
+        out.push(parse_toml_basic_string(elem_token)?);
+        // Skip whitespace, then expect a comma or the end.
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        if bytes[i] == b',' {
+            i += 1;
+            continue;
+        }
+        return None; // junk between elements
+    }
+    Some(out)
+}
+
+/// Escape a string for emission as a TOML BASIC string CONTENT (the text that
+/// goes BETWEEN the surrounding double quotes). Per the TOML spec we escape the
+/// backslash and double-quote, and any control character (U+0000..U+001F plus
+/// U+007F) as its `\uXXXX` form (or the short `\n`/`\t`/`\r`/`\b`/`\f` mnemonics).
+/// This is the WHOLE injection defense: after escaping, the content can contain
+/// NO unescaped `"` to close the token early, NO raw newline to start a second
+/// line/key, and NO control char — so a value like `foo"], allow = [true` becomes
+/// the inert text `foo\"], allow = [true` that re-parses to the SAME string.
+fn escape_toml_basic(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\u{0008}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{000C}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            c if (c as u32) < 0x20 || (c as u32) == 0x7F => {
+                out.push_str(&format!("\\u{:04X}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Validate ONE freeform/array ELEMENT string before it is written. Trims; the
+/// EMPTY string is allowed ONLY for a freeform Str (`allow_empty`), never as an
+/// array element. Rejects any string carrying a control char / newline / NUL
+/// (defense in depth — `escape_toml_basic` would neutralize them anyway, but we
+/// refuse them outright so a hostile control char can never even reach the file),
+/// caps the length, and (when `must_be_abs`) requires an absolute `/`-rooted path.
+/// Returns the trimmed, validated string.
+fn validate_element(raw: &str, must_be_abs: bool, allow_empty: bool) -> Result<String, String> {
+    let v = raw.trim();
+    if v.is_empty() {
+        if allow_empty {
+            return Ok(String::new());
+        }
+        return Err("empty value not allowed here".to_string());
+    }
+    if v.chars().count() > MAX_STR_LEN {
+        return Err(format!("value too long (cap {MAX_STR_LEN} chars)"));
+    }
+    // Reject control chars (incl. newline, carriage return, tab, NUL, DEL). These
+    // are exactly the bytes that could break a value out of its token if the
+    // escaping ever regressed; refusing them is a belt to the escaping suspenders.
+    if let Some(bad) = v.chars().find(|c| (*c as u32) < 0x20 || (*c as u32) == 0x7F) {
+        return Err(format!("value contains a control character (U+{:04X})", bad as u32));
+    }
+    if must_be_abs && !v.starts_with('/') {
+        return Err(format!("path must be absolute (start with '/'): {v:?}"));
+    }
+    Ok(v.to_string())
 }
 
 /// Unquote a TOML basic/literal string token (`"x"` or `'x'`) into its inner
@@ -402,6 +645,30 @@ fn render_token(kind: Kind, value: &SettingValue) -> Result<String, String> {
             Ok(format!("\"{s}\""))
         }
         (Kind::Enum(_), _) => Err("expected one of the allowed options".to_string()),
+        // FREEFORM string: trim + allow-empty + reject control chars + cap length,
+        // then emit an ESCAPED basic string. A hostile value can never break out.
+        (Kind::Str, SettingValue::Str(s)) => {
+            let v = validate_element(s, /*must_be_abs*/ false, /*allow_empty*/ true)?;
+            Ok(format!("\"{}\"", escape_toml_basic(&v)))
+        }
+        (Kind::Str, _) => Err("expected a string".to_string()),
+        // ARRAY: validate EACH element (per-element absolute-path / non-empty +
+        // control-char rejection + length cap), reject duplicates, then emit a
+        // SINGLE-LINE array of ESCAPED basic strings. Empty => `[]`. No element can
+        // smuggle a second array element, key, or comment past its own token.
+        (Kind::StrArray { paths }, SettingValue::StrList(items)) => {
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut elems: Vec<String> = Vec::with_capacity(items.len());
+            for item in items {
+                let v = validate_element(item, /*must_be_abs*/ paths, /*allow_empty*/ false)?;
+                if !seen.insert(v.clone()) {
+                    return Err(format!("duplicate entry: {v:?}"));
+                }
+                elems.push(format!("\"{}\"", escape_toml_basic(&v)));
+            }
+            Ok(format!("[{}]", elems.join(", ")))
+        }
+        (Kind::StrArray { .. }, _) => Err("expected an array of strings".to_string()),
     }
 }
 
@@ -542,8 +809,10 @@ fn rewrite_value_line(line: &str, vregion: &str, token: &str) -> String {
 }
 
 /// Byte offset of the inline `#` that begins a trailing comment in a value
-/// region, respecting single/double quotes (so `'a#b'` is not a comment). None if
-/// there is no inline comment.
+/// region, respecting single/double quotes (so `'a#b'` is not a comment) AND the
+/// `\` escape inside a basic ("..") string (so an escaped `\"` does not falsely
+/// close the string and expose a `#` payload as a comment — critical for the
+/// values we write with escaped quotes). None if there is no inline comment.
 fn inline_comment_start(vregion: &str) -> Option<usize> {
     let bytes = vregion.as_bytes();
     let mut in_str: Option<u8> = None;
@@ -552,6 +821,10 @@ fn inline_comment_start(vregion: &str) -> Option<usize> {
         let b = bytes[i];
         match in_str {
             Some(q) => {
+                if q == b'"' && b == b'\\' {
+                    i += 2;
+                    continue;
+                }
                 if b == q {
                     in_str = None;
                 }
@@ -585,6 +858,17 @@ fn config_path() -> Result<PathBuf, String> {
 /// round-trip + coercion are unit-testable without a daemon. Each flat setting is
 /// coerced to its typed value (falling back to the file's verbatim string only if
 /// the token is malformed); each autonomy section is the derived 3-way state.
+/// The SHAPE-CORRECT sentinel for a setting whose file value is absent or
+/// malformed, so GET always returns the JSON shape the UI's control expects. An
+/// array kind gets an empty list; everything else gets a string (the verbatim
+/// malformed token when there is one, else empty = "unset").
+fn missing_sentinel(kind: Kind, token: Option<&str>) -> SettingValue {
+    match kind {
+        Kind::StrArray { .. } => SettingValue::StrList(Vec::new()),
+        _ => SettingValue::Str(token.map(str::to_string).unwrap_or_default()),
+    }
+}
+
 pub fn build_get(text: &str) -> Vec<SettingState> {
     let raw = read_raw_values(text);
     let mut out: Vec<SettingState> = Vec::new();
@@ -592,12 +876,14 @@ pub fn build_get(text: &str) -> Vec<SettingState> {
     for s in SETTINGS {
         let token = raw.get(&(s.section.to_string(), s.key.to_string()));
         let value = match token {
-            Some(tok) => coerce_value(s.kind, tok)
-                .unwrap_or_else(|| SettingValue::Str(tok.clone())),
-            // Key absent from the file: surface a typed default-shaped sentinel
-            // so the UI still renders. For a missing key we report the file's
-            // intent honestly as an empty string the UI treats as "unset".
-            None => SettingValue::Str(String::new()),
+            // A present token coerces to its typed value. On a malformed token we
+            // fall back to a SHAPE-CORRECT sentinel (empty list for an array, the
+            // verbatim string otherwise) so the UI always renders the right control.
+            Some(tok) => coerce_value(s.kind, tok).unwrap_or_else(|| missing_sentinel(s.kind, Some(tok))),
+            // Key absent from the file: surface a typed default-shaped sentinel so
+            // the UI still renders the right control (empty list for an array, an
+            // empty string the UI treats as "unset" otherwise).
+            None => missing_sentinel(s.kind, None),
         };
         let (kind_tag, options, min, max) = describe(s.kind);
         out.push(SettingState {
@@ -641,6 +927,16 @@ fn describe(kind: Kind) -> (String, Option<Vec<String>>, Option<f64>, Option<f64
         Kind::Enum(opts) => (
             "enum".to_string(),
             Some(opts.iter().map(|s| s.to_string()).collect()),
+            None,
+            None,
+        ),
+        // The UI tag for a freeform string field.
+        Kind::Str => ("string".to_string(), None, None, None),
+        // The UI tag distinguishes a path-array (folder picker) from a plain
+        // string-array (manual repo-id add): "pathlist" vs "strlist".
+        Kind::StrArray { paths } => (
+            if paths { "pathlist" } else { "strlist" }.to_string(),
+            None,
             None,
             None,
         ),
@@ -777,6 +1073,54 @@ fn libc_getuid() -> u32 {
     // SAFETY: getuid() always succeeds, takes no arguments, and has no
     // preconditions; it is the canonical POSIX uid query.
     unsafe { getuid() }
+}
+
+/* ------------------------------------------------------------- folder picker */
+
+/// Open the NATIVE macOS folder picker and return the chosen ABSOLUTE path, or
+/// `None` if the user cancelled. Wired without a new dependency (and so without a
+/// dialog-plugin capability permission to manage): it shells `osascript` to run
+/// `choose folder` — the same canonical macOS chooser the Finder uses — and reads
+/// back its POSIX path. The command takes NO argument from the frontend (there is
+/// nothing to inject; the AppleScript literal is a constant), and the returned
+/// path is RE-VALIDATED on the way IN through `config_set` exactly like a manually
+/// typed path — the picker is a convenience, never a trust shortcut. The manual
+/// validated text-add input remains the always-works baseline if the picker is
+/// unavailable (e.g. no GUI session). Parses the path with a deny-default stance:
+/// only a clean absolute path with no control char is returned.
+#[tauri::command]
+pub async fn pick_folder() -> Result<Option<String>, String> {
+    // `choose folder` returns an alias; `POSIX path of` renders it as an absolute
+    // /-rooted path. On Cancel, osascript exits non-zero with "User canceled"
+    // (error -128) — we map that to Ok(None), not an error.
+    let output = Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg("POSIX path of (choose folder with prompt \"Select a folder JARVIS may index\")")
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("could not run the folder picker: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // User cancelled (-128) — a clean no-selection, not a failure.
+        if stderr.contains("-128") || stderr.to_lowercase().contains("user canceled") {
+            return Ok(None);
+        }
+        return Err(format!(
+            "folder picker unavailable: {}",
+            stderr.trim().lines().next().unwrap_or("no GUI session")
+        ));
+    }
+
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        return Ok(None);
+    }
+    // Validate exactly like an absolute-path array element so the picker can never
+    // surface something config_set would later reject (or anything control-charred).
+    let validated = validate_element(&path, /*must_be_abs*/ true, /*allow_empty*/ false)?;
+    Ok(Some(validated))
 }
 
 /* --------------------------------------------------------------------- tests */
@@ -1201,5 +1545,376 @@ profile = \"default\"      # SHIPS NEUTRAL.
             value: SettingValue::Bool(false),
         }]).unwrap();
         assert!(!u2.ends_with('\n'));
+    }
+
+    /* ============================================================== v1 GAPS:
+       STRING + ARRAY fields. The crux of this pass is that a string/path value
+       can NEVER break out of its token to inject a second key, section, array
+       element, or comment. Below: round-trip, comment preservation, the
+       INJECTION proof, absolute-path validation, and unknown-key rejection. */
+
+    /// A config slice carrying every NEW field this pass adds: the freeform Str
+    /// model ids, the path-array fields, the repo-id array, and the float budget —
+    /// each with its real honest trailing comment so the edit can be proven to
+    /// keep them.
+    const SAMPLE_V1: &str = "\
+[models]
+classifier = \"\"                                     # dedicated small resident model; \"\" = reuse llm.
+local_warm = []                                     # OPTIONAL extra local model ids to keep warm beside `llm`.
+local_budget_gib = 0.0                              # RAM budget (GiB); 0 = single-resident.
+
+[speech]
+engine = \"kokoro\"       # TTS engine.
+model = \"\"              # explicit HF repo for the engine; \"\" = engine default.
+
+[inference]
+speculative = true      # #37 master gate.
+draft_model = \"\"        # #37 small DRAFT checkpoint; \"\" = inert.
+
+[vision]
+enabled = true          # master gate.
+model = \"\"              # SHIPS EMPTY — name an on-device VLM repo id to engage.
+
+[image]
+enabled = true          # master gate.
+model = \"\"              # SHIPS EMPTY — name an on-device diffusion model id to engage.
+
+[docsearch]
+enabled = true          # master gate.
+roots = []                     # EXPLICIT folder allowlist, SHIPS EMPTY.
+build_graph = true             # KG build.
+
+[code]
+enabled = true                 # master switch.
+roots = []                     # EXPLICIT codebase-root allowlist, SHIPS EMPTY.
+";
+
+    // ---------- (a) ROUND-TRIP: set a model id + a roots array + local_warm ----------
+
+    #[test]
+    fn round_trip_string_array_and_float_v1() {
+        let changes = vec![
+            Change { id: "vision.model".into(), value: SettingValue::Str("mlx-community/Qwen2-VL-2B-Instruct-4bit".into()) },
+            Change { id: "speech.model".into(), value: SettingValue::Str("mlx-community/Kokoro-82M-bf16".into()) },
+            Change { id: "inference.draft_model".into(), value: SettingValue::Str("mlx-community/Qwen3-0.6B-Instruct-4bit".into()) },
+            Change { id: "docsearch.roots".into(), value: SettingValue::StrList(vec!["/Users/me/Notes".into(), "/Users/me/Docs".into()]) },
+            Change { id: "code.roots".into(), value: SettingValue::StrList(vec!["/Users/me/proj".into()]) },
+            Change { id: "models.local_warm".into(), value: SettingValue::StrList(vec!["mlx-community/Qwen3-0.6B-Instruct-4bit".into()]) },
+            Change { id: "models.local_budget_gib".into(), value: SettingValue::Float(3.5) },
+        ];
+        let updated = apply_changes(SAMPLE_V1, &changes).expect("apply v1 ok");
+        let states = build_get(&updated);
+
+        assert_eq!(get_value(&states, "vision.model"), SettingValue::Str("mlx-community/Qwen2-VL-2B-Instruct-4bit".into()));
+        assert_eq!(get_value(&states, "speech.model"), SettingValue::Str("mlx-community/Kokoro-82M-bf16".into()));
+        assert_eq!(get_value(&states, "inference.draft_model"), SettingValue::Str("mlx-community/Qwen3-0.6B-Instruct-4bit".into()));
+        assert_eq!(
+            get_value(&states, "docsearch.roots"),
+            SettingValue::StrList(vec!["/Users/me/Notes".into(), "/Users/me/Docs".into()])
+        );
+        assert_eq!(get_value(&states, "code.roots"), SettingValue::StrList(vec!["/Users/me/proj".into()]));
+        assert_eq!(
+            get_value(&states, "models.local_warm"),
+            SettingValue::StrList(vec!["mlx-community/Qwen3-0.6B-Instruct-4bit".into()])
+        );
+        assert_eq!(get_value(&states, "models.local_budget_gib"), SettingValue::Float(3.5));
+
+        // The single-line array form is exactly what the daemon parses.
+        assert!(updated.contains("roots = [\"/Users/me/Notes\", \"/Users/me/Docs\"]"));
+        assert!(updated.contains("local_warm = [\"mlx-community/Qwen3-0.6B-Instruct-4bit\"]"));
+    }
+
+    #[test]
+    fn empty_string_and_empty_array_round_trip_as_honest_unset() {
+        // Setting a model id back to "" (feature inert) and a roots list back to []
+        // are the honest disabled states and must round-trip.
+        let pre = apply_changes(SAMPLE_V1, &[
+            Change { id: "vision.model".into(), value: SettingValue::Str("x/y".into()) },
+            Change { id: "docsearch.roots".into(), value: SettingValue::StrList(vec!["/a".into()]) },
+        ]).unwrap();
+        let cleared = apply_changes(&pre, &[
+            Change { id: "vision.model".into(), value: SettingValue::Str(String::new()) },
+            Change { id: "docsearch.roots".into(), value: SettingValue::StrList(vec![]) },
+        ]).unwrap();
+        let states = build_get(&cleared);
+        assert_eq!(get_value(&states, "vision.model"), SettingValue::Str(String::new()));
+        assert_eq!(get_value(&states, "docsearch.roots"), SettingValue::StrList(vec![]));
+        assert!(cleared.contains("model = \"\""));
+        assert!(cleared.contains("roots = []"));
+    }
+
+    // ---------- (b) COMMENTS preserved on the changed array/string lines ----------
+
+    #[test]
+    fn comments_preserved_on_changed_string_and_array_lines() {
+        let changes = vec![
+            Change { id: "vision.model".into(), value: SettingValue::Str("repo/vlm".into()) },
+            Change { id: "docsearch.roots".into(), value: SettingValue::StrList(vec!["/srv/docs".into()]) },
+            Change { id: "models.local_budget_gib".into(), value: SettingValue::Float(2.0) },
+        ];
+        let updated = apply_changes(SAMPLE_V1, &changes).expect("apply ok");
+
+        // The trailing comments on the CHANGED lines survive byte-for-byte.
+        let vline = updated.lines().find(|l| l.trim_start().starts_with("model =") && l.contains("VLM")).unwrap();
+        assert_eq!(vline, "model = \"repo/vlm\"              # SHIPS EMPTY — name an on-device VLM repo id to engage.");
+        let rline = updated.lines().find(|l| l.trim_start().starts_with("roots =") && l.contains("folder allowlist")).unwrap();
+        assert_eq!(rline, "roots = [\"/srv/docs\"]                     # EXPLICIT folder allowlist, SHIPS EMPTY.");
+        let bline = updated.lines().find(|l| l.trim_start().starts_with("local_budget_gib")).unwrap();
+        assert_eq!(bline, "local_budget_gib = 2.0                              # RAM budget (GiB); 0 = single-resident.");
+    }
+
+    // ---------- (c) INJECTION REJECTED / ESCAPED ----------
+
+    /// Helper: count how many `(section, key)` assignment lines exist for a key in
+    /// a section (to prove no SECOND key was injected).
+    fn count_keys_in_section(text: &str, section: &str, key: &str) -> usize {
+        let mut cur = String::new();
+        let mut n = 0;
+        for line in text.lines() {
+            if let Some(h) = section_header(line) {
+                cur = h;
+                continue;
+            }
+            if let Some((k, _)) = split_assignment(line) {
+                if cur == section && k == key {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn injection_via_array_element_is_escaped_to_a_single_inert_token() {
+        // The classic break-out attempt: an element that, if echoed raw, would
+        // close the array and inject a second key (and a comment).
+        let evil = "foo\"], allow_consequential = [true #pwn";
+        let updated = apply_changes(SAMPLE_V1, &[Change {
+            id: "docsearch.roots".into(),
+            // It IS an absolute path so it passes the abs-path gate; the point is
+            // the QUOTE inside must be escaped, not the path shape.
+            value: SettingValue::StrList(vec![format!("/{evil}")]),
+        }]).expect("escaped, not errored");
+
+        // 1) The value round-trips to EXACTLY the same string (escape was lossless).
+        let states = build_get(&updated);
+        assert_eq!(
+            get_value(&states, "docsearch.roots"),
+            SettingValue::StrList(vec![format!("/{evil}")])
+        );
+        // 2) No SECOND key was injected anywhere: allow_consequential count is
+        //    unchanged (it was never even in SAMPLE_V1 -> still zero), and roots is
+        //    still a SINGLE key under [docsearch].
+        assert_eq!(count_keys_in_section(&updated, "integrations", "allow_consequential"), 0);
+        assert_eq!(count_keys_in_section(&updated, "docsearch", "roots"), 1);
+        // 3) The raw written line escapes the quote and keeps the comment; the `#`
+        //    in the payload is INSIDE the quoted string, never a real comment.
+        let line = updated.lines().find(|l| l.trim_start().starts_with("roots =")).unwrap();
+        assert!(line.contains("\\\""), "the quote must be backslash-escaped: {line}");
+        assert!(line.ends_with("# EXPLICIT folder allowlist, SHIPS EMPTY."), "real comment kept: {line}");
+    }
+
+    #[test]
+    fn injection_via_string_field_is_escaped_to_a_single_inert_token() {
+        // A model-id with a quote + array-close + key-inject payload.
+        let evil = "a\\b\"\nclassifier = \"pwned";
+        // A newline/control char is REJECTED outright (defense in depth).
+        let r = apply_changes(SAMPLE_V1, &[Change {
+            id: "vision.model".into(),
+            value: SettingValue::Str(evil.into()),
+        }]);
+        assert!(r.is_err(), "a control char / newline in a string must be rejected");
+
+        // A control-free but quote/backslash-laden value is ESCAPED, not errored,
+        // and re-parses to the SAME string with no injected key.
+        let tricky = "a\\b\", classifier = \"pwned"; // backslash + quote, no newline
+        let updated = apply_changes(SAMPLE_V1, &[Change {
+            id: "vision.model".into(),
+            value: SettingValue::Str(tricky.into()),
+        }]).expect("escaped, not errored");
+        let states = build_get(&updated);
+        assert_eq!(get_value(&states, "vision.model"), SettingValue::Str(tricky.into()));
+        // classifier was not hijacked — it is still exactly one key and still "".
+        assert_eq!(count_keys_in_section(&updated, "models", "classifier"), 1);
+        assert_eq!(get_value(&states, "models.classifier"), SettingValue::Str(String::new()));
+        // vision.model is still a single key.
+        assert_eq!(count_keys_in_section(&updated, "vision", "model"), 1);
+    }
+
+    #[test]
+    fn control_chars_newline_nul_are_rejected_in_array_elements() {
+        for bad in ["/a\nb", "/a\tb", "/a\u{0000}b", "/a\u{007F}b", "/a\rb"] {
+            let r = apply_changes(SAMPLE_V1, &[Change {
+                id: "docsearch.roots".into(),
+                value: SettingValue::StrList(vec![bad.into()]),
+            }]);
+            assert!(r.is_err(), "control char in {bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn escape_then_parse_is_lossless_for_adversarial_strings() {
+        // Property: for any control-free string, escape_toml_basic wrapped in
+        // quotes re-parses to the identical string (the escape is sound + complete).
+        for s in [
+            "plain/repo-id",
+            "with \"quotes\" inside",
+            "back\\slash\\path",
+            "],[#=trick",
+            "trailing-backslash\\",
+            "unicode-é-ñ-中",
+        ] {
+            let token = format!("\"{}\"", escape_toml_basic(s));
+            assert_eq!(parse_toml_basic_string(&token).as_deref(), Some(s), "lossless for {s:?}");
+        }
+    }
+
+    // ---------- (d) a non-absolute root path is rejected ----------
+
+    #[test]
+    fn non_absolute_root_path_is_rejected() {
+        for bad in ["relative/path", "~/Documents", "C:\\\\win", "  ", "./x"] {
+            let r = apply_changes(SAMPLE_V1, &[Change {
+                id: "docsearch.roots".into(),
+                value: SettingValue::StrList(vec![bad.into()]),
+            }]);
+            assert!(r.is_err(), "non-absolute root {bad:?} must be rejected");
+        }
+        // code.roots is also path-gated.
+        assert!(apply_changes(SAMPLE_V1, &[Change {
+            id: "code.roots".into(),
+            value: SettingValue::StrList(vec!["not-abs".into()]),
+        }]).is_err());
+        // But local_warm is NOT path-gated — a repo id (no leading /) is fine.
+        assert!(apply_changes(SAMPLE_V1, &[Change {
+            id: "models.local_warm".into(),
+            value: SettingValue::StrList(vec!["mlx-community/whatever".into()]),
+        }]).is_ok());
+    }
+
+    #[test]
+    fn duplicate_array_elements_are_rejected() {
+        let r = apply_changes(SAMPLE_V1, &[Change {
+            id: "docsearch.roots".into(),
+            value: SettingValue::StrList(vec!["/a".into(), "/a".into()]),
+        }]);
+        assert!(r.is_err(), "a duplicate path must be rejected");
+    }
+
+    #[test]
+    fn overlong_string_is_rejected() {
+        let huge = "/".to_string() + &"x".repeat(MAX_STR_LEN);
+        assert!(apply_changes(SAMPLE_V1, &[Change {
+            id: "docsearch.roots".into(),
+            value: SettingValue::StrList(vec![huge]),
+        }]).is_err());
+        let huge_id = "m/".to_string() + &"y".repeat(MAX_STR_LEN);
+        assert!(apply_changes(SAMPLE_V1, &[Change {
+            id: "vision.model".into(),
+            value: SettingValue::Str(huge_id),
+        }]).is_err());
+    }
+
+    #[test]
+    fn wrong_type_for_string_or_array_field_is_rejected() {
+        // A bool for a Str field, a string for an array field, etc.
+        assert!(apply_changes(SAMPLE_V1, &[Change {
+            id: "vision.model".into(), value: SettingValue::Bool(true),
+        }]).is_err());
+        assert!(apply_changes(SAMPLE_V1, &[Change {
+            id: "docsearch.roots".into(), value: SettingValue::Str("/a".into()),
+        }]).is_err());
+        // local_budget_gib out of range.
+        assert!(apply_changes(SAMPLE_V1, &[Change {
+            id: "models.local_budget_gib".into(), value: SettingValue::Float(99.0),
+        }]).is_err());
+        assert!(apply_changes(SAMPLE_V1, &[Change {
+            id: "models.local_budget_gib".into(), value: SettingValue::Float(-1.0),
+        }]).is_err());
+    }
+
+    // ---------- (e) unknown key still rejected (now that new kinds exist) ----------
+
+    #[test]
+    fn unknown_key_still_rejected_for_string_array_values() {
+        for bad in [
+            "models.heavy_model",          // a real-ish key, NOT whitelisted
+            "docsearch.roots\nfoo = [1",   // injection-shaped id
+            "code.bogus",
+        ] {
+            assert!(apply_changes(SAMPLE_V1, &[Change {
+                id: bad.into(),
+                value: SettingValue::StrList(vec!["/x".into()]),
+            }]).is_err(), "unknown key {bad:?} must be rejected");
+        }
+    }
+
+    // ---------- single-line array parser correctness ----------
+
+    #[test]
+    fn array_parser_tolerates_spacing_and_comments() {
+        // Spaces, trailing comma, and an inline comment after the `]`.
+        let raw = read_raw_values("[docsearch]\nroots = [ \"/a\" ,  \"/b\" ]   # the allowlist\n");
+        let tok = raw.get(&("docsearch".into(), "roots".into())).unwrap();
+        assert_eq!(parse_toml_string_array(tok), Some(vec!["/a".to_string(), "/b".to_string()]));
+        // A `]` or `,` INSIDE a quoted element is not a terminator/separator.
+        assert_eq!(
+            parse_toml_string_array("[\"/a],b\"]"),
+            Some(vec!["/a],b".to_string()])
+        );
+        // An escaped quote inside a basic-string element is handled.
+        assert_eq!(
+            parse_toml_string_array("[\"/a\\\"b\"]"),
+            Some(vec!["/a\"b".to_string()])
+        );
+        // Empty forms.
+        assert_eq!(parse_toml_string_array("[]"), Some(vec![]));
+        assert_eq!(parse_toml_string_array("[   ]"), Some(vec![]));
+    }
+
+    #[test]
+    fn real_config_round_trips_new_v1_fields_no_collateral_change() {
+        // End-to-end over the REAL shipped config/jarvis.toml (a temp in-memory
+        // copy; the file is never written): set a model id + both roots arrays +
+        // local_warm + the budget, prove GET returns them, and prove ONLY the
+        // targeted lines changed (comments + every other line intact).
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest.parent().and_then(Path::parent).unwrap();
+        let text = std::fs::read_to_string(root.join("config/jarvis.toml")).unwrap();
+
+        let changes = vec![
+            Change { id: "vision.model".into(), value: SettingValue::Str("mlx-community/Qwen2-VL-2B-Instruct-4bit".into()) },
+            Change { id: "docsearch.roots".into(), value: SettingValue::StrList(vec!["/Users/me/Notes".into()]) },
+            Change { id: "code.roots".into(), value: SettingValue::StrList(vec!["/Users/me/proj".into()]) },
+            Change { id: "models.local_warm".into(), value: SettingValue::StrList(vec!["mlx-community/Qwen3-0.6B-Instruct-4bit".into()]) },
+            Change { id: "models.local_budget_gib".into(), value: SettingValue::Float(2.5) },
+        ];
+        let updated = apply_changes(&text, &changes).expect("apply on the real config");
+        let states = build_get(&updated);
+        assert_eq!(get_value(&states, "vision.model"), SettingValue::Str("mlx-community/Qwen2-VL-2B-Instruct-4bit".into()));
+        assert_eq!(get_value(&states, "docsearch.roots"), SettingValue::StrList(vec!["/Users/me/Notes".into()]));
+        assert_eq!(get_value(&states, "code.roots"), SettingValue::StrList(vec!["/Users/me/proj".into()]));
+        assert_eq!(get_value(&states, "models.local_warm"), SettingValue::StrList(vec!["mlx-community/Qwen3-0.6B-Instruct-4bit".into()]));
+        assert_eq!(get_value(&states, "models.local_budget_gib"), SettingValue::Float(2.5));
+
+        // Exactly five lines changed; same line count + trailing-newline state.
+        let changed = text.lines().zip(updated.lines()).filter(|(a, b)| a != b).count();
+        assert_eq!(changed, 5, "exactly the five targeted lines change");
+        assert_eq!(text.lines().count(), updated.lines().count());
+        assert_eq!(text.ends_with('\n'), updated.ends_with('\n'));
+    }
+
+    #[test]
+    fn new_v1_keys_have_correct_kind_tags_in_get() {
+        let states = build_get(SAMPLE_V1);
+        let by = |id: &str| states.iter().find(|s| s.id == id).unwrap().kind.clone();
+        assert_eq!(by("vision.model"), "string");
+        assert_eq!(by("speech.model"), "string");
+        assert_eq!(by("inference.draft_model"), "string");
+        assert_eq!(by("models.classifier"), "string");
+        assert_eq!(by("docsearch.roots"), "pathlist");
+        assert_eq!(by("code.roots"), "pathlist");
+        assert_eq!(by("models.local_warm"), "strlist");
+        assert_eq!(by("models.local_budget_gib"), "float");
     }
 }

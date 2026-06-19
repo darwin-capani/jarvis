@@ -810,6 +810,7 @@ pub fn run() {
             config_settings::config_get,
             config_settings::config_set,
             config_settings::daemon_restart,
+            config_settings::pick_folder,
             enter_takeover,
             exit_takeover
         ])
