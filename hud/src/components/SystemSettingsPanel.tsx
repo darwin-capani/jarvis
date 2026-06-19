@@ -21,6 +21,31 @@ import {
   pickFolder,
 } from "../tauri/configSettings";
 import type { VoiceIdStatus } from "../core/events";
+import { voiceIdDisplay } from "../core/events";
+import { inTauri } from "../tauri/bridge";
+import { sendCommand } from "../tauri/command";
+
+/**
+ * The EXACT spoken voice-id management phrases the enrollment controls send over
+ * the command channel as `{cmd:"ask", text}`. They are anchored to the daemon's
+ * CONSERVATIVE `voiceid::classify_intent` (daemon/src/voiceid.rs) — the same
+ * classifier the spoken voice path uses — so a click drives the REAL enrollment /
+ * forget flow with NO new Tauri/daemon authority:
+ *   - `enroll` -> `classify_intent` must return `VoiceIntent::Enroll`, which (only
+ *     when `[voice_id].enabled` AND the daemon's audio pipeline is live) OPENS a
+ *     capture session and emits `voiceid.enroll_started`. The HUD never enrolls
+ *     itself; it asks the daemon exactly like saying the phrase aloud, and the
+ *     badge flips to ENROLLED only when the REAL `voiceid.enrolled` telemetry says
+ *     so — a click can never fake a profile.
+ *   - `forget` -> `classify_intent` must return `VoiceIntent::Forget`, which drops
+ *     the stored owner profile (`voiceid.forgot`). Gated behind an explicit confirm.
+ * Both literals are byte-for-byte an anchor in `classify_intent` ("my voice" + an
+ * enroll/forget verb); a phrase edit on either side breaks the spoken path too.
+ */
+export const VOICE_ID_PHRASES = {
+  enroll: "enroll my voice",
+  forget: "forget my voice",
+} as const;
 
 /**
  * SYSTEM SETTINGS — the dedicated config surface for config/jarvis.toml. On open
@@ -368,6 +393,18 @@ function SettingRow({
         )}
       </div>
       <div className="syscfg-hint">{entry.hint}</div>
+      {/* The Enroll / Forget controls live BELOW the toggle row (not inside the
+          badge — the badge stays a pure telemetry reflector). They send the SAME
+          spoken phrases the voice path uses; the badge above is the only enrolled
+          signal, and it flips only on REAL telemetry. */}
+      {entry.id === "voice_id.enabled" && (
+        <VoiceIdEnrollControls
+          voiceId={voiceId}
+          enabledDraft={draftValue === true}
+          enabledLive={liveValue === true}
+          onEdit={onEdit}
+        />
+      )}
       {dangerousNow && entry.danger && <div className="syscfg-warn">⚠ {entry.danger}</div>}
     </div>
   );
@@ -408,6 +445,163 @@ export function VoiceIdBadge({ voiceId }: { voiceId: VoiceIdStatus | null }) {
     >
       NOT ENROLLED — say &quot;enroll my voice&quot;
     </span>
+  );
+}
+
+/** VOICE-ID ENROLLMENT CONTROLS — the "Enroll my voice" / "Forget my voice"
+ *  affordances that sit under the voice_id.enabled toggle. PURE FRONTEND: they add
+ *  NO new Tauri/daemon command — each button sends the SAME spoken phrase the voice
+ *  path uses over the EXISTING `sendCommand({cmd:"ask", text})` bridge, and the
+ *  daemon's `voiceid::classify_intent` drives the REAL flow.
+ *
+ *  HONESTY CONTRACT (do not regress):
+ *   - This does NOT simulate success. Enrollment captures live MIC audio prompt by
+ *     prompt in the daemon; the badge above flips to ENROLLED only when the REAL
+ *     `voiceid.enrolled` telemetry arrives. A click never fakes a profile.
+ *   - It needs Microphone access (TCC) + the daemon running + `[voice_id].enabled`.
+ *     When voice-id is OFF, the daemon's enroll handler is never reached, so the
+ *     button instead offers to flip the toggle ON as a pending change (applied on
+ *     the next restart) — it does not silently send into a dead path.
+ *   - Progress (samples captured / N needed) is reflected straight from telemetry
+ *     (`enrolling` / `captured` / `need`), never invented.
+ *   - Forget is an explicit two-step confirm (it clears your enrolled profile).
+ *   - In a plain browser (no shell) the buttons are disabled with an honest note. */
+export function VoiceIdEnrollControls({
+  voiceId,
+  enabledDraft,
+  enabledLive,
+  onEdit,
+}: {
+  voiceId: VoiceIdStatus | null;
+  /** The DRAFT value of voice_id.enabled (what the toggle shows now). */
+  enabledDraft: boolean;
+  /** The LIVE (on-file) value of voice_id.enabled — what the daemon is actually
+   *  running with until the next Apply+restart. Enrollment only reaches the daemon
+   *  when this is true (a pending draft has not taken effect yet). */
+  enabledLive: boolean;
+  onEdit: (id: string, value: SettingValue) => void;
+}) {
+  const shell = inTauri();
+  const [busy, setBusy] = useState(false);
+  const [confirmForget, setConfirmForget] = useState(false);
+  const [note, setNote] = useState("");
+
+  const display = voiceId === null ? null : voiceIdDisplay(voiceId);
+  const enrolling = voiceId?.enrolling ?? false;
+  const enrolled = voiceId?.enrolled ?? false;
+  // The live capture progress straight from telemetry (never fabricated).
+  const captured = voiceId?.captured ?? null;
+  const need = voiceId?.need ?? null;
+
+  const send = useCallback(async (phrase: string): Promise<string> => {
+    const r = await sendCommand({ cmd: "ask", text: phrase });
+    return r.ok ? r.reply || "" : r.error || "command failed";
+  }, []);
+
+  // ENROLL. If voice-id is not LIVE-enabled yet, enrollment can't reach the daemon
+  // (its handler is gated on [voice_id].enabled), so we flip the toggle ON as a
+  // pending change and say so honestly — we do NOT fire the phrase into a dead
+  // path. Once it is live-enabled, the button sends the real spoken enroll intent.
+  const enroll = useCallback(async () => {
+    if (busy) return;
+    setConfirmForget(false);
+    if (!enabledLive) {
+      if (!enabledDraft) onEdit("voice_id.enabled", true);
+      setNote(
+        "Voice-id is off, so enrollment can't run yet. I've turned it On as a pending " +
+          "change — Apply (which restarts JARVIS), then click Enroll again and speak the " +
+          "prompts when asked. Needs Microphone access + the daemon running.",
+      );
+      return;
+    }
+    setBusy(true);
+    setNote("");
+    try {
+      const reply = await send(VOICE_ID_PHRASES.enroll);
+      setNote(
+        reply ||
+          "Enrollment started — speak the prompted phrases when asked. Needs Microphone " +
+            "access + the daemon running; the badge flips to ENROLLED when capture completes.",
+      );
+    } catch {
+      setNote("shell error");
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, enabledLive, enabledDraft, onEdit, send]);
+
+  // FORGET — two-step. First click arms the confirm; the second sends the real
+  // spoken forget intent that clears the enrolled profile.
+  const forget = useCallback(async () => {
+    if (busy) return;
+    if (!confirmForget) {
+      setConfirmForget(true);
+      setNote(
+        "Confirm: this clears your enrolled voice profile (voice recognition turns off " +
+          "until you enroll again). Click Forget again to confirm.",
+      );
+      return;
+    }
+    setBusy(true);
+    setNote("");
+    try {
+      const reply = await send(VOICE_ID_PHRASES.forget);
+      setNote(reply || "Forgot your voice — voice recognition is off until you enroll again.");
+    } catch {
+      setNote("shell error");
+    } finally {
+      setBusy(false);
+      setConfirmForget(false);
+    }
+  }, [busy, confirmForget, send]);
+
+  // The live progress line: ONLY shown when telemetry says a capture session is
+  // open, and built straight from the captured/need counters (never invented).
+  const progress =
+    enrolling && need !== null
+      ? `Capturing ${captured ?? 0}/${(captured ?? 0) + need} — speak the prompts.`
+      : enrolling
+        ? "Capturing samples — speak the prompts."
+        : "";
+
+  const enrollLabel = enrolling ? "Enrolling…" : enrolled ? "Re-enroll my voice" : "Enroll my voice";
+
+  return (
+    <div className="syscfg-vid-enroll">
+      <div className="syscfg-vid-enroll-btns">
+        <button
+          type="button"
+          className="icon-btn syscfg-vid-enroll-btn"
+          onClick={() => void enroll()}
+          disabled={!shell || busy || enrolling}
+          title="Sends the spoken &quot;enroll my voice&quot; intent the daemon classifies — needs Microphone access + the daemon running; speak the prompts when asked. The badge flips to ENROLLED only when real telemetry reports it."
+        >
+          {enrollLabel}
+        </button>
+        <button
+          type="button"
+          className={`icon-btn syscfg-vid-forget-btn${confirmForget ? " armed" : ""}`}
+          onClick={() => void forget()}
+          disabled={!shell || busy || enrolling || (!enrolled && !confirmForget)}
+          title="Sends the spoken &quot;forget my voice&quot; intent — clears your enrolled profile. Two-step confirm."
+        >
+          {confirmForget ? "Forget — confirm" : "Forget my voice"}
+        </button>
+      </div>
+      {progress && (
+        <div className="syscfg-vid-enroll-progress" aria-live="polite">
+          {progress}
+        </div>
+      )}
+      <div className="syscfg-vid-enroll-note" role="status">
+        {note ||
+          (!shell
+            ? "Enrollment runs in the JARVIS desktop app (it needs the daemon + Microphone access)."
+            : display === "off" && !enabledDraft
+              ? "Voice-id is off. Enrolling will turn it On (pending) — then Apply, speak the prompts when asked."
+              : "Enrollment captures live mic audio prompt-by-prompt: needs Microphone access + the daemon running; speak the prompts when asked. The badge only shows ENROLLED when telemetry confirms it.")}
+      </div>
+    </div>
   );
 }
 

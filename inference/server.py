@@ -263,6 +263,16 @@ DEFAULT_VLM = "mlx-community/Qwen2-VL-2B-Instruct-4bit"
 # and the generated pixels never leave the device (image gen is LOCAL only;
 # there is NO cloud image API).
 DEFAULT_IMAGE_MODEL = "schnell"
+# Contract default repo for the OPTIONAL small DRAFT model used by #37
+# speculative/draft decoding ([inference].draft_model). A tiny instruct
+# checkpoint mlx_lm can load to PROPOSE tokens the main LLM verifies. This is
+# only a DEFAULT id (the canonical one the installer pre-downloads + the config
+# names); speculative stays HONESTLY inert (normal gen, speculative=false
+# reported) until BOTH this checkpoint is present AND mlx_lm's speculative
+# support is available. The real speedup is device/model-dependent and
+# on-device only. Kept in lockstep with config/jarvis.toml [inference].draft_model
+# and the installer's read_model_id DEFAULT_DRAFT.
+DEFAULT_DRAFT = "mlx-community/Qwen3-0.6B-Instruct-4bit"
 DEFAULT_VOICE = "bm_george"
 DEFAULT_SPEED = 1.2
 # Sane kokoro speed range (audit fix): the engine divides predicted phoneme

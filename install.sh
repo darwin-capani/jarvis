@@ -155,6 +155,7 @@ FALLBACK_LLM="mlx-community/Qwen3-4B-Instruct-2507-4bit"
 FALLBACK_STT="mlx-community/whisper-small-mlx"
 FALLBACK_TTS="mlx-community/Kokoro-82M-bf16"
 FALLBACK_VLM="mlx-community/Qwen2-VL-2B-Instruct-4bit"
+FALLBACK_DRAFT="mlx-community/Qwen3-0.6B-Instruct-4bit"
 
 # Dirs that are BUILT or FETCHED fresh in the install home and must NOT be copied
 # from the source tree (so we never ship a stale daemon binary, a wrong-path
@@ -753,29 +754,41 @@ LLM_ID="$(read_model_id DEFAULT_LLM "$FALLBACK_LLM")"
 STT_ID="$(read_model_id DEFAULT_STT "$FALLBACK_STT")"
 TTS_ID="$(read_model_id DEFAULT_TTS "$FALLBACK_TTS")"
 VLM_ID="$(read_model_id DEFAULT_VLM "$FALLBACK_VLM")"
-# The image model id ("schnell") resolves to a FLUX.1-schnell repo inside mflux;
-# we let mflux's own resolver fetch it on first generate, but also name the repo
-# here so the pre-download covers it.
+# Small DRAFT model for #37 speculative decoding ([inference].draft_model). The
+# canonical id is server.py's DEFAULT_DRAFT; speculative stays honestly inert
+# (normal gen, speculative=false reported) until this is present + mlx_lm has
+# speculative support. Tiny relative to the others (~0.5 GB class).
+DRAFT_ID="$(read_model_id DEFAULT_DRAFT "$FALLBACK_DRAFT")"
+# The image model id (server.py DEFAULT_IMAGE_MODEL == "schnell") is an mflux
+# ALIAS, not an HF repo id, so we cannot huggingface-cli download "schnell".
+# "schnell" resolves to this FLUX.1-schnell repo inside mflux's own resolver; we
+# name the repo here so the pre-download covers the same weights mflux fetches on
+# first generate. This is the LARGEST download by far (multi-GB diffusion weights).
 IMG_ID="black-forest-labs/FLUX.1-schnell"
 
-MODELS=("$LLM_ID" "$STT_ID" "$TTS_ID" "$VLM_ID" "$IMG_ID")
+MODELS=("$LLM_ID" "$STT_ID" "$TTS_ID" "$VLM_ID" "$DRAFT_ID" "$IMG_ID")
 
 ui_info "HF_HOME -> $HF_HOME_DIR (models cached in the install home, never the repo)"
 ui_info "LLM   : $LLM_ID"
 ui_info "STT   : $STT_ID"
 ui_info "TTS   : $TTS_ID"
-ui_info "VLM   : $VLM_ID"
-ui_info "IMAGE : $IMG_ID"
+ui_info "VLM   : $VLM_ID            (vision describe — multi-GB)"
+ui_info "DRAFT : $DRAFT_ID  (speculative decoding — small)"
+ui_info "IMAGE : $IMG_ID    (text->image — LARGE, multi-GB)"
 
 if [ "$DO_MODELS" -eq 0 ]; then
-    ui_warn "--no-models: skipping model pre-download (features that need a model"
-    ui_note "will fetch it on first use, gated on enough RAM)."
+    ui_warn "--no-models: skipping ALL model pre-downloads (LLM, STT, TTS, VLM, DRAFT,"
+    ui_note "and the IMAGE model). Features that need a model fetch it on first use,"
+    ui_note "gated on enough RAM; nothing is downloaded now."
 elif [ "$MODE" = "check" ]; then
     plan "mkdir -p \"$HF_HOME_DIR\""
     for m in "${MODELS[@]}"; do
         plan "HF_HOME=\"$HF_HOME_DIR\" \"$VENV/bin/huggingface-cli\" download \"$m\""
     done
-    ui_note "multi-GB total; each download shows progress and is cache-first (resumable)."
+    ui_note "Total download is LARGE, multi-GB (the VLM and especially the IMAGE"
+    ui_note "diffusion model dominate; the DRAFT model is small). Each download shows"
+    ui_note "progress and is cache-first (resumable); already-downloaded models are"
+    ui_note "skipped. Pass --no-models to skip ALL of these."
 else
     mkdir -p "$HF_HOME_DIR"
     export HF_HOME="$HF_HOME_DIR"

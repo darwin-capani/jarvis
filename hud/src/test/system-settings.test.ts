@@ -1,8 +1,35 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
-import SystemSettingsPanel, { VoiceIdBadge } from "../components/SystemSettingsPanel";
-import { voiceIdInitial, type VoiceIdStatus } from "../core/events";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+/* ------------------------------------------------------------------------ *
+ * Tauri-shell shim — make `inTauri()` read true and route sendCommand through *
+ * a controllable invoke spy so the ENROLL / FORGET button wiring can be        *
+ * asserted (the SAME {cmd:"ask"} spoken intent, NO new daemon command) with no *
+ * real socket. The static-render tests below never run effects, so config_get  *
+ * is never invoked — the loading-note tests are unaffected by this shim.        *
+ * ------------------------------------------------------------------------ */
+const invokeMock = vi.fn();
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (cmd: string, args: unknown) => invokeMock(cmd, args),
+}));
+vi.mock("../tauri/bridge", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../tauri/bridge")>();
+  return { ...actual, inTauri: () => true };
+});
+
+import SystemSettingsPanel, {
+  VoiceIdBadge,
+  VoiceIdEnrollControls,
+  VOICE_ID_PHRASES,
+} from "../components/SystemSettingsPanel";
+import { sendCommand } from "../tauri/command";
+import {
+  applyVoiceIdEnrolled,
+  applyVoiceIdEnrollStarted,
+  voiceIdInitial,
+  type VoiceIdStatus,
+} from "../core/events";
 import {
   AUTONOMY_IDS,
   AUTONOMY_OPTIONS,
@@ -470,10 +497,137 @@ describe("voice-id enrollment badge", () => {
     }
   });
 
-  it("never offers an enroll button (enrollment is the spoken flow, not a click)", () => {
+  it("the BADGE itself never renders a button (it is a pure telemetry reflector; the Enroll/Forget buttons live in VoiceIdEnrollControls, not in the badge)", () => {
     for (const html of [badge(enrolled), badge(notEnrolled), badge(null)]) {
       expect(html).not.toContain("<button");
     }
+  });
+});
+
+/* -------------------------------- voice-id enroll / forget controls (WS3-C) */
+
+/* The Enroll / Forget controls are PURE FRONTEND: they reuse the EXISTING command
+ * bridge — no new Tauri/daemon command. Each button sends the SAME spoken phrase
+ * the daemon classifies (voiceid::classify_intent), and the ENROLLED signal comes
+ * ONLY from real telemetry (the badge), never simulated by a click. These pin:
+ *   - the buttons render with honest mic/daemon copy,
+ *   - the exact phrases match the daemon anchors and ride {cmd:"ask"} (no new verb),
+ *   - capture progress is reflected from telemetry (captured/need),
+ *   - the badge flips to ENROLLED only on the real voiceid.enrolled fold. */
+describe("voice-id enroll / forget controls", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function controls(
+    voiceId: VoiceIdStatus | null,
+    enabledDraft = true,
+    enabledLive = true,
+  ): string {
+    return renderToStaticMarkup(
+      createElement(VoiceIdEnrollControls, {
+        voiceId,
+        enabledDraft,
+        enabledLive,
+        onEdit: () => {},
+      }),
+    );
+  }
+
+  it("renders an Enroll button and a Forget affordance with honest mic + daemon copy", () => {
+    const html = controls({ ...voiceIdInitial(), enabled: true, enrolled: false });
+    expect(html).toContain("Enroll my voice");
+    expect(html).toContain("Forget my voice");
+    // HONEST: it needs Microphone access + the daemon running; speak the prompts.
+    expect(html.toLowerCase()).toContain("microphone access");
+    expect(html.toLowerCase()).toContain("daemon running");
+    expect(html.toLowerCase()).toContain("speak the prompts");
+  });
+
+  it("the enroll phrase is the EXACT daemon-classified spoken intent (no new verb)", () => {
+    // Byte-for-byte an anchor in voiceid::classify_intent ("my voice" + enroll verb).
+    expect(VOICE_ID_PHRASES.enroll).toBe("enroll my voice");
+    expect(VOICE_ID_PHRASES.forget).toBe("forget my voice");
+  });
+
+  it("Enroll sends the spoken intent over the EXISTING bridge as {cmd:'ask'} — no new daemon command", async () => {
+    invokeMock.mockResolvedValue({ ok: true, reply: "Let's enroll your voice." });
+    // The button's onClick calls sendCommand({cmd:"ask", text: VOICE_ID_PHRASES.enroll}).
+    // We assert that exact wire shape (the same path the model-tier/voice-clone
+    // buttons use) reaches the backend invoke — never a bespoke enroll verb.
+    const r = await sendCommand({ cmd: "ask", text: VOICE_ID_PHRASES.enroll });
+    expect(r.ok).toBe(true);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    const [name, args] = invokeMock.mock.calls[0];
+    expect(name).toBe("send_command");
+    expect(args).toEqual({ request: { cmd: "ask", text: "enroll my voice" } });
+  });
+
+  it("Forget sends the spoken forget intent over the same {cmd:'ask'} bridge", async () => {
+    invokeMock.mockResolvedValue({ ok: true, reply: "Done — I've forgotten your voice." });
+    const r = await sendCommand({ cmd: "ask", text: VOICE_ID_PHRASES.forget });
+    expect(r.ok).toBe(true);
+    expect(invokeMock.mock.calls[0][1]).toEqual({
+      request: { cmd: "ask", text: "forget my voice" },
+    });
+  });
+
+  it("reflects live capture progress from telemetry (captured / need) — never invented", () => {
+    // A capture session is open: enroll_started -> need 3, then 1 captured.
+    let v = applyVoiceIdEnrollStarted({ ...voiceIdInitial(), enabled: true }, { need: 3 });
+    const html = controls(v);
+    // "Capturing 0/3" right after start (captured 0, need 3).
+    expect(html).toContain("Capturing 0/3");
+    expect(html).toContain("speak the prompts");
+    // The Enroll button reads "Enrolling…" while a session is open.
+    expect(html).toContain("Enrolling");
+  });
+
+  it("flips the badge to ENROLLED only when REAL telemetry reports it (a click cannot fake it)", () => {
+    // Mid-enroll: the badge is NOT enrolled yet (no fake success on the button press).
+    const enrolling = applyVoiceIdEnrollStarted({ ...voiceIdInitial(), enabled: true }, { need: 3 });
+    expect(renderToStaticMarkup(createElement(VoiceIdBadge, { voiceId: enrolling }))).toContain(
+      "NOT ENROLLED",
+    );
+    // Only the real voiceid.enrolled fold turns the badge ENROLLED.
+    const done = applyVoiceIdEnrolled(enrolling);
+    const badgeHtml = renderToStaticMarkup(createElement(VoiceIdBadge, { voiceId: done }));
+    expect(badgeHtml).toContain("ENROLLED");
+    expect(badgeHtml).not.toContain("NOT ENROLLED");
+  });
+
+  it("offers to flip voice-id ON when it is not live-enabled (does not fire into a dead path)", () => {
+    // Voice-id off (live + draft false): the note offers to turn it On, with the
+    // honest Apply/restart caveat — it does NOT pretend enrollment started.
+    const html = controls({ ...voiceIdInitial(), enabled: false }, false, false);
+    expect(html.toLowerCase()).toContain("turn it on");
+    expect(html).toContain("Enroll my voice");
+  });
+
+  it("disables the buttons honestly when not in the desktop shell", async () => {
+    // Re-import the component under a NON-Tauri bridge so inTauri() reads false.
+    vi.resetModules();
+    vi.doMock("../tauri/bridge", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("../tauri/bridge")>();
+      return { ...actual, inTauri: () => false };
+    });
+    const mod = await import("../components/SystemSettingsPanel");
+    const html = renderToStaticMarkup(
+      createElement(mod.VoiceIdEnrollControls, {
+        voiceId: { ...voiceIdInitial(), enabled: true, enrolled: false },
+        enabledDraft: true,
+        enabledLive: true,
+        onEdit: () => {},
+      }),
+    );
+    // The buttons carry the disabled attribute and the honest desktop-app note.
+    expect(html).toContain("disabled");
+    expect(html.toLowerCase()).toContain("desktop app");
+    vi.doUnmock("../tauri/bridge");
+    vi.resetModules();
   });
 });
 

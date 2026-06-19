@@ -4589,6 +4589,39 @@ svg.tri circle {
   background: rgba(255, 180, 84, 0.08);
 }
 
+/* --- voice-id enroll / forget controls (UI-only; sends the existing spoken
+   intent over the command bridge; the badge above is the only enrolled signal) --- */
+.syscfg-vid-enroll {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.syscfg-vid-enroll-btns {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.syscfg-vid-forget-btn.armed {
+  color: var(--amber, #ffb454);
+  border-color: rgba(255, 180, 84, 0.5);
+}
+
+.syscfg-vid-enroll-progress {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--amber, #ffb454);
+}
+
+.syscfg-vid-enroll-note {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim, #7c8aa0);
+  line-height: 1.4;
+}
+
 /* ------------------------------------------------------------ command deck */
 /* The interactive holotable command surface — a toggleable overlay, additive
    to the telemetry HUD (the orb + panels are untouched when it is closed). */

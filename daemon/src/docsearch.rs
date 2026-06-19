@@ -33,11 +33,17 @@
 //!     true) AND a non-empty `roots` (ships empty). The daemon checks both before ever
 //!     indexing, so even enabled it indexes NOTHING until a folder is allowlisted.
 //!
-//! v1 indexes TEXT-LIKE files only (an extension allowlist). PDFs / binaries are
-//! OUT OF SCOPE — a PDF needs a parser dependency; such files are skipped, never
-//! silently treated as indexed.
+//! Beyond TEXT-LIKE files (an extension allowlist), the indexer also extracts
+//! TEXT from born-digital PDFs and Office documents (.docx / .xlsx / .pptx) via
+//! pure-Rust, ON-DEVICE extractors ([`extract_text`]). Every extractor runs behind
+//! a PANIC-SAFE HONEST-SKIP boundary ([`extract_guarded`]): a malformed / encrypted
+//! / scanned / image-only file — or one whose parser PANICS — is SKIPPED with a
+//! logged reason and is NEVER indexed as empty/garbage and NEVER crashes the walk.
+//! Other binaries (images, archives, ...) remain out of scope and are skipped.
 
 use std::collections::HashSet;
+use std::io::{Cursor, Read};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -47,9 +53,10 @@ use tokio::sync::Mutex;
 
 use crate::recall::{cosine_similarity, Bm25Params, Embedder, Fact, LexicalProvider, RankMethod};
 
-/// The extension allowlist (lowercased, no dot). TEXT-LIKE only: prose/notes +
-/// common source/config formats. Anything else (pdf, images, archives, office
-/// binaries, ...) is skipped — v1 does NOT parse binaries.
+/// The TEXT-LIKE extension allowlist (lowercased, no dot): prose/notes + common
+/// source/config formats whose bytes ARE the text (read directly, no extractor).
+/// Images, archives, and other binaries are skipped. PDFs and Office documents are
+/// handled separately via their on-device extractors ([`extract_text`]).
 pub const ALLOWED_EXTENSIONS: &[&str] = &[
     // prose / notes
     "md", "markdown", "txt", "text", "rst", "org", "tex", "log",
@@ -60,6 +67,16 @@ pub const ALLOWED_EXTENSIONS: &[&str] = &[
     "cc", "hpp", "rb", "sh", "bash", "zsh", "sql", "php", "swift", "scala",
     "lua", "pl", "r", "m", "html", "htm", "css", "scss", "xml",
 ];
+
+/// Born-digital PDF: extracted to UTF-8 text on-device via [`pdf_text`]. A
+/// scanned/image-only/encrypted/malformed PDF yields no usable text and is
+/// HONEST-SKIPPED (never indexed empty).
+pub const PDF_EXTENSIONS: &[&str] = &["pdf"];
+
+/// Office Open XML documents (ZIP-of-XML): word processing, spreadsheet,
+/// presentation. Text is pulled from their XML parts on-device via [`office_text`].
+/// The legacy binary formats (.doc/.xls/.ppt) are NOT OOXML and remain out of scope.
+pub const OFFICE_EXTENSIONS: &[&str] = &["docx", "xlsx", "pptx"];
 
 /// Default / max number of results a single [`DocIndex::search`] returns. Bounded
 /// so a search is small and focused on the relevant few.
@@ -158,13 +175,60 @@ fn is_hidden(name: &str) -> bool {
     name.starts_with('.')
 }
 
-/// Whether a file's extension is on the text-like allowlist. No extension, or an
-/// extension not on the list, is rejected (no binary/PDF parsing in v1).
-fn extension_allowed(path: &Path) -> bool {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) => ALLOWED_EXTENSIONS.contains(&ext.to_lowercase().as_str()),
-        None => false,
+/// How a discovered, allowlisted file is turned into indexable text. The walk only
+/// accepts files that classify to a non-`Unsupported` kind; the indexer routes each
+/// to the matching reader/extractor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    /// Bytes ARE the text — read directly + UTF-8-lossy decoded (today's path).
+    Text,
+    /// Born-digital PDF — text via the on-device [`pdf_text`] extractor.
+    Pdf,
+    /// Office Open XML (.docx/.xlsx/.pptx) — text via the on-device [`office_text`]
+    /// extractor. Carries which OOXML family so the extractor reads the right parts.
+    Office(OfficeKind),
+}
+
+/// Which Office Open XML family a `.docx/.xlsx/.pptx` file is, selecting which ZIP
+/// member XML parts the extractor mines for text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfficeKind {
+    /// Word: text runs (`<w:t>`) in `word/document.xml`.
+    Docx,
+    /// Excel: shared strings (`<t>`) + inline cell strings across the workbook.
+    Xlsx,
+    /// PowerPoint: text runs (`<a:t>`) across `ppt/slides/slide*.xml`.
+    Pptx,
+}
+
+/// Classify a path by its (lowercased) extension into the [`FileKind`] that decides
+/// how it is read, or `None` when the extension is on no indexable list (binaries,
+/// images, archives, no-extension files — all skipped). Pure metadata: never reads
+/// the file.
+fn classify(path: &Path) -> Option<FileKind> {
+    let ext = path.extension().and_then(|e| e.to_str())?.to_lowercase();
+    let ext = ext.as_str();
+    if ALLOWED_EXTENSIONS.contains(&ext) {
+        Some(FileKind::Text)
+    } else if PDF_EXTENSIONS.contains(&ext) {
+        Some(FileKind::Pdf)
+    } else if OFFICE_EXTENSIONS.contains(&ext) {
+        match ext {
+            "docx" => Some(FileKind::Office(OfficeKind::Docx)),
+            "xlsx" => Some(FileKind::Office(OfficeKind::Xlsx)),
+            "pptx" => Some(FileKind::Office(OfficeKind::Pptx)),
+            _ => None, // unreachable: OFFICE_EXTENSIONS is exactly these three
+        }
+    } else {
+        None
     }
+}
+
+/// Whether a file's extension is on ANY indexable list — text-like OR a format with
+/// an on-device extractor (PDF / Office). No extension, or an unlisted extension
+/// (image/archive/other binary), is rejected by the walk before any read.
+fn extension_allowed(path: &Path) -> bool {
+    classify(path).is_some()
 }
 
 /// A fast binary sniff: a file is treated as binary (and skipped) if its first
@@ -172,6 +236,306 @@ fn extension_allowed(path: &Path) -> bool {
 /// a mislabeled binary that slipped through the extension allowlist.
 fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8192).any(|&b| b == 0)
+}
+
+// ---------------------------------------------------------------------------
+// EXTRACTORS — born-digital PDF + Office (.docx/.xlsx/.pptx) -> UTF-8 text
+//
+// PANIC-SAFE + HONEST-SKIP CONTRACT: every extractor is reached only through
+// [`extract_guarded`], which runs it inside `catch_unwind` and maps a panic, an
+// extractor error, or an empty/whitespace-only result to `Ok(None)` (a logged
+// HONEST SKIP). The indexer NEVER indexes such a file empty/garbage, and a single
+// bad file NEVER crashes the walk. The text is then capped to the bounds before
+// chunking, so a huge document cannot blow the chunk store.
+// ---------------------------------------------------------------------------
+
+/// The ZIP member XML parts an Office family exposes text in, and the local element
+/// names whose `Text` events carry the visible text. Returning `None` for a part
+/// list means "scan every `*.xml` part matching the prefix predicate".
+struct OfficeSpec {
+    /// `(member-path-predicate, text-element-local-names)`. A member is mined when
+    /// the predicate matches its name; within it, only `Text` directly inside one of
+    /// the listed local element names is collected (so styles/metadata are ignored).
+    text_elements: &'static [&'static str],
+    /// Whether a given ZIP member path should be mined for this family.
+    wants_member: fn(&str) -> bool,
+}
+
+fn docx_wants(name: &str) -> bool {
+    // The main document body, plus headers/footers which also hold visible text.
+    name == "word/document.xml"
+        || (name.starts_with("word/header") && name.ends_with(".xml"))
+        || (name.starts_with("word/footer") && name.ends_with(".xml"))
+}
+
+fn xlsx_wants(name: &str) -> bool {
+    // Shared strings hold most cell text; worksheets hold inline strings + the
+    // (numeric/string) cell values. Both expose visible text via `<t>`.
+    name == "xl/sharedStrings.xml"
+        || (name.starts_with("xl/worksheets/sheet") && name.ends_with(".xml"))
+}
+
+fn pptx_wants(name: &str) -> bool {
+    // Slides plus their notes — all the readable text of a deck.
+    (name.starts_with("ppt/slides/slide") && name.ends_with(".xml"))
+        || (name.starts_with("ppt/notesSlides/notesSlide") && name.ends_with(".xml"))
+}
+
+fn office_spec(kind: OfficeKind) -> OfficeSpec {
+    match kind {
+        OfficeKind::Docx => OfficeSpec {
+            text_elements: &["t"], // <w:t> — local name after namespace strip is "t"
+            wants_member: docx_wants,
+        },
+        OfficeKind::Xlsx => OfficeSpec {
+            text_elements: &["t"], // <t> in sharedStrings + inline <is><t>
+            wants_member: xlsx_wants,
+        },
+        OfficeKind::Pptx => OfficeSpec {
+            text_elements: &["t"], // <a:t>
+            wants_member: pptx_wants,
+        },
+    }
+}
+
+/// The local element name of a (possibly namespace-prefixed) XML tag: the part
+/// after the last `:` (so `w:t` -> `t`, `a:t` -> `t`, `t` -> `t`). Bytes only, no
+/// allocation in the common path.
+fn local_name(qname: &[u8]) -> &[u8] {
+    match qname.iter().rposition(|&b| b == b':') {
+        Some(i) => &qname[i + 1..],
+        None => qname,
+    }
+}
+
+/// Pull the visible text out of ONE Office XML part. Only `Text` events that sit
+/// directly inside an element whose local name is in `text_elements` are collected;
+/// a `<w:p>` paragraph end (docx) and any worksheet/slide boundary insert a newline
+/// so words/cells/runs do not run together. Bounded: stops once `cap` chars are
+/// gathered (the caller caps again, but stopping early avoids buffering a giant
+/// part). Returns the gathered text. Pure XML — never reads the disk or network.
+fn extract_office_part(xml: &[u8], text_elements: &[&str], cap: usize) -> String {
+    use quick_xml::events::Event;
+    use quick_xml::reader::Reader;
+    let mut reader = Reader::from_reader(xml);
+    // Tolerate the slightly-off XML real documents carry; we only read text.
+    reader.config_mut().trim_text(false);
+    let mut out = String::new();
+    let mut depth_in_text: u32 = 0;
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = e.name();
+                let ln = local_name(name.as_ref());
+                if text_elements.iter().any(|t| t.as_bytes() == ln) {
+                    depth_in_text += 1;
+                }
+            }
+            Ok(Event::End(e)) => {
+                let name = e.name();
+                let ln = local_name(name.as_ref());
+                if text_elements.iter().any(|t| t.as_bytes() == ln) {
+                    depth_in_text = depth_in_text.saturating_sub(1);
+                } else if ln == b"p" || ln == b"br" || ln == b"tab" {
+                    // Word paragraph / break / tab -> whitespace boundary.
+                    out.push('\n');
+                } else if ln == b"row" || ln == b"c" {
+                    // Spreadsheet row / cell -> whitespace boundary so cells split.
+                    out.push(' ');
+                }
+            }
+            Ok(Event::Text(t)) if depth_in_text > 0 => {
+                if let Ok(s) = t.unescape() {
+                    // Append only up to the remaining budget so a single huge text
+                    // run cannot blow past `cap` (truncated on a char boundary).
+                    let remaining = cap.saturating_sub(out.len());
+                    if s.len() <= remaining {
+                        out.push_str(&s);
+                        if out.len() < cap {
+                            out.push(' ');
+                        }
+                    } else {
+                        let mut end = remaining;
+                        while end > 0 && !s.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        out.push_str(&s[..end]);
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            // A malformed event ends THIS part's extraction with whatever we have —
+            // never a panic, never garbage (we only ever appended real text).
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+        if out.len() >= cap {
+            break;
+        }
+    }
+    out
+}
+
+/// Extract text from an Office Open XML document already loaded into `bytes`.
+/// Opens the ZIP in memory, reads ONLY the family's text-bearing parts (sorted for
+/// determinism), and concatenates their extracted text up to `cap` chars. Returns
+/// the text (possibly empty — the guard treats empty as an HONEST SKIP). An
+/// encrypted OOXML file (these are actually a CDF/OLE container, not a ZIP) fails
+/// `ZipArchive::new` and yields an error here -> skip. Pure: no disk/network.
+fn office_text(bytes: &[u8], kind: OfficeKind, cap: usize) -> Result<String> {
+    let spec = office_spec(kind);
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .context("not a readable OOXML zip (corrupt or encrypted)")?;
+    // Collect + sort the wanted member names so slide1 precedes slide2, etc.
+    let mut members: Vec<String> = archive
+        .file_names()
+        .filter(|n| (spec.wants_member)(n))
+        .map(|n| n.to_string())
+        .collect();
+    members.sort();
+    let mut out = String::new();
+    for name in members {
+        if out.len() >= cap {
+            break;
+        }
+        // Read the part's bytes (bounded by the file's own size, already <=
+        // max_file_bytes since we only opened a file that passed the size gate).
+        let Ok(mut part) = archive.by_name(&name) else {
+            continue;
+        };
+        let mut xml = Vec::new();
+        if part.read_to_end(&mut xml).is_err() {
+            continue; // a bad member is skipped, not fatal
+        }
+        let remaining = cap.saturating_sub(out.len());
+        let piece = extract_office_part(&xml, spec.text_elements, remaining);
+        if !piece.is_empty() {
+            out.push_str(&piece);
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+/// Extract UTF-8 text from a born-digital PDF already loaded into `bytes`, via the
+/// pure-Rust `pdf-extract` crate (it decodes the content streams on-device). A
+/// scanned/image-only PDF has no text layer -> returns an (effectively) empty
+/// string the guard treats as an HONEST SKIP. An encrypted/malformed PDF errors
+/// here -> skip. Pure: no disk/network.
+fn pdf_text(bytes: &[u8]) -> Result<String> {
+    pdf_extract::extract_text_from_mem(bytes).context("pdf text extraction failed")
+}
+
+/// THE PANIC-SAFE HONEST-SKIP BOUNDARY for every non-text-like extractor.
+///
+/// Runs `f` (a PDF/Office extractor over already-read bytes) inside `catch_unwind`,
+/// so even a parser PANIC on a hostile/malformed file is contained — it becomes an
+/// `Ok(None)` skip, never a crash of the indexer. Mapping:
+///   * `Ok(Ok(text))` with non-whitespace text -> `Some(text)` (INDEX it);
+///   * `Ok(Ok(text))` that is empty/whitespace -> `None` (HONEST SKIP: a
+///     scanned/image-only doc has no text layer — we never index it empty);
+///   * `Ok(Err(e))` (extractor error: corrupt/encrypted/unreadable) -> `None`;
+///   * `Err(panic)` (the parser panicked) -> `None`.
+/// Every `None` is logged with `path` + `reason` so a skip is HONEST + auditable.
+/// `AssertUnwindSafe` is sound here: `f` borrows only `&[u8]` and builds a fresh
+/// `String`; nothing observable is left in a broken state after a unwound panic.
+fn extract_guarded<F>(path: &Path, label: &str, f: F) -> Option<String>
+where
+    F: FnOnce() -> Result<String>,
+{
+    let caught = catch_unwind(AssertUnwindSafe(f));
+    match caught {
+        Ok(Ok(text)) if !text.trim().is_empty() => Some(text),
+        Ok(Ok(_)) => {
+            tracing::debug!(
+                target: "docsearch",
+                path = %path.display(),
+                kind = label,
+                "skipped: no extractable text (likely scanned/image-only or empty)"
+            );
+            None
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(
+                target: "docsearch",
+                path = %path.display(),
+                kind = label,
+                error = %e,
+                "skipped: extraction failed (corrupt/encrypted/unreadable)"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                target: "docsearch",
+                path = %path.display(),
+                kind = label,
+                "skipped: extractor PANICKED on this file (contained, not fatal)"
+            );
+            None
+        }
+    }
+}
+
+/// Turn one discovered file's RAW BYTES into indexable UTF-8 text per its
+/// [`FileKind`], or `None` to HONEST-SKIP it. The single per-file extraction entry
+/// the indexer calls:
+///   * `Text`  -> a mislabeled-binary NUL sniff then UTF-8-lossy decode (today's
+///               behavior, byte-for-byte — text-like handling UNCHANGED);
+///   * `Pdf`   -> [`pdf_text`] behind the panic-safe guard;
+///   * `Office`-> [`office_text`] behind the panic-safe guard.
+/// `cap` bounds the extracted text length BEFORE chunking (the chunk store's
+/// `max_chunks` is the other ceiling). Pure w.r.t. disk/network: `bytes` were
+/// already read by the caller; nothing here reads a file or reaches the network.
+fn extract_text(path: &Path, kind: FileKind, bytes: &[u8], cap: usize) -> Option<String> {
+    let text = match kind {
+        FileKind::Text => {
+            if looks_binary(bytes) {
+                // A mislabeled binary that slipped the extension allowlist — skip
+                // (unchanged from the original text-like path).
+                tracing::debug!(
+                    target: "docsearch",
+                    path = %path.display(),
+                    "skipped: text-like file is actually binary (NUL sniff)"
+                );
+                return None;
+            }
+            // Lossy UTF-8: a stray invalid byte becomes U+FFFD rather than dropping
+            // the whole file — we still index the readable text (unchanged).
+            String::from_utf8_lossy(bytes).into_owned()
+        }
+        FileKind::Pdf => extract_guarded(path, "pdf", || pdf_text(bytes))?,
+        FileKind::Office(k) => {
+            let label = match k {
+                OfficeKind::Docx => "docx",
+                OfficeKind::Xlsx => "xlsx",
+                OfficeKind::Pptx => "pptx",
+            };
+            extract_guarded(path, label, || office_text(bytes, k, cap))?
+        }
+    };
+    // Cap the extracted text to the bound BEFORE chunking, on a char boundary so a
+    // multibyte codepoint is never split. An empty result is an honest skip.
+    let capped = cap_chars(&text, cap);
+    if capped.trim().is_empty() {
+        return None;
+    }
+    Some(capped)
+}
+
+/// Truncate `s` to at most `cap` BYTES, backing off to the previous char boundary
+/// so a UTF-8 codepoint is never split. Cheap when `s` already fits.
+fn cap_chars(s: &str, cap: usize) -> String {
+    if s.len() <= cap {
+        return s.to_string();
+    }
+    let mut end = cap;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -531,7 +895,10 @@ impl DocIndex {
     /// calls. It:
     ///   1. forgets the old index (reindex is a full rebuild — bounded + idempotent);
     ///   2. walks the CONFINED, bounded roots ([`walk`]);
-    ///   3. reads + chunks each accepted file (binary sniff skips a mislabeled blob);
+    ///   3. reads + EXTRACTS text from each accepted file per its [`FileKind`]
+    ///      (text-like = read+decode; PDF/Office = on-device extractor behind the
+    ///      panic-safe HONEST-SKIP guard), caps it to `max_file_bytes`, then chunks
+    ///      it — a corrupt/encrypted/scanned/image-only/binary file is SKIPPED;
     ///   4. embeds the chunks ON-DEVICE in one batched call via `embedder`; if that
     ///      errs (server down / no embed op), stores the chunks WITHOUT vectors so
     ///      search falls back to BM25 — never failing the index;
@@ -560,15 +927,23 @@ impl DocIndex {
             if pending.len() >= bounds.max_chunks {
                 break;
             }
+            // Route by kind. A path the walk accepted always classifies, but a
+            // disappeared/renamed file mid-walk is skipped honestly.
+            let Some(kind) = classify(&d.path) else {
+                continue;
+            };
             let Ok(bytes) = std::fs::read(&d.path) else {
                 continue;
             };
-            if looks_binary(&bytes) {
-                continue; // mislabeled binary that slipped the extension allowlist
-            }
-            // Lossy UTF-8: a stray invalid byte becomes U+FFFD rather than dropping
-            // the whole file — we still index the readable text.
-            let content = String::from_utf8_lossy(&bytes);
+            // Per-file extraction (text-like = read+decode unchanged; PDF/Office =
+            // on-device extractor behind the panic-safe HONEST-SKIP guard). The
+            // extracted text is capped to `max_file_bytes` BEFORE chunking — the
+            // same ceiling the raw bytes already respect — so a document cannot
+            // exceed the established per-file bound. `None` => HONEST SKIP (logged):
+            // a corrupt/encrypted/scanned/image-only/empty file is never indexed.
+            let Some(content) = extract_text(&d.path, kind, &bytes, bounds.max_file_bytes) else {
+                continue;
+            };
             let chunks = chunk_text(&content, bounds.chunk_chars, bounds.chunk_overlap);
             let root = d.root.display().to_string();
             let file_path = d.path.display().to_string();
@@ -792,6 +1167,10 @@ mod tests {
             self.0.join(rel)
         }
         fn write(&self, rel: &str, contents: &str) -> PathBuf {
+            self.write_bytes(rel, contents.as_bytes())
+        }
+        /// Write raw bytes (for the binary PDF/Office fixtures).
+        fn write_bytes(&self, rel: &str, contents: &[u8]) -> PathBuf {
             let p = self.join(rel);
             if let Some(parent) = p.parent() {
                 fs::create_dir_all(parent).unwrap();
@@ -965,10 +1344,14 @@ mod tests {
         assert!(extension_allowed(Path::new("notes.md")));
         assert!(extension_allowed(Path::new("main.rs")));
         assert!(extension_allowed(Path::new("config.TOML"))); // case-insensitive
-        // Out of scope in v1: PDFs/binaries/no-extension.
-        assert!(!extension_allowed(Path::new("paper.pdf")));
+        // Now in scope via on-device extractors: born-digital PDF + Office OOXML.
+        assert!(extension_allowed(Path::new("paper.pdf")));
+        assert!(extension_allowed(Path::new("memo.docx")));
+        assert!(extension_allowed(Path::new("book.XLSX"))); // case-insensitive
+        // Still out of scope: images/archives/legacy-binary-office/no-extension.
         assert!(!extension_allowed(Path::new("photo.png")));
         assert!(!extension_allowed(Path::new("archive.zip")));
+        assert!(!extension_allowed(Path::new("legacy.doc")));
         assert!(!extension_allowed(Path::new("Makefile")));
     }
 
@@ -977,7 +1360,11 @@ mod tests {
         let t = TempTree::new("reindex");
         t.write("docs/a.md", "the quarterly budget meeting covered the launch plan");
         t.write("docs/b.txt", "a corgi named Watson sleeps on the rug");
-        t.write("docs/skip.pdf", "this PDF must be skipped (binary, out of scope)");
+        // A .pdf extension but NOT a valid PDF — the extractor errors -> HONEST SKIP
+        // (a malformed file is never indexed as garbage even though .pdf is in scope).
+        t.write("docs/skip.pdf", "this PDF is not a valid pdf and must be skipped");
+        // An image binary is out of scope entirely (extension not indexable).
+        t.write_bytes("docs/photo.png", &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0]);
         t.write("docs/sub/c.rs", "fn main() { println!(\"hello rust\"); }");
 
         let idx = DocIndex::open(&t.db_path()).unwrap();
@@ -986,13 +1373,13 @@ mod tests {
             .reindex(&roots_of(&t, "docs"), &bounds, &KeywordEmbedder)
             .await
             .unwrap();
-        // 3 text-like files indexed (md, txt, rs); the pdf is skipped.
-        assert_eq!(status.files, 3, "only allowlisted text-like files: {status:?}");
+        // 3 indexable files (md, txt, rs); the malformed pdf + the png are skipped.
+        assert_eq!(status.files, 3, "only the readable files are indexed: {status:?}");
         assert!(status.chunks >= 3, "each small file is at least one chunk: {status:?}");
-        // The pdf content must never appear in any stored chunk.
+        // The malformed pdf's raw content must never appear in any stored chunk.
         let all = idx.all_chunks().await.unwrap();
         assert!(
-            all.iter().all(|c| !c.chunk_text.contains("PDF must be skipped")),
+            all.iter().all(|c| !c.chunk_text.contains("not a valid pdf")),
             "the skipped PDF's content must not be stored"
         );
     }
@@ -1289,5 +1676,365 @@ mod tests {
             paths.iter().all(|p| !p.contains(".secret") && !p.contains(".hidden")),
             "hidden entries must be skipped: {paths:?}"
         );
+    }
+
+    // =====================================================================
+    // PDF + OFFICE EXTRACTION — born-digital extract + index + search, and
+    // PANIC-SAFE HONEST-SKIP of corrupt/garbage files.
+    // =====================================================================
+
+    /// Build a minimal BORN-DIGITAL PDF (one page, Helvetica, a single text show
+    /// operator) carrying `body` as visible text. Hand-rolled so the test owns the
+    /// bytes — no external fixture file. This is exactly the shape `pdf-extract`
+    /// decodes from a real born-digital PDF's content stream.
+    fn make_pdf(body: &str) -> Vec<u8> {
+        use std::fmt::Write as _;
+        let objs: Vec<String> = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+              /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_string(),
+            {
+                let stream = format!("BT /F1 24 Tf 72 700 Td ({body}) Tj ET");
+                format!("<< /Length {} >>\nstream\n{}\nendstream", stream.len(), stream)
+            },
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        ];
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"%PDF-1.4\n");
+        let mut offsets = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offsets.push(out.len());
+            let mut s = String::new();
+            write!(s, "{} 0 obj\n{}\nendobj\n", i + 1, o).unwrap();
+            out.extend_from_slice(s.as_bytes());
+        }
+        let xref_pos = out.len();
+        let mut s = String::new();
+        write!(s, "xref\n0 {}\n", objs.len() + 1).unwrap();
+        s.push_str("0000000000 65535 f \n");
+        for off in &offsets {
+            write!(s, "{off:010} 00000 n \n").unwrap();
+        }
+        write!(
+            s,
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF",
+            objs.len() + 1,
+            xref_pos
+        )
+        .unwrap();
+        out.extend_from_slice(s.as_bytes());
+        out
+    }
+
+    /// Build a minimal valid OOXML package (a ZIP of `parts`, STORED so no
+    /// compression backend feature is needed to write the fixture). The reader path
+    /// (`office_text`) handles both stored and DEFLATE'd real-world documents.
+    fn make_ooxml(parts: &[(&str, &str)]) -> Vec<u8> {
+        use std::io::Cursor;
+        use zip::write::{SimpleFileOptions, ZipWriter};
+        use zip::CompressionMethod;
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zw = ZipWriter::new(&mut buf);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            for (name, body) in parts {
+                zw.start_file(*name, opts).unwrap();
+                std::io::Write::write_all(&mut zw, body.as_bytes()).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    /// A minimal valid .docx: [Content_Types].xml + word/document.xml with two
+    /// paragraphs of `<w:t>` runs.
+    fn make_docx() -> Vec<u8> {
+        make_ooxml(&[
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>"#,
+            ),
+            (
+                "word/document.xml",
+                r#"<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>the quarterly budget</w:t></w:r><w:r><w:t xml:space="preserve"> review and forecast</w:t></w:r></w:p><w:p><w:r><w:t>covers the Subaru Outback fleet</w:t></w:r></w:p></w:body></w:document>"#,
+            ),
+        ])
+    }
+
+    /// A minimal valid .xlsx: shared strings + one worksheet.
+    fn make_xlsx() -> Vec<u8> {
+        make_ooxml(&[
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0"?><Types></Types>"#,
+            ),
+            (
+                "xl/sharedStrings.xml",
+                r#"<?xml version="1.0"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>Revenue</t></si><si><t>quarterly forecast 2026</t></si></sst>"#,
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                r#"<?xml version="1.0"?><worksheet><sheetData><row><c t="inlineStr"><is><t>inline cell text</t></is></c></row></sheetData></worksheet>"#,
+            ),
+        ])
+    }
+
+    /// A minimal valid .pptx: one slide with `<a:t>` text runs.
+    fn make_pptx() -> Vec<u8> {
+        make_ooxml(&[
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0"?><Types></Types>"#,
+            ),
+            (
+                "ppt/slides/slide1.xml",
+                r#"<?xml version="1.0"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><a:t>Project JARVIS</a:t><a:t>quarterly roadmap</a:t></p:spTree></p:cSld></p:sld>"#,
+            ),
+        ])
+    }
+
+    // ---- the unit-level extractor: born-digital files yield real text ----------
+
+    #[test]
+    fn pdf_extractor_pulls_born_digital_text() {
+        let pdf = make_pdf("Quarterly budget Subaru Outback");
+        let got = pdf_text(&pdf).expect("a born-digital PDF must extract");
+        assert!(got.contains("Quarterly"), "extracted PDF text: {got:?}");
+        assert!(got.contains("Subaru"), "extracted PDF text: {got:?}");
+    }
+
+    #[test]
+    fn office_extractors_pull_text_from_each_family() {
+        let docx = office_text(&make_docx(), OfficeKind::Docx, 1 << 20).unwrap();
+        assert!(docx.contains("quarterly budget"), "docx: {docx:?}");
+        // Adjacent runs in one paragraph are concatenated, not glued.
+        assert!(docx.contains("review and forecast"), "docx run join: {docx:?}");
+        assert!(docx.contains("Subaru Outback"), "docx p2: {docx:?}");
+
+        let xlsx = office_text(&make_xlsx(), OfficeKind::Xlsx, 1 << 20).unwrap();
+        assert!(xlsx.contains("Revenue"), "xlsx shared string: {xlsx:?}");
+        assert!(xlsx.contains("quarterly forecast 2026"), "xlsx: {xlsx:?}");
+        assert!(xlsx.contains("inline cell text"), "xlsx inline string: {xlsx:?}");
+
+        let pptx = office_text(&make_pptx(), OfficeKind::Pptx, 1 << 20).unwrap();
+        assert!(pptx.contains("Project JARVIS"), "pptx: {pptx:?}");
+        assert!(pptx.contains("quarterly roadmap"), "pptx: {pptx:?}");
+    }
+
+    // ---- (1) a real docx/pdf INDEXES + its text is SEARCHABLE -------------------
+
+    #[tokio::test]
+    async fn pdf_and_docx_are_indexed_and_searchable() {
+        let t = TempTree::new("doc-index");
+        let pdf_path = t.write_bytes("docs/report.pdf", &make_pdf("the quarterly budget forecast review"));
+        let docx_path = t.write_bytes("docs/memo.docx", &make_docx());
+        let xlsx_path = t.write_bytes("docs/sheet.xlsx", &make_xlsx());
+        let pptx_path = t.write_bytes("docs/deck.pptx", &make_pptx());
+
+        let idx = DocIndex::open(&t.db_path()).unwrap();
+        let bounds = IndexBounds::default();
+        // DownEmbedder -> chunks stored vector-less -> BM25 search (no MLX needed).
+        let status = idx
+            .reindex(&roots_of(&t, "docs"), &bounds, &DownEmbedder)
+            .await
+            .unwrap();
+        assert_eq!(status.files, 4, "pdf+docx+xlsx+pptx all indexed: {status:?}");
+        assert!(status.chunks >= 4, "each doc is at least one chunk: {status:?}");
+
+        // BM25 search finds the PDF for a budget query and CITES the real pdf path.
+        let pdf_real = fs::canonicalize(&pdf_path).unwrap().display().to_string();
+        let r = idx.search("quarterly budget forecast", 5, &DownEmbedder).await;
+        assert_eq!(r.method, RankMethod::Lexical);
+        assert!(!r.hits.is_empty(), "the pdf must be retrievable");
+        assert_eq!(r.hits[0].file_path, pdf_real, "top hit cites the real pdf: {:?}", r.hits);
+
+        // The docx text is searchable too (its own distinctive phrase).
+        let docx_real = fs::canonicalize(&docx_path).unwrap().display().to_string();
+        let r = idx.search("Subaru Outback fleet", 5, &DownEmbedder).await;
+        assert!(
+            r.hits.iter().any(|h| h.file_path == docx_real),
+            "the docx text must be searchable + cited: {:?}",
+            r.hits
+        );
+
+        // The xlsx + pptx text is present in the store (searchable content).
+        let xlsx_real = fs::canonicalize(&xlsx_path).unwrap().display().to_string();
+        let pptx_real = fs::canonicalize(&pptx_path).unwrap().display().to_string();
+        let all = idx.all_chunks().await.unwrap();
+        assert!(
+            all.iter().any(|c| c.file_path == xlsx_real && c.chunk_text.contains("Revenue")),
+            "xlsx text indexed"
+        );
+        assert!(
+            all.iter().any(|c| c.file_path == pptx_real && c.chunk_text.contains("Project JARVIS")),
+            "pptx text indexed"
+        );
+    }
+
+    // ---- (2) a CORRUPT/GARBAGE pdf/docx is SKIPPED (no index, NO PANIC) ---------
+
+    #[tokio::test]
+    async fn corrupt_pdf_and_docx_are_skipped_without_panic_or_empty_rows() {
+        let t = TempTree::new("doc-corrupt");
+        // A good text file so the index is non-empty (proves the walk continued).
+        let good = t.write("docs/ok.md", "a perfectly good readable note");
+        // Garbage with a .pdf extension (not a real PDF).
+        t.write("docs/broken.pdf", "%PDF-1.4 this is absolutely not a valid pdf stream");
+        // Pure garbage bytes with a .pdf extension.
+        t.write_bytes("docs/junk.pdf", &[0x25, 0x50, 0x44, 0x46, 0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02]);
+        // Garbage with a .docx extension (not a zip at all).
+        t.write("docs/broken.docx", "this is plainly not a zip-of-xml docx package");
+        // A .docx that IS a zip but is MISSING word/document.xml -> no text -> skip.
+        let empty_docx = make_ooxml(&[(
+            "[Content_Types].xml",
+            r#"<?xml version="1.0"?><Types></Types>"#,
+        )]);
+        t.write_bytes("docs/noparts.docx", &empty_docx);
+
+        let idx = DocIndex::open(&t.db_path()).unwrap();
+        // This call must NOT panic even though three extractors hit malformed input.
+        let status = idx
+            .reindex(&roots_of(&t, "docs"), &IndexBounds::default(), &DownEmbedder)
+            .await
+            .unwrap();
+
+        // Only the one good .md file is indexed — every malformed doc is skipped.
+        assert_eq!(status.files, 1, "only the good file is indexed: {status:?}");
+        let good_real = fs::canonicalize(&good).unwrap().display().to_string();
+        let all = idx.all_chunks().await.unwrap();
+        assert!(all.iter().all(|c| c.file_path == good_real), "only the good file's chunks: {all:?}");
+        // NO empty/garbage row from any skipped doc.
+        assert!(
+            all.iter().all(|c| !c.chunk_text.contains("not a valid pdf")
+                && !c.chunk_text.contains("not a zip-of-xml")),
+            "no skipped-file garbage was indexed: {all:?}"
+        );
+        assert!(
+            all.iter().all(|c| !c.chunk_text.trim().is_empty()),
+            "no empty chunk row was stored"
+        );
+    }
+
+    /// The panic-safe boundary itself: even an extractor that PANICS becomes an
+    /// honest skip (`None`), never an unwind that crosses the indexer. This is the
+    /// catch_unwind proof at the unit level.
+    #[test]
+    fn extract_guarded_contains_a_panicking_extractor() {
+        let p = Path::new("/tmp/whatever.pdf");
+        let got = extract_guarded(p, "pdf", || panic!("simulated parser explosion"));
+        assert!(got.is_none(), "a panicking extractor must be SKIPPED, not propagate");
+        // An extractor that returns empty text is also a skip (scanned/image-only).
+        let empty = extract_guarded(p, "pdf", || Ok(String::new()));
+        assert!(empty.is_none(), "empty extraction is an honest skip");
+        let ws = extract_guarded(p, "pdf", || Ok("   \n\t  ".to_string()));
+        assert!(ws.is_none(), "whitespace-only extraction is an honest skip");
+        // A real-text extraction is kept.
+        let ok = extract_guarded(p, "pdf", || Ok("real extracted text".to_string()));
+        assert_eq!(ok.as_deref(), Some("real extracted text"));
+    }
+
+    /// A scanned/image-only PDF (no text layer) is HONEST-SKIPPED, never indexed
+    /// empty. We model "no text layer" with a valid PDF whose page has no text show
+    /// operator at all.
+    #[tokio::test]
+    async fn image_only_pdf_yields_no_text_and_is_skipped() {
+        let t = TempTree::new("scanned-pdf");
+        // A structurally-valid PDF with an empty content stream (no Tj) -> no text.
+        let no_text = make_pdf("");
+        t.write_bytes("docs/scan.pdf", &no_text);
+        t.write("docs/real.md", "a real note so the index is not empty");
+
+        let idx = DocIndex::open(&t.db_path()).unwrap();
+        let status = idx
+            .reindex(&roots_of(&t, "docs"), &IndexBounds::default(), &DownEmbedder)
+            .await
+            .unwrap();
+        // The scanned PDF contributes nothing; only the .md is indexed.
+        assert_eq!(status.files, 1, "image-only PDF must not be indexed: {status:?}");
+        let all = idx.all_chunks().await.unwrap();
+        assert!(
+            all.iter().all(|c| c.file_path.ends_with("real.md")),
+            "no scanned-PDF row: {all:?}"
+        );
+    }
+
+    // ---- (3) BOUNDS still hold for the new extractors --------------------------
+
+    #[tokio::test]
+    async fn oversize_pdf_is_skipped_by_the_byte_cap_before_parsing() {
+        let t = TempTree::new("pdf-oversize");
+        // A born-digital PDF padded past the per-file byte cap. The walk's metadata
+        // size gate must skip it BEFORE any extractor reads/parses it.
+        let big_body = "padding ".repeat(20_000); // ~160 KB of show-text
+        let big_pdf = make_pdf(&big_body);
+        assert!(big_pdf.len() > 50_000, "fixture is genuinely large: {}", big_pdf.len());
+        t.write_bytes("docs/big.pdf", &big_pdf);
+        t.write("docs/small.md", "tiny note within the cap");
+
+        let bounds = IndexBounds {
+            max_files: 100,
+            max_chunks: 1000,
+            max_file_bytes: 4096, // smaller than the big pdf, larger than small.md
+            max_depth: 8,
+            chunk_chars: 256,
+            chunk_overlap: 32,
+        };
+        // The walk drops the oversize pdf at the metadata gate (no read/parse).
+        let found = walk(&roots_of(&t, "docs"), &bounds);
+        assert!(
+            found.iter().all(|d| !d.path.ends_with("big.pdf")),
+            "the oversize pdf must be skipped before parsing: {found:?}"
+        );
+
+        let idx = DocIndex::open(&t.db_path()).unwrap();
+        let status = idx.reindex(&roots_of(&t, "docs"), &bounds, &DownEmbedder).await.unwrap();
+        assert_eq!(status.files, 1, "only the within-cap file is indexed: {status:?}");
+    }
+
+    #[tokio::test]
+    async fn extracted_text_is_capped_before_chunking() {
+        // A within-byte-cap docx whose EXTRACTED text far exceeds a tiny text cap.
+        // The cap bounds the text fed to the chunker, so the chunk count stays
+        // proportional to the cap, not the (much larger) extracted text.
+        let long_run = "alpha ".repeat(2000); // ~12 KB of extracted text
+        let docx = make_ooxml(&[
+            ("[Content_Types].xml", r#"<?xml version="1.0"?><Types></Types>"#),
+            (
+                "word/document.xml",
+                &format!(
+                    r#"<?xml version="1.0"?><w:document xmlns:w="http://x"><w:body><w:p><w:r><w:t>{long_run}</w:t></w:r></w:p></w:body></w:document>"#
+                ),
+            ),
+        ]);
+        // Extract with a tiny cap directly and assert the bound holds.
+        let capped = office_text(&docx, OfficeKind::Docx, 512).unwrap();
+        assert!(capped.len() <= 512 + 8, "office_text honored its cap: {} bytes", capped.len());
+
+        // And through extract_text the final text never exceeds the cap.
+        let bytes = docx.clone();
+        let out = extract_text(Path::new("docs/x.docx"), FileKind::Office(OfficeKind::Docx), &bytes, 300)
+            .expect("non-empty");
+        assert!(out.len() <= 300, "extract_text honored the cap: {} bytes", out.len());
+    }
+
+    #[test]
+    fn classify_routes_extensions_to_the_right_kind() {
+        assert_eq!(classify(Path::new("a.md")), Some(FileKind::Text));
+        assert_eq!(classify(Path::new("a.RS")), Some(FileKind::Text));
+        assert_eq!(classify(Path::new("a.pdf")), Some(FileKind::Pdf));
+        assert_eq!(classify(Path::new("a.PDF")), Some(FileKind::Pdf));
+        assert_eq!(classify(Path::new("a.docx")), Some(FileKind::Office(OfficeKind::Docx)));
+        assert_eq!(classify(Path::new("a.xlsx")), Some(FileKind::Office(OfficeKind::Xlsx)));
+        assert_eq!(classify(Path::new("a.pptx")), Some(FileKind::Office(OfficeKind::Pptx)));
+        // Out of scope: legacy binary office, images, no-extension.
+        assert_eq!(classify(Path::new("a.doc")), None);
+        assert_eq!(classify(Path::new("a.png")), None);
+        assert_eq!(classify(Path::new("Makefile")), None);
+        // The new formats are walk-discoverable now.
+        assert!(extension_allowed(Path::new("a.pdf")));
+        assert!(extension_allowed(Path::new("a.docx")));
+        assert!(!extension_allowed(Path::new("a.png")));
     }
 }
