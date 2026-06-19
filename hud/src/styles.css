@@ -7070,3 +7070,113 @@ svg.tri circle {
   letter-spacing: 0.03em;
   color: #6b7d92;
 }
+
+/* ============================================================ *
+ * FIRST-RUN ONBOARDING WIZARD (WS4b item 1) — a once-only      *
+ * multi-step modal that routes to the existing setup surfaces. *
+ * Reuses .modal-backdrop / .modal / .icon-btn / Frame chrome.  *
+ * ============================================================ */
+.onboarding-modal {
+  width: 560px;
+  max-width: 92vw;
+}
+
+.onboarding-body {
+  padding: 12px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.onboarding-progress {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.onboarding-dot {
+  width: 22px;
+  height: 3px;
+  background: rgba(26, 214, 255, 0.18);
+  border: 1px solid var(--stroke);
+  transition: background 200ms ease, box-shadow 200ms ease;
+}
+.onboarding-dot.done {
+  background: rgba(125, 243, 255, 0.45);
+}
+.onboarding-dot.active {
+  background: var(--cyan-bright);
+  box-shadow: 0 0 8px rgba(125, 243, 255, 0.55);
+}
+
+.onboarding-step-count {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+}
+
+.onboarding-title {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ice);
+  margin: 2px 0 0;
+}
+
+.onboarding-para {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ice-dim);
+  margin: 0;
+}
+
+.onboarding-route {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 2px;
+}
+
+.icon-btn.onboarding-route-btn {
+  align-self: flex-start;
+  border-color: var(--cyan-bright);
+  color: var(--cyan-bright);
+  font-size: 12px;
+  padding: 6px 14px;
+}
+.icon-btn.onboarding-route-btn:hover {
+  background: rgba(125, 243, 255, 0.1);
+}
+
+.onboarding-route-note {
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.onboarding-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(26, 214, 255, 0.16);
+}
+
+.onboarding-nav-right {
+  display: flex;
+  gap: 8px;
+}
+
+.icon-btn.onboarding-skip {
+  color: #6b7d92;
+  border-color: rgba(107, 125, 146, 0.4);
+}
+
+.icon-btn.onboarding-next,
+.icon-btn.onboarding-finish {
+  border-color: var(--cyan-bright);
+  color: var(--cyan-bright);
+}

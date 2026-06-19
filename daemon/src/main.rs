@@ -788,6 +788,31 @@ async fn eval_report_task(
     }
 }
 
+/// AUDIT snapshot cadence. The chokepoints already RECORD decisions to the
+/// hash-chained log; this read-only loop periodically EMITS a secret-free
+/// `audit.snapshot` so the HUD's AuditPanel timeline reflects the durable record
+/// (the live chokepoint events fill the gaps between snapshots). A short startup
+/// delay so the first frame lands soon after a HUD connects; a slow tick since the
+/// timeline is a record, not a live feed (the live chokepoint events are immediate).
+const AUDIT_SNAPSHOT_STARTUP_DELAY: Duration = Duration::from_secs(5);
+const AUDIT_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(15);
+
+/// The periodic AUDIT snapshot pass (runtime-only; never run in tests). Each tick
+/// it READS the installed global audit log (len + recent + verify_chain) and emits
+/// the SECRET-FREE `audit.snapshot` telemetry the HUD AuditPanel renders. READ-ONLY
+/// — it never records, prunes, confirms, denies, or mutates the log; that is the
+/// daemon chokepoints' job. When audit is OFF it emits the honest `enabled:false`
+/// payload so the panel shows the OFF state. A read failure skips that tick rather
+/// than emitting a fabricated/partial snapshot. Warn-and-continue throughout: a
+/// snapshot tick must never wedge or panic the daemon.
+async fn audit_snapshot_task() {
+    tokio::time::sleep(AUDIT_SNAPSHOT_STARTUP_DELAY).await;
+    loop {
+        audit::emit_snapshot().await;
+        tokio::time::sleep(AUDIT_SNAPSHOT_INTERVAL).await;
+    }
+}
+
 /// EDITH anticipation cadence. The live loop is runtime-only — it is NOT
 /// exercised by tests (the pure evaluator in `anticipate.rs` is); these
 /// constants tune the live tick. A generous startup delay keeps housekeeping
@@ -1732,6 +1757,12 @@ async fn main() -> Result<()> {
         trace_store.clone(),
         eval_state.clone(),
     ));
+    // Periodic AUDIT snapshot pass: reads the installed global audit log and emits
+    // the secret-free `audit.snapshot` telemetry for the HUD AuditPanel timeline.
+    // READ-ONLY accountability — it never records/prunes/mutates the log (the gate
+    // chokepoints do that); when [audit].enabled is false it emits the honest
+    // OFF payload so the panel shows the disabled state, never a stale one.
+    tokio::spawn(audit_snapshot_task());
     // Resolve the Anthropic API key eagerly (env var, then macOS Keychain) so
     // daemon.started reports whether the cloud path is available. Only the
     // bool ever leaves this call — the key itself stays out of logs and

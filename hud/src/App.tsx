@@ -25,6 +25,7 @@ import McpPanel from "./components/McpPanel";
 import ExtensibilityPanel from "./components/ExtensibilityPanel";
 import MemoryPanel from "./components/MemoryPanel";
 import NexusPanel, { NEXUS_APP_NAME } from "./components/NexusPanel";
+import OnboardingWizard from "./components/OnboardingWizard";
 import ResearchNotebooksPanel from "./components/ResearchNotebooksPanel";
 import ReportPanel from "./components/ReportPanel";
 import ReticleDial from "./components/ReticleDial";
@@ -45,6 +46,8 @@ import VisionPanel, { VISION_APP } from "./components/VisionPanel";
 import Waveform from "./components/Waveform";
 import { audioStore } from "./core/audioStore";
 import { bool, num, parseEnvelope } from "./core/events";
+import { hasSeenOnboarding, markOnboardingSeen } from "./core/onboarding";
+import type { OnboardingRouteTarget } from "./core/onboarding";
 import { initialState, reduce } from "./core/state";
 import {
   initialTakeoverState,
@@ -59,8 +62,39 @@ import { TELEMETRY_URL, TelemetryLink } from "./ws/client";
 
 export default function App() {
   const [state, dispatch] = useReducer(reduce, undefined, initialState);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // The Settings modal: null = closed, else the tab to open on. The onboarding
+  // wizard routes by opening it on a specific tab (it never adds a new surface).
+  const [settingsTab, setSettingsTab] = useState<"credentials" | "system" | null>(null);
+  const settingsOpen = settingsTab !== null;
   const [deckOpen, setDeckOpen] = useState(false);
+
+  // FIRST-RUN ONBOARDING (WS4b item 1): shown ONCE, gated on the REAL persisted
+  // flag (localStorage via hasSeenOnboarding). Dismissing/finishing/skipping (or
+  // routing away) sets the flag so it never reappears on its own; it can be
+  // re-opened from Settings. Initialized lazily from storage so a returning user
+  // never even mounts it. Fail-safe: an unavailable storage reads as already-seen,
+  // so the wizard never gets stuck re-appearing where it cannot persist.
+  const [onboardingOpen, setOnboardingOpen] = useState(() => !hasSeenOnboarding());
+  // Dismiss + persist (Skip / Finish / Esc / backdrop / route-away all land here).
+  const dismissOnboarding = useCallback(() => {
+    markOnboardingSeen();
+    setOnboardingOpen(false);
+  }, []);
+  // A routing step opens the matching EXISTING Settings tab, then dismisses the
+  // wizard. It never bypasses the gated action on that surface — it just deep-opens
+  // the panel the user completes the step in.
+  const onboardingRoute = useCallback(
+    (target: Exclude<OnboardingRouteTarget, null>) => {
+      setSettingsTab(target === "settings-system" ? "system" : "credentials");
+      dismissOnboarding();
+    },
+    [dismissOnboarding],
+  );
+  // Re-open the tour from Settings (a deliberate user action — never auto).
+  const reopenOnboarding = useCallback(() => {
+    setSettingsTab(null);
+    setOnboardingOpen(true);
+  }, []);
 
   // KIOSK TAKEOVER — the full-desktop, no-OS-chrome mode. Ships OFF and is
   // NEVER auto-entered: nothing here calls enterTakeover at startup; it is an
@@ -253,7 +287,7 @@ export default function App() {
           security={state.security}
           lockdown={state.lockdown}
           onPanic={() => void panic()}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => setSettingsTab("credentials")}
           onOpenDeck={() => setDeckOpen(true)}
         />
         <LatencyStrip timings={state.lastTimings} />
@@ -345,6 +379,13 @@ export default function App() {
 
       <Toasts toasts={state.toasts} />
       <CommandDeck open={deckOpen} onClose={() => setDeckOpen(false)} />
+
+      {/* FIRST-RUN ONBOARDING — shown once (real persisted flag); routes to the
+          existing, already-gated Settings surfaces and never bypasses them. */}
+      {onboardingOpen && (
+        <OnboardingWizard onRoute={onboardingRoute} onDismiss={dismissOnboarding} />
+      )}
+
       {settingsOpen && (
         <SettingsModal
           mcp={state.mcp}
@@ -356,7 +397,9 @@ export default function App() {
           security={state.security}
           lockdown={state.lockdown}
           onLockedChange={onLockedChange}
-          onClose={() => setSettingsOpen(false)}
+          initialTab={settingsTab ?? "credentials"}
+          onReopenOnboarding={reopenOnboarding}
+          onClose={() => setSettingsTab(null)}
         />
       )}
 

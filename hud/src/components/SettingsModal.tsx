@@ -149,6 +149,8 @@ export default function SettingsModal({
   security = null,
   lockdown = null,
   onLockedChange,
+  initialTab = "credentials",
+  onReopenOnboarding,
   onClose,
 }: {
   mcp: McpStatus | null;
@@ -178,13 +180,20 @@ export default function SettingsModal({
    *  render without it; when absent the section still works (the indicator just
    *  waits for the next telemetry frame instead of flipping instantly). */
   onLockedChange?: (locked: boolean) => void;
+  /** Which tab to open on. Defaults to "credentials" (today's behavior). The
+   *  onboarding wizard routes to a specific tab by passing this — it never adds
+   *  a new surface, it just deep-opens an existing one. */
+  initialTab?: "credentials" | "system";
+  /** Re-open the first-run onboarding tour (a deliberate user action). Optional
+   *  so the existing tests render without it; when absent the control is hidden. */
+  onReopenOnboarding?: () => void;
   onClose: () => void;
 }) {
   const shell = inTauri();
   // Which top-level Settings surface is showing. "credentials" is the existing
   // keys/gates/policy view; "system" is the dedicated SYSTEM SETTINGS panel that
   // edits config/jarvis.toml (batched, applied on a daemon restart).
-  const [tab, setTab] = useState<"credentials" | "system">("credentials");
+  const [tab, setTab] = useState<"credentials" | "system">(initialTab);
   // The configured MCP servers that declare a token (mcp.status carries only the
   // usesToken bool — never a secret), so a server's token can be stored under its
   // mcp_<server>_token Keychain account through the SAME guarded path.
@@ -311,7 +320,18 @@ export default function SettingsModal({
               paste-only like GitHub or Slack.
             </div>
 
-            <div className="field-row" style={{ justifyContent: "flex-end" }}>
+            <div className="field-row" style={{ justifyContent: "space-between" }}>
+              {onReopenOnboarding ? (
+                <button
+                  className="icon-btn"
+                  onClick={onReopenOnboarding}
+                  title="Reopen the first-run welcome tour"
+                >
+                  Reopen welcome tour
+                </button>
+              ) : (
+                <span />
+              )}
               <button className="icon-btn" onClick={onClose}>
                 Close
               </button>

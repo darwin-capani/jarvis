@@ -522,6 +522,126 @@ pub async fn record_global(
     }
 }
 
+/// How many recent entries the HUD audit-timeline snapshot carries (newest-first).
+/// Bounded so the read + the wire payload stay cheap; the full bounded log lives
+/// on-device and the snapshot's `total` tells the HUD how many it is summarizing.
+pub const SNAPSHOT_RECENT: usize = 50;
+
+/// Build the SECRET-FREE `audit.snapshot` wire payload the HUD's AuditPanel reads.
+///
+/// PURE + read-only: it folds the already-stored, already-redacted fields the read
+/// API returns into the exact shape `parseAuditSnapshot` (hud/src/core/events.ts)
+/// consumes — NOTHING is invented here. The internal chain bytes
+/// (`prev_hash`/`entry_hash`) are deliberately NOT carried: the operator reads the
+/// decision/outcome timeline + the single chain verdict, not the raw hashes, so
+/// even the wire shape cannot smuggle a chain byte. `enabled=false` yields the
+/// honest "audit OFF" payload (no entries, chain not-verified) so the panel renders
+/// the OFF state rather than a stale or fabricated one.
+///
+/// `entries` MUST already be newest-first (as [`AuditLog::recent`] returns them);
+/// they are surfaced verbatim — an empty slice is the honest "nothing recorded yet"
+/// state, NEVER backfilled.
+pub fn snapshot_json(
+    enabled: bool,
+    total: usize,
+    entries: &[AuditEntry],
+    chain: &ChainStatus,
+) -> serde_json::Value {
+    let chain_json = match chain {
+        ChainStatus::Ok { count } => serde_json::json!({ "ok": true, "count": count }),
+        ChainStatus::Broken { seq, reason } => serde_json::json!({
+            "ok": false,
+            "broken_seq": seq,
+            "reason": reason,
+        }),
+    };
+    let entries_json: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "seq": e.seq,
+                "ts": e.ts,
+                "agent": e.agent,
+                "tool": e.tool,
+                // The ALREADY-redacted target summary (redacted twice daemon-side).
+                "target_redacted": e.target_redacted,
+                "decision": e.decision,
+                "outcome": e.outcome,
+            })
+        })
+        .collect();
+    // `truncated` is surfaced LIVE via the separate `audit.truncated` event the
+    // prune path emits; the snapshot reports the durable count, so a re-rooted
+    // chain still verifies as a fresh chain (count == surviving suffix).
+    serde_json::json!({
+        "enabled": enabled,
+        "total": total,
+        "chain": chain_json,
+        "entries": entries_json,
+    })
+}
+
+/// Read the installed global audit log and emit one SECRET-FREE `audit.snapshot`
+/// telemetry frame for the HUD's AuditPanel. Fire-and-forget through the existing
+/// telemetry hub; dropped silently when no HUD is connected.
+///
+/// HONESTY + SAFETY:
+///   - READ-ONLY. Calls only the read API (`len`/`recent`/`verify_chain`) — it
+///     never records, prunes, or mutates the log.
+///   - When audit is OFF (or no log installed) it emits the honest `enabled:false`
+///     payload so the panel shows the OFF state, NOT a stale or fabricated one.
+///   - A read error degrades to NOT emitting that tick (warn-and-continue) rather
+///     than emitting a fabricated/partial snapshot — a missed frame is recoverable
+///     on the next tick; a lie is not.
+pub async fn emit_snapshot() {
+    let Some((enabled, log)) = GLOBAL.get() else {
+        // No log installed at all — emit the honest OFF payload once so the panel
+        // does not sit on a stale snapshot.
+        crate::telemetry::emit(
+            "system",
+            "audit.snapshot",
+            snapshot_json(false, 0, &[], &ChainStatus::Ok { count: 0 }),
+        );
+        return;
+    };
+    if !*enabled {
+        // Audit is OFF: recording is skipped, so report the honest OFF state
+        // (no entries, no verified chain) without touching the DB.
+        crate::telemetry::emit(
+            "system",
+            "audit.snapshot",
+            snapshot_json(false, 0, &[], &ChainStatus::Ok { count: 0 }),
+        );
+        return;
+    }
+    let total = match log.len().await {
+        Ok(n) => n,
+        Err(e) => {
+            warn!(error = %e, "audit: failed to read len for snapshot; skipping this tick");
+            return;
+        }
+    };
+    let entries = match log.recent(SNAPSHOT_RECENT).await {
+        Ok(es) => es,
+        Err(e) => {
+            warn!(error = %e, "audit: failed to read recent for snapshot; skipping this tick");
+            return;
+        }
+    };
+    let chain = match log.verify_chain().await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "audit: failed to verify chain for snapshot; skipping this tick");
+            return;
+        }
+    };
+    crate::telemetry::emit(
+        "system",
+        "audit.snapshot",
+        snapshot_json(true, total, &entries, &chain),
+    );
+}
+
 /// PURE chain verifier over an ordered (by seq ASC) slice of entries. Factored
 /// out of [`AuditLog::verify_chain`] so the chain logic is unit-testable directly
 /// (and so the DB method and the test exercise the exact same code). An empty
@@ -819,5 +939,89 @@ mod tests {
             verify_entries(&entries).is_ok(),
             "the re-rooted suffix must verify as a fresh chain"
         );
+    }
+
+    // -- HUD snapshot wire shape (audit.snapshot) -----------------------------
+
+    /// The snapshot folds the REAL stored, redacted fields into the wire shape the
+    /// HUD parses — newest-first — and carries NO chain bytes (prev_hash/entry_hash)
+    /// nor any raw input. Pins the secret-free contract at the wire boundary.
+    #[tokio::test]
+    async fn snapshot_json_surfaces_only_the_secret_free_subset_newest_first() {
+        let log = AuditLog::in_memory().unwrap();
+        log_some(&log).await; // seqs 1,2,3
+        let total = log.len().await.unwrap();
+        let entries = log.recent(SNAPSHOT_RECENT).await.unwrap();
+        let chain = log.verify_chain().await.unwrap();
+        let snap = snapshot_json(true, total, &entries, &chain);
+
+        assert_eq!(snap["enabled"], serde_json::json!(true));
+        assert_eq!(snap["total"], serde_json::json!(3));
+        assert_eq!(snap["chain"]["ok"], serde_json::json!(true));
+        assert_eq!(snap["chain"]["count"], serde_json::json!(3));
+
+        let arr = snap["entries"].as_array().expect("entries array");
+        assert_eq!(arr.len(), 3, "all three recorded decisions are surfaced");
+        // Newest-first: the last recorded (slack_post_message, BLOCKED) is row 0.
+        assert_eq!(arr[0]["seq"], serde_json::json!(3));
+        assert_eq!(arr[0]["tool"], serde_json::json!("slack_post_message"));
+        assert_eq!(arr[0]["decision"], serde_json::json!("never"));
+        assert_eq!(arr[0]["outcome"], serde_json::json!("blocked_by_policy"));
+
+        // The chain bytes are NEVER on the wire — only the verdict is.
+        let whole = snap.to_string();
+        assert!(!whole.contains("prev_hash"), "no chain bytes on the wire: {whole}");
+        assert!(!whole.contains("entry_hash"), "no chain bytes on the wire: {whole}");
+        for e in arr {
+            let obj = e.as_object().unwrap();
+            assert!(obj.contains_key("target_redacted"), "the redacted target is the only target field");
+            assert!(!obj.contains_key("prev_hash"));
+            assert!(!obj.contains_key("entry_hash"));
+        }
+    }
+
+    /// A secret in the target is redacted BEFORE it reaches the wire snapshot too —
+    /// the raw token never appears in the emitted JSON.
+    #[tokio::test]
+    async fn snapshot_json_never_carries_a_raw_secret() {
+        let log = AuditLog::in_memory().unwrap();
+        let secret = "sk-LIVE-DEADBEEF-0123456789";
+        log.record("agent.pepper", "gmail_send", &format!("key {secret}"), Decision::Ask, Outcome::Parked)
+            .await
+            .unwrap();
+        let entries = log.recent(SNAPSHOT_RECENT).await.unwrap();
+        let chain = log.verify_chain().await.unwrap();
+        let snap = snapshot_json(true, 1, &entries, &chain);
+        assert!(!snap.to_string().contains(secret), "the raw secret must never reach the wire");
+    }
+
+    /// HONEST EMPTY/OFF: a disabled (or empty) snapshot carries enabled:false, zero
+    /// total, and NO fabricated entries — the panel renders the OFF/empty state,
+    /// never an invented decision.
+    #[test]
+    fn snapshot_json_off_state_is_honest_and_empty() {
+        let snap = snapshot_json(false, 0, &[], &ChainStatus::Ok { count: 0 });
+        assert_eq!(snap["enabled"], serde_json::json!(false));
+        assert_eq!(snap["total"], serde_json::json!(0));
+        assert_eq!(
+            snap["entries"].as_array().expect("entries array").len(),
+            0,
+            "an OFF/empty snapshot fabricates no entries"
+        );
+    }
+
+    /// A BROKEN chain is reported honestly on the wire (ok:false + where/why),
+    /// never silently downgraded to a green verdict.
+    #[test]
+    fn snapshot_json_reports_a_broken_chain_honestly() {
+        let snap = snapshot_json(
+            true,
+            5,
+            &[],
+            &ChainStatus::Broken { seq: 2, reason: "hash mismatch".into() },
+        );
+        assert_eq!(snap["chain"]["ok"], serde_json::json!(false));
+        assert_eq!(snap["chain"]["broken_seq"], serde_json::json!(2));
+        assert_eq!(snap["chain"]["reason"], serde_json::json!("hash mismatch"));
     }
 }
