@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -7,9 +8,30 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{info, warn};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Per-attempt UnixStream::connect ceiling. A live server accepts in <1ms;
+/// without this cap a kernel that accepts the connect() but never lets the
+/// server `accept()` (a wedged/half-up server) could hang `ensure_connected`
+/// indefinitely. Short on purpose: the socket is local — a connect that does
+/// not complete in a second is not coming up this attempt.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+/// Reconnect backoff for a dropped/restarted/flapping inference server. The
+/// per-op retry loop ([`request_generic`]/[`request_raw`]) walks this schedule
+/// so a dead server does NOT make every op pay full 30s timeout ceilings, and a
+/// flapping server is rate-limited instead of hammered. The contract is
+/// unchanged on the happy path (the first attempt connects + succeeds with no
+/// sleep) and on the honest-failure path (exhaustion still returns the last
+/// transport Err, never a fake success). See [`backoff_delay`] for the exact
+/// schedule. Bounded: at most [`RECONNECT_MAX_ATTEMPTS`] connect attempts.
+const RECONNECT_MAX_ATTEMPTS: u32 = 4;
+/// First backoff step; each subsequent step doubles up to [`RECONNECT_MAX_DELAY`].
+const RECONNECT_BASE_DELAY: Duration = Duration::from_millis(50);
+/// Backoff ceiling — a single op never waits longer than this between attempts,
+/// so even a hard-down server bounds total added latency to well under the 30s
+/// op timeout (50+100+200 ≈ 350ms of sleep across 4 attempts at this ceiling).
+const RECONNECT_MAX_DELAY: Duration = Duration::from_millis(400);
 /// op=consolidate only: the largest generation in the system (up to 40
 /// transcript pairs + 200 facts prefilled into the 4B on the M1 Pro), and its
 /// 30s window used to include server-side queueing behind the engine lock —
@@ -496,6 +518,181 @@ enum ConverseOutcome {
     /// The server reported failure in a well-formed done line; the
     /// connection itself is still healthy.
     ServerFail(String),
+}
+
+/// PURE: the un-jittered backoff delay BEFORE connect attempt `attempt`
+/// (0-based). Attempt 0 is immediate (no sleep) — the happy path connects on
+/// the first try with zero added latency, so a healthy server is byte-for-byte
+/// as fast as before. From attempt 1 the delay doubles
+/// ([`RECONNECT_BASE_DELAY`] * 2^(attempt-1)) and saturates at
+/// [`RECONNECT_MAX_DELAY`]. Saturating arithmetic so a large `attempt` can
+/// never overflow into a tiny/zero delay. Unit-tested for the exact schedule.
+fn backoff_delay(attempt: u32) -> Duration {
+    if attempt == 0 {
+        return Duration::ZERO;
+    }
+    // 2^(attempt-1), saturating — never panics, never wraps to a small value.
+    let factor = 1u32.checked_shl(attempt - 1).unwrap_or(u32::MAX);
+    let scaled = RECONNECT_BASE_DELAY
+        .checked_mul(factor)
+        .unwrap_or(RECONNECT_MAX_DELAY);
+    if scaled > RECONNECT_MAX_DELAY {
+        RECONNECT_MAX_DELAY
+    } else {
+        scaled
+    }
+}
+
+/// PURE: add bounded +/- jitter (up to ~25% of the base) to a backoff delay so
+/// several independent [`InferenceClient`]s (the mic loop + reflect +
+/// anticipation + standing tasks each own one) do NOT reconnect in lockstep and
+/// thundering-herd a recovering server. `seed` is a cheap rotating nonce (the
+/// client's request counter) — no RNG dependency, fully deterministic for the
+/// test. Zero base in -> zero out (the immediate first attempt never sleeps).
+fn jittered_delay(base: Duration, seed: u64) -> Duration {
+    if base.is_zero() {
+        return Duration::ZERO;
+    }
+    let base_ms = base.as_millis() as u64;
+    // Jitter span = 25% of base; map the seed into [-span, +span].
+    let span = (base_ms / 4).max(1);
+    // seed % (2*span+1) - span  =>  symmetric jitter without negative overflow.
+    let offset = (seed % (2 * span + 1)) as i64 - span as i64;
+    let jittered = (base_ms as i64 + offset).max(0) as u64;
+    Duration::from_millis(jittered)
+}
+
+// ---------------------------------------------------------------------------
+// SHARED INFERENCE HEALTH — a process-global snapshot of inference-server
+// reachability, published by the background liveness task (liveness_task) and
+// read by the daemon's degraded-mode logic + the HUD. Today a down server is
+// only discovered when a user turn is LOST; this lets the system know it is
+// degraded BEFORE a turn fails. Multiple InferenceClients exist (mic loop +
+// reflect + anticipation + standing); ONE liveness probe feeds this one shared
+// state so they don't each have to discover the outage independently.
+// ---------------------------------------------------------------------------
+
+/// Default cadence of the background liveness probe. Frequent enough that the
+/// HUD reflects a server coming up/going down within a couple seconds, cheap
+/// enough that a connect+close every few seconds is negligible.
+pub const LIVENESS_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Point-in-time reachability of the inference server, as last observed by the
+/// background liveness probe (NOT by user turns — this is the proactive view).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InferenceHealth {
+    /// True iff the most recent probe connected.
+    pub reachable: bool,
+    /// Consecutive failed probes (0 while reachable). Lets the HUD distinguish
+    /// a one-off blip from a sustained outage without keeping history.
+    pub consecutive_failures: u32,
+    /// Unix seconds of the last SUCCESSFUL probe; None if never reachable since
+    /// boot (honest: we have not yet seen the server up, not "0 == 1970").
+    pub last_ok_unix: Option<i64>,
+    /// True until the FIRST probe completes — so a reader never reports
+    /// "reachable:false" before we have actually looked (honest unknown state).
+    pub probed: bool,
+}
+
+impl InferenceHealth {
+    const fn initial() -> Self {
+        Self {
+            reachable: false,
+            consecutive_failures: 0,
+            last_ok_unix: None,
+            probed: false,
+        }
+    }
+}
+
+static HEALTH: RwLock<InferenceHealth> = RwLock::new(InferenceHealth::initial());
+
+/// Test-only: reset the shared health state so the `record_probe` transition
+/// test is independent of any other test that touched the global.
+#[cfg(test)]
+fn reset_health_for_test() {
+    if let Ok(mut g) = HEALTH.write() {
+        *g = InferenceHealth::initial();
+    }
+}
+
+/// The current shared inference health snapshot (the proactive liveness view).
+/// `probed == false` means no probe has completed yet — callers must treat that
+/// as UNKNOWN, never as "down", to stay honest at boot.
+pub fn health_snapshot() -> InferenceHealth {
+    HEALTH.read().map(|g| *g).unwrap_or(InferenceHealth::initial())
+}
+
+/// Fold one probe result into the shared health state. Returns the PRIOR
+/// `reachable` so the caller can detect an edge (up<->down) and only emit/log
+/// on transitions instead of every tick. `now_unix` is injected so the state
+/// transition is unit-testable without a clock.
+fn record_probe(ok: bool, now_unix: i64) -> bool {
+    let mut guard = match HEALTH.write() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    let prev = guard.reachable;
+    guard.probed = true;
+    if ok {
+        guard.reachable = true;
+        guard.consecutive_failures = 0;
+        guard.last_ok_unix = Some(now_unix);
+    } else {
+        guard.reachable = false;
+        guard.consecutive_failures = guard.consecutive_failures.saturating_add(1);
+    }
+    prev
+}
+
+/// Background liveness loop: every [`LIVENESS_INTERVAL`] it connect-probes the
+/// inference socket (NO model call — `probe_reachable` connects + closes) and
+/// folds the result into the shared [`InferenceHealth`]. On every probe it
+/// publishes an `inference.health` telemetry frame (so the HUD can render a
+/// degraded badge); on an UP<->DOWN transition it logs + emits a coherent
+/// `inference.degraded` / `inference.recovered` frame ONCE, instead of the
+/// per-turn `inference.unavailable` spam the daemon emits today. Never blocks
+/// the pipeline and never panics it (a poisoned lock just skips the tick).
+/// This is the proactive half of degraded-mode honesty; the per-turn abort
+/// path is unchanged.
+pub async fn liveness_task(socket_path: PathBuf, interval: Duration) {
+    let probe = InferenceClient::new(socket_path);
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        let ok = probe.probe_reachable().await.is_ok();
+        let now = chrono::Utc::now().timestamp();
+        let was_reachable = record_probe(ok, now);
+        let snap = health_snapshot();
+        crate::telemetry::emit(
+            "system",
+            "inference.health",
+            serde_json::json!({
+                "reachable": snap.reachable,
+                "consecutive_failures": snap.consecutive_failures,
+                "last_ok_unix": snap.last_ok_unix,
+            }),
+        );
+        // Edge-trigger the coherent degraded/recovered signal exactly once.
+        if was_reachable && !ok {
+            warn!(
+                consecutive_failures = snap.consecutive_failures,
+                "inference server became UNREACHABLE — running degraded (local turns will abort honestly until it returns)"
+            );
+            crate::telemetry::emit(
+                "system",
+                "inference.degraded",
+                serde_json::json!({"reason": "liveness_probe_failed"}),
+            );
+        } else if !was_reachable && ok {
+            info!("inference server is reachable again — degraded mode cleared");
+            crate::telemetry::emit(
+                "system",
+                "inference.recovered",
+                serde_json::json!({"last_ok_unix": snap.last_ok_unix}),
+            );
+        }
+    }
 }
 
 /// Lazy JSONL client for the Python inference server. The daemon must keep
@@ -1024,7 +1221,10 @@ impl InferenceClient {
         req.local_model = local_model.filter(|m| !m.trim().is_empty());
 
         for attempt in 0..2 {
-            self.ensure_connected().await?;
+            // The CONNECT leg gets bounded backoff (recovers a restarted
+            // server); the STREAM is never blindly replayed once sentences
+            // were emitted — that guard lives below.
+            self.connect_with_backoff().await?;
             let mut emitted = 0u64;
             match self.converse_roundtrip(&req, &events, &mut emitted).await {
                 Ok(ConverseOutcome::Done(done)) => return Ok(done),
@@ -1138,20 +1338,94 @@ impl InferenceClient {
         format!("req-{}", self.next_id)
     }
 
+    /// Open the connection if it is not already up, with a SHORT connect
+    /// timeout so a wedged/half-up server cannot hang the op. A live server
+    /// accepts instantly; a missing socket fails fast with the same honest
+    /// "inference socket unavailable" context the daemon has always surfaced.
+    /// NO retry/backoff here — that lives in [`connect_with_backoff`], which
+    /// the per-op loops call so a single attempt is still cheap to probe.
     async fn ensure_connected(&mut self) -> Result<()> {
         if self.conn.is_none() {
-            let stream = UnixStream::connect(&self.socket_path)
-                .await
-                .with_context(|| {
+            let connect = UnixStream::connect(&self.socket_path);
+            let stream = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
+                Ok(res) => res.with_context(|| {
                     format!(
                         "inference socket unavailable at {}",
                         self.socket_path.display()
                     )
-                })?;
+                })?,
+                Err(_) => {
+                    return Err(anyhow!(
+                        "inference connect timed out after {}s at {}",
+                        CONNECT_TIMEOUT.as_secs(),
+                        self.socket_path.display()
+                    ));
+                }
+            };
             let (r, w) = stream.into_split();
             self.conn = Some((BufReader::new(r), w));
         }
         Ok(())
+    }
+
+    /// Ensure the connection is up, retrying the CONNECT (only) with bounded
+    /// exponential backoff + jitter. A dropped/restarted/flapping inference
+    /// server is recovered transparently here instead of failing the op on the
+    /// first missed connect. The HONESTY CONTRACT is preserved: on exhausting
+    /// [`RECONNECT_MAX_ATTEMPTS`] this returns the LAST real connect Err (never
+    /// a fake success), so the caller still aborts the turn truthfully. The
+    /// happy path (server up) connects on attempt 0 with ZERO added latency.
+    /// Only the connect leg is retried here — a transport error mid-roundtrip
+    /// is handled by the op loop (which drops the conn and re-enters here),
+    /// because a half-streamed converse must not be silently replayed.
+    async fn connect_with_backoff(&mut self) -> Result<()> {
+        let mut last_err = None;
+        for attempt in 0..RECONNECT_MAX_ATTEMPTS {
+            let delay = jittered_delay(backoff_delay(attempt), self.next_id.wrapping_add(attempt as u64));
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            match self.ensure_connected().await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    self.conn = None;
+                    warn!(
+                        attempt = attempt + 1,
+                        max = RECONNECT_MAX_ATTEMPTS,
+                        error = %e,
+                        "inference connect failed; backing off"
+                    );
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err
+            .unwrap_or_else(|| anyhow!("inference connect failed after {RECONNECT_MAX_ATTEMPTS} attempts")))
+    }
+
+    /// Connect-probe liveness check: is the inference server reachable RIGHT
+    /// NOW? Opens a fresh short-timeout connection and immediately closes it —
+    /// it spends NO model call (the server has no `ping` op; a connect+close is
+    /// the cheapest honest reachability signal). Does NOT touch `self.conn` (so
+    /// it never disturbs an in-flight pooled connection) and never retries:
+    /// this is a point-in-time probe for the background liveness task + the
+    /// `--selftest` board, which want the truthful current state, not a
+    /// best-effort that masks a down server. Returns Ok(()) iff a connection
+    /// established within [`CONNECT_TIMEOUT`].
+    pub async fn probe_reachable(&self) -> Result<()> {
+        let connect = UnixStream::connect(&self.socket_path);
+        match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
+            Ok(Ok(_stream)) => Ok(()), // dropped here -> clean close
+            Ok(Err(e)) => Err(anyhow!(
+                "inference socket unreachable at {}: {e}",
+                self.socket_path.display()
+            )),
+            Err(_) => Err(anyhow!(
+                "inference connect timed out after {}s at {}",
+                CONNECT_TIMEOUT.as_secs(),
+                self.socket_path.display()
+            )),
+        }
     }
 
     async fn request(&mut self, req: &Request<'_>) -> Result<Response> {
@@ -1169,11 +1443,14 @@ impl InferenceClient {
         op: &str,
         timeout: Duration,
     ) -> Result<Response> {
-        // One retry: a stale connection left over from a restarted inference
-        // server fails fast, so reconnect once before reporting failure.
+        // One transport retry: a stale connection left over from a restarted
+        // inference server fails fast, so reconnect once before reporting
+        // failure. The CONNECT leg itself is retried with bounded backoff
+        // inside connect_with_backoff, so a dropped/flapping server recovers
+        // without each op paying the full timeout ceiling.
         let mut last_err = None;
         for _ in 0..2 {
-            self.ensure_connected().await?;
+            self.connect_with_backoff().await?;
             match tokio::time::timeout(timeout, self.roundtrip(req)).await {
                 Ok(Ok(resp)) => {
                     if resp.ok {
@@ -1217,7 +1494,7 @@ impl InferenceClient {
     ) -> Result<Response> {
         let mut last_err = None;
         for _ in 0..2 {
-            self.ensure_connected().await?;
+            self.connect_with_backoff().await?;
             match tokio::time::timeout(timeout, self.roundtrip(req)).await {
                 // A well-formed line — ok true OR false — is the caller's to read.
                 Ok(Ok(resp)) => return Ok(resp),
@@ -1259,13 +1536,17 @@ impl InferenceClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_shape_to_request, Classification, ConsolidateRequest, FactPair, Request, Response,
-        TranscriptPair, CONSOLIDATE_TIMEOUT, DESCRIBE_IMAGE_DEFAULT_MAX_TOKENS,
+        apply_shape_to_request, backoff_delay, jittered_delay, record_probe,
+        reset_health_for_test, Classification,
+        ConsolidateRequest, FactPair, InferenceClient, Request, Response, TranscriptPair,
+        CONNECT_TIMEOUT, CONSOLIDATE_TIMEOUT, DESCRIBE_IMAGE_DEFAULT_MAX_TOKENS,
         DESCRIBE_IMAGE_MAX_TOKENS_CAP, DESCRIBE_IMAGE_UNAVAILABLE_REASON, GENERATE_IMAGE_DEFAULT_SIZE,
         GENERATE_IMAGE_DEFAULT_STEPS, GENERATE_IMAGE_MAX_SIZE, GENERATE_IMAGE_MAX_STEPS_CAP,
-        GENERATE_IMAGE_MIN_SIZE, GENERATE_IMAGE_UNAVAILABLE_REASON, REQUEST_TIMEOUT,
+        GENERATE_IMAGE_MIN_SIZE, GENERATE_IMAGE_UNAVAILABLE_REASON, RECONNECT_BASE_DELAY,
+        RECONNECT_MAX_ATTEMPTS, RECONNECT_MAX_DELAY, REQUEST_TIMEOUT,
     };
     use serde_json::json;
+    use std::time::Duration;
 
     /// Converse wire contract for the per-agent persona: when set, the request
     /// carries a "persona" string (the agent NAME the server maps to
@@ -1960,5 +2241,189 @@ mod tests {
         assert_eq!(8.clamp(GENERATE_IMAGE_MIN_SIZE, GENERATE_IMAGE_MAX_SIZE), GENERATE_IMAGE_MIN_SIZE);
         assert_eq!(99_999u32.clamp(GENERATE_IMAGE_MIN_SIZE, GENERATE_IMAGE_MAX_SIZE), GENERATE_IMAGE_MAX_SIZE);
         assert_eq!(9_999u32.clamp(1, GENERATE_IMAGE_MAX_STEPS_CAP), GENERATE_IMAGE_MAX_STEPS_CAP);
+    }
+
+    // -----------------------------------------------------------------------
+    // RELIABILITY: reconnect backoff + jitter + liveness/health (WS2).
+    // All MOCK-based — no live inference server, no model. The live-socket
+    // tests bind a temp UnixListener and drop it to simulate a down server.
+    // -----------------------------------------------------------------------
+
+    /// The backoff schedule is EXACTLY: attempt 0 immediate (zero added latency
+    /// on the happy path), then 50ms, 100ms, 200ms, … doubling and saturating at
+    /// the 400ms ceiling. This is the load-bearing property: a healthy server is
+    /// as fast as before, and a flapping one is rate-limited, never hammered.
+    #[test]
+    fn backoff_schedule_is_immediate_then_bounded_exponential() {
+        // Attempt 0 NEVER sleeps — the happy path pays nothing.
+        assert_eq!(backoff_delay(0), Duration::ZERO, "first attempt must be immediate");
+        // Then exponential from the base.
+        assert_eq!(backoff_delay(1), RECONNECT_BASE_DELAY, "attempt 1 == base (50ms)");
+        assert_eq!(backoff_delay(2), RECONNECT_BASE_DELAY * 2, "attempt 2 doubles");
+        // Saturates at the ceiling — never grows unbounded.
+        assert_eq!(backoff_delay(3), RECONNECT_BASE_DELAY * 4, "attempt 3 == 200ms (still under cap)");
+        assert_eq!(backoff_delay(99), RECONNECT_MAX_DELAY, "a huge attempt saturates at the cap, never overflows");
+        // Monotonic non-decreasing up to the cap.
+        let mut prev = Duration::ZERO;
+        for a in 0..20 {
+            let d = backoff_delay(a);
+            assert!(d >= prev, "schedule must be non-decreasing");
+            assert!(d <= RECONNECT_MAX_DELAY, "schedule must never exceed the cap");
+            prev = d;
+        }
+    }
+
+    /// Total sleep across a full exhausted reconnect (the bounded worst case) is
+    /// far below the 30s op timeout — a hard-down server adds sub-second latency,
+    /// not a multi-timeout stall. Proves the gap assess flagged ("every op pays
+    /// full 30s ceilings") is closed.
+    #[test]
+    fn total_backoff_across_all_attempts_is_well_under_the_op_timeout() {
+        let mut total = Duration::ZERO;
+        for a in 0..RECONNECT_MAX_ATTEMPTS {
+            total += backoff_delay(a);
+        }
+        assert!(
+            total < Duration::from_secs(2),
+            "worst-case reconnect backoff ({total:?}) must be a small fraction of REQUEST_TIMEOUT (30s)"
+        );
+    }
+
+    /// Jitter stays within +/-25% of the base, never goes negative, and a zero
+    /// base (the immediate first attempt) yields exactly zero — so jitter can
+    /// never accidentally introduce a sleep on the happy path. The spread across
+    /// seeds proves independent clients won't reconnect in lockstep.
+    #[test]
+    fn jitter_is_bounded_and_zero_preserving() {
+        // Zero base in -> zero out (no sleep on the immediate attempt).
+        assert_eq!(jittered_delay(Duration::ZERO, 12345), Duration::ZERO);
+
+        let base = Duration::from_millis(200);
+        let span = base.as_millis() as u64 / 4; // 50ms
+        let lo = base.as_millis() as u64 - span;
+        let hi = base.as_millis() as u64 + span;
+        let mut saw_low = false;
+        let mut saw_high = false;
+        for seed in 0..1000u64 {
+            let j = jittered_delay(base, seed).as_millis() as u64;
+            assert!(j >= lo && j <= hi, "jitter {j}ms out of [{lo},{hi}] for seed {seed}");
+            if j < base.as_millis() as u64 {
+                saw_low = true;
+            }
+            if j > base.as_millis() as u64 {
+                saw_high = true;
+            }
+        }
+        assert!(saw_low && saw_high, "jitter must spread both below and above the base across seeds");
+    }
+
+    /// LIVE-SOCKET MOCK: a connect-probe against a bound temp UnixListener
+    /// succeeds, and against a path with NO listener it fails fast (well within
+    /// the connect timeout) — never hangs. This is the liveness primitive the
+    /// background health task and --selftest board rely on; no model is spent.
+    #[tokio::test]
+    async fn probe_reachable_is_true_when_bound_false_when_absent() {
+        // /tmp (not the long /var/folders temp_dir) keeps the sockaddr_un path
+        // under macOS's ~104-byte SUN_LEN cap.
+        let dir = std::path::PathBuf::from("/tmp").join(format!("jv-probe-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = dir.join("inference.sock");
+        let _ = std::fs::remove_file(&sock);
+
+        // No listener yet -> unreachable, and it returns quickly (fail-fast).
+        let client = InferenceClient::new(sock.clone());
+        let start = std::time::Instant::now();
+        assert!(client.probe_reachable().await.is_err(), "absent socket must probe unreachable");
+        assert!(start.elapsed() < CONNECT_TIMEOUT + Duration::from_millis(500), "probe must fail fast, not hang");
+
+        // Bind a listener -> reachable.
+        let listener = tokio::net::UnixListener::bind(&sock).expect("bind temp inference socket");
+        assert!(client.probe_reachable().await.is_ok(), "bound socket must probe reachable");
+        drop(listener);
+
+        // After the listener is gone -> unreachable again (honest, point-in-time).
+        let _ = std::fs::remove_file(&sock);
+        assert!(client.probe_reachable().await.is_err(), "removed socket must probe unreachable again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LIVE-SOCKET MOCK: connect_with_backoff RECOVERS a server that was down at
+    /// the start of the op and came up during the backoff window — the exact
+    /// "inference server restarted between turns" scenario. With NO listener it
+    /// exhausts the bounded attempts and returns an HONEST Err (never a fake
+    /// success); once a listener is bound it connects on a subsequent attempt.
+    #[tokio::test]
+    async fn connect_with_backoff_recovers_a_server_that_comes_up_late() {
+        // /tmp keeps the sockaddr_un path under macOS's ~104-byte SUN_LEN cap.
+        let dir = std::path::PathBuf::from("/tmp").join(format!("jv-recon-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = dir.join("inference.sock");
+        let _ = std::fs::remove_file(&sock);
+
+        // Hard-down: no listener at all -> exhausts attempts -> honest Err.
+        let mut client = InferenceClient::new(sock.clone());
+        let res = client.connect_with_backoff().await;
+        assert!(res.is_err(), "a hard-down server must surface an honest Err, never a fake connect");
+        assert!(client.conn.is_none(), "no live connection after exhaustion");
+
+        // Server comes up mid-op: bind in a task after a short delay, then call
+        // connect_with_backoff — the backoff schedule gives it room to land.
+        let sock2 = sock.clone();
+        let binder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let l = tokio::net::UnixListener::bind(&sock2).expect("bind late");
+            // Hold the listener open long enough for the client to connect.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            drop(l);
+        });
+        let res = client.connect_with_backoff().await;
+        assert!(res.is_ok(), "a server that comes up during the backoff window must be recovered");
+        assert!(client.conn.is_some(), "a live connection is established after recovery");
+        let _ = binder.await;
+        let _ = std::fs::remove_file(&sock);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The shared health state transitions honestly: starts UNKNOWN (probed
+    /// false), a success marks reachable + stamps last_ok, failures count up,
+    /// and a recovery resets the counter — and record_probe returns the PRIOR
+    /// reachable so the liveness task can edge-trigger degraded/recovered once.
+    #[test]
+    fn health_state_records_probes_and_reports_edges_honestly() {
+        reset_health_for_test();
+        // First failure from the initial state: prior reachable is false.
+        let prev = record_probe(false, 100);
+        assert!(!prev, "initial reachable is false (unknown-at-boot is not 'up')");
+        let s = super::health_snapshot();
+        assert!(s.probed, "a completed probe marks probed=true (no longer unknown)");
+        assert!(!s.reachable);
+        assert_eq!(s.consecutive_failures, 1);
+        assert_eq!(s.last_ok_unix, None, "never reachable yet -> no last_ok, not a fake 0");
+
+        // Second failure accumulates.
+        record_probe(false, 200);
+        assert_eq!(super::health_snapshot().consecutive_failures, 2);
+
+        // Recovery: prior was DOWN, so this is the up edge.
+        let prev = record_probe(true, 300);
+        assert!(!prev, "the recovery edge sees prior reachable=false");
+        let s = super::health_snapshot();
+        assert!(s.reachable);
+        assert_eq!(s.consecutive_failures, 0, "recovery clears the failure count");
+        assert_eq!(s.last_ok_unix, Some(300));
+
+        // Staying up: prior reachable=true (no edge).
+        let prev = record_probe(true, 400);
+        assert!(prev, "a steady-up tick sees prior reachable=true (no recovered edge)");
+        assert_eq!(super::health_snapshot().last_ok_unix, Some(400));
+
+        // Going down: prior reachable=true (the degraded edge).
+        let prev = record_probe(false, 500);
+        assert!(prev, "the degraded edge sees prior reachable=true");
+        let s = super::health_snapshot();
+        assert!(!s.reachable);
+        assert_eq!(s.consecutive_failures, 1);
+        assert_eq!(s.last_ok_unix, Some(400), "last_ok is preserved across a new outage");
+        reset_health_for_test();
     }
 }

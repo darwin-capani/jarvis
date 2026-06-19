@@ -153,6 +153,7 @@ mod research;
 mod router;
 mod screen_context;
 mod selector;
+mod selfcheck;
 mod shell;
 mod signals;
 mod skills;
@@ -1113,6 +1114,28 @@ async fn main() -> Result<()> {
     // requires the API key, writes a proposal artifact under a temp sandbox,
     // and NEVER touches the live daemon/ sources. This is the one sanctioned
     // cloud-spending verification path; it does not start the daemon.
+    // Operator entrypoint: `jarvisd --selftest` (alias `--health`) validates the
+    // installed environment WITHOUT starting the full daemon (no audio, no MCP
+    // connect, no model, no mic). It resolves the root EXACTLY like a normal
+    // start, runs the honest PASS/SKIP/FAIL board (root/config/venv/binary/state
+    // dirs/0700 ipc perms/inference-reachability via connect-probe/telemetry-port
+    // bindability/cloud-key), prints it, and EXITS NON-ZERO on any hard FAIL.
+    // Mirrors `inference/server.py --selftest`'s honesty: a check that could not
+    // actually run is SKIP, never PASS — it never claims healthy when a check was
+    // skipped or a dep is missing. Spends no cloud/model call beyond resolving
+    // whether a key EXISTS (bool only; the key never leaves the resolver).
+    if std::env::args().any(|a| a == "--selftest" || a == "--health") {
+        let root = selfcheck::resolve_root_like_daemon();
+        let (cfg, _issues) = Config::load(&root.join("config").join("jarvis.toml"));
+        let cloud_key_present = anthropic::resolve_api_key().await.is_some();
+        let checks = selfcheck::run_selftest(&root, cfg.telemetry.port, cloud_key_present).await;
+        selfcheck::print_board("JARVIS daemon selftest", &checks);
+        if selfcheck::any_failed(&checks) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     if std::env::args().any(|a| a == "--heal-drill") {
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
@@ -1240,6 +1263,33 @@ async fn main() -> Result<()> {
     // when shipping a behavior change worth confirming live.
     info!(build = "2026-06-14-echosafe-sweep", "jarvisd starting");
     info!(root = %root.display(), "jarvisd root resolved");
+
+    // STARTUP SELF-CHECK (WS2): validate the STRUCTURAL preconditions
+    // (root/config readable, the three state subdirs exist, state/ipc is 0700)
+    // BEFORE doing heavy work, so a broken tree aborts with an ACTIONABLE
+    // message instead of limping into the mic loop behind a healthy-looking
+    // process. This is deliberately NARROW: the inference + cloud-key legs are
+    // NOT blocking (lazy-connect + local-only are resilient by design) — only a
+    // genuinely structural fault (e.g. an unwritable/looser-than-0700 confined
+    // socket dir, or an unreadable config) stops startup. The same engine backs
+    // `jarvisd --selftest`. Honest: each failing check carries its remediation.
+    {
+        let startup = selfcheck::startup_blocking_checks(&root);
+        if selfcheck::any_failed(&startup) {
+            for c in &startup {
+                if c.status == selfcheck::Status::Fail {
+                    error!(check = c.name, detail = %c.detail, "startup self-check FAILED");
+                }
+            }
+            selfcheck::print_board("jarvisd startup self-check", &startup);
+            anyhow::bail!(
+                "jarvisd startup self-check failed — a structural precondition did not hold (see the board above); refusing to start in a broken state"
+            );
+        }
+        let (pass, skip, _fail) = selfcheck::tally(&startup);
+        info!(pass, skip, "startup self-check passed (structural preconditions hold)");
+    }
+
     sweep_stale_utterances(&root);
     anthropic::init_persona(&root);
 
@@ -1548,6 +1598,18 @@ async fn main() -> Result<()> {
 
     let sock_path = root.join("state").join("ipc").join("inference.sock");
     let mut infer = InferenceClient::new(sock_path.clone());
+    // BACKGROUND INFERENCE LIVENESS (WS2): a lightweight connect-probe loop that
+    // publishes shared inference health + an `inference.health` telemetry frame
+    // every few seconds, and a coherent ONE-SHOT `inference.degraded` /
+    // `inference.recovered` edge signal — so the system (and HUD) KNOW the
+    // inference server is down BEFORE a user turn is lost, instead of discovering
+    // it per-turn. It spends NO model call (connect + close) and never blocks or
+    // panics the pipeline. The per-turn lazy-connect + honest abort path is
+    // unchanged; this is the proactive half of degraded-mode honesty.
+    tokio::spawn(inference::liveness_task(
+        sock_path.clone(),
+        inference::LIVENESS_INTERVAL,
+    ));
     // Daemon-mediated generate proxy (security finding #4): a SEPARATE,
     // op-restricted socket micro-apps reach instead of the multiplexed
     // inference.sock. Only op=generate, token-gated, 256-token-capped, and
@@ -1684,6 +1746,43 @@ async fn main() -> Result<()> {
             "cloud_key_present": cloud_key_present,
         }),
     );
+
+    // AGGREGATED READINESS (WS2): one coherent `daemon.ready` frame AFTER the
+    // spawns, so readiness is OBSERVABLE without blocking startup (lazy-connect
+    // resilience is preserved — we do NOT gate the mic loop on inference being
+    // up). A non-fatal connect-probe of inference.sock seeds the initial
+    // reachability; `None` means UNKNOWN (socket absent / probe skipped), never
+    // a silent "false". The background liveness loop keeps it fresh after this.
+    {
+        let inference_reachable: Option<bool> = if sock_path.exists() {
+            Some(
+                InferenceClient::new(sock_path.clone())
+                    .probe_reachable()
+                    .await
+                    .is_ok(),
+            )
+        } else {
+            None // honest UNKNOWN: the server hasn't created its socket yet
+        };
+        // The hub was initialized + its WS server spawned earlier in startup;
+        // this frame reaching subscribers at all is itself evidence the hub is
+        // up. We report true honestly (a failed bind logs an error in serve()
+        // and the HUD simply never connects — it would not see this frame).
+        let telemetry_bound = true;
+        let ready = selfcheck::ready_frame(
+            &root,
+            inference_reachable,
+            cloud_key_present,
+            telemetry_bound,
+            true, // the startup self-check already passed (we'd have bailed otherwise)
+        );
+        info!(
+            inference_reachable = ?inference_reachable,
+            cloud_key_present,
+            "daemon ready (lazy-connect resilient: startup is not gated on inference)"
+        );
+        telemetry::emit("system", "daemon.ready", ready);
+    }
 
     // Announce the installed micro-app registry to the HUD: which apps exist
     // and whether each is running. Lets the HUD render an OFFLINE placeholder

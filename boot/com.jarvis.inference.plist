@@ -20,5 +20,7 @@
     <string>__JARVIS_ROOT__/state/logs/launchd-inference.log</string>
     <key>ProcessType</key>
     <string>Interactive</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
 </dict>
 </plist>

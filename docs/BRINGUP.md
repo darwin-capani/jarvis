@@ -157,6 +157,43 @@ paths or keys.
 
 ---
 
+## Automated bring-up + doctor (one command each)
+
+The manual order above is the source of truth, but two scripts automate the check legs.
+Both resolve the JARVIS root exactly like the daemon (honor `JARVIS_ROOT`, else their own
+parent dir) and are **honest**: a check that cannot run is reported `SKIP`/`UNKNOWN` with the
+reason — never a faked pass.
+
+```sh
+# Read-only environment diagnostic — starts/stops/changes NOTHING. Reports the venv,
+# binary, on-device models (in BOTH the install models/ cache AND ~/.cache/huggingface,
+# flagging the HF_HOME split), the two sockets + telemetry port, and whether the
+# LaunchAgents are loaded. Safe to run anytime.
+scripts/doctor.sh
+
+# One-command bring-up + read-only smoke: starts inference then the daemon (or detects an
+# already-running pair and leaves it alone), waits for readiness with bounded timeouts,
+# runs ONE token-gated `roster` round-trip on the command socket (inference-free — it does
+# NOT spend a model call), prints a per-subsystem PASS/SKIP/FAIL board, then tears down only
+# what IT started. Exits non-zero on a hard failure.
+scripts/bringup.sh
+
+# Smoke an ALREADY-running pair only (start nothing):
+scripts/bringup.sh --no-start
+```
+
+Also: `jarvisd --selftest` (alias `--health`) validates the installed environment WITHOUT
+starting the daemon (root/config/venv/binary/state dirs/0700 ipc perms/inference
+reachability/telemetry-port bindability/cloud-key) and exits non-zero on a hard failure.
+
+The daemon now also runs a **background inference-liveness probe** (publishing
+`inference.health` + a one-shot `inference.degraded`/`inference.recovered` edge to the HUD)
+and emits a single aggregated `daemon.ready` frame at startup — so a down inference server is
+visible *before* a turn is lost, and the inference IPC client reconnects with bounded
+exponential backoff + jitter instead of failing the first op after a server restart.
+
+---
+
 ## Troubleshooting quick hits
 
 - **`transcription failed; is the inference server up?`** → start the inference server first
