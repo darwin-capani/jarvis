@@ -19,12 +19,14 @@
 #   - copy the proposed app/<name>/ into a FRESH re-validation staging dir,
 #   - RE-CHECK the manifest + permission minimization (no device perms; fs_write
 #     only to the app's own state dir; confined fs_read; capped bare-host
-#     net_hosts, with the MAX_NET_HOSTS count cap) — the SAME gate forge.rs
-#     enforces, re-implemented here so a hand-edited proposal cannot smuggle a
-#     wider grant past deploy. The [permissions] table is isolated and its arrays
-#     collapsed to one logical line per key FIRST, so a MULTI-LINE TOML array
-#     (whose opening `key = [` line holds no tokens) cannot slip entries past the
-#     token checks,
+#     net_hosts) by handing the manifest to `jarvisd --validate-forge-manifest`,
+#     which runs the SAME forge::validate_manifest gate the draft path runs over
+#     the manifest as the daemon's OWN toml parser sees it. This is deliberately
+#     NOT a textual scan: a text scan is a TOML parser-differential (it can't see
+#     top-level dotted keys like `permissions.gpu = true` or an inline table
+#     `permissions = { gpu = true }`, both of which parse clean on the daemon and
+#     grant the over-broad permission at launch), so a hand-edited proposal cannot
+#     smuggle a wider grant past deploy,
 #   - rebuild + retest the app in the staging copy (cargo check + cargo test for
 #     a Rust app, py_compile for python),
 #   - and ONLY on green move the app into apps/<name>/ so AppRegistry::discover
@@ -155,133 +157,88 @@ fi
 
 # Re-check the permission minimization the daemon enforced at draft time. A
 # proposal is a plain directory a human could hand-edit, so the wider grants the
-# forge forbids are re-rejected HERE before the app is ever deployed — this is
-# the SAME gate forge.rs::validate_permissions enforces.
+# forge forbids are re-rejected HERE before the app is ever deployed.
 #
-# TOML arrays may span MULTIPLE lines, e.g.
-#     fs_write = [
-#       "/etc/cron.d/evil",
-#       "../../tmp/escape"
-#     ]
-# A naive line-based `grep '^fs_write ='` would capture only the opening
-# `fs_write = [` line — which holds NO quoted tokens — so the over-broad entries
-# on the following lines would slip past unchecked. To make a hand-edited
-# proposal unable to smuggle a wider grant, we FIRST isolate the [permissions]
-# table and collapse it to ONE logical line per key (multi-line arrays joined),
-# THEN extract + check every quoted token. (Device perms are scalar booleans;
-# they cannot be multi-line and are checked directly.)
+# CRITICAL: this is decided by the daemon's OWN toml parser, NOT a textual scan.
+# A text scan is a TOML parser-differential: it only sees a literal
+# `[permissions]` header plus `key = true` / `key = [..]` lines under it, so a
+# hand-edited proposal using top-level dotted keys
+# (`permissions.fs_write = [...]`, `permissions.gpu = true`) or an inline table
+# (`permissions = { gpu = true }`) parses CLEAN on the daemon (which honors the
+# over-broad grants at launch) while sliding past every text check. We therefore
+# hand the manifest to `jarvisd --validate-forge-manifest`, which runs the EXACT
+# same forge::validate_manifest gate the draft path runs (schema +
+# deny_unknown_fields + name == dir + permission minimization + default-deny SBPL
+# derivability) over the manifest as the daemon's toml crate actually parses it.
+# Any over-broad grant, any escaping read/write, too many net_hosts, a malformed
+# host, a device permission, or a parse error -> non-zero exit -> deploy refused,
+# apps/ untouched. This gate CANNOT diverge from what the daemon would grant.
 
-# Device permissions: must be absent or false. Booleans can't be multi-line, so a
-# direct match is sufficient and any `= true` anywhere refuses the deploy.
-for perm in audio gpu camera screen; do
-  if grep -Eq "^[[:space:]]*$perm[[:space:]]*=[[:space:]]*true" "$MANIFEST"; then
-    fail "manifest requests over-broad permission '$perm = true' (forged apps may not)"
-  fi
-done
-
-# Isolate the [permissions] table: every line from `[permissions]` up to (but not
-# including) the next `[section]` header or EOF. If the table is absent there are
-# no array grants to widen, and the defaults (empty) are already minimal.
-PERMS_BLOCK="$(awk '
-  /^[[:space:]]*\[/ { if (in_perms) exit; if ($0 ~ /^[[:space:]]*\[permissions\]/) { in_perms=1; next } }
-  in_perms { print }
-' "$MANIFEST")"
-
-# Collapse the isolated block so each array key becomes ONE logical line with all
-# its elements, regardless of how many physical lines the TOML array spanned.
-# Strategy: drop comments, join every physical line in the block into a single
-# stream, then re-split on commas/brackets is unnecessary — instead we extract,
-# per key, the text from `<key> =` to the matching `]` (or end-of-assignment for a
-# single-line array), and pull the quoted tokens out of THAT span. We implement
-# this with awk state so a multi-line array is fully consumed.
+# Resolve the daemon binary that runs the gate. By default, build it FRESH from
+# the current source before use: install_boot.sh / apply_heal.sh follow the same
+# rebuild-before-use posture, and it is load-bearing here — an OLDER on-disk
+# binary would not know the `--validate-forge-manifest` flag and would fall
+# through to ordinary daemon startup (or otherwise mishandle it), so a stale
+# binary could MISS the gate entirely. A fresh build guarantees the gate binary
+# matches the source that defines forge::validate_manifest. cargo is already a
+# hard dependency below for the staging rebuild/retest, so this adds none.
+# Incremental, so a no-op when up to date.
 #
-# perm_values <key>  ->  prints each quoted element of that key's array, one per
-# line (works for inline `key = ["a","b"]` and multi-line forms alike).
-perm_values() {
-  local want="$1"
-  printf '%s\n' "$PERMS_BLOCK" | awk -v key="$want" '
-    BEGIN { collecting=0 }
-    {
-      # NOTE: do NOT pre-strip `#` comments here. TOML treats a `#` INSIDE a
-      # double-quoted value as a literal, but a naive `sub(/#.*/, "", line)` would
-      # truncate the physical line at the first `#` even when it sits inside a
-      # quoted token (e.g. `fs_read = [ "ok#x", "../../etc/shadow" ]`), dropping the
-      # rest of the array and hiding an over-broad grant from the escape checks.
-      # split_quoted() only matches complete "..." spans, so a `#` OUTSIDE quotes
-      # (a genuine inline comment after a value) yields no quoted token and is
-      # already ignored. Leaving the line intact keeps both behaviors correct.
-      line=$0
-    }
-    collecting==0 {
-      # Match the start of this key assignment: optional ws, key, ws, =.
-      if (line ~ "^[[:space:]]*" key "[[:space:]]*=") {
-        # Begin collecting from the value side of the =.
-        sub("^[[:space:]]*" key "[[:space:]]*=", "", line)
-        buf = line
-        collecting=1
-        # A single-line array closes on the same line.
-        if (index(buf, "]") > 0) { emit(buf); collecting=0; buf="" }
-        next
-      }
-      next
-    }
-    collecting==1 {
-      buf = buf "\n" line
-      if (index(line, "]") > 0) { emit(buf); collecting=0; buf="" }
-      next
-    }
-    function emit(s,   n, i, arr) {
-      # Print every "quoted" token in the accumulated value span.
-      n = split_quoted(s, arr)
-      for (i=1; i<=n; i++) print arr[i]
-    }
-    function split_quoted(s, out,   count, rest, m) {
-      count=0
-      rest=s
-      while (match(rest, /"[^"]*"/)) {
-        m = substr(rest, RSTART, RLENGTH)
-        gsub(/"/, "", m)
-        out[++count]=m
-        rest = substr(rest, RSTART+RLENGTH)
-      }
-      return count
-    }
-  '
-}
-
-# fs_write: only the app's own state dir "state/apps/<name>" is allowed.
-while IFS= read -r entry; do
-  [ -z "$entry" ] && continue
-  entry="${entry%/}"
-  if [ "$entry" != "state/apps/$APP_NAME" ]; then
-    fail "manifest fs_write '$entry' is outside the app's own state dir (only state/apps/$APP_NAME allowed)"
+# JARVISD_VALIDATE_BIN: an OPTIONAL override pointing at an ALREADY-BUILT jarvisd
+# that implements the gate (used by the hermetic apply_forge.sh test harness,
+# which runs the script in a temp ROOT that has no daemon/ tree to build). It
+# only changes WHERE the gate binary lives, never WHAT the gate does: the very
+# next step PROVES the chosen binary actually rejects an over-broad probe before
+# any verdict is trusted, so a wrong/stale override fails closed.
+if [ -n "${JARVISD_VALIDATE_BIN:-}" ] && [ -x "${JARVISD_VALIDATE_BIN}" ]; then
+  JARVISD_BIN="$JARVISD_VALIDATE_BIN"
+else
+  if ! (cd "$ROOT/daemon" && cargo build --release --bin jarvisd); then
+    fail "could not build jarvisd to run the deploy-time permission gate — apps/ NOT modified"
   fi
-done < <(perm_values fs_write)
+  JARVISD_BIN="$ROOT/daemon/target/release/jarvisd"
+  if [ ! -x "$JARVISD_BIN" ]; then
+    fail "jarvisd binary missing after build; cannot run the permission gate — apps/ NOT modified"
+  fi
+fi
 
-# fs_read / net_hosts: refuse obvious escapes (absolute paths, "..") and
-# non-bare hosts (scheme/port/slash). Conservative textual checks mirroring
-# forge.rs::validate_permissions.
-for key in fs_read net_hosts; do
-  while IFS= read -r entry; do
-    [ -z "$entry" ] && continue
-    case "$entry" in
-      /*|*..*) fail "manifest $key '$entry' escapes the project (absolute or ..)";;
-    esac
-    if [ "$key" = "net_hosts" ]; then
-      case "$entry" in
-        */*|*:*) fail "manifest net_hosts '$entry' is not a bare hostname";;
-      esac
-    fi
-  done < <(perm_values "$key")
-done
+# Defense in depth: PROVE this binary actually implements the gate before we
+# trust its verdict on the real manifest. A binary too old to know
+# `--validate-forge-manifest` would NOT emit the expected REJECTED marker on a
+# deliberately over-broad probe (it would start the daemon, exit 0, or print
+# nothing), so we fail-closed unless the probe is rejected with the marker. The
+# probe is a throwaway over-broad manifest written to the staging area's parent.
+PROBE_DIR="$FORGE_ROOT/gate-probe-$TS"
+rm -rf "$PROBE_DIR"
+mkdir -p "$PROBE_DIR"
+PROBE_MANIFEST="$PROBE_DIR/manifest.toml"
+cat > "$PROBE_MANIFEST" <<'PROBE_EOF'
+permissions.gpu = true
 
-# net_hosts COUNT cap: a forged app may declare at most MAX_NET_HOSTS outbound
-# hosts (forge.rs enforces this; the bash gate must too so a hand-edited
-# proposal can't widen the host set past deploy).
-MAX_NET_HOSTS=6
-NET_HOSTS_COUNT="$(perm_values net_hosts | grep -c . || true)"
-if [ "$NET_HOSTS_COUNT" -gt "$MAX_NET_HOSTS" ]; then
-  fail "manifest net_hosts requests $NET_HOSTS_COUNT hosts (max $MAX_NET_HOSTS for a forged app)"
+[app]
+name = "gateprobe"
+version = "0.1.0"
+description = "deploy-gate self-test; never deployed"
+entry = "gateprobe"
+runtime = "binary"
+PROBE_EOF
+# `|| PROBE_RC=$?` keeps `set -e` from aborting on the EXPECTED non-zero exit of
+# a correctly-rejecting probe (a bare `VAR="$(cmd)"` assignment from a failing
+# command substitution trips `set -e` before $? can be read).
+PROBE_RC=0
+PROBE_OUT="$("$JARVISD_BIN" --validate-forge-manifest "$PROBE_MANIFEST" gateprobe 2>&1)" || PROBE_RC=$?
+rm -rf "$PROBE_DIR"
+if [ "$PROBE_RC" -eq 0 ] || ! printf '%s' "$PROBE_OUT" | grep -q 'FORGE MANIFEST REJECTED'; then
+  fail "deploy-gate self-test FAILED: jarvisd did not reject an over-broad probe manifest (stale or wrong binary?) — apps/ NOT modified"
+fi
+
+# Run the gate on the REAL manifest. forge::validate_manifest_file prints
+# "FORGE MANIFEST OK: ..." on pass and "FORGE MANIFEST REJECTED: <reason>" on a
+# non-zero exit. It parses with the daemon's OWN toml crate, so dotted keys /
+# inline tables / multi-line arrays / deny_unknown_fields are all decided exactly
+# as the daemon would grant them.
+if ! "$JARVISD_BIN" --validate-forge-manifest "$MANIFEST" "$APP_NAME"; then
+  fail "manifest failed the forge permission-minimization gate (see FORGE MANIFEST REJECTED above) — apps/ NOT modified"
 fi
 
 # Re-build + re-test the app in a FRESH staging copy. NOTHING touches apps/ until

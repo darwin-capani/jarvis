@@ -1143,6 +1143,44 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Deploy-time gate entrypoint: `jarvisd --validate-forge-manifest <manifest_path> <app_name>`
+    // parses the manifest with the daemon's OWN toml crate + runs the SAME
+    // forge permission-minimization + default-deny-SBPL gate the draft path
+    // runs (forge::validate_manifest_file -> validate_manifest), exiting 0 on a
+    // minimal manifest and NON-ZERO on a parse error or any over-broad grant.
+    // scripts/apply_forge.sh calls this in place of a textual permission scan,
+    // closing the TOML parser-differential (dotted keys / inline tables /
+    // deny_unknown_fields) the text scan could not see. Side-effect-free: it
+    // only reads the manifest and validates — it deploys NOTHING and touches
+    // neither apps/ nor any config. No daemon starts; no tracing/Config/Keychain.
+    if let Some(pos) = std::env::args().position(|a| a == "--validate-forge-manifest") {
+        let manifest_path = std::env::args().nth(pos + 1).unwrap_or_default();
+        let app_name = std::env::args().nth(pos + 2).unwrap_or_default();
+        if manifest_path.trim().is_empty() || app_name.trim().is_empty() {
+            eprintln!(
+                "usage: jarvisd --validate-forge-manifest <manifest_path> <app_name>"
+            );
+            std::process::exit(2);
+        }
+        // Representative root for the SBPL-derivability check only; nothing is
+        // deployed and the live tree is never read here.
+        let root = resolve_root();
+        match forge::validate_manifest_file(
+            Path::new(&manifest_path),
+            &app_name,
+            &root,
+        ) {
+            Ok(()) => {
+                println!("FORGE MANIFEST OK: minimal permissions, default-deny SBPL derivable");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("FORGE MANIFEST REJECTED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Operator entrypoint: `jarvisd --forge-goal "<goal>"` runs the GATED,
     // PROPOSE-ONLY Self-Forge production path (forge::forge_app) against the live
     // project root + config + Memory. It respects [forge].enabled (does nothing

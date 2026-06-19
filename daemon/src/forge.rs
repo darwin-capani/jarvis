@@ -56,7 +56,7 @@ use std::pin::Pin;
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 use serde_json::json;
 
@@ -426,6 +426,41 @@ fn validate_manifest(manifest_toml: &str, dir_name: &str, project_root: &Path) -
         bail!("generated SBPL is not default-deny (refusing to propose)");
     }
     Ok(manifest)
+}
+
+/// Deploy-time re-validation gate, callable from the `jarvisd
+/// --validate-forge-manifest <manifest_path> <app_name>` CLI dispatch.
+///
+/// scripts/apply_forge.sh calls THIS instead of re-implementing the
+/// permission-minimization gate as a textual scan. The textual scan was a
+/// TOML parser-differential: it only understood a literal `[permissions]`
+/// header + scalar `key = true` / inline-or-multiline arrays under it, so a
+/// hand-edited proposal using top-level dotted keys
+/// (`permissions.fs_write = [...]`) or an inline table
+/// (`permissions = { gpu = true }`) parsed clean on the daemon's `toml` crate
+/// — yielding the over-broad grants the daemon honors at launch — yet slipped
+/// past every text check. This entry point parses the manifest with the SAME
+/// `toml` crate AppManifest::parse uses and runs the SAME
+/// `validate_manifest` sequence (schema + name == dir + permission
+/// minimization + default-deny-SBPL derivability), so the deploy gate can
+/// never diverge from what the daemon would parse and grant.
+///
+/// `project_root` is used only to derive representative SBPL paths during the
+/// born-sandboxed check; it does NOT need to be the live root (no app is
+/// deployed here — this is a pure read+validate). Returns Ok(()) on a minimal
+/// manifest and Err(reason) on a parse error or any over-broad grant.
+pub fn validate_manifest_file(
+    manifest_path: &Path,
+    app_name: &str,
+    project_root: &Path,
+) -> Result<()> {
+    let raw = std::fs::read_to_string(manifest_path)
+        .with_context(|| format!("reading manifest {}", manifest_path.display()))?;
+    // SAME parse + minimization + SBPL-derivability gate the draft path runs.
+    // A divergent parse (dotted key, inline table, deny_unknown_fields, etc.)
+    // is now decided by the daemon's own toml crate, not a text scan.
+    validate_manifest(&raw, app_name, project_root)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1371,6 +1406,72 @@ mod tests {
         assert!(validate_manifest(mismatch, "different", &root).is_err());
     }
 
+    // -- deploy-time gate: the parser-differential the textual scan missed ----
+    //
+    // scripts/apply_forge.sh used to re-implement the permission gate as a TEXT
+    // scan that only understood a literal `[permissions]` header + `key = true`
+    // / `key = [..]` lines under it. A hand-edited proposal using top-level
+    // DOTTED keys (`permissions.gpu = true`) or an INLINE TABLE
+    // (`permissions = { gpu = true }`) parses CLEAN on the daemon's toml crate —
+    // the daemon honors the over-broad grant at launch — yet slid past every
+    // text check. validate_manifest_file (the CLI gate the script now calls)
+    // parses with that SAME toml crate, so both forms are caught.
+    #[test]
+    fn validate_manifest_file_catches_toml_parser_differential() {
+        let dir = std::env::temp_dir().join(format!("jarvis-forge-gate-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let root = std::env::temp_dir();
+        let write = |body: &str| {
+            let p = dir.join("manifest.toml");
+            std::fs::write(&p, body).unwrap();
+            p
+        };
+
+        // (a) TOP-LEVEL DOTTED keys before [app]: the text scan saw no
+        // `[permissions]` header and no `gpu = true` line, so it passed. The
+        // daemon parses gpu=true + escaping grants. validate_manifest_file MUST
+        // reject it.
+        let dotted = "permissions.fs_write = [\"state/apps/evil\", \"/Users/x\"]\n\
+            permissions.net_hosts = [\"a.com\",\"b.com\",\"c.com\",\"d.com\",\"e.com\",\"f.com\",\"g.com\"]\n\
+            permissions.fs_read = [\"/Users/x/.ssh\"]\n\
+            permissions.gpu = true\n\n\
+            [app]\nname = \"evil\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+            entry = \"evil\"\nruntime = \"binary\"\n";
+        let p = write(dotted);
+        let err = validate_manifest_file(&p, "evil", &root)
+            .expect_err("dotted-key over-broad manifest must be rejected")
+            .to_string();
+        assert!(err.contains("gpu"), "dotted-key gpu must be rejected: {err}");
+
+        // (b) INLINE TABLE: `permissions = { gpu = true, ... }`. Same — the text
+        // scan never saw a `[permissions]` section; the daemon parses gpu=true.
+        let inline = "permissions = { gpu = true, fs_write = [\"/etc\"] }\n\n\
+            [app]\nname = \"evil\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+            entry = \"evil\"\nruntime = \"binary\"\n";
+        let p = write(inline);
+        let err = validate_manifest_file(&p, "evil", &root)
+            .expect_err("inline-table over-broad manifest must be rejected")
+            .to_string();
+        assert!(err.contains("gpu"), "inline-table gpu must be rejected: {err}");
+
+        // (c) MINIMAL valid manifest still ACCEPTS (the gate is not a blanket no).
+        let good = "[app]\nname = \"reverser\"\nversion = \"0.1.0\"\n\
+            description = \"reverse a string\"\nentry = \"reverser\"\nruntime = \"binary\"\n\
+            [permissions]\nfs_write = [\"state/apps/reverser\"]\nnet_hosts = [\"api.example.com\"]\n";
+        let p = write(good);
+        validate_manifest_file(&p, "reverser", &root)
+            .expect("minimal manifest must pass the deploy-time gate");
+
+        // (d) a manifest path that does not exist -> a clean error, never a pass.
+        let missing = dir.join("does-not-exist.toml");
+        assert!(
+            validate_manifest_file(&missing, "reverser", &root).is_err(),
+            "a missing manifest must fail-closed, never pass the gate"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // -- artifact rendering --------------------------------------------------
 
     #[test]
@@ -1677,13 +1778,41 @@ mod tests {
         copied
     }
 
+    /// Resolve an already-built jarvisd that implements the deploy-time gate, for
+    /// the hermetic apply_forge.sh harness (which runs the script in a temp ROOT
+    /// with no daemon/ tree to build). Prefer an existing release/debug binary
+    /// under this crate's target/; build the release binary once if neither
+    /// exists. The script PROVES the binary rejects an over-broad probe before
+    /// trusting it, so this only supplies a binary — it cannot weaken the gate.
+    fn resolve_gate_binary() -> PathBuf {
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        for prof in ["release", "debug"] {
+            let cand = target.join(prof).join("jarvisd");
+            if cand.is_file() {
+                return cand;
+            }
+        }
+        // Neither exists in this checkout — build the release binary once.
+        let status = std::process::Command::new(env!("CARGO"))
+            .args(["build", "--release", "--bin", "jarvisd"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .status()
+            .expect("build jarvisd for the apply_forge gate test");
+        assert!(status.success(), "building jarvisd for the gate test failed");
+        target.join("release").join("jarvisd")
+    }
+
     /// Run the copied apply_forge.sh `<ts> --yes` and return (success, combined
-    /// stdout+stderr).
+    /// stdout+stderr). Points the script's deploy-time gate at an already-built
+    /// jarvisd via JARVISD_VALIDATE_BIN so the hermetic temp ROOT (which has no
+    /// daemon/ tree) need not build one.
     fn run_apply_forge(script: &Path, ts: u64) -> (bool, String) {
+        let gate_bin = resolve_gate_binary();
         let out = std::process::Command::new("bash")
             .arg(script)
             .arg(ts.to_string())
             .arg("--yes")
+            .env("JARVISD_VALIDATE_BIN", &gate_bin)
             .output()
             .expect("spawn apply_forge.sh");
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -1704,7 +1833,8 @@ mod tests {
                 // The exact finding scenario: fs_write to /etc/cron.d + ".." escape.
                 "fs_write",
                 "evil",
-                "[app]\nname = \"evil\"\nversion = \"0.1.0\"\nruntime = \"python\"\nentry = \"main.py\"\n\n\
+                "[app]\nname = \"evil\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+                 runtime = \"python\"\nentry = \"main.py\"\n\n\
                  [permissions]\naudio = false\ngpu = false\n\
                  fs_write = [\n  \"/etc/cron.d/evil\",\n  \"../../tmp/escape\"\n]\n\
                  fs_read = []\nnet_hosts = []\n"
@@ -1715,7 +1845,8 @@ mod tests {
                 // Multi-line fs_read escape (an SSH private key) past a minimal fs_write.
                 "fs_read",
                 "evil",
-                "[app]\nname = \"evil\"\nversion = \"0.1.0\"\nruntime = \"python\"\nentry = \"main.py\"\n\n\
+                "[app]\nname = \"evil\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+                 runtime = \"python\"\nentry = \"main.py\"\n\n\
                  [permissions]\nfs_write = [\"state/apps/evil\"]\n\
                  fs_read = [\n  \"ok/path\",\n  \"../../etc/shadow\"\n]\nnet_hosts = []\n"
                     .to_string(),
@@ -1725,7 +1856,8 @@ mod tests {
                 // Multi-line net_hosts COUNT > MAX_NET_HOSTS (each bare, too many).
                 "net_count",
                 "evil",
-                "[app]\nname = \"evil\"\nversion = \"0.1.0\"\nruntime = \"python\"\nentry = \"main.py\"\n\n\
+                "[app]\nname = \"evil\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+                 runtime = \"python\"\nentry = \"main.py\"\n\n\
                  [permissions]\nfs_write = [\"state/apps/evil\"]\nfs_read = []\n\
                  net_hosts = [\n  \"h1.test\", \"h2.test\",\n  \"h3.test\", \"h4.test\",\n  \
                  \"h5.test\", \"h6.test\",\n  \"h7.test\"\n]\n"
@@ -1736,11 +1868,35 @@ mod tests {
                 // Multi-line net_hosts with a non-bare host (scheme/port).
                 "net_bare",
                 "evil",
-                "[app]\nname = \"evil\"\nversion = \"0.1.0\"\nruntime = \"python\"\nentry = \"main.py\"\n\n\
+                "[app]\nname = \"evil\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+                 runtime = \"python\"\nentry = \"main.py\"\n\n\
                  [permissions]\nfs_write = [\"state/apps/evil\"]\nfs_read = []\n\
                  net_hosts = [\n  \"ok.test\",\n  \"attacker.test:4444\"\n]\n"
                     .to_string(),
                 "not a bare hostname",
+            ),
+            (
+                // NEW: the parser-differential the OLD text scan missed — top-level
+                // DOTTED keys (no [permissions] header) the daemon's toml crate
+                // parses as gpu=true. The text scan saw nothing; the real-parse gate
+                // must reject it.
+                "dotted_gpu",
+                "evil",
+                "permissions.gpu = true\n\n\
+                 [app]\nname = \"evil\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+                 runtime = \"python\"\nentry = \"main.py\"\n"
+                    .to_string(),
+                "gpu",
+            ),
+            (
+                // NEW: the INLINE-TABLE form of the same bypass.
+                "inline_gpu",
+                "evil",
+                "permissions = { gpu = true }\n\n\
+                 [app]\nname = \"evil\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+                 runtime = \"python\"\nentry = \"main.py\"\n"
+                    .to_string(),
+                "gpu",
             ),
         ];
 
@@ -1778,7 +1934,8 @@ mod tests {
     fn apply_forge_accepts_legit_multiline_manifest() {
         let ts = now_secs().saturating_mul(1000).saturating_add(900);
         let root = TempRoot::new("apply-multiline-ok");
-        let manifest = "[app]\nname = \"reverser\"\nversion = \"0.1.0\"\nruntime = \"python\"\n\
+        let manifest = "[app]\nname = \"reverser\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+             runtime = \"python\"\n\
              entry = \"main.py\"\n\n[permissions]\naudio = false\ngpu = false\n\
              fs_write = [\n  \"state/apps/reverser\"\n]\n\
              fs_read = [\n  \"apps/reverser/data\"\n]\n\
