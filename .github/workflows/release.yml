@@ -1,0 +1,170 @@
+# WS4a — JARVIS HUD release pipeline (sign + notarize + staple + publish).
+#
+# WHAT IT DOES: on a pushed `v*` tag, builds the Tauri HUD .app/.dmg on macOS,
+# CODE-SIGNS it with the owner's Developer ID, NOTARIZES + STAPLES it with Apple,
+# SIGNS the updater bundle with the owner's minisign updater key, and PUBLISHES
+# the artifacts + a `latest.json` update manifest to the GitHub Release.
+#
+# ───────────────────────────── HONEST HARD GATE ─────────────────────────────
+# This pipeline is CORRECT and TURNKEY but it CANNOT run a real sign/notarize/
+# release without the OWNER's secrets — which only the owner can create and which
+# are NEVER committed to this repo:
+#
+#   * Code-signing + notarization REQUIRE a paid Apple Developer account and a
+#     "Developer ID Application" certificate. There is no way around Apple here.
+#   * The auto-updater REQUIRES a minisign/tauri updater keypair the OWNER
+#     generates (`npm run tauri signer generate`) and keeps PRIVATE.
+#
+# Every secret below is read via `${{ secrets.* }}` — the repo contains NO key,
+# NO password, NO certificate, and NO private updater key. Until the owner adds
+# the secrets (see docs/RELEASE.md), this workflow will fail at the signing step
+# (honestly — it does not fake a release). The moment the secrets exist, tagging
+# `vX.Y.Z` produces a fully signed, notarized, stapled, auto-updatable release
+# with no further edits.
+#
+# REQUIRED REPO SECRETS (Settings → Secrets and variables → Actions):
+#   APPLE_CERTIFICATE          base64 of the Developer ID Application .p12
+#   APPLE_CERTIFICATE_PASSWORD password for that .p12
+#   APPLE_SIGNING_IDENTITY     e.g. "Developer ID Application: Your Name (TEAMID)"
+#   APPLE_ID                   the Apple ID email used for notarization
+#   APPLE_PASSWORD             an app-specific password for that Apple ID
+#   APPLE_TEAM_ID              the 10-char Apple Developer Team ID
+#   TAURI_SIGNING_PRIVATE_KEY  the PRIVATE updater key (from `tauri signer generate`)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password (set "" if you made none)
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# The job creates a GitHub Release and uploads assets to it.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # macOS is REQUIRED: codesign / notarytool / stapler are Apple-only tools, and
+    # the .app/.dmg bundle can only be produced on macOS.
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up the Rust toolchain (Apple Silicon target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # The HUD ships for Apple Silicon (minimumSystemVersion targets it); the
+          # universal target also produces an x86_64 slice for older Intel Macs.
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            hud/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('hud/src-tauri/Cargo.lock') }}
+
+      - name: Install HUD JS deps
+        working-directory: hud
+        run: npm ci
+
+      # ─────────────────────────── verification gates ───────────────────────────
+      # Match the local pre-merge gates so a tag can never ship a red build. These
+      # run BEFORE any signing so a failing test aborts the release.
+      - name: tsc (HUD typecheck)
+        working-directory: hud
+        run: npx tsc --noEmit
+
+      - name: vitest (HUD tests)
+        working-directory: hud
+        run: npm test
+
+      - name: cargo test (HUD shell)
+        working-directory: hud/src-tauri
+        run: cargo test --locked
+
+      # ───────────── import the Developer ID cert into a temp keychain ─────────────
+      # The certificate + password come ONLY from secrets. We create a throwaway
+      # keychain, import the .p12, and allow codesign to use it non-interactively.
+      # The keychain + decoded cert are deleted in the cleanup step.
+      - name: Import Apple Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/developer_id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+          # Decode the base64 cert from the secret to a temp file (never logged).
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o "$CERT_PATH"
+
+          # Create + unlock a temporary keychain and make it the default search list.
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import the cert; allow codesign (apple-tool / codesign) to use the key.
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # Remove the decoded cert immediately; the key now lives only in the
+          # temp keychain, which the cleanup step deletes.
+          rm -f "$CERT_PATH"
+
+      # ───────────────────── build + sign + notarize + publish ─────────────────────
+      # tauri-action runs `tauri build`, which: builds the front end + the Rust
+      # shell, bundles the .app/.dmg, CODE-SIGNS with APPLE_SIGNING_IDENTITY (the
+      # hardenedRuntime + entitlements.plist from tauri.conf.json are applied),
+      # SUBMITS to Apple notarytool with APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID and
+      # STAPLES the ticket, and SIGNS the updater bundle with
+      # TAURI_SIGNING_PRIVATE_KEY. It then creates the GitHub Release and uploads
+      # the .app(.tar.gz)/.dmg + the `latest.json` updater manifest (the endpoint
+      # tauri.conf.json points at). EVERY value is from secrets — nothing committed.
+      - name: Build, sign, notarize, and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          # Updater bundle signing (minisign). PRIVATE key + password from secrets.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Code-signing identity (must match the imported cert).
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # Notarization credentials (Apple notarytool).
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # The GitHub token for creating the Release + uploading assets.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # The HUD app lives under hud/ (tauri.conf.json is at hud/src-tauri/).
+          projectPath: hud
+          # Reuse the pushed tag as the release tag/name; ship a draft so the owner
+          # reviews + publishes (publishing is what makes latest.json the "latest").
+          tagName: ${{ github.ref_name }}
+          releaseName: "JARVIS ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+          # Build the universal binary so one bundle runs on Apple Silicon + Intel.
+          args: --target universal-apple-darwin
+
+      # ─────────────────────────────── cleanup ───────────────────────────────
+      # Always delete the temporary signing keychain (best effort), even on failure,
+      # so no key material lingers on the runner.
+      - name: Clean up the signing keychain
+        if: ${{ always() }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true

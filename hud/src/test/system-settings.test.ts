@@ -21,6 +21,8 @@ vi.mock("../tauri/bridge", async (importOriginal) => {
 import SystemSettingsPanel, {
   VoiceIdBadge,
   VoiceIdEnrollControls,
+  UpdatesSection,
+  UninstallSection,
   VOICE_ID_PHRASES,
 } from "../components/SystemSettingsPanel";
 import { sendCommand } from "../tauri/command";
@@ -628,6 +630,49 @@ describe("voice-id enroll / forget controls", () => {
     expect(html.toLowerCase()).toContain("desktop app");
     vi.doUnmock("../tauri/bridge");
     vi.resetModules();
+  });
+});
+
+/* -------------------------------------------- updates + uninstall (WS4a) */
+
+/* The Updates + Uninstall sections live in the System tab. These pin the
+ * honesty/safety contract from the static render (they run no effects, so no
+ * invoke fires on mount):
+ *   - Updates: a "Check for updates" affordance; no Install button until a real
+ *     signed update is reported available (a click can't conjure one).
+ *   - Uninstall: a clearly-marked DESTRUCTIVE control whose FIRST click only
+ *     arms a confirm — the static (un-armed) render shows no "Open uninstaller"
+ *     button and never auto-runs anything. The copy states the two-step typed
+ *     confirmation still happens in the terminal. */
+describe("updates section (WS4a)", () => {
+  function html(): string {
+    return renderToStaticMarkup(createElement(UpdatesSection));
+  }
+  it("renders a Check-for-updates control with honest signed-update copy", () => {
+    const h = html();
+    expect(h).toContain("Check for updates");
+    expect(h.toLowerCase()).toContain("signature");
+    // No Install button on first paint — none is offered until a real available
+    // update is reported by the backend (a click can never fabricate one).
+    expect(h).not.toContain("Install");
+  });
+});
+
+describe("uninstall section (WS4a)", () => {
+  function html(): string {
+    return renderToStaticMarkup(createElement(UninstallSection));
+  }
+  it("is a clearly-marked danger zone with a two-stage, non-destructive first click", () => {
+    const h = html();
+    expect(h).toContain("DANGER ZONE");
+    expect(h).toContain("Uninstall JARVIS");
+    // The first (un-armed) render shows the arming button, NOT the open-terminal
+    // action — a single click cannot open (let alone run) the uninstaller.
+    expect(h).not.toContain("Open uninstaller in Terminal");
+    // Honest copy: it only OPENS Terminal; nothing is removed until the user types
+    // the script's confirmations there.
+    expect(h.toLowerCase()).toContain("opens the uninstaller in terminal");
+    expect(h.toLowerCase()).toContain("never deletes anything by itself");
   });
 });
 

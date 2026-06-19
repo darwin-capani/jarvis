@@ -232,6 +232,82 @@ export async function healApply(ts: string): Promise<HealApplyResult> {
   return { ...r, available: true };
 }
 
+/* --------------------------------------------------------- auto-updates (WS4a) */
+
+/** The honest outcome of an update check (mirrors the Rust `UpdateCheck`).
+ *  `status` is the small contract vocabulary the UI switches on; `detail` is a
+ *  short human line (never a secret); `version` is present only when an update is
+ *  available/installed. */
+export interface UpdateCheck {
+  /** "not_configured" (the shipped state — no owner key/release yet), "up_to_date",
+   *  "available", "installed", "error", or "unavailable" (no desktop shell). */
+  status:
+    | "not_configured"
+    | "up_to_date"
+    | "available"
+    | "installed"
+    | "error"
+    | "unavailable";
+  detail: string;
+  version?: string | null;
+}
+
+/** CHECK for a JARVIS update via the updater plugin. When `install` is true and a
+ *  newer SIGNED version exists, it is downloaded, signature-verified against the
+ *  owner's public key, and installed. In a plain browser (no shell) there is
+ *  nothing to update — return an honest unavailable result rather than throwing.
+ *
+ *  HONEST: while the owner has not yet added their updater public key + published
+ *  a signed release, the backend returns `not_configured` with NO network call —
+ *  it never pretends an update exists. */
+export async function checkForUpdates(install = false): Promise<UpdateCheck> {
+  if (!inTauri()) {
+    return {
+      status: "unavailable",
+      detail: "Updates are checked from the JARVIS desktop app.",
+    };
+  }
+  try {
+    return await invoke<UpdateCheck>("check_for_updates", { install });
+  } catch (e) {
+    return {
+      status: "error",
+      detail: typeof e === "string" ? e : "update check failed",
+    };
+  }
+}
+
+/* ----------------------------------------------------------- uninstall (WS4a) */
+
+/** The honest outcome of opening the uninstaller (mirrors the Rust
+ *  `UninstallOpen`). `opened` is true only when Terminal.app was launched on the
+ *  installed uninstall.sh; `detail` is a short human line (never a secret). */
+export interface UninstallOpen {
+  opened: boolean;
+  detail: string;
+}
+
+/** OPEN Terminal.app running the installed `uninstall.sh`. This does NOT run the
+ *  uninstaller and passes NO auto-confirm — the user completes the script's TWO
+ *  typed confirmations in the terminal. In a plain browser there is no shell —
+ *  return an honest not-opened result rather than throwing. */
+export async function uninstallOpen(): Promise<UninstallOpen> {
+  if (!inTauri()) {
+    return {
+      opened: false,
+      detail: "Uninstall runs from the JARVIS desktop app (it opens Terminal on uninstall.sh).",
+    };
+  }
+  try {
+    return await invoke<UninstallOpen>("uninstall_open");
+  } catch (e) {
+    return {
+      opened: false,
+      detail: typeof e === "string" ? e : "could not open the uninstaller",
+    };
+  }
+}
+
 export async function toggleFullscreen(): Promise<void> {
   if (!inTauri()) {
     // Browser fallback for development.

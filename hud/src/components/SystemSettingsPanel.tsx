@@ -22,7 +22,12 @@ import {
 } from "../tauri/configSettings";
 import type { VoiceIdStatus } from "../core/events";
 import { voiceIdDisplay } from "../core/events";
-import { inTauri } from "../tauri/bridge";
+import {
+  inTauri,
+  checkForUpdates,
+  uninstallOpen,
+  type UpdateCheck,
+} from "../tauri/bridge";
 import { sendCommand } from "../tauri/command";
 
 /**
@@ -267,6 +272,12 @@ export default function SystemSettingsPanel({
         />
       ))}
 
+      {/* WS4a — maintenance lives OUTSIDE the batched config-edit flow: these are
+          immediate actions (check for updates / open the uninstaller), not
+          jarvis.toml edits, so they are not part of the pending/Apply batch. */}
+      <UpdatesSection />
+      <UninstallSection />
+
       <div className="syscfg-footer">
         <div className="syscfg-pending-summary" aria-live="polite">
           {changes.length === 0 ? (
@@ -315,6 +326,172 @@ export default function SystemSettingsPanel({
         />
       )}
     </div>
+  );
+}
+
+/* ----------------------------------------------------------- updates (WS4a) */
+
+/** UPDATES — the in-app "Check for updates" affordance. It drives the updater
+ *  plugin via the `check_for_updates` backend command.
+ *
+ *  HONESTY CONTRACT (do not regress): auto-update is ARMED only once the OWNER
+ *  has (1) generated an updater keypair and pasted the PUBLIC key into
+ *  tauri.conf.json, and (2) published a SIGNED GitHub Release with a latest.json.
+ *  Until then the backend returns `not_configured` with NO network call — so this
+ *  section says so honestly and never pretends an update exists. When armed, the
+ *  plugin verifies the bundle's minisign signature against the owner's public key
+ *  before installing; an unsigned / wrong-key bundle is rejected. A second click
+ *  (INSTALL) only appears when a real signed update is available. */
+export function UpdatesSection() {
+  const shell = inTauri();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<UpdateCheck | null>(null);
+
+  const check = useCallback(
+    async (install: boolean) => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        setResult(await checkForUpdates(install));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy],
+  );
+
+  const available = result?.status === "available";
+  const note =
+    result?.detail ??
+    "Checks GitHub Releases for a newer signed JARVIS and verifies its signature before installing.";
+
+  return (
+    <section className="syscfg-group" aria-label="Updates">
+      <div className="cred-section-title">UPDATES</div>
+      <div className="syscfg-row">
+        <div className="syscfg-row-head">
+          <span className="syscfg-label">Software update</span>
+          <span className="syscfg-control">
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => void check(false)}
+              disabled={!shell || busy}
+              title="Check GitHub Releases for a newer signed JARVIS"
+            >
+              {busy && !available ? "Checking…" : "Check for updates"}
+            </button>
+            {available && (
+              <button
+                type="button"
+                className="icon-btn syscfg-apply"
+                onClick={() => void check(true)}
+                disabled={!shell || busy}
+                title="Download, verify the signature, and install the available update"
+              >
+                {busy ? "Installing…" : `Install ${result?.version ?? "update"}`}
+              </button>
+            )}
+          </span>
+        </div>
+        <div className="syscfg-hint" role="status">
+          {!shell
+            ? "Updates are checked from the JARVIS desktop app."
+            : note}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* --------------------------------------------------------- uninstall (WS4a) */
+
+/** UNINSTALL — a clearly-marked DESTRUCTIVE control. HONESTY + SAFETY CONTRACT
+ *  (do not regress): clicking "Uninstall JARVIS" does NOT delete anything. It
+ *  takes a two-stage path: a HUD-local PRE-CONFIRM (the first click arms a warning
+ *  + a second explicit "Open uninstaller" button), and only that second click
+ *  calls the backend, which merely OPENS Terminal.app running uninstall.sh. The
+ *  actual deletion still requires the user to type the script's OWN two
+ *  confirmations ("yes" twice) in that terminal. So no single click — and no two
+ *  clicks here — can remove JARVIS; the destructive decision stays in the
+ *  terminal, behind the script's typed confirmations. */
+export function UninstallSection() {
+  const shell = inTauri();
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+
+  const open = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    setNote("");
+    try {
+      const r = await uninstallOpen();
+      setNote(r.detail);
+      // Re-disarm so a stray click can't re-open without re-confirming.
+      setArmed(false);
+    } finally {
+      setBusy(false);
+    }
+  }, [busy]);
+
+  return (
+    <section className="syscfg-group syscfg-danger-zone" aria-label="Uninstall">
+      <div className="cred-section-title danger">DANGER ZONE // UNINSTALL</div>
+      <div className="syscfg-row danger">
+        <div className="syscfg-row-head">
+          <span className="syscfg-label">Uninstall JARVIS</span>
+          <span className="syscfg-control">
+            {!armed ? (
+              <button
+                type="button"
+                className="icon-btn cred-remove"
+                onClick={() => {
+                  setArmed(true);
+                  setNote("");
+                }}
+                disabled={!shell || busy}
+                title="Begin uninstall — opens Terminal where you type two confirmations; nothing is removed yet"
+              >
+                Uninstall JARVIS…
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="icon-btn cred-remove"
+                  onClick={() => void open()}
+                  disabled={!shell || busy}
+                  title="Open Terminal running uninstall.sh — you then type 'yes' twice there to actually remove JARVIS"
+                >
+                  {busy ? "Opening Terminal…" : "Open uninstaller in Terminal"}
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => {
+                    setArmed(false);
+                    setNote("");
+                  }}
+                  disabled={busy}
+                  title="Cancel — nothing happens"
+                >
+                  Cancel
+                </button>
+              </>
+            )}
+          </span>
+        </div>
+        <div className="syscfg-warn" role="status">
+          {note ||
+            (!shell
+              ? "Uninstall runs from the JARVIS desktop app (it opens Terminal on uninstall.sh)."
+              : armed
+                ? "This will OPEN Terminal running uninstall.sh. Nothing is removed until you type 'yes' to BOTH prompts there. The uninstaller removes only JARVIS's own footprint (install home, the two LaunchAgents, the com.jarvis.daemon Keychain items, and the logs)."
+                : "Completely removes JARVIS via its two-step typed-confirmation uninstaller. This button only OPENS the uninstaller in Terminal — it never deletes anything by itself; you type the confirmations there.")}
+        </div>
+      </div>
+    </section>
   );
 }
 

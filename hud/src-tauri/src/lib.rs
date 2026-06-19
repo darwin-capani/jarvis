@@ -16,6 +16,8 @@ mod config_settings;
 mod credentials;
 mod heal;
 mod takeover;
+mod updates;
+mod uninstall;
 
 use std::time::Duration;
 
@@ -781,6 +783,13 @@ async fn exit_takeover(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        // WS4a auto-updater. The plugin reads its endpoint + the OWNER's PUBLIC
+        // updater key from tauri.conf.json (plugins.updater). It performs NO work
+        // on its own — it only exposes the update API the `check_for_updates`
+        // command drives, and that command no-ops cleanly while the pubkey is the
+        // committed PLACEHOLDER / no real release is published (see updates.rs).
+        // The matching PRIVATE key lives ONLY in CI secrets, never in this repo.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Explicit, idempotent takeover state shared by the enter/exit commands
         // and the reset-on-exit safety net. Ships INACTIVE (Default).
         .manage(Takeover::default())
@@ -811,6 +820,8 @@ pub fn run() {
             config_settings::config_set,
             config_settings::daemon_restart,
             config_settings::pick_folder,
+            updates::check_for_updates,
+            uninstall::uninstall_open,
             enter_takeover,
             exit_takeover
         ])

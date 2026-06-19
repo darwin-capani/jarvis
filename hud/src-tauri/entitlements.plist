@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  HARDENED-RUNTIME ENTITLEMENTS for the JARVIS HUD (.app).
+
+  These are referenced from tauri.conf.json (bundle.macOS.entitlements) and are
+  applied by the codesign step that `tauri build` runs WHEN a Developer ID
+  signing identity is present. They are the MINIMUM an AI desktop assistant
+  needs under the macOS hardened runtime — each one widens the attack surface a
+  little, so nothing speculative is enabled:
+
+    * audio-input        — the HUD's voice path captures microphone audio
+                           (wake word / dictation / voice-id enrolment). macOS
+                           ALSO requires a TCC prompt with the
+                           NSMicrophoneUsageDescription string (see Info.plist
+                           keys in tauri.conf.json) before the mic is opened.
+    * automation.apple-events — JARVIS's ui_actuate / takeover paths drive other
+                           apps and the desktop via AppleEvents (e.g. the
+                           uninstall command opens Terminal.app; the folder
+                           picker shells `osascript`). Hardened runtime blocks
+                           sending Apple events to other processes WITHOUT this
+                           entitlement; macOS still shows the per-target
+                           Automation TCC prompt (NSAppleEventsUsageDescription).
+    * network client     — the HUD verifies pasted credentials over HTTPS
+                           (anthropic / github / slack) and the updater fetches
+                           the GitHub Releases latest.json + the signed bundle.
+    * allow-jit + allow-unsigned-executable-memory — WKWebView (the Tauri
+                           webview JS engine) JITs JavaScript; without these the
+                           hardened runtime kills the webview on first JIT.
+
+  We DELIBERATELY do NOT request: camera, location, address-book, calendars,
+  reminders, photos, or the debugger/get-task-allow entitlement (a release build
+  must not be debuggable). screen-recording is NOT an entitlement — it is a pure
+  TCC permission the OS grants on first capture (documented in Info.plist's note
+  via tauri.conf.json), so there is nothing to declare here for it.
+
+  HONEST GATE: applying these requires the owner's Developer ID Application
+  certificate (a paid Apple Developer account). With NO identity (a local "-"
+  ad-hoc / unsigned build) the file is harmless — codesign just is not invoked
+  with it. See docs/RELEASE.md.
+-->
+<plist version="1.0">
+<dict>
+  <!-- Microphone capture for the voice path (paired with the TCC usage string). -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+
+  <!-- Send Apple events to other apps (ui_actuate / takeover / open Terminal for
+       the uninstaller / osascript folder picker). TCC still prompts per target. -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+
+  <!-- Outbound network: credential verification + the auto-updater fetch. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+
+  <!-- WKWebView JITs JavaScript; the hardened runtime needs these to allow it. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+</dict>
+</plist>

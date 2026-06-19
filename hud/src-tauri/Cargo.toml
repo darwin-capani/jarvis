@@ -14,6 +14,14 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# WS4a auto-updater: checks the GitHub Releases latest.json endpoint (configured
+# in tauri.conf.json -> plugins.updater) and verifies the bundle's minisign
+# signature against the OWNER's PUBLIC updater key. The matching PRIVATE key
+# (TAURI_SIGNING_PRIVATE_KEY) lives ONLY in CI secrets — it is NEVER in this repo.
+# With the pubkey placeholder + no real endpoint payload, the in-app check no-ops
+# cleanly (see check_for_updates in lib.rs). Pinned to the 2.x line that matches
+# tauri 2.11.x.
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }

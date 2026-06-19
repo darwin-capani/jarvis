@@ -1883,7 +1883,10 @@ roots = []                     # EXPLICIT codebase-root allowlist, SHIPS EMPTY.
         let text = std::fs::read_to_string(root.join("config/jarvis.toml")).unwrap();
 
         let changes = vec![
-            Change { id: "vision.model".into(), value: SettingValue::Str("mlx-community/Qwen2-VL-2B-Instruct-4bit".into()) },
+            // A distinct sentinel id (NOT the shipped default) so this line always
+            // changes regardless of what config/jarvis.toml ships vision.model as —
+            // this test exercises the round-trip mechanics, not a specific model id.
+            Change { id: "vision.model".into(), value: SettingValue::Str("test-org/distinct-vlm-sentinel".into()) },
             Change { id: "docsearch.roots".into(), value: SettingValue::StrList(vec!["/Users/me/Notes".into()]) },
             Change { id: "code.roots".into(), value: SettingValue::StrList(vec!["/Users/me/proj".into()]) },
             Change { id: "models.local_warm".into(), value: SettingValue::StrList(vec!["mlx-community/Qwen3-0.6B-Instruct-4bit".into()]) },
@@ -1891,7 +1894,7 @@ roots = []                     # EXPLICIT codebase-root allowlist, SHIPS EMPTY.
         ];
         let updated = apply_changes(&text, &changes).expect("apply on the real config");
         let states = build_get(&updated);
-        assert_eq!(get_value(&states, "vision.model"), SettingValue::Str("mlx-community/Qwen2-VL-2B-Instruct-4bit".into()));
+        assert_eq!(get_value(&states, "vision.model"), SettingValue::Str("test-org/distinct-vlm-sentinel".into()));
         assert_eq!(get_value(&states, "docsearch.roots"), SettingValue::StrList(vec!["/Users/me/Notes".into()]));
         assert_eq!(get_value(&states, "code.roots"), SettingValue::StrList(vec!["/Users/me/proj".into()]));
         assert_eq!(get_value(&states, "models.local_warm"), SettingValue::StrList(vec!["mlx-community/Qwen3-0.6B-Instruct-4bit".into()]));
