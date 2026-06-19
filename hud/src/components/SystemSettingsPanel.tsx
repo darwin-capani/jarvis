@@ -29,6 +29,7 @@ import {
   type UpdateCheck,
 } from "../tauri/bridge";
 import { sendCommand } from "../tauri/command";
+import { isAutoUpdateOn, setAutoUpdateOn } from "../core/autoUpdate";
 
 /**
  * The EXACT spoken voice-id management phrases the enrollment controls send over
@@ -346,6 +347,11 @@ export function UpdatesSection() {
   const shell = inTauri();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<UpdateCheck | null>(null);
+  // The persisted "auto-install on launch" preference. Initialised lazily from
+  // the SAME localStorage flag the launch path reads (jarvis.autoUpdate), so
+  // this toggle reflects the real value and turning it OFF here is the
+  // reversible undo of the dialog's "Update & don't ask again". Default OFF.
+  const [autoUpdate, setAutoUpdate] = useState(() => isAutoUpdateOn());
 
   const check = useCallback(
     async (install: boolean) => {
@@ -359,6 +365,16 @@ export function UpdatesSection() {
     },
     [busy],
   );
+
+  // Flip + persist the auto-update preference. Persisting OFF clears the key, so
+  // "don't ask again" is fully undoable from here.
+  const toggleAutoUpdate = useCallback(() => {
+    setAutoUpdate((on) => {
+      const next = !on;
+      setAutoUpdateOn(next);
+      return next;
+    });
+  }, []);
 
   const available = result?.status === "available";
   const note =
@@ -398,6 +414,37 @@ export function UpdatesSection() {
           {!shell
             ? "Updates are checked from the JARVIS desktop app."
             : note}
+        </div>
+      </div>
+
+      {/* REVERSIBLE auto-update preference. Reflects the persisted
+          jarvis.autoUpdate flag and lets the user turn "don't ask again" back
+          OFF. HONEST: when ON, the next launch SILENTLY installs an available,
+          SIGNATURE-VERIFIED update (with a brief notice) instead of showing the
+          dialog. It changes nothing when the updater is not armed — there is
+          simply never an available update to install. */}
+      <div className="syscfg-row">
+        <div className="syscfg-row-head">
+          <span className="syscfg-label">Automatically install updates on launch</span>
+          <span className="syscfg-control">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoUpdate}
+              aria-label="Automatically install updates on launch"
+              className={`syscfg-toggle ${autoUpdate ? "on" : "off"}`}
+              onClick={toggleAutoUpdate}
+            >
+              <span className="syscfg-toggle-track" aria-hidden="true">
+                <span className="syscfg-toggle-knob" />
+              </span>
+              <span className="syscfg-toggle-text">{autoUpdate ? "On" : "Off"}</span>
+            </button>
+          </span>
+        </div>
+        <div className="syscfg-hint">
+          When on, JARVIS installs signature-verified updates automatically at launch (with a brief
+          notice) instead of asking. Turn off to be asked each time. Off by default.
         </div>
       </div>
     </section>

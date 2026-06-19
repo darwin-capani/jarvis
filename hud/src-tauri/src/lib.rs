@@ -821,6 +821,7 @@ pub fn run() {
             config_settings::daemon_restart,
             config_settings::pick_folder,
             updates::check_for_updates,
+            updates::relaunch_app,
             uninstall::uninstall_open,
             enter_takeover,
             exit_takeover

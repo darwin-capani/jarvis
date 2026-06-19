@@ -4485,6 +4485,13 @@ svg.tri circle {
   padding-top: 10px;
 }
 
+/* The launch "Update available" dialog reuses the confirm-overlay posture; it
+   carries three buttons, so let them wrap rather than overflow on a narrow
+   window. */
+.update-dialog .syscfg-confirm-btns {
+  flex-wrap: wrap;
+}
+
 /* --- freeform string (model id) + string-array list editors (v1 gaps) --- */
 .syscfg-text-input {
   min-width: 220px;

@@ -1121,7 +1121,14 @@ export type HudAction =
   // the "no thanks" half of the propose-only contract. Accept is NOT a reducer
   // action: it sends the gated standing-mission creation command (App.tsx), then
   // dismisses the offer locally so it is not re-shown.
-  | { type: "suggestion.dismiss"; id: string };
+  | { type: "suggestion.dismiss"; id: string }
+  // WS4 auto-update — push a single transient INFO toast for the silent
+  // launch-update notice ("Updating JARVIS to <version>…"). This is a pure,
+  // non-blocking surface action (no daemon, no authority): it only adds a toast
+  // to the existing stack so an auto-install (pref ON) is never a silent
+  // surprise. It does NOT download/install — the install runs through the
+  // existing signed backend command in App; this is just the visible notice.
+  | { type: "notice.toast"; text: string; at: number };
 
 export function initialState(): HudState {
   return {
@@ -1408,6 +1415,12 @@ export function reduce(state: HudState, action: HudAction): HudState {
         ledger.delete(oldest);
       }
       return { ...state, suggestions, dismissedSuggestions: ledger };
+    }
+    case "notice.toast": {
+      // A single transient INFO toast (the silent launch-update notice). Empty
+      // text is a no-op so a missing version never churns the tree.
+      if (!action.text) return state;
+      return pushToast(state, "info", action.text, action.at);
     }
   }
 }

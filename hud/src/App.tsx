@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import ActionPanel from "./components/ActionPanel";
 import AgentPanel from "./components/AgentPanel";
 import AlertPanel from "./components/AlertPanel";
@@ -35,6 +35,7 @@ import SiliconCanvasPanel, { SILICON_CANVAS_APP } from "./components/SiliconCanv
 import SkillsPanel from "./components/SkillsPanel";
 import StatusBar from "./components/StatusBar";
 import SuggestionsPanel from "./components/SuggestionsPanel";
+import UpdateDialog from "./components/UpdateDialog";
 import BriefFocusPanel from "./components/BriefFocusPanel";
 import UnifiedSearchPanel from "./components/UnifiedSearchPanel";
 import VerifyPanel from "./components/VerifyPanel";
@@ -54,7 +55,12 @@ import {
   isExitKey,
   takeoverReduce,
 } from "./core/takeover";
-import { bindFullscreenKey } from "./tauri/bridge";
+import { bindFullscreenKey, checkForUpdates, inTauri, relaunchApp } from "./tauri/bridge";
+import {
+  decideLaunchUpdateAction,
+  isAutoUpdateOn,
+  silentUpdateNotice,
+} from "./core/autoUpdate";
 import { sendCommand } from "./tauri/command";
 import { enterTakeover as invokeEnterTakeover, exitTakeover as invokeExitTakeover } from "./tauri/takeover";
 import CoreScene from "./three/CoreScene";
@@ -67,6 +73,17 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<"credentials" | "system" | null>(null);
   const settingsOpen = settingsTab !== null;
   const [deckOpen, setDeckOpen] = useState(false);
+
+  // LAUNCH AUTO-UPDATE — the version string for the "Update available" dialog,
+  // or null when no dialog is showing. Set ONLY by the launch auto-check below,
+  // and ONLY when the backend reported a REAL available update (status
+  // "available") AND the auto-update preference is OFF. It is never set for any
+  // other status, so the dialog can never appear on not_configured/up_to_date/
+  // error or on a fabricated update.
+  const [updateDialogVersion, setUpdateDialogVersion] = useState<string | null>(null);
+  // ONCE-PER-LAUNCH guard: a ref (not state) so a re-render never re-fires the
+  // launch check, and the StrictMode double-invoke in dev never double-checks.
+  const launchUpdateChecked = useRef(false);
 
   // FIRST-RUN ONBOARDING (WS4b item 1): shown ONCE, gated on the REAL persisted
   // flag (localStorage via hasSeenOnboarding). Dismissing/finishing/skipping (or
@@ -196,6 +213,54 @@ export default function App() {
 
   // F11 fullscreen.
   useEffect(() => bindFullscreenKey(), []);
+
+  // LAUNCH AUTO-CHECK FOR UPDATES — fire ONCE per launch, and ONLY inside the
+  // real Tauri shell (never a plain browser / vite dev / vitest render). The
+  // ref guard makes it idempotent across re-renders + the StrictMode double
+  // mount; the inTauri() gate keeps it from ever running outside the desktop
+  // app (where checkForUpdates would only return "unavailable" anyway).
+  //
+  // HONESTY: we call checkForUpdates(false) (a CHECK, no install) and route the
+  // result through decideLaunchUpdateAction, which produces a dialog/silent
+  // outcome ONLY for status "available". Every other status
+  // (not_configured / up_to_date / error / unavailable) yields "none" — we do
+  // NOTHING visible at launch (no dialog, no nag), exactly today's quiet launch.
+  // When available: pref ON -> SILENT install (with an honest non-blocking
+  // toast) via the EXISTING signed backend command + relaunch; pref OFF -> open
+  // the dialog naming the real version.
+  useEffect(() => {
+    if (launchUpdateChecked.current) return;
+    launchUpdateChecked.current = true;
+    if (!inTauri()) return; // shell-only: never in a browser / dev render
+    let cancelled = false;
+    void (async () => {
+      const result = await checkForUpdates(false);
+      if (cancelled) return;
+      const action = decideLaunchUpdateAction(result, isAutoUpdateOn());
+      if (action.kind === "none") return; // honest quiet launch
+      if (action.kind === "dialog") {
+        setUpdateDialogVersion(action.version);
+        return;
+      }
+      // action.kind === "silent": pref is ON. Show a brief honest notice, then
+      // install through the SAME signed backend command and relaunch — no
+      // dialog, but never a silent surprise.
+      dispatch({ type: "notice.toast", text: silentUpdateNotice(action.version), at: Date.now() });
+      const installed = await checkForUpdates(true);
+      if (cancelled) return;
+      if (installed.status === "installed") {
+        await relaunchApp();
+        // If relaunch is unavailable the new binary still applies on the next
+        // manual restart; we do not claim it finished.
+      }
+      // A non-"installed" result (e.g. an install error) is left to the manual
+      // UpdatesSection on the next check — the launch path stays non-blocking
+      // and never claims a success that did not happen.
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // "C" toggles the command deck (ignored while typing in a field, and never
   // stealing the settings modal's focus). Additive to the telemetry HUD.
@@ -400,6 +465,17 @@ export default function App() {
           initialTab={settingsTab ?? "credentials"}
           onReopenOnboarding={reopenOnboarding}
           onClose={() => setSettingsTab(null)}
+        />
+      )}
+
+      {/* LAUNCH UPDATE DIALOG — mounts ONLY when the launch auto-check reported a
+          REAL available update (status "available") and the auto-update pref is
+          OFF. Cancel just closes (pref unchanged, re-checks next launch); the
+          install path runs through the existing signed backend command. */}
+      {updateDialogVersion !== null && (
+        <UpdateDialog
+          version={updateDialogVersion}
+          onClose={() => setUpdateDialogVersion(null)}
         />
       )}
 

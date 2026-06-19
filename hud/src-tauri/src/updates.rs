@@ -154,6 +154,20 @@ pub async fn check_for_updates(app: AppHandle, install: bool) -> Result<UpdateCh
     }
 }
 
+/// RELAUNCH the app to finish applying an already-installed update.
+///
+/// This adds NO install authority: it does not download, verify, or install
+/// anything — `check_for_updates(install=true)` already did the signed download
+/// + minisign verification + install. This command only restarts the binary
+/// that is already on disk, using Tauri's built-in `AppHandle::restart()`. It is
+/// the explicit "relaunch to finish updating" step the HUD offers after a
+/// successful install. `restart()` replaces the process and never returns; the
+/// `Result` signature exists only so the command type-checks in the handler.
+#[tauri::command]
+pub fn relaunch_app(app: AppHandle) -> Result<(), String> {
+    app.restart();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

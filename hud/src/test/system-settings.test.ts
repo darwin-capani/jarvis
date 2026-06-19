@@ -47,6 +47,11 @@ import {
   valueMapFromStates,
 } from "../core/systemSettings";
 import type { Change, SettingState, SettingValue } from "../tauri/configSettings";
+import {
+  isAutoUpdateOn,
+  setAutoUpdateOn,
+  type AutoUpdateStorage,
+} from "../core/autoUpdate";
 
 /* The SYSTEM SETTINGS catalog is the UI-facing mirror of the backend whitelist
  * (src-tauri/src/config_settings.rs SETTINGS + AUTONOMY_SECTIONS). These pin the
@@ -655,6 +660,40 @@ describe("updates section (WS4a)", () => {
     // No Install button on first paint — none is offered until a real available
     // update is reported by the backend (a click can never fabricate one).
     expect(h).not.toContain("Install");
+  });
+
+  it("exposes the REVERSIBLE 'Automatically install updates on launch' toggle (default Off)", () => {
+    const h = html();
+    expect(h).toContain("Automatically install updates on launch");
+    // A real switch, defaulting OFF (the shipped posture) since no pref is set.
+    expect(h).toContain('role="switch"');
+    expect(h).toContain('aria-checked="false"');
+    // Honest copy: it auto-installs SIGNATURE-VERIFIED updates at launch, and is
+    // the undo of "don't ask again".
+    expect(h.toLowerCase()).toContain("signature-verified");
+    expect(h.toLowerCase()).toContain("off by default");
+  });
+});
+
+/* The settings toggle reverses the dialog's "don't ask again": it reflects +
+ * flips the SAME persisted jarvis.autoUpdate flag the launch path reads. */
+describe("auto-update settings toggle reversibility", () => {
+  it("reflects + flips the same persisted preference (ON then back OFF)", () => {
+    const map = new Map<string, string>();
+    const store: AutoUpdateStorage = {
+      getItem: (k) => (map.has(k) ? map.get(k)! : null),
+      setItem: (k, v) => {
+        map.set(k, v);
+      },
+      removeItem: (k) => {
+        map.delete(k);
+      },
+    };
+    expect(isAutoUpdateOn(store)).toBe(false); // default OFF (what the toggle shows)
+    setAutoUpdateOn(true, store); // dialog's "don't ask again" / toggle ON
+    expect(isAutoUpdateOn(store)).toBe(true);
+    setAutoUpdateOn(false, store); // toggle OFF — fully reversible
+    expect(isAutoUpdateOn(store)).toBe(false);
   });
 });
 

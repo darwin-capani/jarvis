@@ -277,6 +277,24 @@ export async function checkForUpdates(install = false): Promise<UpdateCheck> {
   }
 }
 
+/** RELAUNCH the app to finish applying an installed update. Drives the
+ *  `relaunch_app` backend command, which calls Tauri's built-in
+ *  `AppHandle::restart()` (no new install authority, no plugin) — it merely
+ *  restarts the already-installed binary. In a plain browser there is no shell
+ *  to relaunch — return false so the UI can fall back to an honest
+ *  "Restart to finish updating" state rather than throwing. */
+export async function relaunchApp(): Promise<boolean> {
+  if (!inTauri()) return false;
+  try {
+    await invoke("relaunch_app");
+    // restart() does not return (the process is replaced); reaching here means
+    // the call dispatched without throwing.
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /* ----------------------------------------------------------- uninstall (WS4a) */
 
 /** The honest outcome of opening the uninstaller (mirrors the Rust
