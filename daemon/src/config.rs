@@ -343,7 +343,15 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // multi-speaker transcript; on-device whisper (no diarization model) is an HONEST
     // single-stream "speaker: unknown" labeling — NEVER a fabricated set of distinct
     // speakers. Listed so it never reads as a typo.
-    ("voice", &["cloud_tier", "cloud_stt", "model", "voices", "adaptive_prosody", "whisper", "whisper_auto", "diarize"]),
+    // `cloud_sfx` SHIPS ON (full-power default), gated EXACTLY like cloud_tier
+    // (key + non-Local tier): it reaches the inference server's sound_effect cue op;
+    // without a key it is a silent no-op (no on-device SFX generator). `stream_tts`
+    // is OPT-IN (ships OFF — default behavior unchanged): low-latency streaming TTS
+    // on ElevenLabs that falls back to blocking on any streaming error.
+    // `pronunciation_dictionary_id` / `pronunciation_dictionary_version` (both
+    // DEFAULT "") thread an EL pronunciation-dictionary locator into speak — empty =
+    // none (today's speech). All four listed so none reads as a typo.
+    ("voice", &["cloud_tier", "cloud_stt", "model", "voices", "adaptive_prosody", "whisper", "whisper_auto", "diarize", "cloud_sfx", "stream_tts", "pronunciation_dictionary_id", "pronunciation_dictionary_version"]),
     // [wake] — CUSTOM WAKE-WORD (#32, wake.rs). `enabled` SHIPS ON (full-power
     // default): since `phrase` defaults to "jarvis", behavior is identical to today
     // unless the phrase is changed. The always-listening loop that consults the
@@ -929,6 +937,33 @@ pub struct VoiceConfig {
     /// NEVER fabricates distinct speakers the backend did not report. Diarization is
     /// EL-Scribe-gated; that limitation is stated honestly, never faked.
     pub diarize: bool,
+    /// SOUND-EFFECT CUE TIER. SHIPS ON (full-power default) — INERT WITHOUT A KEY:
+    /// gates the inference server's `sound_effect` op (text prompt -> a short
+    /// generated SFX cue), reached only when an `elevenlabs_api_key` is in the
+    /// Keychain AND the tier is non-Local; otherwise NO cue is produced (silent
+    /// no-op — there is no on-device SFX generator, stated honestly, never faked).
+    /// An ADDED cue layer reached only through its explicit gate/command — it NEVER
+    /// changes the default speech path. When active the SFX text prompt leaves the
+    /// device (text only). Mirrors cloud_tier's credential+runtime gating.
+    pub cloud_sfx: bool,
+    /// LOW-LATENCY STREAMING TTS. OPT-IN (ships OFF) — default behavior is unchanged
+    /// (today's blocking synthesis). When true AND the resolved backend is ElevenLabs,
+    /// `speak` requests the streaming endpoint for first-audio latency; the inference
+    /// server FALLS BACK to blocking on any streaming error, so a turn is never failed
+    /// by the streaming leg. Inert on Kokoro (on-device path is unchanged). Delivery
+    /// timing only — never a gate/policy surface.
+    pub stream_tts: bool,
+    /// The ACTIVE ElevenLabs pronunciation-dictionary id threaded as a `speak`
+    /// pronunciation locator (the `create_pronunciation` op returns these ids).
+    /// DEFAULT "" (none): empty = no locator is sent, so speech is byte-for-byte
+    /// today's. Non-empty = the server adds this dictionary to the speak request's
+    /// pronunciation_locators. EL-pronunciation-gated; inert on Kokoro.
+    pub pronunciation_dictionary_id: String,
+    /// OPTIONAL version for the active pronunciation-dictionary locator above.
+    /// DEFAULT "" (none): empty = the latest version is used (no version pinned);
+    /// non-empty = this exact version_id is sent alongside the dictionary id. Inert
+    /// when `pronunciation_dictionary_id` is empty.
+    pub pronunciation_dictionary_version: String,
 }
 
 impl Default for VoiceConfig {
@@ -967,6 +1002,25 @@ impl Default for VoiceConfig {
             // whisper has no diarization model => honest single-stream
             // "speaker: unknown" (never fabricated speakers). EL-Scribe-gated.
             diarize: true,
+            // SHIPS ON (full-power default) — INERT WITHOUT A KEY, exactly like
+            // cloud_tier: the sound_effect cue op is reached only when cloud_sfx=true
+            // AND elevenlabs_api_key is in the Keychain AND the tier is non-Local;
+            // otherwise NO cue (silent no-op — no on-device SFX generator). An ADDED
+            // cue tier reached only through its explicit gate; never changes the
+            // default speech path. When active the SFX text prompt leaves the device.
+            cloud_sfx: true,
+            // OPT-IN (ships OFF) so DEFAULT BEHAVIOR IS UNCHANGED: streaming TTS is
+            // requested only when stream_tts=true AND the backend is ElevenLabs; the
+            // server falls back to blocking on any streaming error. Inert on Kokoro.
+            // Delivery timing only — never a gate.
+            stream_tts: false,
+            // DEFAULT "" (none): no pronunciation locator is threaded into speak, so
+            // speech is byte-for-byte today's until an operator sets the active
+            // dictionary id (returned by the create_pronunciation op). EL-gated.
+            pronunciation_dictionary_id: String::new(),
+            // DEFAULT "" (none): no version pinned — the latest dictionary version is
+            // used. Inert when pronunciation_dictionary_id is empty.
+            pronunciation_dictionary_version: String::new(),
         }
     }
 }
@@ -3943,6 +3997,22 @@ mod tests {
         assert!(cfg.voice.adaptive_prosody, "#33 adaptive prosody SHIPS ON (full-power default)");
         assert!(cfg.voice.whisper, "#34 whisper mode SHIPS ON (full-power default)");
         assert!(cfg.voice.whisper_auto, "#34 whisper auto-engage SHIPS ON (full-power default)");
+        assert!(
+            cfg.voice.cloud_sfx,
+            "the sound-effect cue tier SHIPS ON (full-power default; INERT WITHOUT A KEY — silent no-op without the EL key, no on-device SFX generator)"
+        );
+        assert!(
+            !cfg.voice.stream_tts,
+            "low-latency streaming TTS is OPT-IN (ships OFF) — default behavior is unchanged (today's blocking synthesis)"
+        );
+        assert!(
+            cfg.voice.pronunciation_dictionary_id.is_empty(),
+            "no active pronunciation dictionary by default (empty = no speak locator)"
+        );
+        assert!(
+            cfg.voice.pronunciation_dictionary_version.is_empty(),
+            "no pronunciation-dictionary version pinned by default (empty = latest)"
+        );
         assert_eq!(cfg.voice.model, "eleven_flash_v2_5", "default EL model");
         assert!(cfg.voice.voices.is_empty(), "no per-agent EL voice mapped by default");
 
@@ -3952,6 +4022,10 @@ mod tests {
             cloud_tier = false
             cloud_stt = false
             diarize = false
+            cloud_sfx = false
+            stream_tts = true
+            pronunciation_dictionary_id = "EL_PD_ID"
+            pronunciation_dictionary_version = "EL_PD_VER"
             model = "eleven_multilingual_v2"
 
             [voice.voices]
@@ -3963,6 +4037,16 @@ mod tests {
         assert!(!cfg.voice.cloud_tier, "the operator can turn the cloud TTS tier off");
         assert!(!cfg.voice.cloud_stt, "cloud_stt must round-trip as a known key");
         assert!(!cfg.voice.diarize, "diarize must round-trip as a known key");
+        assert!(!cfg.voice.cloud_sfx, "cloud_sfx must round-trip as a known key (operator can turn the SFX cue tier off)");
+        assert!(cfg.voice.stream_tts, "stream_tts must round-trip as a known key (operator can opt in to streaming TTS)");
+        assert_eq!(
+            cfg.voice.pronunciation_dictionary_id, "EL_PD_ID",
+            "pronunciation_dictionary_id must round-trip as a known key"
+        );
+        assert_eq!(
+            cfg.voice.pronunciation_dictionary_version, "EL_PD_VER",
+            "pronunciation_dictionary_version must round-trip as a known key"
+        );
         assert_eq!(cfg.voice.model, "eleven_multilingual_v2");
         assert_eq!(cfg.voice.voices.get("jarvis").map(String::as_str), Some("EL_VOICE_JARVIS"));
         assert_eq!(cfg.voice.voices.get("friday").map(String::as_str), Some("EL_VOICE_FRIDAY"));

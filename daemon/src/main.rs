@@ -1326,6 +1326,15 @@ async fn main() -> Result<()> {
     // merged id is simply unused (Kokoro speaks), exactly like an unmapped agent. A
     // clone confirmed mid-session is persisted and takes effect from here next boot.
     voiceclone::load_clones(&root).merge_into(&mut cfg.voice.voices);
+    // PRONUNCIATION DICTIONARY (Phase-2): fold any previously-minted active
+    // pronunciation locator (state/voice/pronunciation.json) into the effective
+    // [voice].pronunciation_dictionary_id/_version so a minted dictionary becomes a
+    // speak locator — but WITHOUT clobbering an explicit operator config value (config
+    // wins). With the keys empty (none minted) speech is byte-for-byte today's.
+    voiceclone::load_pronunciation(&root).merge_into(
+        &mut cfg.voice.pronunciation_dictionary_id,
+        &mut cfg.voice.pronunciation_dictionary_version,
+    );
     let cfg = Arc::new(cfg);
     // Install the consequential-action gate from config ([integrations]
     // allow_consequential, default false) ONCE at startup, so every integration
@@ -3217,6 +3226,177 @@ async fn handle_voice_clone(
                 Some(voiceclone::consent_prompt(&display))
             }
             None => None,
+        }
+    }
+}
+
+/// SOUND-EFFECT CUE trigger (Phase-2). Mirrors the clone seam: gate -> read the key
+/// from the Keychain -> emit op=sound_effect -> return the cue WAV path. Reached only
+/// through its EXPLICIT gate ([`voice_tier::sfx_enabled`] = `[voice].cloud_sfx` + key
+/// present) AND, like cloud_tier, only when the operator is NOT offline (a `Local` tier
+/// keeps everything on-device). SFX has NO on-device fallback, so when the gate is off /
+/// there is no key / the operator is offline this returns an HONEST `Err` ("unavailable")
+/// — never a fabricated cue. The SFX text PROMPT leaves the device (text only).
+///
+/// SECURITY: the resolved key is read here ONLY to thread into the request body
+/// (server -> xi-api-key header); it is never logged/argv/telemetry. Mirrors
+/// `handle_voice_clone`'s key handling exactly.
+#[allow(dead_code)] // Phase-2 command seam; wired to the SFX command/intent surface next
+async fn trigger_sound_effect(
+    cfg: &Config,
+    prompt: &str,
+    duration_s: Option<f32>,
+    prompt_influence: Option<f32>,
+    infer: &mut InferenceClient,
+) -> Result<std::path::PathBuf, String> {
+    // Cheap pre-check: never touch the Keychain when offline or the switch is off.
+    let active = model_tier::active_tier(cfg, model_tier::current_override());
+    if active == model_tier::Tier::Local {
+        return Err("Sound effects need the cloud tier, but you're working offline — \
+                    nothing was generated."
+            .to_string());
+    }
+    if !cfg.voice.cloud_sfx {
+        return Err("The sound-effect cue tier is off. Turn on [voice].cloud_sfx to use it."
+            .to_string());
+    }
+    // Resolve the key ONLY now that the switch is on + non-offline.
+    let key = crate::integrations::resolve_secret(voice_tier::ELEVENLABS_ACCOUNT).await;
+    let Some(key) = key else {
+        // sfx_enabled(cfg, key_present=false) == false: honest unavailable, no on-device
+        // SFX generator to fall back to.
+        debug_assert!(!voice_tier::sfx_enabled(cfg, false));
+        telemetry::emit("system", "sfx.no_key", json!({}));
+        return Err("I can't generate sound effects without an ElevenLabs key — add one in \
+                    Settings. There's no on-device sound generator."
+            .to_string());
+    };
+    debug_assert!(voice_tier::sfx_enabled(cfg, true), "gate must be open here");
+    match infer
+        .sound_effect(prompt, &key, duration_s, prompt_influence)
+        .await
+    {
+        Ok(path) => {
+            telemetry::emit("system", "sfx.generated", json!({}));
+            Ok(path)
+        }
+        Err(e) => {
+            warn!(error = %e, "sound-effect: sound_effect op failed");
+            telemetry::emit("system", "sfx.failed", json!({}));
+            Err("I couldn't generate that sound effect just now — the cloud cue didn't go \
+                 through. Nothing was produced."
+                .to_string())
+        }
+    }
+}
+
+/// DESIGN VOICE provisioning trigger (Phase-2). Mirrors the clone seam, but with NO
+/// consent/audio gate (text-only — no audio leaves the device): gate on the key -> emit
+/// op=design_voice with the voice DESCRIPTION + display name -> store the returned
+/// voice_id in the `[voice.voices]` store for `agent` (so that agent can use it like any
+/// EL voice). Still KEY-GATED: with no key (or offline) this returns an HONEST `Err`
+/// ("unavailable") — never a fabricated voice. Only the text description leaves the device.
+///
+/// SECURITY: the resolved key is read here ONLY to thread into the request body; it is
+/// never logged/argv/telemetry. The returned voice_id is non-secret.
+#[allow(dead_code)] // Phase-2 provisioning seam; wired to the design-voice command next
+async fn trigger_design_voice(
+    cfg: &Config,
+    description: &str,
+    name: &str,
+    agent: &str,
+    root: &Path,
+    cloned_voices: &mut voiceclone::ClonedVoices,
+    infer: &mut InferenceClient,
+) -> Result<String, String> {
+    let active = model_tier::active_tier(cfg, model_tier::current_override());
+    if active == model_tier::Tier::Local {
+        return Err("Designing a voice needs the cloud tier, but you're working offline — \
+                    nothing was created."
+            .to_string());
+    }
+    let key = crate::integrations::resolve_secret(voice_tier::ELEVENLABS_ACCOUNT).await;
+    let Some(key) = key else {
+        telemetry::emit("system", "design_voice.no_key", json!({"agent": agent}));
+        return Err("I can't design a voice without an ElevenLabs key — add one in Settings. \
+                    No voice was created."
+            .to_string());
+    };
+    match infer.design_voice(description, name, &key).await {
+        Ok(voice_id) => {
+            // Store the designed voice id like a cloned one (agent -> EL voice id); it
+            // merges into [voice.voices] at the next load + this session's runtime cfg.
+            cloned_voices.set(agent, &voice_id);
+            if let Err(e) = voiceclone::save_clones(root, cloned_voices) {
+                warn!(error = %e, "design-voice: failed to persist the designed voice id");
+                return Err("I designed the voice, but couldn't save it to disk — it'll work \
+                            this session and you may need to re-create it later."
+                    .to_string());
+            }
+            // Telemetry: the AGENT slot only — NEVER the voice id, never the key.
+            telemetry::emit("system", "design_voice.created", json!({"agent": agent}));
+            Ok(voice_id)
+        }
+        Err(e) => {
+            warn!(error = %e, "design-voice: design_voice op failed");
+            telemetry::emit("system", "design_voice.failed", json!({"agent": agent}));
+            Err("I couldn't design that voice just now — the cloud request didn't go through. \
+                 Nothing was created."
+                .to_string())
+        }
+    }
+}
+
+/// CREATE PRONUNCIATION DICTIONARY provisioning trigger (Phase-2). Mirrors the clone
+/// seam, NO consent/audio gate (text rules only): gate on the key -> emit
+/// op=create_pronunciation with the name + rules -> store the returned NON-secret
+/// (dictionary_id, version_id) in the active-pronunciation store so it threads into
+/// speak as a locator. Still KEY-GATED: with no key (or offline) this returns an HONEST
+/// `Err` ("unavailable") — never a fabricated id. No audio leaves the device.
+///
+/// SECURITY: the resolved key is read here ONLY to thread into the request body; it is
+/// never logged/argv/telemetry. Both returned ids are non-secret.
+#[allow(dead_code)] // Phase-2 provisioning seam; wired to the pronunciation command next
+async fn trigger_create_pronunciation(
+    cfg: &Config,
+    name: &str,
+    rules: &[crate::inference::PronunciationRule],
+    root: &Path,
+    active_pron: &mut voiceclone::ActivePronunciation,
+    infer: &mut InferenceClient,
+) -> Result<(String, String), String> {
+    let active = model_tier::active_tier(cfg, model_tier::current_override());
+    if active == model_tier::Tier::Local {
+        return Err("Creating a pronunciation dictionary needs the cloud tier, but you're \
+                    working offline — nothing was created."
+            .to_string());
+    }
+    let key = crate::integrations::resolve_secret(voice_tier::ELEVENLABS_ACCOUNT).await;
+    let Some(key) = key else {
+        telemetry::emit("system", "pronunciation.no_key", json!({}));
+        return Err("I can't create a pronunciation dictionary without an ElevenLabs key — \
+                    add one in Settings. Nothing was created."
+            .to_string());
+    };
+    match infer.create_pronunciation(name, rules, &key).await {
+        Ok((dictionary_id, version_id)) => {
+            active_pron.set(&dictionary_id, &version_id);
+            if let Err(e) = voiceclone::save_pronunciation(root, active_pron) {
+                warn!(error = %e, "create-pronunciation: failed to persist the locator");
+                return Err("I created the pronunciation dictionary, but couldn't save it to \
+                            disk — it'll apply this session and you may need to re-create it later."
+                    .to_string());
+            }
+            // Telemetry carries NO ids and NO key.
+            telemetry::emit("system", "pronunciation.created", json!({}));
+            Ok((dictionary_id, version_id))
+        }
+        Err(e) => {
+            warn!(error = %e, "create-pronunciation: create_pronunciation op failed");
+            telemetry::emit("system", "pronunciation.failed", json!({}));
+            Err("I couldn't create that pronunciation dictionary just now — the cloud request \
+                 didn't go through. Nothing was created."
+                .to_string())
         }
     }
 }

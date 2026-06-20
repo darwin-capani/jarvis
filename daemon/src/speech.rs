@@ -694,6 +694,11 @@ pub async fn speak_in_lang(
     // HUD). A neutral shape still emits an honest "neutral" line.
     crate::prosody::emit_telemetry(profile, &backend, &shape, whisper_on);
 
+    // ADDITIVE (Phase-2): the streaming opt-in + pronunciation locator, derived once
+    // from [voice]. With the shipped defaults (stream_tts OFF, empty dictionary id)
+    // this is SpeakExtras::none() -> the speak wire is byte-for-byte today's.
+    let extras = crate::inference::SpeakExtras::from_config(cfg);
+
     let sentences = split_sentences(&speakable);
     let mut played_any = false;
     for sentence in &sentences {
@@ -703,7 +708,7 @@ pub async fn speak_in_lang(
             warn!("barge-in: halting reply mid-stream");
             break;
         }
-        match infer.speak(sentence, &backend, el_key.as_deref(), lang, &shape).await {
+        match infer.speak(sentence, &backend, el_key.as_deref(), lang, &shape, &extras).await {
             Ok(wav) => {
                 played_any |= reply.deliver(&wav).await;
             }

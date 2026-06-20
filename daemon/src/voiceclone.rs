@@ -261,6 +261,75 @@ pub fn store_path(root: &Path) -> PathBuf {
     root.join("state").join("voice").join("cloned.json")
 }
 
+/// The LOCALLY-stored ACTIVE pronunciation-dictionary locator (Phase-2): the NON-secret
+/// (dictionary_id, version_id) pair a CONFIRMED `create_pronunciation` op returned.
+/// Mirrors [`ClonedVoices`] exactly — persisted at `state/voice/pronunciation.json`,
+/// loaded at startup and folded into `[voice].pronunciation_dictionary_id`/`_version`
+/// so a minted dictionary becomes a speak locator. With the keys empty (no dictionary
+/// minted) speech is byte-for-byte today's. NON-secret (ids only, NEVER a key).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivePronunciation {
+    /// The active pronunciation-dictionary id (empty = none active).
+    pub dictionary_id: String,
+    /// The version paired with `dictionary_id` (empty = latest).
+    pub version_id: String,
+}
+
+impl ActivePronunciation {
+    /// Record the active locator from a confirmed `create_pronunciation` (replaces any
+    /// prior one — a re-create supersedes the old dictionary).
+    #[allow(dead_code)] // written by trigger_create_pronunciation + exercised in tests
+    pub fn set(&mut self, dictionary_id: &str, version_id: &str) {
+        self.dictionary_id = dictionary_id.to_string();
+        self.version_id = version_id.to_string();
+    }
+
+    /// Fold the active locator into the runtime config keys WITHOUT clobbering an
+    /// explicit config value (the operator's explicit choice wins; a minted locator
+    /// fills only an EMPTY config). Mirrors [`ClonedVoices::merge_into`]. Pure.
+    pub fn merge_into(&self, dict_id: &mut String, version: &mut String) {
+        if self.dictionary_id.is_empty() {
+            return;
+        }
+        if dict_id.trim().is_empty() {
+            *dict_id = self.dictionary_id.clone();
+            *version = self.version_id.clone();
+        }
+    }
+}
+
+/// The on-disk path of the active-pronunciation store:
+/// `<root>/state/voice/pronunciation.json`. NON-SECRET ids only — never a key.
+pub fn pronunciation_store_path(root: &Path) -> PathBuf {
+    root.join("state").join("voice").join("pronunciation.json")
+}
+
+/// Load the active-pronunciation store, or an EMPTY one when none exists / it is
+/// malformed (treated as "no active dictionary", never an error that wedges the daemon).
+pub fn load_pronunciation(root: &Path) -> ActivePronunciation {
+    let path = pronunciation_store_path(root);
+    std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<ActivePronunciation>(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the active-pronunciation store (non-secret ids) with restrictive perms,
+/// mirroring [`save_clones`]. Best-effort 0700 dir / 0600 file.
+#[allow(dead_code)] // written by trigger_create_pronunciation + exercised in tests
+pub fn save_pronunciation(root: &Path, active: &ActivePronunciation) -> std::io::Result<()> {
+    let path = pronunciation_store_path(root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        set_mode(parent, 0o700);
+    }
+    let bytes = serde_json::to_vec_pretty(active)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(&path, bytes)?;
+    set_mode(&path, 0o600);
+    Ok(())
+}
+
 /// Load the cloned-voice store, or an EMPTY store when none exists / it is malformed
 /// (treated as "no clones", never an error that wedges the daemon).
 pub fn load_clones(root: &Path) -> ClonedVoices {
@@ -499,6 +568,53 @@ mod tests {
         assert!(f.forget("jarvis"), "forget reports a present clone");
         assert!(!f.forget("jarvis"), "second forget reports none");
         assert!(f.voices.is_empty());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn active_pronunciation_store_round_trips_and_merges_without_clobbering_config() {
+        let root = tmp_dir("pron-store");
+        // No store yet -> empty (no active dictionary => today's speech).
+        assert!(load_pronunciation(&root).dictionary_id.is_empty());
+
+        // Record a confirmed create_pronunciation, persist, reload.
+        let mut active = ActivePronunciation::default();
+        active.set("EL_PD_ID", "EL_PD_VER");
+        save_pronunciation(&root, &active).expect("persist the non-secret locator");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(pronunciation_store_path(&root))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "the pronunciation store must be 0600");
+        }
+        let loaded = load_pronunciation(&root);
+        assert_eq!(loaded.dictionary_id, "EL_PD_ID");
+        assert_eq!(loaded.version_id, "EL_PD_VER");
+
+        // merge_into fills an EMPTY config but NEVER clobbers an explicit config value.
+        let mut cfg_id = String::new();
+        let mut cfg_ver = String::new();
+        loaded.merge_into(&mut cfg_id, &mut cfg_ver);
+        assert_eq!(cfg_id, "EL_PD_ID", "a minted locator fills an empty config key");
+        assert_eq!(cfg_ver, "EL_PD_VER");
+
+        let mut explicit_id = "OPERATOR_PD".to_string();
+        let mut explicit_ver = "OPERATOR_VER".to_string();
+        loaded.merge_into(&mut explicit_id, &mut explicit_ver);
+        assert_eq!(explicit_id, "OPERATOR_PD", "an explicit config value must win");
+        assert_eq!(explicit_ver, "OPERATOR_VER");
+
+        // An empty store merges NOTHING (no active dictionary).
+        let empty = ActivePronunciation::default();
+        let mut id = String::new();
+        let mut ver = String::new();
+        empty.merge_into(&mut id, &mut ver);
+        assert!(id.is_empty() && ver.is_empty(), "an empty store threads no locator");
 
         std::fs::remove_dir_all(&root).ok();
     }

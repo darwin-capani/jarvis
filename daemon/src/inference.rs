@@ -202,6 +202,66 @@ struct Request<'a> {
     /// guards it), so this never softens a gate's words below audibility.
     #[serde(skip_serializing_if = "Option::is_none")]
     volume: Option<f32>,
+    /// create_pronunciation only: the dictionary's display NAME on ElevenLabs. Carried
+    /// only on that provisioning op (a non-secret label), absent on every other op so an
+    /// old server sees a clean shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
+    /// create_pronunciation only: the non-empty list of replacement RULES
+    /// ({string_to_replace, type:"alias"|"phoneme", alias|phoneme, ...}). NON-secret
+    /// (text rules only — no audio leaves the device). Carried only on that op.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rules: Option<&'a [PronunciationRule]>,
+    /// sound_effect only: OPTIONAL cue length in seconds (server clamps to EL's
+    /// 0.5-22s window). Absent => the server's default duration. Carried only when the
+    /// caller pins one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_s: Option<f32>,
+    /// sound_effect only: OPTIONAL prompt-influence in [0,1] (server clamps). Absent =>
+    /// the server's default. Carried only when the caller pins one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_influence: Option<f32>,
+    /// speak only (ADDITIVE): the active ElevenLabs pronunciation-dictionary locators
+    /// ([{pronunciation_dictionary_id, version_id?}]) the daemon minted via
+    /// op=create_pronunciation. NON-secret ids only. Carried ONLY when a non-empty list
+    /// is threaded ([voice].pronunciation_dictionary_id is set); ABSENT (the shipped
+    /// default) so the speak wire is byte-for-byte today's and an old server ignores it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pronunciation_locators: Option<Vec<PronunciationLocator<'a>>>,
+    /// speak only (ADDITIVE): opt-in low-latency STREAMING TTS. Carried ONLY when
+    /// [voice].stream_tts is true (it ships OFF), so the default wire is unchanged; the
+    /// server falls back to blocking on any streaming error. NON-secret (a bool).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
+}
+
+/// One ElevenLabs pronunciation replacement RULE on the create_pronunciation wire —
+/// a flat passthrough of the server contract ({string_to_replace, type, alias|phoneme}).
+/// NON-secret (text rules only). `alias`/`phoneme` are mutually-exclusive per the EL
+/// rule type, so both are optional and carried only when present.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PronunciationRule {
+    pub string_to_replace: String,
+    #[serde(rename = "type")]
+    pub rule_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phoneme: Option<String>,
+    /// "phoneme"-type rules carry an alphabet ("ipa"/"cmu"); absent for "alias" rules.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alphabet: Option<String>,
+}
+
+/// One pronunciation-dictionary LOCATOR on the speak wire — the non-secret
+/// (dictionary_id[, version_id]) pair op=create_pronunciation returned. `version_id`
+/// is omitted when empty (EL then uses the latest version), so the wire matches the
+/// server's `_normalize_pronunciation_locators` contract exactly.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PronunciationLocator<'a> {
+    pub pronunciation_dictionary_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version_id: Option<&'a str>,
 }
 
 impl<'a> Request<'a> {
@@ -236,6 +296,12 @@ impl<'a> Request<'a> {
             style: None,
             rate: None,
             volume: None,
+            name: None,
+            rules: None,
+            duration_s: None,
+            prompt_influence: None,
+            pronunciation_locators: None,
+            stream: None,
         }
     }
 }
@@ -265,6 +331,70 @@ fn apply_shape_to_request(req: &mut Request<'_>, shape: &crate::prosody::SpeakSh
     }
     if shape.volume != 1.0 {
         req.volume = Some(shape.volume);
+    }
+}
+
+/// ADDITIVE speak-wire extras the daemon threads from `[voice]` (Phase-2 wiring):
+/// opt-in low-latency streaming TTS (`[voice].stream_tts`, ships OFF) and the active
+/// pronunciation-dictionary locator (`[voice].pronunciation_dictionary_id`/`_version`,
+/// default empty). BOTH are inert by default — [`SpeakExtras::none`] threads NOTHING,
+/// so a default config sends a BYTE-FOR-BYTE-today speak request. The locator carries
+/// only NON-secret ids; streaming is a bool. Built once per reply from the config
+/// ([`SpeakExtras::from_config`]) and applied by [`apply_extras_to_request`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpeakExtras {
+    /// Opt-in streaming TTS: `Some(true)` only when `[voice].stream_tts` is on, else
+    /// `None` (the field is omitted from the wire, the server default applies).
+    pub stream: Option<bool>,
+    /// The active pronunciation dictionary id (`[voice].pronunciation_dictionary_id`);
+    /// EMPTY = no locator threaded (today's speech).
+    pub pronunciation_dictionary_id: String,
+    /// OPTIONAL version (`[voice].pronunciation_dictionary_version`); EMPTY = latest.
+    pub pronunciation_dictionary_version: String,
+}
+
+impl SpeakExtras {
+    /// The inert default — threads NOTHING onto the speak wire (today's request).
+    #[allow(dead_code)] // the documented inert-default helper; exercised by the unit tests
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Derive the speak extras from `[voice]`: opt in to streaming ONLY when
+    /// `stream_tts` is true (it ships OFF), and carry the pronunciation locator ONLY
+    /// when `pronunciation_dictionary_id` is non-empty (it defaults empty). With both
+    /// at their defaults this equals [`SpeakExtras::none`], so the speak request is
+    /// UNCHANGED — the threading is purely additive.
+    pub fn from_config(cfg: &crate::config::Config) -> Self {
+        Self {
+            // OPT-IN: only ever Some(true); never sent as Some(false) so the default
+            // (off) wire omits the field entirely.
+            stream: if cfg.voice.stream_tts { Some(true) } else { None },
+            pronunciation_dictionary_id: cfg.voice.pronunciation_dictionary_id.clone(),
+            pronunciation_dictionary_version: cfg.voice.pronunciation_dictionary_version.clone(),
+        }
+    }
+}
+
+/// Thread the ADDITIVE speak extras (streaming opt-in + pronunciation locator) onto a
+/// `speak` request. Each field is set ONLY when active, so a default [`SpeakExtras`]
+/// (the shipped config default) leaves the request BYTE-FOR-BYTE today's. Factored out
+/// of [`InferenceClient::speak`] so the additive wiring is hermetically testable
+/// (build a request, apply real extras, assert the JSON) without a server/EL.
+fn apply_extras_to_request<'a>(req: &mut Request<'a>, extras: &'a SpeakExtras) {
+    // Streaming opt-in: only carried when the operator turned it on.
+    if extras.stream.is_some() {
+        req.stream = extras.stream;
+    }
+    // Pronunciation locator: only when an active dictionary id is set (non-empty). The
+    // version rides only when also non-empty (else the server uses the latest).
+    let did = extras.pronunciation_dictionary_id.trim();
+    if !did.is_empty() {
+        let ver = extras.pronunciation_dictionary_version.trim();
+        req.pronunciation_locators = Some(vec![PronunciationLocator {
+            pronunciation_dictionary_id: did,
+            version_id: if ver.is_empty() { None } else { Some(ver) },
+        }]);
     }
 }
 
@@ -337,12 +467,23 @@ struct Response {
     /// Absent on old servers (they reject op=embed before producing this).
     #[serde(default)]
     vectors: Option<Vec<Vec<f64>>>,
-    /// clone_voice only: the ElevenLabs voice id minted for the uploaded sample.
-    /// Absent on old servers (they reject op=clone_voice as an unknown op) and on
-    /// every non-clone op — deserializes as None. Non-secret (the daemon stores it
-    /// in [voice.voices]); NEVER a key.
+    /// clone_voice / design_voice only: the ElevenLabs voice id minted for the
+    /// uploaded sample (clone) or the text DESCRIPTION (design). Absent on old servers
+    /// (they reject those ops as unknown) and on every other op — deserializes as None.
+    /// Non-secret (the daemon stores it in [voice.voices]); NEVER a key.
     #[serde(default)]
     voice_id: Option<String>,
+    /// create_pronunciation only: the NON-secret pronunciation-dictionary id minted
+    /// by ElevenLabs (op=create_pronunciation). Absent on old servers (unknown op) and
+    /// every other op — deserializes as None. The daemon stores it in
+    /// [voice].pronunciation_dictionary_id; NEVER a key.
+    #[serde(default)]
+    dictionary_id: Option<String>,
+    /// create_pronunciation only: the NON-secret version id paired with
+    /// `dictionary_id`. Absent on old servers / other ops — deserializes as None. The
+    /// daemon stores it in [voice].pronunciation_dictionary_version; NEVER a key.
+    #[serde(default)]
+    version_id: Option<String>,
     /// describe_image only: the VLM id that produced `text` (AVAILABLE path).
     /// NON-secret (a model repo id). Absent on every other op and on old
     /// servers — deserializes as None.
@@ -947,6 +1088,11 @@ impl InferenceClient {
     /// when it differs from the neutral default, so a NEUTRAL shape (both features off,
     /// the shipped default) is BYTE-FOR-BYTE today's request and an old server simply
     /// ignores the added fields.
+    /// `extras` are the ADDITIVE Phase-2 speak fields ([`SpeakExtras`]): the opt-in
+    /// streaming TTS flag (`[voice].stream_tts`, ships OFF) and the active pronunciation
+    /// locator (`[voice].pronunciation_dictionary_id`/`_version`, default empty). With
+    /// the shipped defaults this is [`SpeakExtras::none`] and the request is
+    /// BYTE-FOR-BYTE today's; an old server simply ignores the fields when present.
     pub async fn speak(
         &mut self,
         text: &str,
@@ -954,6 +1100,7 @@ impl InferenceClient {
         el_key: Option<&str>,
         lang: Option<&str>,
         shape: &crate::prosody::SpeakShape,
+        extras: &SpeakExtras,
     ) -> Result<PathBuf> {
         use crate::voice_tier::Backend;
         let mut req = Request::new(self.fresh_id(), "speak");
@@ -979,10 +1126,110 @@ impl InferenceClient {
         // EXPRESSIVENESS (#33/#34): thread the shaped fields onto the request. A
         // neutral shape (the OFF default) sets NOTHING extra -> byte-for-byte today's.
         apply_shape_to_request(&mut req, shape);
+        // ADDITIVE (Phase-2): thread streaming opt-in + pronunciation locator. Default
+        // SpeakExtras sets NOTHING -> the speak wire is unchanged.
+        apply_extras_to_request(&mut req, extras);
         let resp = self.request(&req).await?;
         resp.path
             .map(PathBuf::from)
             .ok_or_else(|| anyhow!("speak response missing path"))
+    }
+
+    /// SOUND-EFFECT CUE (Phase-2): emit op=sound_effect with the text `prompt` + the
+    /// resolved ElevenLabs key; the server generates a short SFX WAV (EL sound-generation)
+    /// and returns its path under state/tmp/ for the daemon to play. `duration_s` and
+    /// `prompt_influence` are OPTIONAL shaping hints (the server clamps them).
+    ///
+    /// HONESTY: there is NO on-device SFX generator — this is reached ONLY through the
+    /// `[voice].cloud_sfx` + key gate (see [`crate::voice_tier::sfx_enabled`]). On any
+    /// failure (no key / network / quota) the server returns ok:false and this returns
+    /// Err, so the caller surfaces an honest "unavailable" — never a fabricated cue. The
+    /// SFX text PROMPT leaves the device (text only — no on-device audio is uploaded).
+    ///
+    /// SECURITY: `el_key` rides ONLY the request body for the server's `xi-api-key`
+    /// header — never logged/argv/telemetry. Mirrors `clone_voice`.
+    #[allow(dead_code)] // credential+runtime-gated seam; reached via trigger_sound_effect
+    pub async fn sound_effect(
+        &mut self,
+        prompt: &str,
+        el_key: &str,
+        duration_s: Option<f32>,
+        prompt_influence: Option<f32>,
+    ) -> Result<PathBuf> {
+        let mut req = Request::new(self.fresh_id(), "sound_effect");
+        req.text = Some(prompt);
+        req.el_key = Some(el_key);
+        req.duration_s = duration_s;
+        req.prompt_influence = prompt_influence;
+        let resp = self.request(&req).await?;
+        resp.path
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow!("sound_effect response missing path"))
+    }
+
+    /// DESIGN VOICE (Phase-2): mint an ElevenLabs voice from a text DESCRIPTION (no
+    /// audio sample). Emits op=design_voice with `description` (the EL prompt, 20-1000
+    /// chars), `name` (the display name), and the resolved key; returns the new
+    /// `voice_id` the daemon stores in `[voice.voices]` so the named agent can use it
+    /// like any EL voice.
+    ///
+    /// HONESTY: unlike `clone_voice`, NO audio leaves the device — the voice is minted
+    /// purely from the text description, so there is NO consent/audio gate (still
+    /// key-gated). There is no on-device voice designer, so on any failure (or no key)
+    /// the server returns ok:false and this returns Err (honest 'unavailable', never a
+    /// fabricated voice_id). Only the text description leaves the device.
+    ///
+    /// SECURITY: `el_key` rides ONLY the request body for the server's `xi-api-key`
+    /// header — never logged/argv/telemetry. The returned `voice_id` is non-secret.
+    #[allow(dead_code)] // credential+runtime-gated seam; reached via trigger_design_voice
+    pub async fn design_voice(
+        &mut self,
+        description: &str,
+        name: &str,
+        el_key: &str,
+    ) -> Result<String> {
+        let mut req = Request::new(self.fresh_id(), "design_voice");
+        req.text = Some(description); // the voice DESCRIPTION (server reads req.text)
+        req.voice = Some(name); // the display name (server reads req.voice || req.name)
+        req.el_key = Some(el_key);
+        let resp = self.request(&req).await?;
+        resp.voice_id
+            .ok_or_else(|| anyhow!("design_voice response missing voice_id"))
+    }
+
+    /// CREATE PRONUNCIATION DICTIONARY (Phase-2): mint an ElevenLabs pronunciation
+    /// dictionary from text `rules`. Emits op=create_pronunciation with `name`, the
+    /// non-empty `rules` list, and the resolved key; returns the NON-secret
+    /// (dictionary_id, version_id) pair the daemon stores in
+    /// `[voice].pronunciation_dictionary_id`/`_version` to later thread into speak as a
+    /// pronunciation locator.
+    ///
+    /// HONESTY: NO audio leaves the device — the dictionary is minted purely from the
+    /// text rules, so there is NO consent/audio gate (still key-gated). There is no
+    /// on-device equivalent, so on any failure (or no key) the server returns ok:false
+    /// and this returns Err (honest 'unavailable', never a fabricated id).
+    ///
+    /// SECURITY: `el_key` rides ONLY the request body for the server's `xi-api-key`
+    /// header — never logged/argv/telemetry. Both returned ids are non-secret.
+    #[allow(dead_code)] // credential+runtime-gated seam; reached via trigger_create_pronunciation
+    pub async fn create_pronunciation(
+        &mut self,
+        name: &str,
+        rules: &[PronunciationRule],
+        el_key: &str,
+    ) -> Result<(String, String)> {
+        let mut req = Request::new(self.fresh_id(), "create_pronunciation");
+        req.name = Some(name);
+        req.rules = Some(rules);
+        req.el_key = Some(el_key);
+        let resp = self.request(&req).await?;
+        let dictionary_id = resp
+            .dictionary_id
+            .ok_or_else(|| anyhow!("create_pronunciation response missing dictionary_id"))?;
+        let version_id = resp
+            .version_id
+            .ok_or_else(|| anyhow!("create_pronunciation response missing version_id"))?;
+        Ok((dictionary_id, version_id))
     }
 
     /// On-device retrieval embeddings: hand the server a batch of strings and
@@ -1536,9 +1783,10 @@ impl InferenceClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_shape_to_request, backoff_delay, jittered_delay, record_probe,
-        reset_health_for_test, Classification,
-        ConsolidateRequest, FactPair, InferenceClient, Request, Response, TranscriptPair,
+        apply_extras_to_request, apply_shape_to_request, backoff_delay, jittered_delay,
+        record_probe, reset_health_for_test, Classification,
+        ConsolidateRequest, FactPair, InferenceClient, PronunciationRule, Request, Response,
+        SpeakExtras, TranscriptPair,
         CONNECT_TIMEOUT, CONSOLIDATE_TIMEOUT, DESCRIBE_IMAGE_DEFAULT_MAX_TOKENS,
         DESCRIBE_IMAGE_MAX_TOKENS_CAP, DESCRIBE_IMAGE_UNAVAILABLE_REASON, GENERATE_IMAGE_DEFAULT_SIZE,
         GENERATE_IMAGE_DEFAULT_STEPS, GENERATE_IMAGE_MAX_SIZE, GENERATE_IMAGE_MAX_STEPS_CAP,
@@ -1894,6 +2142,207 @@ mod tests {
         )
         .unwrap();
         assert!(other.voice_id.is_none(), "voice_id is absent on non-clone responses");
+    }
+
+    /// sound_effect wire contract (Phase-2). The request carries {op:"sound_effect",
+    /// text (the SFX prompt), el_key} plus the OPTIONAL {duration_s, prompt_influence}
+    /// shaping hints when pinned; the key rides ONLY the body and the account name never
+    /// rides the wire. The cue WAV path comes back in the response.
+    #[test]
+    fn sound_effect_request_carries_prompt_key_and_optional_shaping() {
+        // With shaping pinned: all four fields ride.
+        let mut req = Request::new("sfx-1".to_string(), "sound_effect");
+        req.text = Some("a short metallic chime");
+        req.el_key = Some("sk-secret-key");
+        req.duration_s = Some(2.0);
+        req.prompt_influence = Some(0.7);
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["op"], "sound_effect");
+        assert_eq!(v["text"], "a short metallic chime");
+        assert_eq!(v["el_key"], "sk-secret-key", "key reaches the server in the body only");
+        assert_eq!(v["duration_s"].as_f64().unwrap(), 2.0);
+        // f32 -> f64 widening: compare within tolerance rather than to the exact literal.
+        assert!((v["prompt_influence"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(!line.contains("elevenlabs_api_key"), "the Keychain account name never rides the wire");
+
+        // Without shaping: the optional hints are OMITTED (server defaults apply).
+        let mut bare = Request::new("sfx-2".to_string(), "sound_effect");
+        bare.text = Some("a soft click");
+        bare.el_key = Some("sk-k");
+        let bv = serde_json::to_value(&bare).unwrap();
+        assert!(bv.get("duration_s").is_none(), "duration_s omitted when unset");
+        assert!(bv.get("prompt_influence").is_none(), "prompt_influence omitted when unset");
+
+        // The SFX response carries the cue WAV path.
+        let resp = serde_json::from_str::<Response>(
+            r#"{"id":"sfx-1","ok":true,"path":"/state/tmp/sfx.wav","latency_ms":700}"#,
+        )
+        .unwrap();
+        assert_eq!(resp.path.as_deref(), Some("/state/tmp/sfx.wav"));
+    }
+
+    /// design_voice wire contract (Phase-2). The request carries {op:"design_voice",
+    /// text (the voice DESCRIPTION — server reads req.text), voice (the display name —
+    /// server reads req.voice || req.name), el_key}. NO path/audio rides (text-only —
+    /// no audio leaves the device). The minted voice_id comes back in the response.
+    #[test]
+    fn design_voice_request_is_text_only_with_description_name_and_key() {
+        let mut req = Request::new("dv-1".to_string(), "design_voice");
+        req.text = Some("a warm, calm baritone with a slight rasp");
+        req.voice = Some("Atlas");
+        req.el_key = Some("sk-secret-key");
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["op"], "design_voice");
+        assert_eq!(v["text"], "a warm, calm baritone with a slight rasp", "the description rides as text");
+        assert_eq!(v["voice"], "Atlas", "the display name rides as voice");
+        assert_eq!(v["el_key"], "sk-secret-key", "key reaches the server in the body only");
+        // No audio sample leaves the device on the design path.
+        assert!(v.get("path").is_none(), "design_voice is TEXT-ONLY — no audio sample path");
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(!line.contains("elevenlabs_api_key"), "the Keychain account name never rides the wire");
+
+        // The design response carries a NON-secret voice_id (same field as clone).
+        let resp = serde_json::from_str::<Response>(
+            r#"{"id":"dv-1","ok":true,"voice_id":"EL_DESIGNED_ID","latency_ms":1200}"#,
+        )
+        .unwrap();
+        assert_eq!(resp.voice_id.as_deref(), Some("EL_DESIGNED_ID"));
+    }
+
+    /// create_pronunciation wire contract (Phase-2). The request carries
+    /// {op:"create_pronunciation", name, rules:[...], el_key}; the rules are TEXT only
+    /// (no audio leaves the device). The minted NON-secret (dictionary_id, version_id)
+    /// pair comes back in the response.
+    #[test]
+    fn create_pronunciation_request_carries_name_rules_and_key() {
+        let rules = vec![
+            PronunciationRule {
+                string_to_replace: "JARVIS".to_string(),
+                rule_type: "alias".to_string(),
+                alias: Some("jarviss".to_string()),
+                phoneme: None,
+                alphabet: None,
+            },
+            PronunciationRule {
+                string_to_replace: "nginx".to_string(),
+                rule_type: "phoneme".to_string(),
+                alias: None,
+                phoneme: Some("ˈɛndʒɪnˌɛks".to_string()),
+                alphabet: Some("ipa".to_string()),
+            },
+        ];
+        let mut req = Request::new("cp-1".to_string(), "create_pronunciation");
+        req.name = Some("JARVIS dictionary");
+        req.rules = Some(&rules);
+        req.el_key = Some("sk-secret-key");
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["op"], "create_pronunciation");
+        assert_eq!(v["name"], "JARVIS dictionary");
+        assert_eq!(v["el_key"], "sk-secret-key", "key reaches the server in the body only");
+        // The rules ride as a flat list matching the EL add-from-rules contract.
+        assert_eq!(v["rules"][0]["string_to_replace"], "JARVIS");
+        assert_eq!(v["rules"][0]["type"], "alias", "the rule discriminator serializes as `type`");
+        assert_eq!(v["rules"][0]["alias"], "jarviss");
+        assert!(v["rules"][0].get("phoneme").is_none(), "an alias rule omits phoneme");
+        assert_eq!(v["rules"][1]["type"], "phoneme");
+        assert_eq!(v["rules"][1]["phoneme"], "ˈɛndʒɪnˌɛks");
+        assert_eq!(v["rules"][1]["alphabet"], "ipa");
+        assert!(v["rules"][1].get("alias").is_none(), "a phoneme rule omits alias");
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(!line.contains("elevenlabs_api_key"), "the Keychain account name never rides the wire");
+
+        // The response carries the NON-secret (dictionary_id, version_id) pair.
+        let resp = serde_json::from_str::<Response>(
+            r#"{"id":"cp-1","ok":true,"dictionary_id":"EL_PD_ID","version_id":"EL_PD_VER","latency_ms":500}"#,
+        )
+        .unwrap();
+        assert_eq!(resp.dictionary_id.as_deref(), Some("EL_PD_ID"));
+        assert_eq!(resp.version_id.as_deref(), Some("EL_PD_VER"));
+        // Non-pronunciation responses carry neither id.
+        let other = serde_json::from_str::<Response>(
+            r#"{"id":"x","ok":true,"text":"hi","latency_ms":3}"#,
+        )
+        .unwrap();
+        assert!(other.dictionary_id.is_none() && other.version_id.is_none());
+    }
+
+    /// ADDITIVE speak-threading (Phase-2): with DEFAULT extras (SpeakExtras::none, the
+    /// shipped config default — stream_tts OFF, empty pronunciation dictionary) the
+    /// speak request is BYTE-FOR-BYTE today's: NO `stream` and NO `pronunciation_locators`
+    /// fields appear, on EITHER backend. This is the safety property — the default
+    /// behavior must not change.
+    #[test]
+    fn speak_extras_default_leave_the_request_unchanged() {
+        let none = SpeakExtras::none();
+        assert_eq!(none, SpeakExtras::default());
+
+        // Kokoro path (default tier OFF): byte-for-byte today's.
+        let mut kk = Request::new("se-1".to_string(), "speak");
+        kk.text = Some("hello");
+        kk.voice = Some("bm_george");
+        apply_extras_to_request(&mut kk, &none);
+        let kv = serde_json::to_value(&kk).unwrap();
+        assert!(kv.get("stream").is_none(), "no stream field with default extras (Kokoro)");
+        assert!(
+            kv.get("pronunciation_locators").is_none(),
+            "no pronunciation_locators with default extras (Kokoro)"
+        );
+
+        // ElevenLabs path: the additive fields are STILL omitted with default extras.
+        let mut el = Request::new("se-2".to_string(), "speak");
+        el.text = Some("hello");
+        el.backend = Some("elevenlabs");
+        el.voice_id = Some("EL");
+        el.model = Some("eleven_flash_v2_5");
+        apply_extras_to_request(&mut el, &none);
+        let ev = serde_json::to_value(&el).unwrap();
+        assert!(ev.get("stream").is_none(), "no stream field with default extras (EL)");
+        assert!(ev.get("pronunciation_locators").is_none(), "no locators with default extras (EL)");
+    }
+
+    /// ADDITIVE speak-threading (Phase-2): when the operator opts IN, the extras ride
+    /// the wire — `stream:true` and a single pronunciation locator {dictionary_id[,
+    /// version_id]}. The version rides only when non-empty (else EL uses the latest).
+    /// And streaming is only ever carried as `true` (the opt-in is never sent as false).
+    #[test]
+    fn speak_extras_thread_stream_and_pronunciation_locator_when_set() {
+        // Both opted in, with a pinned version.
+        let extras = SpeakExtras {
+            stream: Some(true),
+            pronunciation_dictionary_id: "EL_PD_ID".to_string(),
+            pronunciation_dictionary_version: "EL_PD_VER".to_string(),
+        };
+        let mut req = Request::new("se-3".to_string(), "speak");
+        req.text = Some("nginx");
+        req.backend = Some("elevenlabs");
+        req.voice_id = Some("EL");
+        req.model = Some("eleven_flash_v2_5");
+        apply_extras_to_request(&mut req, &extras);
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["stream"], true, "streaming opt-in rides the wire when set");
+        let loc = &v["pronunciation_locators"][0];
+        assert_eq!(loc["pronunciation_dictionary_id"], "EL_PD_ID");
+        assert_eq!(loc["version_id"], "EL_PD_VER", "the pinned version rides alongside the id");
+
+        // Dictionary id set but NO version pinned -> the locator omits version_id.
+        let no_ver = SpeakExtras {
+            stream: None,
+            pronunciation_dictionary_id: "EL_PD_ID".to_string(),
+            pronunciation_dictionary_version: String::new(),
+        };
+        let mut req2 = Request::new("se-4".to_string(), "speak");
+        req2.text = Some("hi");
+        req2.voice = Some("bm_george");
+        apply_extras_to_request(&mut req2, &no_ver);
+        let v2 = serde_json::to_value(&req2).unwrap();
+        assert!(v2.get("stream").is_none(), "stream omitted when not opted in");
+        let loc2 = &v2["pronunciation_locators"][0];
+        assert_eq!(loc2["pronunciation_dictionary_id"], "EL_PD_ID");
+        assert!(
+            loc2.get("version_id").is_none(),
+            "version_id omitted when empty (EL uses the latest version)"
+        );
     }
 
     /// speak wire contract — Babel target language (build 2/2). The `lang` field

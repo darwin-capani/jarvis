@@ -230,6 +230,23 @@ pub fn resolve_stt_backend(cfg: &Config, tier: Tier, key_present: bool) -> SttBa
     }
 }
 
+/// The SOUND-EFFECT CUE gate (Phase-2): whether the `sound_effect` op may be reached.
+/// SFX has NO on-device fallback (there is no local SFX generator), so unlike the TTS
+/// backend selection this is a SIMPLE enabled gate rather than a backend choice: it is
+/// reachable ONLY when `[voice].cloud_sfx` is on AND an `elevenlabs_api_key` is present
+/// (`key_present`). With it off, or with no key, the cue is honestly UNAVAILABLE (a
+/// silent no-op) — never a fabricated/placeholder cue.
+///
+/// Like [`resolve_voice_backend`], this is told only WHETHER a key exists (a bool by
+/// design — the key value never enters this pure decision). PURE: no I/O, no globals,
+/// no network. The daemon still reads the runtime tier at the call site (an offline /
+/// `Local` tier is handled there, mirroring the SFX gate's "key + non-Local" contract);
+/// this predicate is the switch+key half the unit tests pin.
+#[allow(dead_code)] // Phase-2 gate; consumed by trigger_sound_effect + the unit test
+pub fn sfx_enabled(cfg: &Config, key_present: bool) -> bool {
+    cfg.voice.cloud_sfx && key_present
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +383,32 @@ mod tests {
     #[test]
     fn elevenlabs_account_constant_is_the_keychain_account() {
         assert_eq!(ELEVENLABS_ACCOUNT, "elevenlabs_api_key");
+    }
+
+    // === SFX cue gate (Phase-2): sfx_enabled ===============================
+
+    /// The SFX cue gate is a SIMPLE switch+key AND (no on-device fallback): reachable
+    /// ONLY when `[voice].cloud_sfx` is on AND a key is present. The shipped default is
+    /// cloud_sfx=ON, but INERT WITHOUT A KEY — so the default with no key is still
+    /// disabled (an honest silent no-op), and any one of {switch off, no key} disables.
+    #[test]
+    fn sfx_gate_needs_both_the_switch_and_a_key() {
+        // Shipped default: cloud_sfx ON. With NO key it is still disabled (INERT
+        // WITHOUT A KEY — there is no on-device SFX generator to fall back to).
+        let default_cfg = Config::default();
+        assert!(default_cfg.voice.cloud_sfx, "SFX cue tier SHIPS ON (full-power default)");
+        assert!(
+            !sfx_enabled(&default_cfg, false),
+            "ON but NO KEY -> disabled (honest silent no-op, never a fabricated cue)"
+        );
+        // ON + key -> the ONLY enabled cell.
+        assert!(sfx_enabled(&default_cfg, true), "ON + key -> SFX is reachable");
+
+        // Switch explicitly OFF -> disabled even WITH a key.
+        let mut off = Config::default();
+        off.voice.cloud_sfx = false;
+        assert!(!sfx_enabled(&off, true), "switch OFF -> disabled even with a key");
+        assert!(!sfx_enabled(&off, false), "switch OFF + no key -> disabled");
     }
 
     // === STT tier (build 2/2): resolve_stt_backend ==========================

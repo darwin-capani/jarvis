@@ -1390,6 +1390,10 @@ async fn roll_call(
         json!({"agents": agents.all().len()}),
     );
 
+    // ADDITIVE (Phase-2): streaming opt-in + pronunciation locator from [voice].
+    // SpeakExtras::none() with the shipped defaults -> the speak wire is unchanged.
+    let extras = crate::inference::SpeakExtras::from_config(cfg);
+
     let mut spoken_intros: Vec<String> = Vec::new();
     for agent in agents.all() {
         if ROLL_CALL_CANCEL.load(Ordering::Relaxed) {
@@ -1421,7 +1425,7 @@ async fn roll_call(
         intro_shape = crate::prosody::apply_whisper(intro_shape, whisper_on, false);
         crate::prosody::emit_telemetry(profile, &backend, &intro_shape, whisper_on);
         // English self-introduction — no Babel target language to thread.
-        match infer.speak(&intro, &backend, el_key.as_deref(), None, &intro_shape).await {
+        match infer.speak(&intro, &backend, el_key.as_deref(), None, &intro_shape, &extras).await {
             Ok(wav) => {
                 if reply.push_clip(&wav).await {
                     spoken_intros.push(intro);

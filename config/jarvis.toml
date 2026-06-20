@@ -364,6 +364,31 @@ adaptive_prosody = true        # #33 ADAPTIVE TONE/PROSODY, SHIPS ON (full-power
 whisper = true                 # #34 WHISPER / DISCREET MODE, SHIPS ON (full-power default). Explicit-command terse + soft delivery. Changes DELIVERY ONLY — never suppresses a required safety confirmation (a required confirm still speaks, softly). Set false to disable.
 whisper_auto = true            # #34 auto-engage whisper by sustained low-amplitude input, SHIPS ON (full-power default). PURE energy-series heuristic; does NOT open the mic itself. Delivery-only. Set false to require the explicit command.
 diarize = true                 # #31 MULTI-SPEAKER DIARIZATION, SHIPS ON (full-power default) — INERT ON-DEVICE: consumes speaker labels the EL SCRIBE STT backend reports; on-device whisper has no diarization model => honest single-stream "speaker: unknown" (never fabricated speakers). EL-Scribe-gated. Set false for single-stream always.
+# cloud_sfx — the SOUND-EFFECT CUE tier (the inference server's sound_effect op:
+# a short text prompt -> a generated SFX cue). SHIPS ON (full-power default), gated
+# EXACTLY like cloud_tier: reached only when cloud_sfx = true AND an
+# `elevenlabs_api_key` is present in the Keychain AND the tier is non-Local. There is
+# NO on-device SFX generator, so without a key (or offline) it is a SILENT NO-OP — no
+# cue is produced, stated honestly, never faked. An ADDED cue layer reached only
+# through its explicit gate/command; it NEVER changes the default speech path. When
+# active the SFX TEXT PROMPT leaves the device (text only). Set false to disable cues.
+cloud_sfx = true               # SFX cue master switch, SHIPS ON (full-power default) — INERT WITHOUT A KEY: needs the EL key + a non-Local tier; otherwise a silent no-op (no on-device SFX generator). Reached only through its explicit gate; never changes the default speech path. When active the SFX text prompt leaves the device. Set false to disable cues.
+# stream_tts — LOW-LATENCY STREAMING TTS. OPT-IN (ships OFF) so DEFAULT BEHAVIOR IS
+# UNCHANGED — today's blocking synthesis stays the default. When true AND the resolved
+# backend is ElevenLabs, `speak` requests the streaming endpoint for faster first
+# audio; the inference server FALLS BACK to blocking on ANY streaming error, so a turn
+# is never failed by the streaming leg. Inert on Kokoro (the on-device path is
+# unchanged). Delivery timing only — never a gate/policy surface.
+stream_tts = false             # low-latency streaming TTS, OPT-IN (ships OFF) — default is today's blocking synthesis. When true AND the backend is ElevenLabs, speak streams for first-audio latency (falls back to blocking on any streaming error). Inert on Kokoro. Set true to opt in.
+# pronunciation_dictionary_id / pronunciation_dictionary_version — the ACTIVE
+# ElevenLabs pronunciation-dictionary locator threaded into `speak`. Both DEFAULT ""
+# (none): empty id = NO locator is sent, so speech is byte-for-byte today's. The
+# create_pronunciation op (name + rules, text/rules only — no audio leaves the device)
+# returns the dictionary_id + version_id to paste here. With an id set, the server
+# adds it to the speak request's pronunciation_locators; the version is OPTIONAL
+# (empty = latest version). EL-pronunciation-gated; inert on Kokoro.
+pronunciation_dictionary_id = ""      # ACTIVE EL pronunciation-dictionary id threaded as a speak locator. DEFAULT "" (none) => no locator, today's speech. Paste the dictionary_id the create_pronunciation op returns.
+pronunciation_dictionary_version = "" # OPTIONAL version for the locator above. DEFAULT "" (none) => latest version. Paste the version_id the create_pronunciation op returns to pin it. Inert when the id is empty.
 
 # [docsearch] — ON-DEVICE FILE RAG (docsearch.rs): index + search the user's OWN
 # text-like files, 100% on-device. File CONTENTS + EMBEDDINGS NEVER LEAVE THE
