@@ -378,6 +378,18 @@ ELEVENLABS_SFX_OUTPUT_FORMAT = "pcm_24000"
 ELEVENLABS_SFX_DURATION_MIN = 0.5
 ELEVENLABS_SFX_DURATION_MAX = 22.0
 
+# AUDIO ISOLATION (voice isolator / background-noise removal): POST
+# /v1/audio-isolation as multipart (the `audio` file part) -> cleaned audio. Strips
+# background noise/ambience and leaves only the voice. Like SFX, the key rides ONLY
+# the xi-api-key header (never URL/query/log) and we request PCM (pcm_24000) so the
+# cleaned bytes wrap into the SAME pipeline WAV via _pcm16_to_float32 -> _write_wav.
+# There is NO on-device isolator, so this is a PURE cloud capability: gated on the
+# key, and INERT (honest 'unavailable', never faked) without one. HONESTY: the
+# user's AUDIO leaves the device here (like Scribe STT). Endpoint confirmed against
+# the 2026 ElevenLabs docs: https://elevenlabs.io/docs/api-reference/audio-isolation/convert
+ELEVENLABS_AUDIO_ISOLATION_URL = "https://api.elevenlabs.io/v1/audio-isolation"
+ELEVENLABS_AUDIO_ISOLATION_OUTPUT_FORMAT = "pcm_24000"
+
 # VOICE DESIGN (prompt-to-voice): a TWO-STEP cloud flow that mints a brand-new
 # NON-secret voice_id from a TEXT DESCRIPTION (no audio sample uploaded, unlike
 # clone). Step 1 POST /v1/text-to-voice/design ({"voice_description", optional
@@ -813,6 +825,48 @@ def _elevenlabs_clone_voice(name, sample_path, api_key, timeout_s=ELEVENLABS_TIM
     if not isinstance(voice_id, str) or not voice_id:
         raise ValueError("ElevenLabs clone response had no voice_id")
     return voice_id
+
+
+def _elevenlabs_isolate_audio(audio_path, api_key, timeout_s=ELEVENLABS_TIMEOUT_S):
+    """THE audio-isolation network seam (the ONLY place isolation touches the EL
+    net). POST the audio file at `audio_path` to /v1/audio-isolation as multipart
+    (the `audio` file part) and return the CLEANED audio bytes. We request PCM
+    (output_format=pcm_24000) so the bytes are raw PCM16 mono @24kHz — the caller
+    wraps them into the pipeline WAV via _pcm16_to_float32 -> _write_wav, exactly
+    like SFX. The `api_key` rides ONLY the `xi-api-key` request header — never the
+    URL/query, never a log line. Raises on any HTTP/transport error; the caller
+    (`isolate_audio`) catches EVERYTHING and returns no audio, so a failure never
+    fabricates a cleaned clip and never crashes a turn.
+
+    This is the mock seam: tests monkeypatch `server._elevenlabs_isolate_audio` to
+    return canned bytes (or raise) WITHOUT touching the network. Stdlib-only (urllib).
+
+    CREDENTIAL+RUNTIME GATED: reached ONLY from the isolate_audio op, which the
+    daemon enters only after its key gate. HONESTY: the user's AUDIO leaves the
+    device here (like Scribe STT). There is NO on-device isolator."""
+    import urllib.request
+
+    if not api_key:
+        # Defense in depth: never send a keyless cloud request.
+        raise ValueError("ElevenLabs audio isolation requires an API key (none supplied)")
+    with open(audio_path, "rb") as f:
+        audio_bytes = f.read()
+    if not audio_bytes:
+        raise ValueError("audio file is empty; nothing to isolate")
+    file_name = os.path.basename(audio_path) or "audio.wav"
+    # The cleaned audio comes back as raw PCM (pcm_24000) so it decodes through the
+    # IDENTICAL _pcm16_to_float32 -> _write_wav path as TTS/SFX.
+    url = f"{ELEVENLABS_AUDIO_ISOLATION_URL}?output_format={ELEVENLABS_AUDIO_ISOLATION_OUTPUT_FORMAT}"
+    content_type, body = _multipart_body(
+        {}, "audio", file_name, audio_bytes, content_type="audio/wav"
+    )
+    req = urllib.request.Request(url, data=body, method="POST")
+    # The key rides ONLY this header. Never a URL/query param, never logged.
+    req.add_header(_ELEVENLABS_HEADER, api_key)
+    req.add_header("Content-Type", content_type)
+    req.add_header("Accept", "audio/pcm")
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        return resp.read()
 
 
 def _build_design_payload(description, text=None):
@@ -4245,6 +4299,35 @@ class InferenceEngine:
             )
             return None
 
+    def isolate_audio(self, audio_path, el_key):
+        """Strip background noise from the audio at `audio_path` via ElevenLabs
+        audio isolation (voice isolator) and return a CLEANED pipeline WAV path, or
+        None on any failure.
+
+        HONESTY: the user's AUDIO leaves the device here (like Scribe STT) — MORE
+        sensitive than TTS text. There is NO on-device isolator, so a failure (or no
+        key) yields None and the caller treats it as 'unavailable' — never a faked or
+        passed-through clip, never a crash. The cleaned PCM bytes flow through the
+        IDENTICAL _pcm16_to_float32 -> _write_wav path as TTS/SFX (fades, atomic
+        write, pipeline WAV). The key rides only the seam header — never logged here.
+        Blocking; runs on a worker thread."""
+        try:
+            cleaned = _elevenlabs_isolate_audio(audio_path, el_key)
+            if not cleaned:
+                log.warning("ElevenLabs audio isolation returned no audio; nothing produced")
+                return None
+            audio = _pcm16_to_float32(cleaned)
+            return self._write_wav(audio, ELEVENLABS_SAMPLE_RATE)
+        except Exception as exc:
+            # ANY error (network, HTTP, auth, timeout, missing key/file, decode) ->
+            # no audio. Log only the redacted exception CLASS — never the message
+            # (which could echo a key-bearing URL fragment).
+            log.warning(
+                "ElevenLabs audio isolation failed (%s); nothing produced",
+                _redact_elevenlabs(type(exc).__name__),
+            )
+            return None
+
     @staticmethod
     def _apply_gain(audio, volume):
         """COARSE output gain (#34 whisper soft delivery), honoured on EVERY backend.
@@ -5177,6 +5260,32 @@ class InferenceServer:
                     "id": rid,
                     "ok": False,
                     "error": "sound effects unavailable (cloud SFX tier off or no key)",
+                    "latency_ms": latency_ms(),
+                }
+
+            if op == "isolate_audio":
+                # CLOUD-ONLY audio isolation (ElevenLabs voice isolator). The daemon
+                # emits this only after its key gate. path = the audio file to clean;
+                # el_key = the xi-api-key (request-body only, NEVER logged). There is
+                # NO on-device isolator, so on any failure (or no key) -> ok:false
+                # (honest 'unavailable', never a faked/passed-through clip). HONESTY:
+                # the user's AUDIO leaves the device to ElevenLabs (like Scribe STT).
+                path = req.get("path")
+                if not path or not isinstance(path, str):
+                    raise ValueError("'path' (audio to isolate) is required for op=isolate_audio")
+                el_key = req.get("el_key")
+                if el_key is not None and not isinstance(el_key, str):
+                    raise ValueError("'el_key' must be a string")
+                cleaned_path = await asyncio.to_thread(
+                    self.engine.isolate_audio, path, el_key
+                )
+                if cleaned_path:
+                    return {"id": rid, "ok": True, "path": cleaned_path, "latency_ms": latency_ms()}
+                # Honest unavailable: there is no on-device isolator to substitute.
+                return {
+                    "id": rid,
+                    "ok": False,
+                    "error": "audio isolation unavailable (no key or isolation failed)",
                     "latency_ms": latency_ms(),
                 }
 
