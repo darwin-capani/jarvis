@@ -344,6 +344,19 @@ SPEAK_RATE_MAX = 2.0
 SPEAK_VOLUME_MIN = 0.05
 SPEAK_VOLUME_MAX = 1.0
 
+# SOUND EFFECTS: POST /v1/sound-generation ({"text": prompt, ...}) -> audio.
+# Generates a NON-speech cue (chime/alert/ambient/whoosh) from a text prompt. Like
+# TTS, the key rides ONLY the xi-api-key header (never URL/query/log) and we request
+# PCM (pcm_24000) so the bytes wrap into the SAME pipeline WAV via _write_wav. There
+# is NO on-device SFX generator, so this is a PURE cloud capability: gated on the key
+# + the daemon's [voice].cloud_sfx switch, and INERT (honest 'unavailable', never
+# faked) without a key. EL caps generated length at ~22s; duration/influence are
+# OPTIONAL and clamped.
+ELEVENLABS_SFX_URL = "https://api.elevenlabs.io/v1/sound-generation"
+ELEVENLABS_SFX_OUTPUT_FORMAT = "pcm_24000"
+ELEVENLABS_SFX_DURATION_MIN = 0.5
+ELEVENLABS_SFX_DURATION_MAX = 22.0
+
 
 def _is_non_english_lang(lang):
     """True when `lang` names a language that is NOT English (so the EL TTS leg
@@ -494,6 +507,56 @@ def _pcm16_to_float32(pcm_bytes):
         pcm_bytes = pcm_bytes[: len(pcm_bytes) - 1]
     pcm = np.frombuffer(pcm_bytes, dtype="<i2")
     return (pcm.astype(np.float32) / 32768.0)
+
+
+def _build_sfx_payload(prompt, duration_s=None, prompt_influence=None):
+    """Build the ElevenLabs sound-generation request JSON (a dict) for `prompt`.
+    `duration_s` (clamped to EL's 0.5-22s window) and `prompt_influence` (0-1) are
+    OPTIONAL — absent/invalid values are omitted so EL auto-chooses. PURE; no network
+    — split out so the payload shaping is unit-testable without HTTP."""
+    body = {"text": prompt}
+    d = _clamp_optional_float(duration_s, ELEVENLABS_SFX_DURATION_MIN, ELEVENLABS_SFX_DURATION_MAX)
+    if d is not None:
+        body["duration_seconds"] = d
+    pi = _clamp_optional_float(prompt_influence, 0.0, 1.0)
+    if pi is not None:
+        body["prompt_influence"] = pi
+    return body
+
+
+def _elevenlabs_sfx(prompt, api_key, duration_s=None, prompt_influence=None,
+                    timeout_s=ELEVENLABS_TIMEOUT_S):
+    """THE sound-effects network seam (the ONLY place SFX touches the EL network).
+
+    POST `prompt` to /v1/sound-generation and return raw PCM16 mono @24kHz bytes
+    (output_format=pcm_24000); the caller wraps them into the pipeline WAV. The
+    `api_key` rides ONLY the `xi-api-key` request header — never the URL/query,
+    never a log line. Raises on any HTTP/transport error; the caller
+    (`sound_effect`) catches EVERYTHING and returns no audio, so a failure never
+    fabricates a cue and never crashes a turn.
+
+    Mock seam: tests monkeypatch `server._elevenlabs_sfx` to return canned bytes
+    (or raise) WITHOUT touching the network. Stdlib-only (urllib).
+
+    CREDENTIAL+RUNTIME GATED: reached ONLY from the sound_effect op, which the
+    daemon enters only after its [voice].cloud_sfx + key gate."""
+    import urllib.request
+
+    if not api_key:
+        # Defense in depth: never send a keyless cloud request.
+        raise ValueError("ElevenLabs sound generation requires an API key (none supplied)")
+    if not (isinstance(prompt, str) and prompt.strip()):
+        raise ValueError("ElevenLabs sound generation requires a non-empty prompt")
+
+    url = f"{ELEVENLABS_SFX_URL}?output_format={ELEVENLABS_SFX_OUTPUT_FORMAT}"
+    payload = json.dumps(_build_sfx_payload(prompt, duration_s, prompt_influence)).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, method="POST")
+    # The key rides ONLY this header. Never a URL/query param, never logged.
+    req.add_header(_ELEVENLABS_HEADER, api_key)
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "audio/pcm")
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        return resp.read()
 
 
 def _multipart_body(fields, file_field, file_name, file_bytes, content_type="audio/wav"):
@@ -3771,6 +3834,32 @@ class InferenceEngine:
             )
             return None
 
+    def sound_effect(self, prompt, el_key, duration_s=None, prompt_influence=None):
+        """Generate a NON-speech SOUND-EFFECT cue from `prompt` via ElevenLabs
+        sound-generation and return a pipeline WAV path, or None on any failure.
+
+        There is NO on-device SFX generator, so a failure (or no key) yields None
+        and the caller treats it as 'unavailable' — never a fabricated/placeholder
+        cue, never a crash. The PCM bytes flow through the IDENTICAL _write_wav path
+        as TTS (fades, atomic write, pipeline WAV). The key rides only the seam
+        header — never logged here. Blocking; runs on a worker thread."""
+        try:
+            pcm = _elevenlabs_sfx(prompt, el_key, duration_s, prompt_influence)
+            if not pcm:
+                log.warning("ElevenLabs sound generation returned no audio; no cue produced")
+                return None
+            audio = _pcm16_to_float32(pcm)
+            return self._write_wav(audio, ELEVENLABS_SAMPLE_RATE)
+        except Exception as exc:
+            # ANY error (network, HTTP, auth, timeout, missing key/prompt, decode)
+            # -> no cue. Log only the redacted exception CLASS — never the message
+            # (which could echo a key-bearing URL fragment).
+            log.warning(
+                "ElevenLabs sound generation failed (%s); no cue produced",
+                _redact_elevenlabs(type(exc).__name__),
+            )
+            return None
+
     @staticmethod
     def _apply_gain(audio, volume):
         """COARSE output gain (#34 whisper soft delivery), honoured on EVERY backend.
@@ -4582,6 +4671,38 @@ class InferenceServer:
                     "id": rid,
                     "ok": False,
                     "error": "voice cloning unavailable (no voice produced)",
+                    "latency_ms": latency_ms(),
+                }
+
+            if op == "sound_effect":
+                # CLOUD-ONLY sound-effect cue (ElevenLabs sound-generation). The
+                # daemon emits this only after its [voice].cloud_sfx + key gate.
+                # text = the SFX prompt; el_key = the xi-api-key (request-body only,
+                # NEVER logged); optional duration_s + prompt_influence shape the cue.
+                # There is NO on-device SFX generator, so on any failure (or no key)
+                # -> ok:false (honest 'unavailable', never a fabricated/placeholder cue).
+                prompt = req.get("text")
+                if not prompt or not isinstance(prompt, str):
+                    raise ValueError("'text' (sound-effect prompt) is required for op=sound_effect")
+                el_key = req.get("el_key")
+                if el_key is not None and not isinstance(el_key, str):
+                    raise ValueError("'el_key' must be a string")
+                duration_s = req.get("duration_s")
+                if duration_s is not None and not isinstance(duration_s, (int, float)):
+                    raise ValueError("'duration_s' must be a number")
+                prompt_influence = req.get("prompt_influence")
+                if prompt_influence is not None and not isinstance(prompt_influence, (int, float)):
+                    raise ValueError("'prompt_influence' must be a number")
+                path = await asyncio.to_thread(
+                    self.engine.sound_effect, prompt, el_key, duration_s, prompt_influence
+                )
+                if path:
+                    return {"id": rid, "ok": True, "path": path, "latency_ms": latency_ms()}
+                # Honest unavailable: there is no on-device SFX fallback to substitute.
+                return {
+                    "id": rid,
+                    "ok": False,
+                    "error": "sound effects unavailable (cloud SFX tier off or no key)",
                     "latency_ms": latency_ms(),
                 }
 
