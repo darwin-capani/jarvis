@@ -158,7 +158,7 @@ FALLBACK_LLM="mlx-community/Qwen3-4B-Instruct-2507-4bit"
 FALLBACK_STT="mlx-community/whisper-small-mlx"
 FALLBACK_TTS="mlx-community/Kokoro-82M-bf16"
 FALLBACK_VLM="mlx-community/Qwen2-VL-2B-Instruct-4bit"
-FALLBACK_DRAFT="mlx-community/Qwen3-0.6B-Instruct-4bit"
+FALLBACK_DRAFT="mlx-community/Qwen3-0.6B-4bit"
 
 # Dirs that are BUILT or FETCHED fresh in the install home and must NOT be copied
 # from the source tree (so we never ship a stale daemon binary, a wrong-path
@@ -953,14 +953,30 @@ else
     else
         ui_err "no model downloader in the venv (need 'hf' or huggingface_hub — Stage 3 installs huggingface_hub)"; exit 1
     fi
-    n=0; total="${#MODELS[@]}"
+    n=0; total="${#MODELS[@]}"; failed_models=()
     for m in "${MODELS[@]}"; do
         n=$((n + 1))
         ui_progress $(( (n - 1) * 100 / total )) "model $n/$total: $m"
-        ui_spin "download $m" -- "${DL[@]}" "$m"
+        # BEST-EFFORT: a single model failing (a renamed/removed repo, an HF hiccup,
+        # a rate-limit) must NOT abort the whole multi-GB install after the others
+        # already downloaded. Warn + continue; the daemon fetches a missing model on
+        # first use, or the dependent feature stays honestly inert (e.g. speculative
+        # decoding without the DRAFT model). Downloads are cache-first, so re-running
+        # the installer resumes cheaply.
+        if ui_spin "download $m" -- "${DL[@]}" "$m"; then
+            :
+        else
+            failed_models+=("$m")
+            ui_warn "could not pre-download $m — JARVIS will fetch it on first use (or the dependent feature stays inert)."
+        fi
     done
-    ui_progress 100 "all models cached"
-    ui_ok "Every model the OS uses is pre-downloaded into $HF_HOME_DIR"
+    ui_progress 100 "models cached"
+    if [ "${#failed_models[@]}" -eq 0 ]; then
+        ui_ok "Every model the OS uses is pre-downloaded into $HF_HOME_DIR"
+    else
+        ui_warn "Pre-downloaded all but ${#failed_models[@]} of $total model(s): ${failed_models[*]}"
+        ui_note "Each is fetched on first use (or its feature stays inert). Re-run the installer to retry — downloads resume from cache."
+    fi
 fi
 
 # ============================================================================

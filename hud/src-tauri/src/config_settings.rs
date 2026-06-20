@@ -1601,10 +1601,10 @@ roots = []                     # EXPLICIT codebase-root allowlist, SHIPS EMPTY.
         let changes = vec![
             Change { id: "vision.model".into(), value: SettingValue::Str("mlx-community/Qwen2-VL-2B-Instruct-4bit".into()) },
             Change { id: "speech.model".into(), value: SettingValue::Str("mlx-community/Kokoro-82M-bf16".into()) },
-            Change { id: "inference.draft_model".into(), value: SettingValue::Str("mlx-community/Qwen3-0.6B-Instruct-4bit".into()) },
+            Change { id: "inference.draft_model".into(), value: SettingValue::Str("mlx-community/Qwen3-0.6B-4bit".into()) },
             Change { id: "docsearch.roots".into(), value: SettingValue::StrList(vec!["/Users/me/Notes".into(), "/Users/me/Docs".into()]) },
             Change { id: "code.roots".into(), value: SettingValue::StrList(vec!["/Users/me/proj".into()]) },
-            Change { id: "models.local_warm".into(), value: SettingValue::StrList(vec!["mlx-community/Qwen3-0.6B-Instruct-4bit".into()]) },
+            Change { id: "models.local_warm".into(), value: SettingValue::StrList(vec!["mlx-community/Qwen3-0.6B-4bit".into()]) },
             Change { id: "models.local_budget_gib".into(), value: SettingValue::Float(3.5) },
         ];
         let updated = apply_changes(SAMPLE_V1, &changes).expect("apply v1 ok");
@@ -1612,7 +1612,7 @@ roots = []                     # EXPLICIT codebase-root allowlist, SHIPS EMPTY.
 
         assert_eq!(get_value(&states, "vision.model"), SettingValue::Str("mlx-community/Qwen2-VL-2B-Instruct-4bit".into()));
         assert_eq!(get_value(&states, "speech.model"), SettingValue::Str("mlx-community/Kokoro-82M-bf16".into()));
-        assert_eq!(get_value(&states, "inference.draft_model"), SettingValue::Str("mlx-community/Qwen3-0.6B-Instruct-4bit".into()));
+        assert_eq!(get_value(&states, "inference.draft_model"), SettingValue::Str("mlx-community/Qwen3-0.6B-4bit".into()));
         assert_eq!(
             get_value(&states, "docsearch.roots"),
             SettingValue::StrList(vec!["/Users/me/Notes".into(), "/Users/me/Docs".into()])
@@ -1620,13 +1620,13 @@ roots = []                     # EXPLICIT codebase-root allowlist, SHIPS EMPTY.
         assert_eq!(get_value(&states, "code.roots"), SettingValue::StrList(vec!["/Users/me/proj".into()]));
         assert_eq!(
             get_value(&states, "models.local_warm"),
-            SettingValue::StrList(vec!["mlx-community/Qwen3-0.6B-Instruct-4bit".into()])
+            SettingValue::StrList(vec!["mlx-community/Qwen3-0.6B-4bit".into()])
         );
         assert_eq!(get_value(&states, "models.local_budget_gib"), SettingValue::Float(3.5));
 
         // The single-line array form is exactly what the daemon parses.
         assert!(updated.contains("roots = [\"/Users/me/Notes\", \"/Users/me/Docs\"]"));
-        assert!(updated.contains("local_warm = [\"mlx-community/Qwen3-0.6B-Instruct-4bit\"]"));
+        assert!(updated.contains("local_warm = [\"mlx-community/Qwen3-0.6B-4bit\"]"));
     }
 
     #[test]

@@ -272,7 +272,7 @@ DEFAULT_IMAGE_MODEL = "schnell"
 # support is available. The real speedup is device/model-dependent and
 # on-device only. Kept in lockstep with config/jarvis.toml [inference].draft_model
 # and the installer's read_model_id DEFAULT_DRAFT.
-DEFAULT_DRAFT = "mlx-community/Qwen3-0.6B-Instruct-4bit"
+DEFAULT_DRAFT = "mlx-community/Qwen3-0.6B-4bit"
 DEFAULT_VOICE = "bm_george"
 DEFAULT_SPEED = 1.2
 # Sane kokoro speed range (audit fix): the engine divides predicted phoneme

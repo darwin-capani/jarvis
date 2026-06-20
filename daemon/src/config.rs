@@ -1196,7 +1196,7 @@ impl Default for InferenceConfig {
             // (never faked). Set draft_model to a real small checkpoint to engage.
             speculative: true,
             // SHIPS EMPTY — INERT-UNTIL-MODEL companion to speculative=true. Set e.g.
-            // "mlx-community/Qwen3-0.6B-Instruct-4bit" (must be downloadable) to
+            // "mlx-community/Qwen3-0.6B-4bit" (must be downloadable) to
             // actually engage speculative; unloadable => normal gen + speculative=false.
             draft_model: String::new(),
             // "auto" == today's behavior (load the model as configured); an
@@ -2940,19 +2940,19 @@ mod tests {
     fn local_warm_set_keys_are_known_and_parse() {
         let raw = r#"
             [models]
-            local_warm = ["mlx-community/Qwen3-0.6B-Instruct-4bit"]
+            local_warm = ["mlx-community/Qwen3-0.6B-4bit"]
             local_budget_gib = 3.0
-            local_sizes = { "mlx-community/Qwen3-0.6B-Instruct-4bit" = 0.5 }
+            local_sizes = { "mlx-community/Qwen3-0.6B-4bit" = 0.5 }
         "#;
         let (cfg, issues) = Config::parse(raw);
         assert!(
             !issues.iter().any(|i| i.contains("models.local")),
             "local_* keys must be KNOWN (no unknown-key diagnostic): {issues:?}"
         );
-        assert_eq!(cfg.models.local_warm, vec!["mlx-community/Qwen3-0.6B-Instruct-4bit"]);
+        assert_eq!(cfg.models.local_warm, vec!["mlx-community/Qwen3-0.6B-4bit"]);
         assert_eq!(cfg.models.local_budget_gib, 3.0);
         assert_eq!(
-            cfg.models.local_sizes.get("mlx-community/Qwen3-0.6B-Instruct-4bit"),
+            cfg.models.local_sizes.get("mlx-community/Qwen3-0.6B-4bit"),
             Some(&0.5)
         );
     }
@@ -2990,7 +2990,7 @@ mod tests {
         let raw = r#"
             [inference]
             speculative = true
-            draft_model = "mlx-community/Qwen3-0.6B-Instruct-4bit"
+            draft_model = "mlx-community/Qwen3-0.6B-4bit"
             quant = "int4"
         "#;
         let (cfg, issues) = Config::parse(raw);
@@ -2999,7 +2999,7 @@ mod tests {
             "[inference] keys must be KNOWN (no diagnostic): {issues:?}"
         );
         assert!(cfg.inference.speculative);
-        assert_eq!(cfg.inference.draft_model, "mlx-community/Qwen3-0.6B-Instruct-4bit");
+        assert_eq!(cfg.inference.draft_model, "mlx-community/Qwen3-0.6B-4bit");
         assert_eq!(cfg.inference.quant, "int4");
     }
 
