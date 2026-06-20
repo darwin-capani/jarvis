@@ -389,6 +389,45 @@ export const CATALOG: CatalogEntry[] = [
     dangerWhen: "on",
   },
   {
+    id: "voice.cloud_sfx",
+    group: "Voice & Speech",
+    label: "Cloud sound effects (ElevenLabs)",
+    control: "toggle",
+    hint:
+      "Gates the ElevenLabs sound-effect CUE tier (a short text prompt -> a generated non-speech cue). " +
+      "Ships ON but INERT WITHOUT A KEY — needs the EL key + a non-Local tier; there is no on-device SFX generator, so without a key (or offline) it is a silent no-op (never faked). " +
+      "An added cue layer reached only through its explicit gate; it never changes the default speech path. When active the SFX text prompt leaves the device.",
+  },
+  {
+    id: "voice.stream_tts",
+    group: "Voice & Speech",
+    label: "Streaming cloud TTS",
+    control: "toggle",
+    hint:
+      "Opt-in LOWER-LATENCY ElevenLabs streaming TTS for faster first audio (ships OFF — default is today's blocking synthesis). " +
+      "Active only when the resolved backend is ElevenLabs; the server FALLS BACK to the standard blocking path on ANY streaming error (a turn is never failed by the streaming leg). Inert on on-device Kokoro. Delivery timing only — never a gate.",
+  },
+  {
+    id: "voice.pronunciation_dictionary_id",
+    group: "Voice & Speech",
+    label: "Pronunciation dictionary id",
+    control: "string",
+    placeholder: "empty = none (today's pronunciation)",
+    hint:
+      "Pins HOW THE CLOUD VOICE SAYS names/acronyms: the active ElevenLabs pronunciation-dictionary id threaded into speak as a locator. " +
+      "Empty = NONE — no locator is sent, so speech is byte-for-byte today's. Paste the dictionary_id the create_pronunciation op returns. EL-pronunciation-gated; inert on Kokoro.",
+  },
+  {
+    id: "voice.pronunciation_dictionary_version",
+    group: "Voice & Speech",
+    label: "Pronunciation dictionary version",
+    control: "string",
+    placeholder: "empty = latest version",
+    hint:
+      "OPTIONAL version pin for the pronunciation dictionary above. " +
+      "Empty = NONE (latest version). Paste the version_id the create_pronunciation op returns to pin it. Inert when the id is empty.",
+  },
+  {
     id: "voice.adaptive_prosody",
     group: "Voice & Speech",
     label: "Adaptive prosody",

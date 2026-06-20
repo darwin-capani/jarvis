@@ -101,6 +101,10 @@ const BACKEND_WHITELIST_IDS: string[] = [
   // VOICE & SPEECH
   "voice.cloud_tier",
   "voice.cloud_stt",
+  "voice.cloud_sfx",
+  "voice.stream_tts",
+  "voice.pronunciation_dictionary_id",
+  "voice.pronunciation_dictionary_version",
   "voice.adaptive_prosody",
   "voice.whisper",
   "voice.whisper_auto",
@@ -247,6 +251,94 @@ describe("control kinds match the catalog requirements", () => {
       // nothing is read until the user adds a folder.
       expect(hint).toContain("on-device");
       expect(hint).toMatch(/nothing is read until/);
+    }
+  });
+});
+
+/* ------------------------------------- new ElevenLabs daemon voice keys (HUD) */
+
+/* The daemon's [voice] section grew four cloud-voice config keys; the HUD must
+ * SURFACE + CONTROL them through the SAME settings catalog the other [voice]
+ * flags ride. These pin that each new key is exposed in the Voice & Speech group
+ * with the right control kind + honest copy (lifted from config/jarvis.toml):
+ *   - voice.cloud_sfx  -> a toggle (ships on, inert without a key, non-speech cues)
+ *   - voice.stream_tts -> a toggle (opt-in lower-latency EL streaming, falls back)
+ *   - voice.pronunciation_dictionary_id / _version -> text fields (empty = none).
+ * They sit beside the existing cloud_tier / cloud_stt voice settings. */
+describe("new ElevenLabs [voice] daemon keys are surfaced in the HUD catalog", () => {
+  it("cloud_sfx is an honest toggle in the Voice & Speech group", () => {
+    const e = entryById("voice.cloud_sfx");
+    expect(e?.control).toBe("toggle");
+    expect(e?.group).toBe("Voice & Speech");
+    expect(e?.label).toBe("Cloud sound effects (ElevenLabs)");
+    const hint = e!.hint.toLowerCase();
+    // Honest: ships on, inert without a key, generates non-speech cues, no on-device fallback.
+    expect(hint).toContain("ships on");
+    expect(hint).toContain("inert without a key");
+    expect(hint).toContain("cue");
+    expect(hint).toContain("no on-device sfx generator");
+  });
+
+  it("stream_tts is an honest opt-in toggle in the Voice & Speech group", () => {
+    const e = entryById("voice.stream_tts");
+    expect(e?.control).toBe("toggle");
+    expect(e?.group).toBe("Voice & Speech");
+    expect(e?.label).toBe("Streaming cloud TTS");
+    const hint = e!.hint.toLowerCase();
+    // Honest: opt-in (ships off), lower-latency EL streaming, falls back on any error.
+    expect(hint).toContain("opt-in");
+    expect(hint).toContain("ships off");
+    expect(hint).toMatch(/lower[- ]latency/);
+    expect(hint).toContain("falls back");
+  });
+
+  it("pronunciation dictionary id + version are text fields (empty = none)", () => {
+    for (const id of [
+      "voice.pronunciation_dictionary_id",
+      "voice.pronunciation_dictionary_version",
+    ]) {
+      const e = entryById(id);
+      expect(e?.control).toBe("string");
+      expect(e?.group).toBe("Voice & Speech");
+      // Each hint honestly states empty = none.
+      expect(e!.hint.toLowerCase()).toMatch(/empty = none/);
+    }
+    expect(entryById("voice.pronunciation_dictionary_id")?.label).toBe(
+      "Pronunciation dictionary id",
+    );
+    expect(entryById("voice.pronunciation_dictionary_version")?.label).toBe(
+      "Pronunciation dictionary version",
+    );
+  });
+
+  it("the new keys sit in the same group as the existing cloud_tier / cloud_stt voice settings", () => {
+    const ids = entriesForGroup("Voice & Speech").map((e) => e.id);
+    for (const id of [
+      "voice.cloud_tier",
+      "voice.cloud_stt",
+      "voice.cloud_sfx",
+      "voice.stream_tts",
+      "voice.pronunciation_dictionary_id",
+      "voice.pronunciation_dictionary_version",
+    ]) {
+      expect(ids).toContain(id);
+    }
+  });
+
+  it("the new toggles/text fields are never marked dangerous (no confirm gate)", () => {
+    for (const id of ["voice.cloud_sfx", "voice.stream_tts"]) {
+      const e = entryById(id)!;
+      expect(e.danger).toBeFalsy();
+      expect(isDangerousChange(e, true)).toBe(false);
+      expect(isDangerousChange(e, false)).toBe(false);
+    }
+    for (const id of [
+      "voice.pronunciation_dictionary_id",
+      "voice.pronunciation_dictionary_version",
+    ]) {
+      const e = entryById(id)!;
+      expect(e.danger).toBeFalsy();
+      expect(isDangerousChange(e, "any-id")).toBe(false);
     }
   });
 });
