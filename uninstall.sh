@@ -219,6 +219,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
     ui_ok "Dry run complete — the above is exactly what a real run would remove. Nothing was deleted."
 else
     ui_ok "J.A.R.V.I.S. has been completely removed from this machine."
-    ui_note "Thank you, sir."
+    ui_note "Thank you."
 fi
 exit 0
