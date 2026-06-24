@@ -44,7 +44,7 @@ speed = 1.2             # kokoro only (csm/orpheus have no speed control); clipp
 sentence_pause_ms = 250 # pure silence the daemon inserts between consecutive clips in a reply (after the opener and between content sentences, never after the last); 120ms gapless playback read as rushed
 opener_delay_ms = 300   # natural beat between end-of-utterance and the opener WAV; the daemon sleeps this inside the ReplySession while STT runs CONCURRENTLY (never serialized in front of transcription); first_audio_ms includes it. Only consulted when instant_opener = true
 openers = ["Right away, sir.", "Of course.", "One moment.", "On it, sir.", "Let me see."]  # opener bank: synthesized to state/openers/opener-<idx>.wav at every server start (preload, after TTS warm); the daemon plays one the instant an utterance ends and maps filename index -> this list. Only used when instant_opener = true
-instant_opener = true   # master gate for the canned instant acknowledgment. SHIPS ON (full-power default): a task-ack ("Right away, sir.") plays the instant an utterance ends while STT runs concurrently. Pure UX feature, no safety surface. (Owner tradeoff: set false for a warmer, varied greeting — then the converse stream IS the whole reply, the persona greets/answers naturally from its first word. All the opener machinery stays intact either way.)
+instant_opener = false  # master gate for the canned instant acknowledgment. SHIPS OFF (owner preference): with it OFF you do NOT hear the fixed "Right away, sir." ack — the converse stream IS the whole reply and the persona greets/answers naturally from its first word. Set true to bring the instant task-ack back (pure UX, no safety surface; all the opener machinery stays intact either way).
 
 [inference]
 preload = true          # warm STT, LLM (+classifier prompt cache) and TTS in a background thread at server startup
@@ -553,9 +553,11 @@ enabled = true                 # layer master switch, SHIPS ON but INERT (store 
 encrypt_memory = false         # SHIPS OFF (enabling changes the on-disk format + migrates). true = encrypt the sensitive stores at rest.
 
 [voice.voices]
-# Per-agent ElevenLabs voice ids: agent name -> EL voice id. An UNMAPPED agent (or
-# an empty map) falls back to that agent's on-device Kokoro voice — so enabling the
-# tier with no mapping still works (every agent keeps its Kokoro voice until you
-# map it here). Example (commented; fill in real EL voice ids from your account):
-#   jarvis = "EXAVITQu4vr4xnSDxMaL"
+# Per-agent ElevenLabs voice ids: agent name -> EL voice id. An UNMAPPED agent
+# falls back to that agent's on-device Kokoro voice. JARVIS ships mapped to the
+# ElevenLabs PREMADE "George" (a stable, shared British male voice available to
+# ANY account) so the cloud voice tier engages with JUST an ElevenLabs key in the
+# Keychain — no manual voice-id step. Change this id to any voice from your EL
+# account's Voices page, and add lines for other agents the same way, e.g.:
 #   friday = "21m00Tcm4TlvDq8ikWAM"
+jarvis = "JBFqnCBsd6RMkjVDRZzb"

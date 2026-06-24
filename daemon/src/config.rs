@@ -861,7 +861,11 @@ impl Default for SpeechConfig {
             // surface. (Owner tradeoff: some prefer it OFF for warmer, varied
             // greetings instead of a canned acknowledgment; set false to restore
             // that. All the opener machinery stays intact either way.)
-            instant_opener: true,
+            //
+            // SHIPS OFF (owner preference): the canned "Right away, sir." ack is off
+            // by default so the persona greets/answers naturally from its first word
+            // (no robotic fixed opener). Set true to bring the instant ack back.
+            instant_opener: false,
         }
     }
 }
@@ -1026,7 +1030,15 @@ impl Default for VoiceConfig {
             // VOICE AUDIO leaves the device.
             cloud_stt: true,
             model: "eleven_flash_v2_5".to_string(),
-            voices: std::collections::BTreeMap::new(),
+            // Default per-agent ElevenLabs voice: Jarvis-Prime -> "George", an
+            // ElevenLabs PREMADE (shared, stable) British male voice available to
+            // ANY account. So once an EL key is in the Keychain the cloud voice
+            // engages with NO manual voice-id mapping (the formerly-empty map was
+            // the silent reason the EL tier never engaged). Other agents stay on
+            // their on-device Kokoro voice until mapped here. Override to taste.
+            voices: [("jarvis".to_string(), "JBFqnCBsd6RMkjVDRZzb".to_string())]
+                .into_iter()
+                .collect(),
             // #33 SHIPS ON (full-power default). Expressiveness-only: picks a
             // ProsodyProfile and emits EL-v3 audio-tags ONLY on EL-v3 backends; on
             // Kokoro (and non-v3 EL models) the mapping is coarse/neutral (rich
@@ -3206,7 +3218,10 @@ mod tests {
         assert_eq!(cfg.cloud.heavy_model, defaults.cloud.heavy_model);
         assert_eq!(cfg.telemetry.port, defaults.telemetry.port);
         assert_eq!(cfg.speech.instant_opener, defaults.speech.instant_opener);
-        assert!(cfg.speech.instant_opener, "the instant opener SHIPS ON (full-power default)");
+        assert!(
+            !cfg.speech.instant_opener,
+            "the canned instant opener now SHIPS OFF — the persona greets/answers naturally"
+        );
         assert_eq!(
             cfg.integrations.allow_consequential,
             defaults.integrations.allow_consequential
@@ -3301,26 +3316,26 @@ mod tests {
         }
     }
 
-    /// Contract lockstep: [speech].instant_opener SHIPS ON (full-power default) — the
-    /// canned task-ack plays the instant an utterance ends (pure UX, no safety
-    /// surface). The key must parse without an unknown-key diagnostic, and flipping it
-    /// off must take.
+    /// Contract lockstep: [speech].instant_opener SHIPS OFF (owner preference) — the
+    /// canned "Right away, sir." task-ack does NOT play by default; the persona
+    /// answers naturally from its first word. The key must parse without an
+    /// unknown-key diagnostic, and turning it ON must take.
     #[test]
-    fn instant_opener_defaults_on_and_is_a_known_key() {
+    fn instant_opener_defaults_off_and_is_a_known_key() {
         let (cfg, issues) = Config::parse("");
         assert!(issues.is_empty());
         assert!(
-            cfg.speech.instant_opener,
-            "the canned opener SHIPS ON (full-power default)"
+            !cfg.speech.instant_opener,
+            "the canned opener SHIPS OFF (owner preference)"
         );
 
         let raw = r#"
             [speech]
-            instant_opener = false
+            instant_opener = true
         "#;
         let (cfg, issues) = Config::parse(raw);
         assert!(issues.is_empty(), "instant_opener must be a known key: {issues:?}");
-        assert!(!cfg.speech.instant_opener, "the operator can turn the canned opener off");
+        assert!(cfg.speech.instant_opener, "the operator can turn the canned opener back on");
     }
 
     /// Contract lockstep: [self_heal] ships enabled=TRUE (full-power default; inert
@@ -4136,7 +4151,11 @@ mod tests {
             "event cues are OPT-IN (ship OFF) — DEFAULT BEHAVIOR IS UNCHANGED: no cue is spawned on confirm/deny"
         );
         assert_eq!(cfg.voice.model, "eleven_flash_v2_5", "default EL model");
-        assert!(cfg.voice.voices.is_empty(), "no per-agent EL voice mapped by default");
+        assert_eq!(
+            cfg.voice.voices.get("jarvis").map(String::as_str),
+            Some("JBFqnCBsd6RMkjVDRZzb"),
+            "Jarvis-Prime ships mapped to the ElevenLabs premade 'George' (British) voice so the cloud tier engages with just a key"
+        );
         assert_eq!(
             cfg.voice.mic_source, "device",
             "mic_source DEFAULTS to \"device\" (today's cpal capture, byte-for-byte) — \"app\" is opt-in"
