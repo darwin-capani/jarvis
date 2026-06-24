@@ -1021,7 +1021,19 @@ else
         ui_ok "Every model the OS uses is pre-downloaded into $HF_HOME_DIR"
     else
         ui_warn "Pre-downloaded all but ${#failed_models[@]} of $total model(s): ${failed_models[*]}"
-        ui_note "Each is fetched on first use (or its feature stays inert). Re-run the installer to retry — downloads resume from cache."
+        ui_note "The rest of JARVIS installs + runs normally; only each skipped model's"
+        ui_note "feature stays inert until it's available. Re-run to retry — downloads resume from cache."
+        # GATED-MODEL guidance: a 'requires approval' / 'Access denied' failure (e.g.
+        # FLUX.1-schnell, the IMAGE model) is NOT a bug — that repo is gated on Hugging
+        # Face and cannot download anonymously. Tell the user the exact fix.
+        case " ${failed_models[*]} " in
+            *FLUX*|*flux*)
+                ui_note "Note: ${UI_BRIGHT}FLUX.1-schnell${UI_RESET} (image generation) is a ${UI_BRIGHT}GATED${UI_RESET} Hugging Face model."
+                ui_note "To enable image generation: accept its licence at"
+                ui_note "  ${UI_ICE}https://huggingface.co/black-forest-labs/FLUX.1-schnell${UI_RESET}"
+                ui_note "then authenticate — ${UI_CYAN}\"$VENV/bin/hf\" auth login${UI_RESET}  (or  ${UI_CYAN}export HF_TOKEN=hf_...${UI_RESET}) — and re-run."
+                ;;
+        esac
     fi
 fi
 
