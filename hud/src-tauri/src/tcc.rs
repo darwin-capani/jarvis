@@ -56,14 +56,20 @@ mod imp {
 
     use super::PromptResult;
 
-    // AVFoundation audio media-type constant (NSString*). Referencing it forces
-    // the framework to link AND gives us the real AVMediaTypeAudio value. (Camera
-    // / Screen are captured by the on-device vision helper, a SEPARATE binary, so
-    // this app never requests them — a prompt from here would grant the wrong
-    // process; those open System Settings instead.)
+    // AVFoundation media-type constants (NSString*). Referencing them forces the
+    // framework to link AND gives us the real AVMediaType values.
     #[link(name = "AVFoundation", kind = "framework")]
     extern "C" {
         static AVMediaTypeAudio: *const NSString;
+        static AVMediaTypeVideo: *const NSString;
+    }
+
+    // Screen Recording — CoreGraphics. Preflight checks status without prompting;
+    // Request fires the prompt when not determined and returns whether granted.
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
     }
 
     // Accessibility — ApplicationServices. WithOptions + the prompt key shows the
@@ -74,6 +80,16 @@ mod imp {
         fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
         static kAXTrustedCheckOptionPrompt: CFStringRef;
     }
+
+    // Input Monitoring — IOKit. Check is non-prompting; Request fires the prompt.
+    #[link(name = "IOKit", kind = "framework")]
+    extern "C" {
+        fn IOHIDRequestAccess(request_type: u32) -> bool;
+        fn IOHIDCheckAccess(request_type: u32) -> u32;
+    }
+    const KIOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
+    const KIOHID_ACCESS_TYPE_GRANTED: u32 = 0;
+    const KIOHID_ACCESS_TYPE_DENIED: u32 = 1;
 
     /// AVCaptureDevice authorization for a media type. 0=notDetermined,
     /// 1=restricted, 2=denied, 3=authorized. Fires the prompt (and returns
@@ -117,6 +133,29 @@ mod imp {
         av_request(unsafe { AVMediaTypeAudio }, "Microphone")
     }
 
+    fn request_camera() -> PromptResult {
+        av_request(unsafe { AVMediaTypeVideo }, "Camera")
+    }
+
+    fn request_screen() -> PromptResult {
+        let granted = unsafe { CGPreflightScreenCaptureAccess() };
+        if granted {
+            return PromptResult::new(false, "granted", "Screen Recording is already granted.");
+        }
+        // Not granted: this fires the prompt the first time (notDetermined) and
+        // is a no-op afterward (returns the cached denial).
+        let now = unsafe { CGRequestScreenCaptureAccess() };
+        if now {
+            PromptResult::new(true, "granted", "Screen Recording granted.")
+        } else {
+            PromptResult::new(
+                true,
+                "not_determined",
+                "Asked macOS for Screen Recording — approve the JARVIS prompt (you may need to quit & reopen JARVIS).",
+            )
+        }
+    }
+
     fn request_accessibility() -> PromptResult {
         if unsafe { AXIsProcessTrusted() } {
             return PromptResult::new(false, "granted", "Accessibility is already granted.");
@@ -138,20 +177,40 @@ mod imp {
         }
     }
 
-    /// Fire the native prompt for an allowlisted permission key. The app only
-    /// requests the permissions IT actually uses (Microphone + Accessibility).
-    /// Full Disk Access + Automation have no programmatic request API; Screen
-    /// Recording + Camera are captured by the on-device vision HELPER (a separate
-    /// binary) — a prompt from THIS app would grant the wrong process. All four
-    /// return `no_prompt_api` so the caller opens the exact System Settings pane.
+    fn request_input_monitoring() -> PromptResult {
+        let access = unsafe { IOHIDCheckAccess(KIOHID_REQUEST_TYPE_LISTEN_EVENT) };
+        if access == KIOHID_ACCESS_TYPE_GRANTED {
+            return PromptResult::new(false, "granted", "Input Monitoring is already granted.");
+        }
+        if access == KIOHID_ACCESS_TYPE_DENIED {
+            return PromptResult::new(
+                false,
+                "denied",
+                "Input Monitoring was previously denied — re-enable JARVIS in System Settings.",
+            );
+        }
+        let granted = unsafe { IOHIDRequestAccess(KIOHID_REQUEST_TYPE_LISTEN_EVENT) };
+        PromptResult::new(
+            true,
+            if granted { "granted" } else { "not_determined" },
+            "Asked macOS for Input Monitoring — approve the JARVIS prompt.",
+        )
+    }
+
+    /// Fire the native prompt for an allowlisted permission key. Keys without a
+    /// programmatic request API (Full Disk Access, Automation) return
+    /// `no_prompt_api` so the caller falls back to opening System Settings.
     pub fn request_permission(key: &str) -> PromptResult {
         match key {
             "microphone" => request_microphone(),
+            "camera" => request_camera(),
+            "screen" => request_screen(),
             "accessibility" => request_accessibility(),
-            "full_disk" | "automation" | "screen" | "camera" => PromptResult::new(
+            "input_monitoring" => request_input_monitoring(),
+            "full_disk" | "automation" => PromptResult::new(
                 false,
                 "no_prompt_api",
-                "macOS has no app prompt for this one — opening System Settings instead.",
+                "macOS has no prompt for this one — opening System Settings instead.",
             ),
             _ => PromptResult::new(false, "error", "unknown permission"),
         }

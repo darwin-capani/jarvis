@@ -50,13 +50,19 @@ export const PERMISSION_PANES: PermissionPane[] = [
     key: "screen",
     anchor: "Privacy_ScreenCapture",
     label: "Screen & System Audio Recording",
-    why: "See and read what's on your screen — “what am I looking at”, screen understanding, and visual help. Handled by JARVIS's on-device vision helper, which asks for this the first time you turn on a screen feature.",
+    why: "See and read what's on your screen — “what am I looking at”, screen understanding, and visual help.",
   },
   {
     key: "microphone",
     anchor: "Privacy_Microphone",
     label: "Microphone",
     why: "Hear you — the wake word, dictation, and the on-device voice match.",
+  },
+  {
+    key: "input_monitoring",
+    anchor: "Privacy_ListenEvent",
+    label: "Input Monitoring",
+    why: "Catch the wake word or a hotkey from any app, so “Jarvis…” works anywhere.",
   },
   {
     key: "automation",
@@ -68,7 +74,7 @@ export const PERMISSION_PANES: PermissionPane[] = [
     key: "camera",
     anchor: "Privacy_Camera",
     label: "Camera",
-    why: "On-device vision when you ask JARVIS to watch the camera — stays off until you ask. Handled by the vision helper, which asks for this on first use.",
+    why: "On-device vision when you ask JARVIS to watch the camera. Stays off until you ask.",
   },
 ];
 

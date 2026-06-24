@@ -64,13 +64,19 @@ const PRIVACY_PANES: &[Pane] = &[
         key: "screen",
         anchor: "Privacy_ScreenCapture",
         label: "Screen & System Audio Recording",
-        guidance: "Used by JARVIS's on-device vision helper — it appears here the first time you turn on a screen feature; switch it on then.",
+        guidance: "Switch JARVIS on — click the + to add it first if it isn't listed.",
     },
     Pane {
         key: "microphone",
         anchor: "Privacy_Microphone",
         label: "Microphone",
         guidance: "JARVIS appears here the first time it uses the mic — switch it on then.",
+    },
+    Pane {
+        key: "input_monitoring",
+        anchor: "Privacy_ListenEvent",
+        label: "Input Monitoring",
+        guidance: "Switch JARVIS on — click the + to add it first if it isn't listed.",
     },
     Pane {
         key: "automation",
@@ -82,7 +88,7 @@ const PRIVACY_PANES: &[Pane] = &[
         key: "camera",
         anchor: "Privacy_Camera",
         label: "Camera",
-        guidance: "Used by JARVIS's on-device vision helper — it appears here the first time you ask it to watch the camera; switch it on then.",
+        guidance: "JARVIS appears here the first time it uses the camera — switch it on then.",
     },
 ];
 
@@ -223,6 +229,7 @@ mod tests {
                 "accessibility",
                 "screen",
                 "microphone",
+                "input_monitoring",
                 "automation",
                 "camera",
             ]

@@ -22,6 +22,7 @@ describe("system-access permission allowlist", () => {
       "accessibility",
       "screen",
       "microphone",
+      "input_monitoring",
       "automation",
       "camera",
     ]);
