@@ -1118,7 +1118,11 @@ else
             # launchable — never clobbering an already-installed signed copy.
             place_hud_app "$APP_BUNDLE"
         else
-            ui_warn "tauri build finished but JARVIS.app not located"
+            # A successful build with targets=["app"] ALWAYS emits
+            # bundle/macos/JARVIS.app, so reaching here means the build silently
+            # failed — be FATAL like the daemon-binary check above, never report a
+            # successful install without the HUD app.
+            ui_err "tauri build reported success but produced no JARVIS.app"; exit 1
         fi
     fi
     ui_ok "All release artifacts built fresh in the install home."
