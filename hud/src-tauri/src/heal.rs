@@ -130,10 +130,39 @@ pub fn find_root_from(start: &Path) -> Option<PathBuf> {
     None
 }
 
+/// The canonical install tree, relative to a given home dir:
+/// `<home>/Library/Application Support/JARVIS` — exactly where install.sh places
+/// the repo (`JARVIS_HOME="$HOME/Library/Application Support/JARVIS"`). Returns
+/// it only when it is actually a JARVIS root. Split from `install_root` so the
+/// path logic is unit-testable against a synthetic home WITHOUT mutating the
+/// process-global `$HOME`.
+fn install_root_under(home: &Path) -> Option<PathBuf> {
+    let p = home.join("Library/Application Support/JARVIS");
+    if is_jarvis_root(&p) {
+        Some(p)
+    } else {
+        None
+    }
+}
+
+/// The canonical install location of the JARVIS tree on this machine. An
+/// INSTALLED app is copied to /Applications/JARVIS.app — OUTSIDE the install
+/// tree — so the exe/cwd upward walks below cannot reach it; this is the real
+/// production resolution path. GUI apps reliably inherit `$HOME` (launchd/Finder
+/// set it), so it needs no shell environment.
+fn install_root() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    install_root_under(&PathBuf::from(home))
+}
+
 /// Resolve the JARVIS repo root ONCE per call:
 ///   1. `JARVIS_ROOT` env var when set AND it looks like the root.
-///   2. otherwise walk up from the current exe's directory.
-///   3. otherwise walk up from the current working directory (dev fallback).
+///   2. otherwise walk up from the current exe's directory (dev: exe lives in
+///      the source tree).
+///   3. otherwise the canonical install tree `~/Library/Application Support/
+///      JARVIS` (production: the app was copied to /Applications, divorced from
+///      the install tree, so the walk above can't find it).
+///   4. otherwise walk up from the current working directory (dev fallback).
 /// Returns a structured error string when nothing qualifies.
 fn resolve_jarvis_root() -> Result<PathBuf, String> {
     if let Ok(env_root) = std::env::var("JARVIS_ROOT") {
@@ -154,13 +183,17 @@ fn resolve_jarvis_root() -> Result<PathBuf, String> {
         }
     }
 
+    if let Some(root) = install_root() {
+        return Ok(root);
+    }
+
     if let Ok(cwd) = std::env::current_dir() {
         if let Some(root) = find_root_from(&cwd) {
             return Ok(root);
         }
     }
 
-    Err("could not locate the JARVIS root (no scripts/apply_heal.sh + config/jarvis.toml found above the app, and JARVIS_ROOT is unset)".to_string())
+    Err("could not locate the JARVIS root (looked at $JARVIS_ROOT, above the app, ~/Library/Application Support/JARVIS, and the working dir for scripts/apply_heal.sh + config/jarvis.toml)".to_string())
 }
 
 /// Public root resolver for siblings (the command channel) that need the SAME
@@ -356,5 +389,36 @@ mod tests {
 
         let _ = fs::remove_dir_all(&base);
         let _ = fs::remove_dir_all(&orphan);
+    }
+
+    #[test]
+    fn install_root_under_resolves_the_canonical_app_support_tree() {
+        // Synthesize a fake $HOME containing the install tree exactly where
+        // install.sh places it, WITHOUT touching the process-global $HOME.
+        let home =
+            std::env::temp_dir().join(format!("heal_install_home_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let tree = home.join("Library/Application Support/JARVIS");
+        fs::create_dir_all(tree.join("scripts")).unwrap();
+        fs::create_dir_all(tree.join("config")).unwrap();
+
+        // markers absent -> not yet a root
+        assert!(install_root_under(&home).is_none());
+
+        // both markers present -> resolves to the install tree
+        fs::write(tree.join("scripts/apply_heal.sh"), "#!/bin/bash\n").unwrap();
+        fs::write(tree.join("config/jarvis.toml"), "[self_heal]\n").unwrap();
+        let found = install_root_under(&home).expect("install tree should resolve");
+        assert_eq!(found.canonicalize().unwrap(), tree.canonicalize().unwrap());
+
+        // a home with no install tree -> None (never a false positive)
+        let empty =
+            std::env::temp_dir().join(format!("heal_install_empty_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&empty);
+        fs::create_dir_all(&empty).unwrap();
+        assert!(install_root_under(&empty).is_none());
+
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&empty);
     }
 }
