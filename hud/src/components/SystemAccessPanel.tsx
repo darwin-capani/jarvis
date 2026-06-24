@@ -1,6 +1,11 @@
 import { useCallback, useState } from "react";
 import { PERMISSION_PANES, PERMISSIONS_COPY } from "../core/permissions";
-import { inTauri, requestAccess, requestAllPermissions } from "../tauri/bridge";
+import {
+  inTauri,
+  openPrivacyPane,
+  requestAccess,
+  requestAllPermissions,
+} from "../tauri/bridge";
 
 /**
  * SYSTEM ACCESS // macOS PERMISSIONS — the panel that takes the user straight to
@@ -54,6 +59,25 @@ export default function SystemAccessPanel() {
     }
   }, [busy]);
 
+  // Deep-link straight to a pane in System Settings WITHOUT firing a prompt —
+  // handy to review or change an already-decided permission.
+  const openSettings = useCallback(
+    async (key: string) => {
+      if (busy) return;
+      setBusy(`settings:${key}`);
+      setNote("");
+      try {
+        const r = await openPrivacyPane(key);
+        setNote(r.detail);
+      } catch {
+        setNote("could not open System Settings");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [busy],
+  );
+
   return (
     <div className="sysaccess">
       <div className="cred-section-title">{PERMISSIONS_COPY.title}</div>
@@ -84,6 +108,15 @@ export default function SystemAccessPanel() {
             aria-label={`Request ${p.label} access`}
           >
             {busy === p.key ? "REQUESTING…" : "REQUEST"}
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() => void openSettings(p.key)}
+            disabled={!shell || busy !== null}
+            title={`Open “${p.label}” in System Settings (no prompt)`}
+            aria-label={`Open ${p.label} in System Settings`}
+          >
+            {busy === `settings:${p.key}` ? "OPENING…" : "SETTINGS"}
           </button>
           <div className="cred-hint">{p.why}</div>
         </div>

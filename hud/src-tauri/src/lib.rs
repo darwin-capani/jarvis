@@ -901,6 +901,15 @@ pub fn run() {
             // clean no-op when the daemon hasn't created state/ipc/ yet; it NEVER
             // actuates on its own — only on a token-verified daemon request. Kept
             // entirely off the async runtime / managed state (no !Send type).
+            //
+            // INTENTIONALLY always-on (not gated on the daemon's
+            // [ui_automation].actuate_via_app): the HUD is the SERVER here, the
+            // daemon the client, and the daemon only ever CONNECTS when that flag
+            // is on — so with it off nothing drives the socket. Binding it is inert
+            // and safe regardless: the 0600 socket + the constant-time command-token
+            // check mean no other local process can trigger a click/keystroke, and
+            // the gate stack (per-action confirm/master/lockdown) lives in the
+            // daemon ahead of any request that reaches here.
             actuator::start_actuator_listener();
             Ok(())
         })
