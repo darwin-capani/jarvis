@@ -118,6 +118,7 @@ const BACKEND_WHITELIST_IDS: string[] = [
   // CAPABILITIES
   "shell.enabled",
   "ui_automation.enabled",
+  "ui_automation.actuate_via_app",
   "mcp.enabled",
   "webhooks.enabled",
   "plugin_sdk.enabled",

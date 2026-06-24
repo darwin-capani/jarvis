@@ -58,6 +58,13 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 # (transitive), so naming them as direct deps adds no new crate to the graph.
 block2 = "0.6"
 core-foundation = "0.10"
+# UI ACTUATOR (actuator.rs) — post the SINGLE CGEvent (click / type / key) for a
+# token-authenticated daemon actuation request IN THIS app process, so macOS shows
+# a clean "JARVIS would like to control this computer" Accessibility prompt
+# (JARVIS.app, not the daemon). The HUD is the SERVER that holds the Accessibility
+# grant + posts the event. Already in the lock (transitive via tao); naming it as
+# a direct dep adds no new crate to the graph.
+core-graphics = "0.25"
 
 [dev-dependencies]
 # Drives the async unit tests (verify dispatch short-circuit / id guard). The

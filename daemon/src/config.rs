@@ -446,7 +446,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // under the master switch + confirm + voice-id + !lockdown, never
     // batched/autonomous. INERT WITHOUT TCC: the actuation needs Accessibility consent
     // + a real display. Listed here so the key never reads as a typo.
-    ("ui_automation", &["enabled"]),
+    ("ui_automation", &["enabled", "actuate_via_app"]),
     // [vision] — the OPTIONAL on-device VISION-LANGUAGE model (VLM) describe path
     // (inference describe_image op + the daemon "describe my screen / what am I
     // looking at / describe this image" intent). `enabled` SHIPS ON (full-power
@@ -1719,6 +1719,19 @@ impl Default for ShellConfig {
 #[serde(default)]
 pub struct UiAutomationConfig {
     pub enabled: bool,
+    /// OPT-IN (SHIPS OFF, default false): when true the final, already-approved
+    /// single actuation is POSTED THROUGH the HUD app (JARVIS.app) over the
+    /// `state/ipc/actuate.sock` Unix socket instead of by the daemon's own local
+    /// CGEvent/AX post. The HUD holds the Accessibility TCC grant, so macOS shows
+    /// the clean "JARVIS would like to control this computer using accessibility"
+    /// prompt and attributes the grant to the user-facing app. Default FALSE keeps
+    /// behavior BYTE-FOR-BYTE unchanged: the existing local CGEvent post runs. This
+    /// changes ONLY WHERE the approved action is posted — every gate (the pure
+    /// planner, the consequential confirm, the master switch, voice-id, lockdown,
+    /// the dry-run preview) runs first, UNCHANGED. In via_app mode the daemon's own
+    /// Accessibility check is skipped (the HUD holds the grant); the HUD reports an
+    /// honest failure if it is not trusted, which the daemon surfaces faithfully.
+    pub actuate_via_app: bool,
 }
 
 impl Default for UiAutomationConfig {
@@ -1732,6 +1745,10 @@ impl Default for UiAutomationConfig {
             // INERT WITHOUT TCC: the CGEvent/AX post needs Accessibility consent
             // (runtime, not SBPL-grantable) + a real display.
             enabled: true,
+            // SHIPS OFF: default to the existing local CGEvent post, byte-for-byte
+            // unchanged. Operators opt in to route the post through the HUD app so
+            // macOS attributes the Accessibility grant to JARVIS.app.
+            actuate_via_app: false,
         }
     }
 }
@@ -3909,6 +3926,39 @@ mod tests {
         let (cfg, issues) = Config::parse("[ui_automation]\nenabled = false\n");
         assert!(issues.is_empty(), "ui_automation keys must all be known: {issues:?}");
         assert!(!cfg.ui_automation.enabled, "operator-disabled ui_automation parses false");
+
+        // actuate_via_app SHIPS OFF (default false): the existing LOCAL CGEvent post
+        // is the default, byte-for-byte unchanged. It is opt-in only.
+        assert!(
+            !cfg.ui_automation.actuate_via_app,
+            "actuate_via_app SHIPS OFF — the default is the local CGEvent post"
+        );
+        assert_eq!(
+            cfg.ui_automation.actuate_via_app,
+            defaults.ui_automation.actuate_via_app
+        );
+        assert!(
+            !defaults.ui_automation.actuate_via_app,
+            "the struct default for actuate_via_app is OFF"
+        );
+
+        // The operator can opt in to posting the actuation THROUGH the HUD app — a
+        // known, round-tripping bool key.
+        let (cfg, issues) =
+            Config::parse("[ui_automation]\nactuate_via_app = true\n");
+        assert!(
+            issues.is_empty(),
+            "ui_automation keys must all be known: {issues:?}"
+        );
+        assert!(
+            cfg.ui_automation.actuate_via_app,
+            "operator-enabled actuate_via_app parses true"
+        );
+        // Opting in to the HUD post path does NOT change the master enable default.
+        assert!(
+            cfg.ui_automation.enabled,
+            "enabling actuate_via_app leaves the master switch at its ON default"
+        );
 
         // A typo'd ui_automation key is diagnosed, not silently swallowed.
         let (_cfg, issues) = Config::parse("[ui_automation]\nenabledd = true\n");

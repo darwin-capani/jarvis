@@ -172,6 +172,11 @@ pub const SETTINGS: &[Setting] = &[
     // ---- CAPABILITIES ----
     Setting { section: "shell", key: "enabled", kind: Kind::Bool },
     Setting { section: "ui_automation", key: "enabled", kind: Kind::Bool },
+    // WHERE the approved actuation is posted: false = the daemon posts the
+    // CGEvent itself (grant Accessibility to the service); true = the JARVIS app
+    // posts it, so macOS shows a clean "JARVIS" Accessibility prompt. All safety
+    // gates run in the daemon before the post either way. Restart the daemon.
+    Setting { section: "ui_automation", key: "actuate_via_app", kind: Kind::Bool },
     Setting { section: "mcp", key: "enabled", kind: Kind::Bool },
     Setting { section: "webhooks", key: "enabled", kind: Kind::Bool },
     Setting { section: "plugin_sdk", key: "enabled", kind: Kind::Bool },

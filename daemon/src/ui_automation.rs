@@ -311,6 +311,15 @@ pub enum ActuateError {
     /// post failure, so this is never hit there.)
     #[allow(dead_code)] // constructed only on the non-macOS post arm + asserted in tests
     BackendUnavailable,
+    /// (OPT-IN via-app mode only) The actuation was routed to the HUD app
+    /// (JARVIS.app) over `state/ipc/actuate.sock` but the HUD could not be reached,
+    /// or returned a malformed / failed reply. Carries an HONEST detail (the
+    /// connect error, the unparsable line, or the HUD's own `ok=false` detail — e.g.
+    /// "Accessibility not granted to JARVIS.app"). NEVER a fabricated success: a
+    /// connect failure or a bad reply is reported faithfully as "nothing changed".
+    /// Constructed only on the via_app path (default-off); the local post path is
+    /// completely unchanged.
+    AppActuatorUnavailable(String),
 }
 
 impl ActuateError {
@@ -330,8 +339,211 @@ impl ActuateError {
                  not macOS), so no action was performed"
                     .to_string()
             }
+            ActuateError::AppActuatorUnavailable(d) => format!(
+                "the actuation was routed to the JARVIS app to post (so macOS attributes the \
+                 Accessibility grant to JARVIS.app), but it did not land: {d}"
+            ),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// (OPT-IN) VIA-APP ACTUATION — post the approved single Action THROUGH the HUD app.
+//
+// When `[ui_automation].actuate_via_app = true`, the daemon does NOT post the
+// CGEvent locally. Instead it connects (as a CLIENT) to the Unix stream socket
+// `<root>/state/ipc/actuate.sock` — which the HUD app (JARVIS.app) binds + listens
+// on as the SERVER, because the HUD is the process that must hold the Accessibility
+// TCC grant and post the CGEvent (so macOS shows the clean "JARVIS would like to
+// control this computer using accessibility" prompt and attributes the grant to the
+// user-facing app). One request = one actuation = one connection (open, send one
+// '\n'-terminated JSON request line, read one '\n'-terminated JSON reply line,
+// close) — mirroring the command channel's single round-trip.
+//
+// The WIRE is token-gated by the SAME per-boot capability token the command channel
+// uses (`state/ipc/command.token`): the daemon reads that file and presents the
+// bytes; the HUD verifies by constant-time equality against the file IT reads.
+//
+// SECURITY: this changes ONLY WHERE the final, already-approved single Action is
+// posted. Every gate (the pure planner, the consequential confirm, the master
+// switch, voice-id, lockdown, the dry-run preview) ran FIRST, unchanged. In via_app
+// mode the daemon's own `accessibility_permission_granted()` check is skipped (the
+// HUD holds the grant), but NO other gate is weakened. A connect failure / bad
+// reply / `ok=false` is reported HONESTLY (never a fabricated success).
+//
+// The request/reply ENCODE + PARSE below are PURE (no socket, no event) and are the
+// only logic covered by unit tests; the socket round-trip itself is device-gated and
+// never exercised under `cargo test`.
+// ---------------------------------------------------------------------------
+
+/// PURE: build the ONE '\n'-terminated JSON request line the daemon (client) sends
+/// to the HUD over `actuate.sock`. Shape (per the wire contract):
+///
+/// ```text
+/// {"token":"<command.token bytes>","action":<ACTION>,"target_desc":"<desc>"}\n
+/// ```
+///
+/// where `<ACTION>` is exactly one of:
+///   * `{"kind":"click","x":<i32>,"y":<i32>}`
+///   * `{"kind":"type","text":"<string>"}`
+///   * `{"kind":"key","combo":"<string>"}`
+///
+/// All string fields are JSON-escaped by `serde_json` (so a target/desc/text with a
+/// quote or newline can never break the line framing). The single trailing `\n`
+/// frames the line for the HUD's `read_line`. PURE — no I/O; unit-tested directly.
+fn encode_actuate_request(token: &str, plan: &ActuationPlan) -> String {
+    let action = match plan.action() {
+        Action::Click { x, y } => serde_json::json!({"kind": "click", "x": x, "y": y}),
+        Action::Type { text } => serde_json::json!({"kind": "type", "text": text}),
+        Action::Key { combo } => serde_json::json!({"kind": "key", "combo": combo}),
+    };
+    let req = serde_json::json!({
+        "token": token,
+        "action": action,
+        "target_desc": plan.target_desc(),
+    });
+    // `to_string` on a Value never fails; append the single framing newline.
+    let mut line = req.to_string();
+    line.push('\n');
+    line
+}
+
+/// The HUD's reply, exactly one '\n'-terminated JSON line:
+/// `{"ok":<bool>,"detail":"<string>"}`. Honest by contract: `ok=false` carries a
+/// truthful detail (e.g. Accessibility not granted, or the post failed) and the
+/// daemon NEVER fabricates success from it.
+#[derive(Debug, serde::Deserialize)]
+struct ActuateReply {
+    ok: bool,
+    #[serde(default)]
+    detail: String,
+}
+
+/// PURE: parse the HUD's ONE '\n'-terminated JSON reply line into a faithful result.
+///
+///   * a well-formed `{"ok":true,...}` => `Ok(())` (the HUD posted the one CGEvent);
+///   * a well-formed `{"ok":false,"detail":...}` => `Err(AppActuatorUnavailable(detail))`
+///     (the honest reason — e.g. Accessibility not granted to JARVIS.app);
+///   * an UNPARSABLE / empty line => `Err(AppActuatorUnavailable(...))` (a
+///     malformed reply is NEVER treated as success).
+///
+/// PURE — no I/O; unit-tested directly. NEVER fabricates a success.
+fn parse_actuate_reply(line: &str) -> Result<(), ActuateError> {
+    let trimmed = line.trim();
+    let reply: ActuateReply = match serde_json::from_str(trimmed) {
+        Ok(r) => r,
+        Err(e) => {
+            return Err(ActuateError::AppActuatorUnavailable(format!(
+                "the JARVIS app sent a reply I couldn't parse ({e}); I will not assume it acted"
+            )));
+        }
+    };
+    if reply.ok {
+        Ok(())
+    } else {
+        let detail = if reply.detail.trim().is_empty() {
+            "the JARVIS app declined to actuate (no reason given)".to_string()
+        } else {
+            reply.detail
+        };
+        Err(ActuateError::AppActuatorUnavailable(detail))
+    }
+}
+
+/// (OPT-IN, via_app mode) Send the approved single-action `plan` to the HUD app over
+/// `<root>/state/ipc/actuate.sock` and map the reply. The HUD holds the Accessibility
+/// grant and posts the ONE CGEvent. ONE request = ONE actuation = ONE connection.
+///
+/// HONEST on every failure path (NEVER a fabricated success):
+///   * no resolvable root, or the per-boot command token file is unreadable =>
+///     `AppActuatorUnavailable`;
+///   * the socket cannot be reached (the HUD isn't running / not listening) =>
+///     `AppActuatorUnavailable` with the connect error;
+///   * the write/flush/read fails, or the reply is malformed / `ok=false` =>
+///     `AppActuatorUnavailable` with the honest detail.
+///
+/// DEVICE-gated like the rest of the seam: it opens a REAL socket, so it is BUILT but
+/// NEVER invoked under `cargo test` (the pure encode/parse it relies on ARE tested).
+#[allow(dead_code)] // via-app seam: wired behind the gate, never run in tests
+async fn actuate_via_hud(plan: &ActuationPlan) -> Result<ActuateResult, ActuateError> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixStream;
+
+    // Resolve the JARVIS root (JARVIS_ROOT, else cwd) — the socket + token both live
+    // under <root>/state/ipc, mirroring how the daemon resolves its state dir.
+    let root = std::env::var("JARVIS_ROOT")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+
+    // Present the SAME per-boot capability token the command channel uses. Read the
+    // bytes the HUD itself will compare against (constant-time, on its side).
+    let token_path = crate::command::command_token_path(&root);
+    let token = match std::fs::read_to_string(&token_path) {
+        Ok(t) => t.trim().to_string(),
+        Err(e) => {
+            return Err(ActuateError::AppActuatorUnavailable(format!(
+                "I couldn't read the capability token to authorize the JARVIS app actuation ({e})"
+            )));
+        }
+    };
+    if token.is_empty() {
+        return Err(ActuateError::AppActuatorUnavailable(
+            "the capability token for the JARVIS app actuation was empty".to_string(),
+        ));
+    }
+
+    let sock_path = root.join("state").join("ipc").join("actuate.sock");
+
+    // ONE connection for ONE actuation. A connect failure (the HUD isn't listening)
+    // is reported honestly — never a fabricated success.
+    let stream = match UnixStream::connect(&sock_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(ActuateError::AppActuatorUnavailable(format!(
+                "I couldn't reach the JARVIS app to post the action ({e}); is JARVIS.app running?"
+            )));
+        }
+    };
+
+    let request = encode_actuate_request(&token, plan);
+    let (read_half, mut write_half) = stream.into_split();
+
+    if let Err(e) = write_half.write_all(request.as_bytes()).await {
+        return Err(ActuateError::AppActuatorUnavailable(format!(
+            "I couldn't send the action to the JARVIS app ({e})"
+        )));
+    }
+    if let Err(e) = write_half.flush().await {
+        return Err(ActuateError::AppActuatorUnavailable(format!(
+            "I couldn't flush the action to the JARVIS app ({e})"
+        )));
+    }
+
+    // Read exactly ONE '\n'-terminated reply line, then the connection is done.
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+    match reader.read_line(&mut line).await {
+        Ok(0) => {
+            return Err(ActuateError::AppActuatorUnavailable(
+                "the JARVIS app closed the connection without replying; I will not assume it acted"
+                    .to_string(),
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(ActuateError::AppActuatorUnavailable(format!(
+                "I couldn't read the JARVIS app's reply ({e}); I will not assume it acted"
+            )));
+        }
+    }
+
+    // Map the reply HONESTLY (ok=true => actuated; otherwise an honest error).
+    parse_actuate_reply(&line)?;
+    Ok(ActuateResult {
+        verb: plan.action().verb(),
+        target_desc: plan.target_desc().to_string(),
+    })
 }
 
 /// DEVICE-GATED check: is the Accessibility (TCC) permission granted to THIS
@@ -416,7 +628,21 @@ pub fn accessibility_permission_granted() -> bool {
 /// routing's job; it does its OWN device check (Accessibility TCC) and is the
 /// final, narrowly-scoped, single-action actuator.
 #[allow(dead_code)] // device-gated seam: wired behind the gate, never run in tests
-pub async fn do_actuate(plan: &ActuationPlan) -> Result<ActuateResult, ActuateError> {
+pub async fn do_actuate(
+    plan: &ActuationPlan,
+    actuate_via_app: bool,
+) -> Result<ActuateResult, ActuateError> {
+    // (OPT-IN) VIA-APP MODE: post the approved single action THROUGH the HUD app so
+    // macOS attributes the Accessibility grant to JARVIS.app. The HUD holds the
+    // grant, so the daemon's OWN Accessibility check is SKIPPED here — but EVERY
+    // other gate already ran before this seam, unchanged. The HUD reports an honest
+    // failure (ok=false) when it is not trusted, which we surface faithfully and
+    // NEVER fabricate into a success. Default-OFF: when false, the existing LOCAL
+    // post below runs completely unchanged.
+    if actuate_via_app {
+        return actuate_via_hud(plan).await;
+    }
+
     // DEVICE GATE: the Accessibility TCC consent. Without it macOS drops every
     // synthetic event — refuse HONESTLY rather than pretend the click landed.
     if !accessibility_permission_granted() {
@@ -1028,6 +1254,112 @@ mod tests {
                 && ActuateError::BackendUnavailable.reason().contains("no action was performed"),
             "the unavailable-backend reason must honestly state nothing was actuated"
         );
+        // The via-app variant must carry its honest detail (never fabricate success).
+        assert!(
+            ActuateError::AppActuatorUnavailable("HUD not trusted".into())
+                .reason()
+                .contains("HUD not trusted"),
+            "the via-app failure reason must surface the HUD's honest detail"
+        );
+    }
+
+    // =====================================================================
+    // (OPT-IN) VIA-APP WIRE — PURE encode/parse only. We never open a socket or
+    // post a CGEvent here; we assert ONLY the request JSON we emit for each Action
+    // kind and the reply mapping. The socket round-trip (actuate_via_hud / do_actuate
+    // in via_app mode) is device-gated and never invoked under cargo test.
+    // =====================================================================
+
+    /// Helper: build a plan directly (bypassing the planner) for encode tests.
+    fn plan_for(action: Action, target: &str) -> ActuationPlan {
+        ActuationPlan { action, target_desc: target.to_string() }
+    }
+
+    #[test]
+    fn encode_actuate_request_click_shape() {
+        let plan = plan_for(Action::Click { x: 42, y: 99 }, "the Send button");
+        let line = encode_actuate_request("tok-123", &plan);
+        // ONE trailing newline frames the line for the HUD's read_line.
+        assert!(line.ends_with('\n'), "the request must be one '\\n'-terminated line");
+        assert_eq!(line.matches('\n').count(), 1, "exactly one framing newline");
+        let v: serde_json::Value = serde_json::from_str(line.trim()).expect("valid JSON");
+        assert_eq!(v["token"], "tok-123");
+        assert_eq!(v["target_desc"], "the Send button");
+        assert_eq!(v["action"]["kind"], "click");
+        assert_eq!(v["action"]["x"], 42);
+        assert_eq!(v["action"]["y"], 99);
+        // A click request carries NO type/key fields.
+        assert!(v["action"].get("text").is_none());
+        assert!(v["action"].get("combo").is_none());
+    }
+
+    #[test]
+    fn encode_actuate_request_type_shape_escapes_strings() {
+        // A target/text with a quote + newline must be JSON-escaped so it can never
+        // break the single-line framing.
+        let plan = plan_for(
+            Action::Type { text: "he said \"hi\"\nthen left".into() },
+            "the \"comment\" field",
+        );
+        let line = encode_actuate_request("t", &plan);
+        // Still exactly one framing newline despite the embedded '\n' in the text.
+        assert_eq!(line.matches('\n').count(), 1, "embedded newline must be escaped, not framing");
+        let v: serde_json::Value = serde_json::from_str(line.trim()).expect("valid JSON");
+        assert_eq!(v["action"]["kind"], "type");
+        assert_eq!(v["action"]["text"], "he said \"hi\"\nthen left");
+        assert_eq!(v["target_desc"], "the \"comment\" field");
+        assert!(v["action"].get("x").is_none());
+    }
+
+    #[test]
+    fn encode_actuate_request_key_shape() {
+        let plan = plan_for(Action::Key { combo: "cmd+s".into() }, "the editor");
+        let line = encode_actuate_request("cap", &plan);
+        let v: serde_json::Value = serde_json::from_str(line.trim()).expect("valid JSON");
+        assert_eq!(v["action"]["kind"], "key");
+        assert_eq!(v["action"]["combo"], "cmd+s");
+        assert_eq!(v["token"], "cap");
+        assert!(v["action"].get("text").is_none());
+    }
+
+    #[test]
+    fn parse_actuate_reply_ok_true_is_success() {
+        assert!(parse_actuate_reply("{\"ok\":true,\"detail\":\"posted\"}\n").is_ok());
+        // detail is optional on success.
+        assert!(parse_actuate_reply("{\"ok\":true}").is_ok());
+    }
+
+    #[test]
+    fn parse_actuate_reply_ok_false_is_honest_error_with_detail() {
+        let err = parse_actuate_reply(
+            "{\"ok\":false,\"detail\":\"Accessibility not granted to JARVIS.app\"}\n",
+        )
+        .unwrap_err();
+        match err {
+            ActuateError::AppActuatorUnavailable(d) => {
+                assert!(d.contains("Accessibility not granted to JARVIS.app"));
+            }
+            other => panic!("expected AppActuatorUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_actuate_reply_ok_false_empty_detail_is_still_honest() {
+        let err = parse_actuate_reply("{\"ok\":false,\"detail\":\"\"}").unwrap_err();
+        assert!(matches!(err, ActuateError::AppActuatorUnavailable(_)));
+        assert!(err.reason().to_lowercase().contains("declined") || !err.reason().is_empty());
+    }
+
+    #[test]
+    fn parse_actuate_reply_malformed_is_never_a_fabricated_success() {
+        // An unparsable / empty reply must be an honest error — NEVER treated as ok.
+        for bad in ["", "not json", "{\"ok\":}", "{\"oops\":true}"] {
+            let r = parse_actuate_reply(bad);
+            assert!(
+                matches!(r, Err(ActuateError::AppActuatorUnavailable(_))),
+                "a malformed reply ({bad:?}) must NEVER be a fabricated success"
+            );
+        }
     }
 
     #[test]

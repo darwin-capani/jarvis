@@ -11,6 +11,7 @@
 //! and never leave this process except in the verify request headers
 //! (`x-api-key` / `Authorization: Bearer`) the user explicitly triggers.
 
+mod actuator;
 mod command;
 mod config_settings;
 mod credentials;
@@ -892,6 +893,15 @@ pub fn run() {
                 let state = handle.state::<mic_stream::MicState>();
                 let _ = mic_stream::start_mic_stream(state);
             });
+            // START the UI ACTUATOR listener (actuator.rs) on its own background
+            // thread. It binds <root>/state/ipc/actuate.sock and serves ONE
+            // token-authenticated actuation request per connection, posting the
+            // CGEvent IN THIS app process so macOS shows a clean "JARVIS would like
+            // to control this computer" Accessibility prompt. NON-BLOCKING and a
+            // clean no-op when the daemon hasn't created state/ipc/ yet; it NEVER
+            // actuates on its own — only on a token-verified daemon request. Kept
+            // entirely off the async runtime / managed state (no !Send type).
+            actuator::start_actuator_listener();
             Ok(())
         })
         // RESET-ON-EXIT safety net (window side): when the main window is

@@ -8824,7 +8824,12 @@ async fn ui_actuate_tool(request: &crate::ui_automation::ActuationRequest, confi
             // Accessibility-TCC consent). The result is returned FAITHFULLY, never
             // fabricated.
             telemetry::emit("system", "ui_actuate.actuating", json!({"action": plan.action().verb(), "target": plan.target_desc()}));
-            match crate::ui_automation::do_actuate(&plan).await {
+            // OPT-IN: when [ui_automation].actuate_via_app is true, the already-approved
+            // single action is POSTED THROUGH the HUD app (JARVIS.app) over
+            // state/ipc/actuate.sock so macOS attributes the Accessibility grant to
+            // JARVIS.app. Default false => the existing LOCAL CGEvent post, unchanged.
+            // Every gate above ran first; this flag changes ONLY where the post lands.
+            match crate::ui_automation::do_actuate(&plan, cfg.actuate_via_app).await {
                 Ok(result) => {
                     telemetry::emit(
                         "system",

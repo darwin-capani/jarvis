@@ -544,6 +544,16 @@ export const CATALOG: CatalogEntry[] = [
     dangerWhen: "on",
   },
   {
+    id: "ui_automation.actuate_via_app",
+    group: "Capabilities",
+    label: "Actuate via the JARVIS app",
+    control: "toggle",
+    hint:
+      "WHERE an already-approved click/keystroke is posted. OFF (default): the background service posts it (grant Accessibility to the service). " +
+      "ON: the JARVIS app posts it, so macOS shows a clean \"JARVIS would like to control this computer\" prompt and the grant is the app's. " +
+      "EVERY safety gate (per-action confirm, bounds, the full gate stack) still runs in the service BEFORE the post — this only changes who posts the final event. Restart the daemon after changing.",
+  },
+  {
     id: "mcp.enabled",
     group: "Capabilities",
     label: "MCP client",
