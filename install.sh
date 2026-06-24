@@ -1093,14 +1093,24 @@ else
     # HUD / Tauri release .app.
     if [ -f "$JARVIS_HOME/hud/package.json" ]; then
         ui_spin "npm ci (HUD deps)" -- bash -c "cd '$JARVIS_HOME/hud' && NPM_CONFIG_UPDATE_NOTIFIER=false npm ci --no-fund --no-audit --loglevel=error"
-        # Build the .app WITHOUT updater artifacts. The signed updater bundle
-        # (latest.json + .tar.gz) is a RELEASE-only concern produced by CI, which
-        # holds TAURI_SIGNING_PRIVATE_KEY. A local install has only the public key,
-        # so leaving createUpdaterArtifacts=true makes `tauri build` die at the
-        # signing step *after* the .app/.dmg are already bundled. Overriding it to
-        # false here skips that step cleanly — the installed app still auto-updates
-        # by pulling the CI-signed artifacts from the GitHub release endpoint.
-        ui_spin "npm run tauri build (-> JARVIS.app)" -- bash -c "cd '$JARVIS_HOME/hud' && NPM_CONFIG_UPDATE_NOTIFIER=false NPM_CONFIG_FUND=false npm run tauri -- build --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
+        # Build JARVIS.app for THIS Mac. Two deliberate --config overrides:
+        #   * targets=["app"]              — a local install only needs the .app
+        #     (place_hud_app copies it into /Applications). The .dmg is a
+        #     DISTRIBUTION artifact that CI builds + signs + notarizes; building
+        #     it here is wasted work and extra output, so skip it.
+        #   * createUpdaterArtifacts=false — signing the updater .tar.gz needs the
+        #     PRIVATE key, which only CI holds; leaving it on makes `tauri build`
+        #     die at the signing step *after* the bundle. The installed app still
+        #     auto-updates by pulling the CI-signed artifacts from the release.
+        # A locally-built app is AD-HOC code-signed (signingIdentity "-") and is
+        # NOT Apple-notarized — notarization needs a paid Developer account and
+        # only matters for the downloadable release. Tauri's "skipping app
+        # notarization" warning is therefore EXPECTED + harmless here; we state it
+        # calmly below and filter the raw warn line so a clean build reads clean.
+        # `set -o pipefail` keeps a REAL build failure fatal through the sed filter
+        # (sed always exits 0, so without pipefail a failed build would look ok).
+        ui_note "local build: JARVIS.app is ad-hoc code-signed (not Apple-notarized) — notarization is only for the downloadable release; this build runs fine here"
+        ui_spin "npm run tauri build (-> JARVIS.app)" -- bash -c "set -o pipefail; cd '$JARVIS_HOME/hud' && NPM_CONFIG_UPDATE_NOTIFIER=false NPM_CONFIG_FUND=false npm run tauri -- build --config '{\"bundle\":{\"targets\":[\"app\"],\"createUpdaterArtifacts\":false}}' 2>&1 | sed -e '/skipping app notarization/d'"
         APP_BUNDLE="$(find "$JARVIS_HOME/hud/src-tauri/target/release/bundle" -maxdepth 2 -name 'JARVIS.app' 2>/dev/null | head -1 || true)"
         if [ -n "$APP_BUNDLE" ]; then
             ui_ok "HUD bundled: $APP_BUNDLE"
