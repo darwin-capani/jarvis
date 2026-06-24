@@ -98,9 +98,9 @@ describe("SystemAccessPanel render", () => {
     // Section + the headline re-request control.
     expect(out).toContain(PERMISSIONS_COPY.title);
     expect(out).toContain(PERMISSIONS_COPY.requestAll);
-    // One OPEN affordance per pane (aria-label form is stable to assert).
+    // One REQUEST affordance per pane (aria-label form is stable to assert).
     for (const p of PERMISSION_PANES) {
-      expect(out).toContain(esc(`Open ${p.label} in System Settings`));
+      expect(out).toContain(esc(`Request ${p.label} access`));
     }
   });
 

@@ -17,6 +17,7 @@ mod credentials;
 mod heal;
 mod permissions;
 mod setup;
+mod tcc;
 mod takeover;
 mod updates;
 mod uninstall;
@@ -911,6 +912,7 @@ pub fn run() {
             setup::open_setup_install,
             permissions::open_privacy_pane,
             permissions::request_all_permissions,
+            permissions::request_access,
             enter_takeover,
             exit_takeover
         ])

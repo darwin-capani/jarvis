@@ -85,16 +85,16 @@ export const PERMISSION_KEYS: string[] = PERMISSION_PANES.map((p) => p.key);
 export const PERMISSIONS_COPY = {
   title: "SYSTEM ACCESS // macOS PERMISSIONS",
   lede:
-    "JARVIS is most capable with broad access to your Mac. macOS keeps these behind Privacy & Security — and for your safety, NO app (JARVIS included) can switch them on for itself. What JARVIS can do is take you straight to the right switch.",
+    "JARVIS is most capable with broad access to your Mac. Click REQUEST and JARVIS asks macOS directly — you'll see a system prompt to Allow. macOS still decides: for your safety no app can switch a permission on for itself, so you confirm each one.",
   howTitle: "How this works",
   how: [
-    "Click a permission to open its exact pane in System Settings.",
-    "Turn JARVIS on there. If JARVIS isn't listed yet, click the + to add it — apps appear once they first ask for that access.",
-    "Microphone, Screen Recording, and Accessibility also show a one-time prompt the first time JARVIS uses them; this panel re-opens the pane so you can change your answer afterward.",
+    "Click REQUEST and macOS shows a JARVIS permission prompt — choose Allow.",
+    "If a permission was already decided, or has no prompt (Full Disk Access, Automation), JARVIS opens the exact Settings pane so you can switch it on there.",
+    "You can change any answer later in System Settings → Privacy & Security.",
   ],
   requestAll: "RE-REQUEST ALL PERMISSIONS",
   requestAllHint:
     "Opens System Settings → Privacy & Security, where every category is listed. Use it any time access stops working, or after a macOS update resets a permission.",
   footnote:
-    "This is the maximum an app is allowed to do — open the panes and explain them honestly. The switches are always yours to flip, and you can revoke any of them in the same place at any time.",
+    "macOS always gives YOU the final say — every prompt is yours to allow or deny, and you can revoke any permission in System Settings → Privacy & Security at any time.",
 } as const;

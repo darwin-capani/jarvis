@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { PERMISSION_PANES, PERMISSIONS_COPY } from "../core/permissions";
-import { inTauri, openPrivacyPane, requestAllPermissions } from "../tauri/bridge";
+import { inTauri, requestAccess, requestAllPermissions } from "../tauri/bridge";
 
 /**
  * SYSTEM ACCESS // macOS PERMISSIONS — the panel that takes the user straight to
@@ -27,10 +27,12 @@ export default function SystemAccessPanel() {
       setBusy(key);
       setNote("");
       try {
-        const r = await openPrivacyPane(key);
+        // Fire the NATIVE macOS prompt from the app (clean "JARVIS" dialog); the
+        // backend falls back to opening Settings when macOS won't prompt.
+        const r = await requestAccess(key);
         setNote(r.detail);
       } catch {
-        setNote("could not open System Settings");
+        setNote("could not request the permission");
       } finally {
         setBusy(null);
       }
@@ -78,10 +80,10 @@ export default function SystemAccessPanel() {
             className="icon-btn"
             onClick={() => void openPane(p.key)}
             disabled={!shell || busy !== null}
-            title={`Open “${p.label}” in System Settings`}
-            aria-label={`Open ${p.label} in System Settings`}
+            title={`Request “${p.label}” access — shows the macOS prompt`}
+            aria-label={`Request ${p.label} access`}
           >
-            {busy === p.key ? "OPENING…" : "OPEN"}
+            {busy === p.key ? "REQUESTING…" : "REQUEST"}
           </button>
           <div className="cred-hint">{p.why}</div>
         </div>

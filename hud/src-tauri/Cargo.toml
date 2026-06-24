@@ -45,6 +45,13 @@ time = "=0.3.47"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
+# SYSTEM ACCESS — fire the REAL macOS TCC prompts from THIS app bundle (tcc.rs) so
+# the user sees a clean "JARVIS" dialog. block2 carries the AVFoundation
+# requestAccess completion handler; core-foundation builds the
+# AXIsProcessTrustedWithOptions options dict. Both are already in the lock
+# (transitive), so naming them as direct deps adds no new crate to the graph.
+block2 = "0.6"
+core-foundation = "0.10"
 
 [dev-dependencies]
 # Drives the async unit tests (verify dispatch short-circuit / id guard). The

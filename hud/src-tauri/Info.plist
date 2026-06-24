@@ -45,6 +45,9 @@
   <key>NSMicrophoneUsageDescription</key>
   <string>JARVIS uses the microphone for the voice assistant: the wake word, dictation, and one-time voice-id enrolment. Audio is processed on-device by default; nothing is recorded or uploaded unless you turn on a cloud voice tier.</string>
 
+  <key>NSCameraUsageDescription</key>
+  <string>JARVIS uses the camera only when you explicitly ask it to watch the camera (on-device vision). It stays off until you ask; frames are processed on-device and are not recorded or uploaded.</string>
+
   <key>NSAppleEventsUsageDescription</key>
   <string>JARVIS sends Apple events to control apps you ask it to act on (the "ui actuate" / desktop takeover features) and to open Terminal for the uninstaller. macOS will ask you to approve each app it controls.</string>
 </dict>

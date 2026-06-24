@@ -630,6 +630,31 @@ export async function openPrivacyPane(pane: string): Promise<PaneOpenResult> {
 }
 
 /**
+ * REQUEST a permission the right way: fire the NATIVE macOS prompt from the app
+ * bundle (a clean "JARVIS" dialog) for permissions that have a request API; the
+ * backend falls back to opening the exact Settings pane when macOS won't prompt
+ * (already decided, or no API like Full Disk Access). Honest browser fallback.
+ */
+export async function requestAccess(pane: string): Promise<PaneOpenResult> {
+  if (!inTauri()) {
+    return {
+      opened: false,
+      label: pane,
+      detail: "Requesting permissions needs the JARVIS desktop app.",
+    };
+  }
+  try {
+    return await invoke<PaneOpenResult>("request_access", { pane });
+  } catch (e) {
+    return {
+      opened: false,
+      label: pane,
+      detail: typeof e === "string" ? e : "could not request the permission",
+    };
+  }
+}
+
+/**
  * The "re-request all permissions" action: opens System Settings → Privacy &
  * Security (every category listed). Takes no argument, so there is no injection
  * surface at all. Honest browser fallback.

@@ -181,6 +181,36 @@ pub async fn request_all_permissions() -> Result<PaneOpen, String> {
     .await
 }
 
+/// REQUEST a permission the right way: fire the NATIVE macOS prompt from this app
+/// bundle (so the user sees a clean "JARVIS" dialog) for the permissions that have
+/// a request API; for the ones that do NOT (Full Disk Access, Automation) — or one
+/// macOS won't re-prompt because it was already denied — fall back to opening the
+/// exact Settings pane. The native request runs on a blocking thread (some TCC
+/// request calls block until the user answers). An unknown key is rejected.
+#[tauri::command]
+pub async fn request_access(pane: String) -> Result<PaneOpen, String> {
+    let Some(p) = pane_lookup(&pane) else {
+        return Err(format!("unknown permission pane: {pane}"));
+    };
+    let key = pane.clone();
+    let prompt = tauri::async_runtime::spawn_blocking(move || crate::tcc::request_permission(&key))
+        .await
+        .map_err(|e| format!("permission request task failed: {e}"))?;
+
+    // macOS shows the prompt ONLY from "not determined". When it won't (already
+    // denied, or no prompt API exists for this pane), open the exact Settings pane
+    // so the user can still grant it.
+    if matches!(prompt.status.as_str(), "denied" | "no_prompt_api" | "error") {
+        let opened = open_url(&pane_url(p.anchor), p.label, p.guidance).await?;
+        return Ok(PaneOpen {
+            opened: opened.opened,
+            label: p.label.to_string(),
+            detail: format!("{} {}", prompt.detail, opened.detail),
+        });
+    }
+    Ok(PaneOpen { opened: prompt.fired, label: p.label.to_string(), detail: prompt.detail })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
