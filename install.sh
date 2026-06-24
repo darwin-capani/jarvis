@@ -657,40 +657,48 @@ if [ -x "$CARGO" ] || command -v cargo >/dev/null 2>&1; then
     [ -x "$CARGO" ] || CARGO="$(command -v cargo)"
     # Source the cargo env so a freshly-installed toolchain is on PATH before probing.
     [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-    # VERIFY cargo actually RUNS — not just that the file exists. A rustup proxy
-    # with NO default toolchain configured (`rustup default stable` never ran)
-    # EXISTS but ERRORS ("rustup could not choose a version of cargo to run"). We
-    # must NOT mask that (the old `|| echo cargo` did) — otherwise it sails through
-    # preflight and dies at the BUILD stage.
-    if "$CARGO" --version >/dev/null 2>&1; then
+    _rustup="$HOME/.cargo/bin/rustup"; [ -x "$_rustup" ] || _rustup="$(command -v rustup 2>/dev/null || echo rustup)"
+    _rustc="$HOME/.cargo/bin/rustc";   [ -x "$_rustc" ]  || _rustc="$(command -v rustc 2>/dev/null || echo rustc)"
+    # VERIFY the toolchain is BUILD-CAPABLE — not just that cargo exists. The build
+    # invokes `rustc -vV`, and a rustup proxy with NO default toolchain OR a
+    # BROKEN/partial one ("Missing manifest in toolchain ...") must be caught HERE:
+    # `cargo --version` can PASS while `rustc -vV` FAILS, so we probe BOTH. Masking
+    # either (the old `|| echo cargo`) lets it sail through preflight and die at BUILD.
+    if "$CARGO" --version >/dev/null 2>&1 && "$_rustc" -vV >/dev/null 2>&1; then
         ui_ok "Rust toolchain: $("$CARGO" --version)"
     elif [ "$MODE" = "check" ]; then
-        ui_warn "cargo is present but has NO usable toolchain (rustup has no default set)."
+        ui_warn "cargo is present but its toolchain is missing/broken (no default, or a corrupt stable)."
         if [ "$DO_PROVISION" -eq 1 ]; then
-            plan "rustup default stable   # set the default Rust toolchain so cargo can build"
+            plan "rustup toolchain install stable && rustup default stable   # repair the Rust toolchain so the build can run"
         else
-            ui_note "--no-provision: run  rustup default stable  (then re-run)."
+            ui_note "--no-provision: run  rustup toolchain install stable && rustup default stable  (then re-run)."
             PREFLIGHT_FATAL=1
         fi
     elif [ "$DO_PROVISION" -eq 0 ]; then
-        ui_warn "cargo is present but has NO usable toolchain (rustup has no default set)."
-        ui_note "--no-provision: run  rustup default stable  (then re-run)."
-        ui_err "cargo cannot build the daemon without a default toolchain."
+        ui_warn "cargo is present but its toolchain is missing/broken (no default, or a corrupt stable)."
+        ui_note "--no-provision: run  rustup toolchain install stable && rustup default stable  (then re-run)."
+        ui_err "cargo cannot build the daemon without a working toolchain."
         PREFLIGHT_FATAL=1
     else
-        # AUTO-REPAIR (the common case: rustup installed without a default): set
-        # stable as the default toolchain + re-verify — fixing the exact "could not
-        # choose a version of cargo to run" BUILD failure HERE at preflight.
-        ui_info "cargo has no default toolchain — configuring it (rustup default stable)."
-        _rustup="$HOME/.cargo/bin/rustup"
-        [ -x "$_rustup" ] || _rustup="$(command -v rustup 2>/dev/null || echo rustup)"
-        _rd_rc=0
-        run_quiet "rustup default stable" -- "$_rustup" default stable || _rd_rc=$?
-        if [ "$_rd_rc" -eq 0 ] && "$CARGO" --version >/dev/null 2>&1; then
+        # AUTO-REPAIR — handles BOTH a missing default toolchain AND a broken/partial
+        # one ("Missing manifest"). Install + set default; VERIFY the way the build
+        # does (rustc -vV); if STILL broken, force a CLEAN reinstall (remove the
+        # corrupt toolchain, install fresh). This fixes the exact stage-5 failures
+        # "could not choose a version of cargo" and "Missing manifest in toolchain".
+        ui_info "Rust toolchain missing/broken — repairing (rustup toolchain install + default stable)."
+        run_quiet "rustup: install + default stable" -- bash -c \
+            "'$_rustup' toolchain install stable && '$_rustup' default stable" || true
+        if ! "$_rustc" -vV >/dev/null 2>&1; then
+            ui_warn "the stable toolchain is corrupt — reinstalling it cleanly."
+            run_quiet "rustup: clean reinstall stable" -- bash -c \
+                "'$_rustup' toolchain uninstall stable >/dev/null 2>&1; '$_rustup' toolchain install stable && '$_rustup' default stable" || true
+        fi
+        # Final verdict: BOTH cargo AND rustc -vV must run (rustc -vV is what the build invokes).
+        if "$CARGO" --version >/dev/null 2>&1 && "$_rustc" -vV >/dev/null 2>&1; then
             ui_ok "Rust ready: $("$CARGO" --version)"
         else
-            ui_err "cargo still has no usable toolchain after 'rustup default stable'."
-            ui_note "Run manually:  rustup default stable   (then re-run)."
+            ui_err "Rust toolchain still broken after repair (rustc -vV fails)."
+            ui_note "Fix manually:  rustup toolchain uninstall stable; rustup toolchain install stable; rustup default stable   (then re-run)."
             PREFLIGHT_FATAL=1
         fi
     fi
