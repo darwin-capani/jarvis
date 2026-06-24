@@ -45,6 +45,7 @@ import {
   keychainStatus,
   playSfxCue,
 } from "../tauri/bridge";
+import { configGet } from "../tauri/configSettings";
 import Frame from "./Frame";
 
 /**
@@ -230,7 +231,6 @@ function SfxCueTrigger() {
     let live = true;
     void (async () => {
       try {
-        const { configGet } = await import("../tauri/configSettings");
         const settings = await configGet();
         const sfx = settings.find((s) => s.key === "voice.cloud_sfx");
         if (live) setCloudSfxOn(sfx?.value === true);
@@ -368,7 +368,6 @@ function VoiceLab() {
     let live = true;
     void (async () => {
       try {
-        const { configGet } = await import("../tauri/configSettings");
         const settings = await configGet();
         const tier = settings.find((s) => s.key === "voice.cloud_tier");
         if (live) setCloudTierOn(tier?.value === true);
@@ -548,7 +547,6 @@ function ComposeMusic() {
     let live = true;
     void (async () => {
       try {
-        const { configGet } = await import("../tauri/configSettings");
         const settings = await configGet();
         const music = settings.find((s) => s.key === "voice.cloud_music");
         if (live) setCloudMusicOn(music?.value === true);

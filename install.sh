@@ -1092,8 +1092,15 @@ else
     fi
     # HUD / Tauri release .app.
     if [ -f "$JARVIS_HOME/hud/package.json" ]; then
-        ui_spin "npm ci (HUD deps)" -- bash -c "cd '$JARVIS_HOME/hud' && npm ci"
-        ui_spin "npm run tauri build (-> JARVIS.app)" -- bash -c "cd '$JARVIS_HOME/hud' && npm run tauri build"
+        ui_spin "npm ci (HUD deps)" -- bash -c "cd '$JARVIS_HOME/hud' && NPM_CONFIG_UPDATE_NOTIFIER=false npm ci --no-fund --no-audit --loglevel=error"
+        # Build the .app WITHOUT updater artifacts. The signed updater bundle
+        # (latest.json + .tar.gz) is a RELEASE-only concern produced by CI, which
+        # holds TAURI_SIGNING_PRIVATE_KEY. A local install has only the public key,
+        # so leaving createUpdaterArtifacts=true makes `tauri build` die at the
+        # signing step *after* the .app/.dmg are already bundled. Overriding it to
+        # false here skips that step cleanly — the installed app still auto-updates
+        # by pulling the CI-signed artifacts from the GitHub release endpoint.
+        ui_spin "npm run tauri build (-> JARVIS.app)" -- bash -c "cd '$JARVIS_HOME/hud' && NPM_CONFIG_UPDATE_NOTIFIER=false NPM_CONFIG_FUND=false npm run tauri -- build --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
         APP_BUNDLE="$(find "$JARVIS_HOME/hud/src-tauri/target/release/bundle" -maxdepth 2 -name 'JARVIS.app' 2>/dev/null | head -1 || true)"
         if [ -n "$APP_BUNDLE" ]; then
             ui_ok "HUD bundled: $APP_BUNDLE"
