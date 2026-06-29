@@ -93,7 +93,12 @@ A single local engine + per-agent profiles (not 27 separate models) gives JARVIS
 
 ### The voice & persona
 
-JARVIS answers out loud in a neural voice — **Kokoro TTS on the Metal GPU via `mlx-audio`** — in the register of the Iron Man films' JARVIS: a composed British butler-AI that addresses you as "sir," with dry understatement, kept to a few sentences. The persona (`inference/prompts/persona.txt`) is the single source of truth; there are no canned replies — every response is phrased live by the LLM from real handler data. An **optional ElevenLabs cloud-voice tier** is an *added* premium layer that ships **DISABLED**; on-device Kokoro stays the private/offline default and the fallback on any cloud error.
+JARVIS answers out loud in the register of the Iron Man films' JARVIS: a composed British butler-AI that addresses you as "sir," with dry understatement, kept to a few sentences. The persona (`inference/prompts/persona.txt`) is the single source of truth; there are no canned replies — every response is phrased live by the LLM from real handler data, and the persona greets and answers naturally from its first word (the old canned "Right away, sir." task-ack now ships **OFF** — set `[speech].instant_opener = true` to bring it back).
+
+Two voice engines back this, consistent with the rest of the system — **armed by default, inert without their dependency:**
+
+- **On-device Kokoro TTS** on the Metal GPU via `mlx-audio` (`bm_george`, British male) is the **private/offline default** and the **fallback on any cloud error or timeout**. It needs nothing — no key, no network — and is what you hear with no ElevenLabs key, offline, or in Local ("work offline" / Hulk) mode.
+- An **ElevenLabs cloud-voice tier** is an *added* premium-TTS layer that ships **ON** (`[voice].cloud_tier = true`) but stays **inert until you add an `elevenlabs_api_key` to the Keychain** (and the active tier is non-Local). Jarvis-Prime now ships pre-mapped to the ElevenLabs premade **"George"** voice (a stable, shared British male voice on any account), so the cloud voice engages with **just a key — no manual voice-id step**; other agents stay on Kokoro until mapped in `[voice.voices]`. When this tier is active the text JARVIS is about to speak leaves the device for a cloud round trip to synthesize the audio.
 
 ### The HUD
 
