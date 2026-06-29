@@ -13,18 +13,37 @@
  * mounted nodes (never conditional mount/unmount of animated elements).
  */
 :root {
+  /* Base depths — the void plus a deeper-navy layering tone the body gradient and
+     the frosted-glass panels build from (richer than one flat fill). */
   --bg-void: #04080f;
+  --bg-deep: #081523;
   --panel-bg: rgba(5, 11, 19, 0.84);
+
+  /* Cyan ramp — the HUD's primary accent, now with a deep tone for gradients and
+     shadowed layering so the cyan reads with depth instead of a single flat hue. */
   --cyan: #1ad6ff;
   --cyan-bright: #7df3ff;
   --cyan-dim: rgba(26, 214, 255, 0.55);
+  --cyan-deep: #0c93b8;
   --stroke: rgba(26, 214, 255, 0.42);
+
+  /* Ice text — dim nudged brighter (#8fb4c4 -> #9cc3d4) for legibility on the
+     more-translucent glass surfaces. */
   --ice: #eaf8ff;
-  --ice-dim: #8fb4c4;
+  --ice-dim: #9cc3d4;
+
+  /* Status accents. */
   --cloud-violet: #9d7dff;
   --warn-amber: #ffb454;
   --alert-red: #ff3b4e;
   --learn-green: #5ce0a8;
+
+  /* Glassmorphism tokens — the frosted readout-panel surface: a translucent
+     blue-tinted fill, a top sheen highlight, and the backdrop-blur radius. */
+  --glass-bg: rgba(9, 19, 31, 0.55);
+  --glass-edge: rgba(125, 243, 255, 0.16);
+  --glass-blur: 16px;
+
   --cut: 14px;
 
   --mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
@@ -44,7 +63,13 @@ body,
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: var(--bg-void);
+  /* Layered depth so the frosted-glass panels have something to refract: a deep
+     navy gradient with a faint cyan glow (top-right) and a violet glow
+     (bottom-left). Subtle — the void still dominates. */
+  background:
+    radial-gradient(1100px 760px at 78% -12%, rgba(26, 214, 255, 0.08), transparent 58%),
+    radial-gradient(900px 680px at 8% 112%, rgba(157, 125, 255, 0.05), transparent 55%),
+    linear-gradient(162deg, var(--bg-deep), var(--bg-void) 60%);
   color: var(--ice);
   font-family: var(--text);
   user-select: none;
@@ -251,7 +276,18 @@ body,
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-  background: var(--panel-bg);
+  /* Frosted glass: a translucent blue-tinted fill over a backdrop blur (frosts
+     the body gradient + glows behind the panel), plus a top sheen highlight and
+     an inner shadow for depth — the readout reads as a pane of lit glass, not a
+     flat card. backdrop-filter respects the clip-path, so the frost stays inside
+     the cut-corner silhouette. */
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.25);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.25);
+  box-shadow:
+    inset 0 1px 0 var(--glass-edge),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3),
+    inset 0 0 48px rgba(2, 6, 12, 0.35);
   clip-path: polygon(
     var(--cut) 0,
     100% 0,

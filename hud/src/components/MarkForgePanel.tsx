@@ -52,9 +52,11 @@ export const MARK_FORGE_APP_NAME = "mark-forge";
  *  allocate an unbounded InstancedMesh. The engine caps at 4096 bodies total. */
 const MAX_INSTANCES = 4096;
 
-/** FUI accent (matches the cyan family used across the HUD panels). */
+/** FUI accents (match the cyan family + the violet cool-fill used across the HUD). */
 const CYAN = "#1ad6ff";
 const CYAN_BRIGHT = "#7df3ff";
+const CYAN_DEEP = "#0e3a48";
+const CLOUD_VIOLET = "#9d7dff";
 const SLEEP_DIM = "#2c5566";
 
 /** Pinned pixel ratio, capped — single source of truth (same rationale as
@@ -202,7 +204,7 @@ function Bodies({ frameRef }: { frameRef: FrameRef }) {
  *  render can refine this and is device-gated regardless.) */
 function Ground() {
   const grid = useMemo(
-    () => new THREE.GridHelper(20, 20, CYAN_BRIGHT, "#173947"),
+    () => new THREE.GridHelper(20, 20, CYAN_BRIGHT, CYAN_DEEP),
     [],
   );
   // Push the grid slightly transparent so it reads as a backdrop, not a surface.
@@ -231,9 +233,16 @@ function MarkForgeScene({ frameRef }: { frameRef: FrameRef }) {
       style={CANVAS_STYLE}
       frameloop="demand"
     >
-      <color attach="background" args={["#05080c"]} />
-      <ambientLight intensity={0.55} />
-      <directionalLight position={[5, 8, 5]} intensity={0.9} color={CYAN_BRIGHT} />
+      {/* No opaque background — GL alpha:true lets the bodies composite over the
+          panel's frosted glass (cohesive glassmorphism) instead of a flat fill. */}
+      <ambientLight intensity={0.5} />
+      {/* Three-point-ish lighting so the instanced forms read with DEPTH instead
+          of flat single-source shading: a cyan key (upper-right), a dim violet
+          cool-fill from the opposite side, and a faint cyan rim from behind to
+          separate the bodies from the glass. */}
+      <directionalLight position={[5, 8, 5]} intensity={0.85} color={CYAN_BRIGHT} />
+      <directionalLight position={[-6, 3, -4]} intensity={0.32} color={CLOUD_VIOLET} />
+      <directionalLight position={[0, 2, -8]} intensity={0.22} color={CYAN} />
       <Ground />
       <Bodies frameRef={frameRef} />
     </Canvas>
