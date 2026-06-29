@@ -2053,6 +2053,8 @@ mod tests {
     /// phrase through the USER-SET-ONLY global write path, and an unrecognized
     /// phrase gets an honest "not understood" reply (never a model route). Driven
     /// through the policy override seam so it does not poison the set-once global.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn live_dispatcher_policy_sets_a_rule_and_rejects_a_non_phrase() {
         let _g = gate_guard();
@@ -2163,6 +2165,8 @@ mod tests {
     /// the authenticated-local confirm cannot execute a consequential action while
     /// the switch is off. The parked action is consumed (taken from the slot), so
     /// it cannot fire on a later confirm either.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn confirm_by_id_with_switch_off_consumes_but_never_executes() {
         let _g = gate_guard();
@@ -2199,6 +2203,8 @@ mod tests {
 
     /// confirm {unknown-id} does NOTHING — no fabricated action, and the genuine
     /// pending is left intact for its real id.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn confirm_unknown_id_does_nothing_and_leaves_the_real_pending() {
         let _g = gate_guard();
@@ -2260,6 +2266,8 @@ mod tests {
 
     /// deny {id} clears the parked action and fires nothing; an unknown id leaves
     /// it intact.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn deny_by_id_clears_only_the_named_action() {
         let _g = gate_guard();
@@ -2284,6 +2292,8 @@ mod tests {
 
     /// dismiss_forge clears ONLY the matching pending marker and NEVER deploys —
     /// apps/ is unchanged.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn dismiss_forge_clears_marker_and_never_deploys() {
         let _g = gate_guard();

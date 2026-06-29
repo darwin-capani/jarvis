@@ -44,6 +44,8 @@ const CONVERSE_DONE_TIMEOUT: Duration = Duration::from_secs(30);
 /// ...and never go quiet for longer than this between lines.
 const CONVERSE_EVENT_TIMEOUT: Duration = Duration::from_secs(15);
 
+const MAX_INFERENCE_LINE_BYTES: usize = 16 * 1024 * 1024; // 16 MiB: inference responses are text/paths/embedding-vectors (images/audio are returned as PATHS, not inlined); well above the server's own 8 MiB request limit, bounds a hijacked inference server from OOMing the daemon.
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Classification {
     pub intent: String,
@@ -1585,6 +1587,9 @@ impl InferenceClient {
             if n == 0 {
                 bail!("inference server closed the connection mid-converse");
             }
+            if buf.len() > MAX_INFERENCE_LINE_BYTES {
+                bail!("inference line exceeds {} bytes", MAX_INFERENCE_LINE_BYTES);
+            }
             // Any well-formed line is progress: reset the done budget.
             deadline = now + CONVERSE_DONE_TIMEOUT;
             let msg: ConverseLine =
@@ -1819,6 +1824,9 @@ impl InferenceClient {
         let n = reader.read_line(&mut buf).await?;
         if n == 0 {
             bail!("inference server closed the connection");
+        }
+        if buf.len() > MAX_INFERENCE_LINE_BYTES {
+            bail!("inference line exceeds {} bytes", MAX_INFERENCE_LINE_BYTES);
         }
         let resp: Response =
             serde_json::from_str(buf.trim()).context("malformed inference response")?;

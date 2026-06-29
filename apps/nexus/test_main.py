@@ -24,7 +24,6 @@ Run: python3.11 -m unittest apps/nexus/test_main.py  (or `-m unittest` from here
 from __future__ import annotations
 
 import json
-import math
 import tempfile
 import unittest
 from pathlib import Path

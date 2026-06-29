@@ -11600,6 +11600,8 @@ mod tests {
     /// the master switch is ON, exactly as the cloud loop does — the offline path
     /// does NOT auto-fire it. Drives the real gate with the switch forced ON in a
     /// serialized scope (thread-local override), then restores it on drop.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn consequential_tool_offline_parks_under_on_switch() {
         // Serialize on the shared pending-confirmation slot. This test parks (via the
@@ -12894,6 +12896,8 @@ mod tests {
     ///        park-needing tool (the cross-turn confirm machinery);
     ///   (4)  voice-id unverified REFUSES it before it can even park (master ON).
     /// No real exec, no network, no daemon — the exec seam is built, never invoked.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn shell_tool_is_owned_ships_on_consequential_and_voiceid_gated() {
         use std::time::Instant;
@@ -13013,6 +13017,8 @@ mod tests {
     ///   (4)  voice-id unverified REFUSES it before it can even park (master ON);
     ///   (5)  the PURE planner refuses a degenerate / off-screen instruction.
     /// No real actuation, no display, no daemon — the seam is built, never invoked.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn ui_actuate_is_owned_ships_on_consequential_and_per_action_gated() {
         use std::time::Instant;
@@ -13352,6 +13358,8 @@ mod tests {
     /// EMPTY POLICY + master ON: the chokepoint behaves EXACTLY as today — it
     /// PARKS for a spoken confirmation (no auto-approve, no block). This is the
     /// "ships safe: empty policy => behavior is exactly today's gate" invariant.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn empty_policy_parks_exactly_as_today() {
         let _lock = crate::confirm::PENDING_TEST_LOCK
@@ -13383,6 +13391,8 @@ mod tests {
 
     /// NEVER WINS: a `Never` rule HARD-BLOCKS even with the master switch ON and a
     /// would-be confirmation. Nothing parks and nothing fires.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn never_blocks_even_with_master_on_and_confirmation() {
         let _lock = crate::confirm::PENDING_TEST_LOCK
@@ -13458,6 +13468,8 @@ mod tests {
     /// voice-id gate allowing (default in tests) + an `Always` rule, the action
     /// EXECUTES directly — skipping the per-turn park — and persists. This is the
     /// controlled, master-gated loosening.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn always_auto_approves_when_master_on() {
         let _lock = crate::confirm::PENDING_TEST_LOCK
@@ -13528,6 +13540,8 @@ mod tests {
     /// execute_tool — BEFORE it can even park — even though the master switch is
     /// ON. The refusal is the honest "I don't recognize your voice" line, it is an
     /// is_error, and NOTHING parks (a later "yes" can confirm nothing).
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn voiceid_unverified_denies_consequential_even_with_master_on() {
         use std::time::Instant;
@@ -13620,6 +13634,8 @@ mod tests {
     /// isn't enforcing. (The verified=true enforcing case behaves identically —
     /// `allow_consequential()` is true either way — so this one case covers the
     /// "nothing changes" contract for both OFF and verified.)
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn voiceid_off_gate_parks_consequential_exactly_as_today() {
         use std::time::Instant;
@@ -13801,6 +13817,8 @@ mod tests {
     /// The ON state comes from a thread-local `cfg(test)` override, so the set-once
     /// master switch (which other tests assert is OFF) is never mutated and is
     /// restored to OFF when the guard drops.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn mcp_consequential_on_switch_parks_the_exact_action() {
         use std::time::Instant;
@@ -13858,6 +13876,8 @@ mod tests {
     /// preview of the write AND would arm the owner's pending confirmation slot
     /// (confused-deputy). The replay gate still holds even without this — but the
     /// honest refusal, the preview-leak, and the slot-arming are what this fixes.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn voiceid_unverified_mcp_consequential_is_refused_and_parks_nothing() {
         use std::time::Instant;
@@ -16567,6 +16587,8 @@ mod tests {
     /// `propose_standing_mission` they would get a goal+schedule preview leaked and
     /// arm the owner's pending slot. This is the standing-mission analogue of the
     /// built-in `voiceid_deny` and the MCP deny test.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn voiceid_unverified_standing_propose_is_refused_and_parks_nothing() {
         use std::time::Instant;

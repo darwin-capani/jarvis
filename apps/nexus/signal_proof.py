@@ -164,7 +164,7 @@ def main() -> int:
     if abs(tp_peak - db(sample_peak_lin)) > 0.2:
         print(f"  FAIL tpeak meter {tp_peak:.4f} != sample-peak {db(sample_peak_lin):.4f}"); ok = False
     else:
-        print(f"  OK   peak meter carried the hot fs/4 tone through the FFI")
+        print("  OK   peak meter carried the hot fs/4 tone through the FFI")
 
     core.close()
     print("PASS: signal proof complete" if ok else "FAIL: signal proof had mismatches")

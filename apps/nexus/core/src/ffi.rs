@@ -103,7 +103,7 @@ pub extern "C" fn nexus_engine_create(inputs: usize, outputs: usize, sample_rate
 /// `void nexus_engine_destroy(Engine* engine);` — free the engine. NULL is a
 /// no-op. After this the pointer is dangling; Python must not reuse it.
 #[no_mangle]
-pub extern "C" fn nexus_engine_destroy(engine: *mut Engine) {
+pub unsafe extern "C" fn nexus_engine_destroy(engine: *mut Engine) {
     if engine.is_null() {
         return;
     }
@@ -115,7 +115,7 @@ pub extern "C" fn nexus_engine_destroy(engine: *mut Engine) {
 
 /// `int32_t nexus_engine_inputs(const Engine* engine, size_t* out_inputs);`
 #[no_mangle]
-pub extern "C" fn nexus_engine_inputs(engine: *const Engine, out_inputs: *mut usize) -> i32 {
+pub unsafe extern "C" fn nexus_engine_inputs(engine: *const Engine, out_inputs: *mut usize) -> i32 {
     guard(|| {
         let e = engine_ref!(engine);
         if out_inputs.is_null() {
@@ -128,7 +128,7 @@ pub extern "C" fn nexus_engine_inputs(engine: *const Engine, out_inputs: *mut us
 
 /// `int32_t nexus_engine_outputs(const Engine* engine, size_t* out_outputs);`
 #[no_mangle]
-pub extern "C" fn nexus_engine_outputs(engine: *const Engine, out_outputs: *mut usize) -> i32 {
+pub unsafe extern "C" fn nexus_engine_outputs(engine: *const Engine, out_outputs: *mut usize) -> i32 {
     guard(|| {
         let e = engine_ref!(engine);
         if out_outputs.is_null() {
@@ -146,7 +146,7 @@ pub extern "C" fn nexus_engine_outputs(engine: *const Engine, out_outputs: *mut 
 /// `int32_t nexus_set_crosspoint(Engine*, size_t in, size_t out, float gain_db);`
 /// SPEC §5 `route.set`. `gain_db == -INFINITY` clears the route.
 #[no_mangle]
-pub extern "C" fn nexus_set_crosspoint(engine: *mut Engine, input: usize, output: usize, gain_db: f32) -> i32 {
+pub unsafe extern "C" fn nexus_set_crosspoint(engine: *mut Engine, input: usize, output: usize, gain_db: f32) -> i32 {
     guard(|| {
         let e = engine_mut!(engine);
         status(e.set_crosspoint(input, output, gain_db))
@@ -156,7 +156,7 @@ pub extern "C" fn nexus_set_crosspoint(engine: *mut Engine, input: usize, output
 /// `int32_t nexus_set_input_trim(Engine*, size_t channel, float gain_db);`
 /// SPEC §5 `gain.set` (input stage).
 #[no_mangle]
-pub extern "C" fn nexus_set_input_trim(engine: *mut Engine, channel: usize, gain_db: f32) -> i32 {
+pub unsafe extern "C" fn nexus_set_input_trim(engine: *mut Engine, channel: usize, gain_db: f32) -> i32 {
     guard(|| {
         let e = engine_mut!(engine);
         status(e.set_input_trim(channel, gain_db))
@@ -166,7 +166,7 @@ pub extern "C" fn nexus_set_input_trim(engine: *mut Engine, channel: usize, gain
 /// `int32_t nexus_set_output_trim(Engine*, size_t channel, float gain_db);`
 /// SPEC §5 `gain.set` (output stage).
 #[no_mangle]
-pub extern "C" fn nexus_set_output_trim(engine: *mut Engine, channel: usize, gain_db: f32) -> i32 {
+pub unsafe extern "C" fn nexus_set_output_trim(engine: *mut Engine, channel: usize, gain_db: f32) -> i32 {
     guard(|| {
         let e = engine_mut!(engine);
         status(e.set_output_trim(channel, gain_db))
@@ -176,7 +176,7 @@ pub extern "C" fn nexus_set_output_trim(engine: *mut Engine, channel: usize, gai
 /// `int32_t nexus_set_input_mute(Engine*, size_t channel, bool muted);`
 /// "mute the mic" lands here (voice -> daemon -> gain.set).
 #[no_mangle]
-pub extern "C" fn nexus_set_input_mute(engine: *mut Engine, channel: usize, muted: bool) -> i32 {
+pub unsafe extern "C" fn nexus_set_input_mute(engine: *mut Engine, channel: usize, muted: bool) -> i32 {
     guard(|| {
         let e = engine_mut!(engine);
         status(e.set_input_mute(channel, muted))
@@ -185,7 +185,7 @@ pub extern "C" fn nexus_set_input_mute(engine: *mut Engine, channel: usize, mute
 
 /// `int32_t nexus_set_output_mute(Engine*, size_t channel, bool muted);`
 #[no_mangle]
-pub extern "C" fn nexus_set_output_mute(engine: *mut Engine, channel: usize, muted: bool) -> i32 {
+pub unsafe extern "C" fn nexus_set_output_mute(engine: *mut Engine, channel: usize, muted: bool) -> i32 {
     guard(|| {
         let e = engine_mut!(engine);
         status(e.set_output_mute(channel, muted))
@@ -196,7 +196,7 @@ pub extern "C" fn nexus_set_output_mute(engine: *mut Engine, channel: usize, mut
 /// SPEC §5 `monitor.set`. A NEGATIVE `output` clears the monitor assignment;
 /// otherwise it assigns that output index.
 #[no_mangle]
-pub extern "C" fn nexus_set_monitor_output(engine: *mut Engine, output: i32) -> i32 {
+pub unsafe extern "C" fn nexus_set_monitor_output(engine: *mut Engine, output: i32) -> i32 {
     guard(|| {
         let e = engine_mut!(engine);
         let sel = if output < 0 { None } else { Some(output as usize) };
@@ -222,7 +222,7 @@ pub extern "C" fn nexus_set_monitor_output(engine: *mut Engine, output: i32) -> 
 /// `outputs[0..output_count]` must be valid for `frames * channels` `f32`s.
 /// Python passes ctypes arrays it keeps alive across the call.
 #[no_mangle]
-pub extern "C" fn nexus_process_block(
+pub unsafe extern "C" fn nexus_process_block(
     engine: *mut Engine,
     inputs: *const *const f32,
     input_count: usize,
@@ -278,7 +278,7 @@ pub extern "C" fn nexus_process_block(
 /// `    float* out_peak_dbfs, float* out_rms_dbfs);`
 /// SPEC §6 `audio.levels` per-channel entry. Writes both out-params.
 #[no_mangle]
-pub extern "C" fn nexus_get_channel_meter(
+pub unsafe extern "C" fn nexus_get_channel_meter(
     engine: *const Engine,
     channel: usize,
     out_peak_dbfs: *mut f32,
@@ -302,7 +302,7 @@ pub extern "C" fn nexus_get_channel_meter(
 /// `    float* out_lufs_m, float* out_lufs_s, float* out_lufs_i);`
 /// SPEC §6 BS.1770-4 loudness triplet.
 #[no_mangle]
-pub extern "C" fn nexus_get_loudness(
+pub unsafe extern "C" fn nexus_get_loudness(
     engine: *const Engine,
     out_lufs_m: *mut f32,
     out_lufs_s: *mut f32,
@@ -329,7 +329,7 @@ pub extern "C" fn nexus_get_loudness(
 /// returns OUT_OF_BOUNDS without writing. Use [`nexus_spectrum_band_count`] to
 /// size the buffer.
 #[no_mangle]
-pub extern "C" fn nexus_get_spectrum(engine: *const Engine, out_bands: *mut f32, cap: usize) -> i32 {
+pub unsafe extern "C" fn nexus_get_spectrum(engine: *const Engine, out_bands: *mut f32, cap: usize) -> i32 {
     guard(|| {
         let e = engine_ref!(engine);
         if out_bands.is_null() {
@@ -356,7 +356,7 @@ pub extern "C" fn nexus_spectrum_band_count() -> usize {
 /// `int32_t nexus_get_crosspoint(const Engine*, size_t in, size_t out, float* out_gain_db);`
 /// Read one crosspoint (for `state.get` serialization on the Python side).
 #[no_mangle]
-pub extern "C" fn nexus_get_crosspoint(
+pub unsafe extern "C" fn nexus_get_crosspoint(
     engine: *const Engine,
     input: usize,
     output: usize,
@@ -382,7 +382,7 @@ pub extern "C" fn nexus_get_crosspoint(
 /// Returns 0 on a null handle (indistinguishable from a fresh engine, which is
 /// acceptable: the caller validates the handle once at create).
 #[no_mangle]
-pub extern "C" fn nexus_matrix_revision(engine: *const Engine) -> u64 {
+pub unsafe extern "C" fn nexus_matrix_revision(engine: *const Engine) -> u64 {
     if engine.is_null() {
         return 0;
     }
@@ -401,7 +401,7 @@ pub extern "C" fn nexus_matrix_revision(engine: *const Engine) -> u64 {
 ///
 /// SAFETY: `path` must be a valid NUL-terminated C string for the call.
 #[no_mangle]
-pub extern "C" fn nexus_preset_save_path(engine: *mut Engine, path: *const c_char) -> i32 {
+pub unsafe extern "C" fn nexus_preset_save_path(engine: *mut Engine, path: *const c_char) -> i32 {
     guard(|| {
         let _e = engine_mut!(engine);
         if path.is_null() {
@@ -415,7 +415,7 @@ pub extern "C" fn nexus_preset_save_path(engine: *mut Engine, path: *const c_cha
 
 /// See [`nexus_preset_save_path`]. SAFETY: same `path` contract.
 #[no_mangle]
-pub extern "C" fn nexus_preset_load_path(engine: *mut Engine, path: *const c_char) -> i32 {
+pub unsafe extern "C" fn nexus_preset_load_path(engine: *mut Engine, path: *const c_char) -> i32 {
     guard(|| {
         let _e = engine_mut!(engine);
         if path.is_null() {
@@ -434,43 +434,55 @@ mod tests {
         let e = nexus_engine_create(2, 2, 48_000);
         assert!(!e.is_null());
         let mut ins = 0usize;
-        assert_eq!(nexus_engine_inputs(e, &mut ins), codes::OK);
-        assert_eq!(ins, 2);
-        nexus_engine_destroy(e);
+        // SAFETY: `e` is a live handle from create; out-ptr is a valid local.
+        unsafe {
+            assert_eq!(nexus_engine_inputs(e, &mut ins), codes::OK);
+            assert_eq!(ins, 2);
+            nexus_engine_destroy(e);
+        }
     }
 
     #[test]
     fn null_handle_is_rejected_not_crashed() {
         let null: *mut Engine = std::ptr::null_mut();
-        assert_eq!(nexus_set_crosspoint(null, 0, 0, 0.0), codes::INVALID_HANDLE);
-        let mut out = 0usize;
-        assert_eq!(nexus_engine_inputs(std::ptr::null(), &mut out), codes::INVALID_HANDLE);
-        nexus_engine_destroy(null); // no-op, no crash
+        // SAFETY: null handles are checked and rejected before any deref.
+        unsafe {
+            assert_eq!(nexus_set_crosspoint(null, 0, 0, 0.0), codes::INVALID_HANDLE);
+            let mut out = 0usize;
+            assert_eq!(nexus_engine_inputs(std::ptr::null(), &mut out), codes::INVALID_HANDLE);
+            nexus_engine_destroy(null); // no-op, no crash
+        }
     }
 
     #[test]
     fn crosspoint_set_then_get_via_ffi() {
         let e = nexus_engine_create(2, 2, 48_000);
-        assert_eq!(nexus_set_crosspoint(e, 0, 1, -6.0), codes::OK);
-        let mut g = 0.0f32;
-        assert_eq!(nexus_get_crosspoint(e, 0, 1, &mut g), codes::OK);
-        assert_eq!(g, -6.0);
-        // Out-of-range index returns the matrix's OUT_OF_BOUNDS code.
-        assert_eq!(nexus_set_crosspoint(e, 9, 0, 0.0), codes::OUT_OF_BOUNDS);
-        nexus_engine_destroy(e);
+        // SAFETY: `e` is a live handle from create; out-ptr is a valid local.
+        unsafe {
+            assert_eq!(nexus_set_crosspoint(e, 0, 1, -6.0), codes::OK);
+            let mut g = 0.0f32;
+            assert_eq!(nexus_get_crosspoint(e, 0, 1, &mut g), codes::OK);
+            assert_eq!(g, -6.0);
+            // Out-of-range index returns the matrix's OUT_OF_BOUNDS code.
+            assert_eq!(nexus_set_crosspoint(e, 9, 0, 0.0), codes::OUT_OF_BOUNDS);
+            nexus_engine_destroy(e);
+        }
     }
 
     #[test]
     fn spectrum_buffer_too_small_rejected() {
         let e = nexus_engine_create(1, 1, 48_000);
         let mut small = [0.0f32; 8];
-        assert_eq!(
-            nexus_get_spectrum(e, small.as_mut_ptr(), small.len()),
-            codes::OUT_OF_BOUNDS
-        );
-        let mut full = [0.0f32; SPECTRUM_BANDS_HINT];
-        assert_eq!(nexus_get_spectrum(e, full.as_mut_ptr(), full.len()), codes::OK);
-        nexus_engine_destroy(e);
+        // SAFETY: `e` is a live handle; buffers are valid locals sized as passed.
+        unsafe {
+            assert_eq!(
+                nexus_get_spectrum(e, small.as_mut_ptr(), small.len()),
+                codes::OUT_OF_BOUNDS
+            );
+            let mut full = [0.0f32; SPECTRUM_BANDS_HINT];
+            assert_eq!(nexus_get_spectrum(e, full.as_mut_ptr(), full.len()), codes::OK);
+            nexus_engine_destroy(e);
+        }
     }
 
     #[test]

@@ -4545,8 +4545,6 @@ class InferenceEngine:
         and falls back to on-device Kokoro, so a cloud failure NEVER fails a turn.
         The key is used only to call the seam (which puts it in the xi-api-key
         header) — it is never logged here. Holds self._lock (caller contract)."""
-        import numpy as np
-
         model = self._resolve_elevenlabs_model(model, lang)
         # STREAMING TTS (opt-in): when `stream` is on we hit the low-latency /stream
         # seam and fall back to the blocking seam on any streaming error; with stream
@@ -6126,7 +6124,6 @@ def _selftest_runtime_knobs():
 
     # --- defaults are OFF/neutral (off => today's runtime) -----------------
     # A config-less load_config keeps speculative OFF + no draft + quant "auto".
-    s = {"llm": "x", "stt": "y", "speed": 1.0}
     # The Engine reads these straight from settings; prove the neutral defaults
     # the loader would produce.
     assert ALLOWED_QUANT[0] == "auto", "auto must be the neutral default quant"

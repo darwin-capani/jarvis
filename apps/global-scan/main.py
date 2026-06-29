@@ -53,7 +53,6 @@ import re
 import socket
 import sys
 import threading
-import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET

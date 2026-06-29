@@ -510,6 +510,8 @@ mod tests {
 
     /// A panic drops any parked confirmation — an armed outward action must never
     /// survive the emergency stop.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn panic_drops_a_pending_confirmation() {
         use crate::confirm::{self, PendingConfirmation};

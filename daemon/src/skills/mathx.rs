@@ -1104,6 +1104,7 @@ mod tests {
 
     // ---- round_number ------------------------------------------------------
 
+    #[allow(clippy::approx_constant)] // 3.14159 is rounding test input, not an approximation of PI
     #[test]
     fn rounding_modes() {
         assert_eq!(round_number(&json!({"value": 2.5})).unwrap(), "3"); // half_up

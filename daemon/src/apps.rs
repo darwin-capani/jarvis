@@ -58,6 +58,8 @@ pub(crate) const BSD_BASE_PROFILE: &str = "/System/Library/Sandbox/Profiles/bsd.
 /// Relative to the project root; resolved per-launch.
 const PYTHON_INTERP_REL: &str = ".venv/bin/python3";
 
+const MAX_APP_LINE_BYTES: usize = 1024 * 1024; // 1 MiB: app items/status/log relay lines; bounds a malicious/compromised app from OOMing the daemon (mirrors command.rs MAX_LINE_BYTES).
+
 /// Restart governor: at most this many restarts within the window before the
 /// host gives up on an app and emits app.crashed (see [`RestartGovernor`]).
 const MAX_RESTARTS: u32 = 3;
@@ -1694,6 +1696,10 @@ async fn serve_conn(
                 match read {
                     Ok(0) => return ConnEnd::ConnClosed, // app closed the socket
                     Ok(_) => {
+                        if line.len() > MAX_APP_LINE_BYTES {
+                            warn!(app = name, len = line.len(), "oversized line from app; dropping");
+                            continue;
+                        }
                         if !host_wants_running(registry, name).await {
                             return ConnEnd::HostStopped;
                         }
