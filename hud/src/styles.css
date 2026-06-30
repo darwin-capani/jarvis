@@ -8755,3 +8755,99 @@ body,
   background: rgba(255, 180, 84, 0.08);
   border: 1px solid rgba(255, 180, 84, 0.32);
 }
+
+/* ===================================================================
+   CONNECTOR MARKETPLACE — browsable MCP connector catalog. CONFIGURED reads
+   green; AVAILABLE reads cyan (a neutral "you could add this" opportunity, NOT
+   amber — an unconfigured connector is not a problem state).
+   =================================================================== */
+.connectors-body {
+  padding: 8px 12px 12px;
+  font-family: var(--mono);
+}
+.connectors-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 2px 6px;
+}
+.connectors-count {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.connectors-on-n {
+  color: var(--learn-green);
+  text-shadow: 0 0 10px rgba(92, 224, 168, 0.4);
+}
+.connectors-slash,
+.connectors-total-n {
+  color: var(--ice-dim);
+}
+.connectors-count-label {
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--ice-dim);
+}
+.connectors-note {
+  padding: 0 2px 8px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--ice-dim);
+}
+.connector-row {
+  display: grid;
+  grid-template-columns: 8px minmax(70px, max-content) 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 2px;
+  font-size: 10.5px;
+}
+.connector-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.connector-row.on .connector-dot {
+  background: var(--learn-green);
+  box-shadow: 0 0 6px rgba(92, 224, 168, 0.7);
+}
+.connector-row.off .connector-dot {
+  background: var(--cyan-dim);
+  box-shadow: 0 0 5px rgba(26, 214, 255, 0.4);
+}
+.connector-name {
+  color: var(--ice);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.connector-desc {
+  color: var(--ice-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connector-token {
+  color: var(--cyan-dim);
+  font-size: 9px;
+  white-space: nowrap;
+}
+.connector-pill {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  padding: 2px 6px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.connector-pill.on {
+  color: var(--learn-green);
+  background: rgba(92, 224, 168, 0.1);
+  border: 1px solid rgba(92, 224, 168, 0.35);
+}
+.connector-pill.off {
+  color: var(--cyan-bright);
+  background: rgba(26, 214, 255, 0.08);
+  border: 1px solid rgba(26, 214, 255, 0.3);
+}
