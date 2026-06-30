@@ -1,9 +1,10 @@
 // The static `tool_defs()` JSON literal in `anthropic.rs` is a single large
 // `json!([...])` array; each tool def expands the `json!` macro recursively, and
-// with the ads action tools added this turn the surface crossed the default 128
-// macro-recursion limit. Raise it (a compile-time-only knob with no runtime cost)
-// so the literal keeps its established one-array-per-def style.
-#![recursion_limit = "256"]
+// as the tool surface kept growing (ads tools, then oracle_ask + egress_snapshot)
+// it crossed first the default 128 and then the 256 macro-recursion limit. Raise
+// it (a compile-time-only knob with no runtime cost) so the literal keeps its
+// established one-array-per-def style.
+#![recursion_limit = "512"]
 
 mod actions;
 mod agents;
@@ -46,6 +47,7 @@ mod drafts;
 // ([missions].durable; persistence only — a persisted mission loads PAUSED).
 // Hermetically tested in durable_missions.rs.
 mod durable_missions;
+mod egress;
 mod episodic;
 mod eval;
 mod focus;
@@ -1476,6 +1478,9 @@ async fn main() -> Result<()> {
         &optimize_root.join("optimize.db"),
         master_key.as_ref(),
     )?);
+    // Install the global trace store so the read-only `oracle_ask` query tool can
+    // reach the corpus without threading it through the whole tool-dispatch chain.
+    optimize::set_global_trace_store(trace_store.clone());
 
     // The EVAL scorecard's live, in-memory rolling state (eval.rs): bounded
     // windows of MEASURED per-turn latencies + cloud token usage. Held for the

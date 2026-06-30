@@ -596,6 +596,25 @@ fn tool_defs() -> &'static Value {
                 }
             },
             {
+                "name": "oracle_ask",
+                "description": "Run a READ-ONLY SQL query over JARVIS's local optimizer trace corpus (the privacy-redacted log of past turns) and get the rows back. Use for an analytical question about the user's OWN usage/history that a single SELECT can answer (e.g. 'which agent fails most', 'how many failed turns this week', 'busiest intents'). The ONLY table is `traces(id INTEGER, ts INTEGER /*unix seconds*/, utterance_redacted TEXT, intent TEXT, agent TEXT, mode TEXT, tool_or_skill TEXT, outcome TEXT, latency_ms INTEGER)`; `outcome` is one of 'success','corrected_next_turn','failed','unknown'. STRICTLY read-only — only a single SELECT/WITH/EXPLAIN runs (the engine rejects any write) and at most 50 rows return. Write the SQL yourself from the user's question.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "sql": {"type": "string", "description": "A single read-only SQL query (SELECT/WITH/EXPLAIN) over the traces table"}
+                    },
+                    "required": ["sql"]
+                }
+            },
+            {
+                "name": "egress_snapshot",
+                "description": "Read the host's CURRENT established outbound network connections (a read-only 'what is my Mac talking to right now?' view) and return them as a table of process | pid | remote | state. READ-ONLY + defensive (runs lsof, changes nothing). Use when the user asks what their machine is connected to, or to eyeball for an unexpected/suspicious outbound connection.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
                 "name": "open_path",
                 "description": "Open a specific file or folder in its default application. Only paths under the user's home folder or /Applications are permitted. Call this after search_files when the user wants the found file opened.",
                 "input_schema": {
@@ -7704,6 +7723,21 @@ async fn dispatch_tool(
             Ok(args) => skill_invoke_dispatch(&args.name, &args.args, args.confirm),
             Err(e) => Err(anyhow!("invalid skill_invoke arguments: {e}")),
         },
+        // ORACLE ASK — read-only SQL over the local trace corpus. NOT in
+        // CONSEQUENTIAL_TOOLS (it never writes / never parks); read-only is
+        // enforced by TraceStore::readonly_query (keyword check + PRAGMA
+        // query_only). The trace store is reached via its process-global so the
+        // dispatch signature stays unchanged.
+        "oracle_ask" => match input.get("sql").and_then(Value::as_str) {
+            Some(sql) => match crate::optimize::global_trace_store() {
+                Some(store) => store.readonly_query(sql).await,
+                None => Err(anyhow!("oracle_ask: the trace store is not available")),
+            },
+            None => Err(anyhow!("oracle_ask needs a 'sql' string argument")),
+        },
+        // EGRESS SNAPSHOT — read-only host outbound-connection view (lsof). NOT in
+        // CONSEQUENTIAL_TOOLS (it changes nothing / never parks).
+        "egress_snapshot" => crate::egress::snapshot().await,
         other => Err(anyhow!("unknown tool '{other}'")),
     };
     match result {
@@ -12086,6 +12120,8 @@ mod tests {
                 "open_app",
                 "quit_app",
                 "search_files",
+                "oracle_ask",
+                "egress_snapshot",
                 "open_path",
                 "open_url",
                 "web_search",

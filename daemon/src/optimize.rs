@@ -30,9 +30,10 @@
 //! the reflection-bounded facts/transcripts.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -1417,6 +1418,136 @@ pub fn run_optimizer(
     action
 }
 
+// ===========================================================================
+// ORACLE ASK — a strictly READ-ONLY SQL query surface over the trace corpus.
+// The model writes the SQL from the user's question; this runs it read-only and
+// returns the rows. Read-only is enforced twice (a SELECT/WITH/EXPLAIN keyword
+// check AND `PRAGMA query_only`, so SQLite itself rejects any write), and the
+// output is bounded so a query can never flood the model context.
+// ===========================================================================
+
+/// Process-global trace store, installed once at startup (main.rs) so the
+/// read-only `oracle_ask` tool can reach the corpus without threading the store
+/// through the whole tool-dispatch chain. Unset in unit tests that never install
+/// it (so the tool reports "unavailable" rather than touching a real DB).
+static GLOBAL_TRACE_STORE: OnceLock<Arc<TraceStore>> = OnceLock::new();
+
+/// Install the global trace store (idempotent — a second call is ignored).
+pub fn set_global_trace_store(store: Arc<TraceStore>) {
+    let _ = GLOBAL_TRACE_STORE.set(store);
+}
+
+/// The global trace store, or `None` before startup wiring.
+pub fn global_trace_store() -> Option<&'static Arc<TraceStore>> {
+    GLOBAL_TRACE_STORE.get()
+}
+
+impl TraceStore {
+    /// Run a strictly READ-ONLY SQL query over the trace corpus and return a
+    /// compact text table. Read-only is enforced TWICE: a first-keyword check
+    /// (SELECT/WITH/EXPLAIN only) for a friendly early error, AND `PRAGMA
+    /// query_only` for the duration so SQLite itself rejects any write even if the
+    /// keyword check were bypassed. Output is bounded (<=50 rows, <=200 chars per
+    /// cell). The shared connection is Mutex-serialized; `query_only` is toggled
+    /// inside the lock and ALWAYS reset before the lock is released.
+    pub async fn readonly_query(&self, sql: &str) -> Result<String> {
+        const MAX_ROWS: usize = 50;
+        const MAX_CELL: usize = 200;
+        let trimmed = sql.trim().trim_end_matches(';').trim();
+        if trimmed.is_empty() {
+            return Err(anyhow!("oracle_ask: empty query"));
+        }
+        let first = trimmed
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        if !matches!(first.as_str(), "SELECT" | "WITH" | "EXPLAIN") {
+            return Err(anyhow!(
+                "oracle_ask: only read-only SELECT / WITH / EXPLAIN queries are allowed (got '{first}')"
+            ));
+        }
+        let conn = self.conn.lock().await;
+        // Hard read-only: SQLite rejects ANY write statement while this is on.
+        conn.pragma_update(None, "query_only", true)?;
+        let queried = run_readonly_query(&conn, trimmed, MAX_ROWS, MAX_CELL);
+        // ALWAYS clear query_only before releasing the lock, even on error.
+        let _ = conn.pragma_update(None, "query_only", false);
+        queried
+    }
+}
+
+/// Execute the (keyword-validated, query_only-guarded) statement and render the
+/// rows. Factored out so the `query_only` reset wraps it on every path. Dynamic
+/// columns become strings; rows and per-cell length are bounded.
+fn run_readonly_query(
+    conn: &Connection,
+    sql: &str,
+    max_rows: usize,
+    max_cell: usize,
+) -> Result<String> {
+    let mut stmt = conn.prepare(sql)?;
+    let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let ncols = cols.len();
+    let mut rows = stmt.query([])?;
+    let mut out_rows: Vec<Vec<String>> = Vec::new();
+    let mut truncated = false;
+    while let Some(row) = rows.next()? {
+        if out_rows.len() >= max_rows {
+            truncated = true;
+            break;
+        }
+        let mut cells = Vec::with_capacity(ncols);
+        for i in 0..ncols {
+            cells.push(cell_to_string(row, i, max_cell));
+        }
+        out_rows.push(cells);
+    }
+    Ok(format_query_table(&cols, &out_rows, truncated))
+}
+
+/// One result cell rendered as a string, type-agnostic + length-bounded.
+fn cell_to_string(row: &rusqlite::Row, i: usize, max: usize) -> String {
+    use rusqlite::types::ValueRef;
+    let s = match row.get_ref(i) {
+        Ok(ValueRef::Null) => String::new(),
+        Ok(ValueRef::Integer(n)) => n.to_string(),
+        Ok(ValueRef::Real(f)) => f.to_string(),
+        Ok(ValueRef::Text(t)) => String::from_utf8_lossy(t).into_owned(),
+        Ok(ValueRef::Blob(_)) => "<blob>".to_string(),
+        Err(_) => "<err>".to_string(),
+    };
+    if s.chars().count() > max {
+        let mut c: String = s.chars().take(max).collect();
+        c.push('…');
+        c
+    } else {
+        s
+    }
+}
+
+/// Render columns + rows as a compact pipe-delimited table with a row-count
+/// footer (and a truncation note when capped).
+fn format_query_table(cols: &[String], rows: &[Vec<String>], truncated: bool) -> String {
+    if rows.is_empty() {
+        return format!("(0 rows) — columns: {}", cols.join(", "));
+    }
+    let mut out = String::new();
+    out.push_str(&cols.join(" | "));
+    out.push('\n');
+    for r in rows {
+        out.push_str(&r.join(" | "));
+        out.push('\n');
+    }
+    out.push_str(&format!(
+        "({} row{}{})",
+        rows.len(),
+        if rows.len() == 1 { "" } else { "s" },
+        if truncated { ", capped at 50" } else { "" }
+    ));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1603,6 +1734,52 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0], t, "round-trip must preserve every field exactly");
         assert_eq!(got[0].outcome, Outcome::Success);
+    }
+
+    // --- Oracle Ask: read-only query surface -----------------------------
+
+    #[tokio::test]
+    async fn readonly_query_runs_selects_and_rejects_writes() {
+        let db = TempDb::new("oracle");
+        let store = TraceStore::open(&db.0).unwrap();
+        store
+            .record(&Trace::new(
+                "hi", "conversation", "jarvis", "chat", "", Outcome::Success, 100, 1_700_000_000,
+            ))
+            .await
+            .unwrap();
+        store
+            .record(&Trace::new(
+                "do x", "action", "friday", "act", "open_app", Outcome::Failed, 200, 1_700_000_050,
+            ))
+            .await
+            .unwrap();
+
+        // A read-only SELECT returns rows.
+        let out = store
+            .readonly_query("SELECT outcome, COUNT(*) AS n FROM traces GROUP BY outcome ORDER BY outcome")
+            .await
+            .unwrap();
+        assert!(out.contains("failed"), "got: {out}");
+        assert!(out.contains("success"), "got: {out}");
+
+        // WITH / EXPLAIN are accepted; an empty query is rejected.
+        assert!(store.readonly_query("WITH x AS (SELECT 1 AS a) SELECT a FROM x").await.is_ok());
+        assert!(store.readonly_query("   ").await.is_err());
+
+        // Writes are rejected at the keyword gate, before execution.
+        assert!(store.readonly_query("DELETE FROM traces").await.is_err());
+        assert!(store.readonly_query("UPDATE traces SET intent='x'").await.is_err());
+        assert!(store.readonly_query("DROP TABLE traces").await.is_err());
+
+        // The corpus is intact (no rejected write touched it) and the connection
+        // is usable again afterward (query_only was reset).
+        assert_eq!(store.recent(10).await.unwrap().len(), 2, "rejected writes left the corpus intact");
+        store
+            .record(&Trace::new("more", "conversation", "jarvis", "chat", "", Outcome::Success, 50, 1_700_000_100))
+            .await
+            .unwrap();
+        assert_eq!(store.recent(10).await.unwrap().len(), 3, "writes still work after a read-only query");
     }
 
     #[tokio::test]
