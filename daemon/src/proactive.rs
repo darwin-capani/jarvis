@@ -27,6 +27,10 @@ const META_LAST_INTERACTION: &str = "meta.last_interaction";
 /// (cleared by scripts/apply_heal.sh); the brief mentions it so JARVIS
 /// TELLS the user instead of silently parking the patch.
 const META_HEAL_PENDING: &str = "meta.heal_pending";
+/// Set by the Self-Forge pipeline when a validated app proposal awaits review
+/// (cleared by scripts/apply_forge.sh); mirrors META_HEAL_PENDING so the brief
+/// TELLS the user a forged micro-app is staged instead of silently parking it.
+const META_FORGE_PENDING: &str = "meta.forge_pending";
 /// At most this many matching habit lines ride in one brief — the persona
 /// gets a greeting hint, not a memory dump.
 const BRIEF_HABIT_LIMIT: usize = 3;
@@ -83,6 +87,8 @@ pub struct BriefInputs<'a> {
     pub habits: &'a [(String, String)],
     /// meta.heal_pending value (the proposal timestamp), when set.
     pub heal_pending: Option<&'a str>,
+    /// meta.forge_pending value (the forged-app proposal timestamp), when set.
+    pub forge_pending: Option<&'a str>,
     /// Non-meta facts touched since meta.last_interaction.
     pub facts_learned: u64,
 }
@@ -112,6 +118,11 @@ pub fn assemble_brief(inputs: &BriefInputs) -> (String, usize) {
     if let Some(ts) = inputs.heal_pending {
         lines.push(format!(
             "A validated self-repair proposal ({ts}) is staged and awaiting the user's review; mention it."
+        ));
+    }
+    if let Some(ts) = inputs.forge_pending {
+        lines.push(format!(
+            "A forged micro-app ({ts}) is staged and awaiting the user's review; mention it."
         ));
     }
     match inputs.facts_learned {
@@ -164,6 +175,13 @@ pub async fn first_contact_brief(cfg: &Config, memory: &Memory) -> Option<String
             None
         }
     };
+    let forge_pending = match memory.get_fact(META_FORGE_PENDING).await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "proactive: cannot read forge-pending stamp; brief continues without it");
+            None
+        }
+    };
     let facts_learned = match chrono::DateTime::from_timestamp(last_secs as i64, 0) {
         Some(ts) => memory
             .facts_learned_since(&ts.to_rfc3339())
@@ -181,6 +199,7 @@ pub async fn first_contact_brief(cfg: &Config, memory: &Memory) -> Option<String
         status,
         habits: &habits,
         heal_pending: heal_pending.as_deref(),
+        forge_pending: forge_pending.as_deref(),
         facts_learned,
     });
     telemetry::emit(
@@ -302,6 +321,7 @@ mod tests {
             status: Some(status_line(&snapshot_fixture())),
             habits: &habits,
             heal_pending: Some("1760001234"),
+            forge_pending: None,
             facts_learned: 2,
         });
         assert_eq!(matched, 2, "evening habit must not match a morning brief");
@@ -312,6 +332,40 @@ mod tests {
         assert!(!brief.contains("jazz"), "unmatched habit leaked into the brief");
         assert!(brief.contains("self-repair proposal (1760001234)"));
         assert!(brief.contains("2 new facts about the user were learned"));
+        // forge_pending was None: no forged-app line leaked in.
+        assert!(!brief.contains("forged micro-app"));
+    }
+
+    /// A staged forge proposal (meta.forge_pending) is announced exactly like a
+    /// staged heal proposal — and the two coexist when both are pending.
+    #[test]
+    fn brief_announces_a_pending_forge() {
+        // Forge alone.
+        let (brief, _) = assemble_brief(&BriefInputs {
+            gap_hours: 7.0,
+            time_of_day: "evening",
+            status: None,
+            habits: &[],
+            heal_pending: None,
+            forge_pending: Some("1760002345"),
+            facts_learned: 0,
+        });
+        assert!(brief.contains("A forged micro-app (1760002345) is staged and awaiting the user's review"));
+        assert!(!brief.contains("self-repair"), "no heal line when heal_pending is None");
+
+        // Heal AND forge pending together: both lines appear, heal before forge.
+        let (both, _) = assemble_brief(&BriefInputs {
+            gap_hours: 7.0,
+            time_of_day: "evening",
+            status: None,
+            habits: &[],
+            heal_pending: Some("1760001111"),
+            forge_pending: Some("1760002222"),
+            facts_learned: 0,
+        });
+        let heal_at = both.find("self-repair proposal (1760001111)").expect("heal line present");
+        let forge_at = both.find("forged micro-app (1760002222)").expect("forge line present");
+        assert!(heal_at < forge_at, "heal clause precedes forge clause");
     }
 
     #[test]
@@ -322,6 +376,7 @@ mod tests {
             status: None,
             habits: &[],
             heal_pending: None,
+            forge_pending: None,
             facts_learned: 0,
         });
         assert_eq!(matched, 0);
@@ -334,6 +389,7 @@ mod tests {
             status: None,
             habits: &[],
             heal_pending: None,
+            forge_pending: None,
             facts_learned: 1,
         });
         assert!(brief.contains("1 new fact about the user was learned"));
@@ -355,6 +411,7 @@ mod tests {
             status: None,
             habits: &habits,
             heal_pending: None,
+            forge_pending: None,
             facts_learned: 0,
         });
         assert_eq!(matched, 5, "telemetry reports every match");
