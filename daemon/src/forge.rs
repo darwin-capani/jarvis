@@ -1073,8 +1073,13 @@ pub async fn forge_app(root: &Path, cfg: &Config, memory: &Memory, goal: &str) -
     // Capture the proposal ts from the (synchronous) pending hook so the async
     // meta.forge_pending upsert can run AFTER forge_draft returns (Memory's
     // Mutex<Connection> is not Clone/Send-into-a-closure-friendly, and the
-    // proposal artifact on disk is the source of truth regardless).
-    let pending = std::cell::Cell::new(None::<u64>);
+    // proposal artifact on disk is the source of truth regardless). A
+    // `std::sync::Mutex<Option<u64>>` (NOT a `Cell`) so the closure that holds it
+    // across forge_draft's awaits is `Send` — this lets forge_app be driven from
+    // a spawned task (the Need-Sensed Forge `forge_gap_task`), not just the main
+    // task. The lock is taken only synchronously inside the hook / after the
+    // await, never held across one.
+    let pending = std::sync::Mutex::new(None::<u64>);
     // LOCKDOWN OVERLAY (task #12): self-forge is autonomy, so it is FORCED off
     // while the emergency stop is engaged — the enabled bit is ANDed with
     // `!is_locked_down()`, so `forge_draft`/`forge_action` see Disabled and the
@@ -1089,10 +1094,15 @@ pub async fn forge_app(root: &Path, cfg: &Config, memory: &Memory, goal: &str) -
         &cfg.cloud.heavy_model,
         &brain,
         goal,
-        |ts| pending.set(Some(ts)),
+        |ts| {
+            if let Ok(mut slot) = pending.lock() {
+                *slot = Some(ts);
+            }
+        },
     )
     .await;
-    if let Some(ts) = pending.get() {
+    let stamped = pending.lock().ok().and_then(|slot| *slot);
+    if let Some(ts) = stamped {
         if let Err(e) = memory.upsert_fact(META_FORGE_PENDING, &ts.to_string()).await {
             tracing::warn!(error = %e, "forge: proposal written but meta.forge_pending stamp failed");
         }

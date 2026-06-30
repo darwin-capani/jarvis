@@ -1130,7 +1130,12 @@ const CUE_MAX_LEN: usize = 18;
 ///     consonant-run fragments do not. Rejects high-entropy secret fragments.
 /// A token failing ANY rule is ineligible and never reaches a candidate config
 /// or the proposal artifact.
-fn is_eligible_cue_word(w: &str) -> bool {
+///
+/// `pub(crate)` so the Need-Sensed Forge gap detector ([`crate::forge_gap`])
+/// reuses the SAME privacy gate when sanitizing a synthesized forge goal — a
+/// redactor-surviving secret can never become a learned cue OR a forge goal
+/// keyword through one shared chokepoint.
+pub(crate) fn is_eligible_cue_word(w: &str) -> bool {
     (4..=CUE_MAX_LEN).contains(&w.len())
         && w.chars().all(|c| c.is_ascii_lowercase())
         && w.chars().any(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y'))
@@ -1155,7 +1160,11 @@ const STOPWORDS: &[&str] = &[
 /// fragment of a sub-20-char mixed token) from ever becoming a learned cue or
 /// appearing verbatim in the human-read proposal artifact. The legacy >= 4 /
 /// stopword / dedupe behavior is preserved; the gate only TIGHTENS it.
-fn salient_words(lower: &str) -> Vec<&str> {
+///
+/// `pub(crate)` so the Need-Sensed Forge gap detector ([`crate::forge_gap`])
+/// mines a synthesized forge goal's topic/keywords through the SAME sanitizer
+/// the optimizer mines learned cues with — never inventing a parallel one.
+pub(crate) fn salient_words(lower: &str) -> Vec<&str> {
     let mut out: Vec<&str> = Vec::new();
     for tok in lower.split(|c: char| !c.is_ascii_alphanumeric()) {
         if is_eligible_cue_word(tok) && !STOPWORDS.contains(&tok) && !out.contains(&tok) {

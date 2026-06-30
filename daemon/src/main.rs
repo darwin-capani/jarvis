@@ -51,6 +51,7 @@ mod eval;
 mod focus;
 mod forecast;
 mod forge;
+mod forge_gap;
 mod genproxy;
 mod heal;
 mod inference;
@@ -1794,6 +1795,20 @@ async fn main() -> Result<()> {
         cfg.clone(),
         trace_store.clone(),
         optimize_root.clone(),
+    ));
+    // NEED-SENSED FORGE (forge_gap.rs): mine the SAME redacted trace corpus for a
+    // recurring CAPABILITY GAP (requests that keep failing on a shared topic) and,
+    // on a fresh gap edge, auto-draft ONE PROPOSE-ONLY forge proposal. It NEVER
+    // deploys — forge_app owns every gate and writes only under state/forge/; the
+    // human deploys via scripts/apply_forge.sh. Guarded by a rate limit
+    // (meta.forge_last_attempt), a pending cap (at most one unreviewed proposal),
+    // and the edge latch, so a recurring gap can't spam paid drafts or fill disk.
+    // Inert when [forge].enabled is off (touches no I/O).
+    tokio::spawn(forge_gap::forge_gap_task(
+        root.clone(),
+        cfg.clone(),
+        memory.clone(),
+        trace_store.clone(),
     ));
     // Periodic EVAL report pass: reads the live rolling latency/cost window +
     // recomputes routing accuracy + correction-rate from the trace corpus and
