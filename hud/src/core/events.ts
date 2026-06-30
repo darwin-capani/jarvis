@@ -2810,6 +2810,63 @@ export interface McpStatus {
  *  usable name (a nameless tool is not addressable, so it is not shown). `class`
  *  defaults to consequential (fail-safe) when the bool is absent — the panel
  *  never under-states a tool's risk. Never throws. */
+/* -------------------------------------------------------------------------- *
+ * capability.atlas — the unified ARMED/INERT capability surface (atlas.rs).   *
+ * -------------------------------------------------------------------------- */
+
+/** One capability in the atlas: name, kind, armed verdict, and a secret-free
+ *  one-line detail (what it is when armed, or WHY it is inert when not). */
+export interface CapabilityEntry {
+  name: string;
+  /** "skill" | "agent" | "app" | "integration" — tolerant of future kinds. */
+  kind: string;
+  armed: boolean;
+  detail: string;
+}
+
+/** The capability.atlas snapshot: the master switch, armed/total counts, and the
+ *  per-capability entries. */
+export interface CapabilityAtlas {
+  enabled: boolean;
+  armed: number;
+  total: number;
+  capabilities: CapabilityEntry[];
+}
+
+/** Coerce one untrusted capability object, or null if it has no usable name (an
+ *  unnamed entry is not addressable). Every other field defaults safely. Surfaces
+ *  ONLY the secret-free fields. Never throws. */
+function coerceCapability(o: Record<string, unknown>): CapabilityEntry | null {
+  const name = str(o, "name");
+  if (name === null || name.length === 0) return null;
+  return {
+    name,
+    kind: str(o, "kind") ?? "unknown",
+    armed: bool(o, "armed") ?? false,
+    detail: str(o, "detail") ?? "",
+  };
+}
+
+/** Parse a capability.atlas payload. NEVER returns null — a malformed payload
+ *  yields an empty, honest snapshot rather than a stale one. `enabled` defaults
+ *  to false; the counts fall back to derived values; malformed entries dropped.
+ *  Never carries a secret. Never throws on junk. */
+export function parseCapabilityAtlas(data: Record<string, unknown>): CapabilityAtlas {
+  const rawCaps = data["capabilities"];
+  const capabilities = Array.isArray(rawCaps)
+    ? rawCaps
+        .filter(isPlainObject)
+        .map(coerceCapability)
+        .filter((c): c is CapabilityEntry => c !== null)
+    : [];
+  return {
+    enabled: bool(data, "enabled") ?? false,
+    armed: num(data, "armed") ?? capabilities.filter((c) => c.armed).length,
+    total: num(data, "total") ?? capabilities.length,
+    capabilities,
+  };
+}
+
 function coerceMcpTool(o: Record<string, unknown>): McpToolStatus | null {
   const name = str(o, "name");
   if (name === null || name.length === 0) return null;

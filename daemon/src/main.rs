@@ -10,6 +10,7 @@ mod agents;
 mod anthropic;
 mod anticipate;
 mod apps;
+mod atlas;
 mod audio;
 mod audit;
 mod brief;
@@ -1599,6 +1600,26 @@ async fn main() -> Result<()> {
         "skills.catalog",
         crate::skills::global().catalog_snapshot(cfg.skills.enabled),
     );
+    // CAPABILITY ATLAS (secret-free): the unified ARMED/INERT capability surface
+    // — skills + agents + micro-apps + integrations, each tagged with its missing
+    // dependency — for the HUD Capability Atlas panel. Built in a spawned task
+    // because the integration probes read the Keychain (async, allowlist-guarded,
+    // 5s-per-account timeout) and must NEVER block the boot path. Carries only
+    // capability names + credential PRESENCE, never a secret value.
+    {
+        let atlas_cfg = cfg.clone();
+        let atlas_agents = agents.clone();
+        let atlas_apps = app_registry.clone();
+        tokio::spawn(async move {
+            let snap = crate::atlas::build_snapshot(
+                atlas_cfg.as_ref(),
+                atlas_agents.as_ref(),
+                atlas_apps.as_ref(),
+            )
+            .await;
+            telemetry::emit("system", "capability.atlas", snap);
+        });
+    }
     // The watchdog owns the heal pipeline; it needs Memory for the
     // meta.heal_last_attempt rate limit and the meta.heal_pending marker.
     tokio::spawn(heal::watchdog(root.clone(), cfg.clone(), memory.clone()));

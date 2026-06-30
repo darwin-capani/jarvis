@@ -379,6 +379,15 @@ fn account_allowed(account: &str) -> bool {
         .is_some_and(is_safe_mcp_server_name)
 }
 
+/// Public, side-effect-free view of [`account_allowed`] — answers "would
+/// `resolve_secret` even attempt this account?" without touching the Keychain.
+/// Used by the Capability Atlas to fail the build if it ever probes an account
+/// that has drifted off the allowlist (which would make that integration
+/// silently, permanently inert).
+pub fn account_is_allowlisted(account: &str) -> bool {
+    account_allowed(account)
+}
+
 /// Read an integration secret from the macOS Keychain by account name.
 ///
 /// Runs `security find-generic-password -s com.jarvis.daemon -a <account> -w`

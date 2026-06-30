@@ -40,6 +40,7 @@ import {
   LocalWarmStatus,
   InferencePerfStatus,
   LockdownStatus,
+  CapabilityAtlas,
   McpStatus,
   WebhookSurface,
   PluginSurface,
@@ -126,6 +127,7 @@ import {
   parseEpisodicRecorded,
   parseEvalReport,
   parseForgeProposed,
+  parseCapabilityAtlas,
   parseMcpStatus,
   parseWebhookEvent,
   applyWebhookEvent,
@@ -610,6 +612,10 @@ export interface HudState {
    *  present-but-disabled snapshot (enabled=false, servers=[]). REVIEW-ONLY and
    *  SECRET-FREE — there is no token field to render. */
   mcp: McpStatus | null;
+  /** The capability surface (capability.atlas): the master switch, armed/total
+   *  counts, and every capability tagged armed/inert. Null until the daemon emits
+   *  the startup snapshot. REVIEW-ONLY and SECRET-FREE. */
+  capabilityAtlas: CapabilityAtlas | null;
   /** The AT-REST ENCRYPTION surface (security.status): the honest posture of the
    *  opt-in, ships-OFF whole-file SQLCipher encryption — the [security].encrypt_memory
    *  config intent, the GROUND-TRUTH `active` flag (the master key actually resolved
@@ -1165,6 +1171,7 @@ export function initialState(): HudState {
     shell: null,
     uiActuate: null,
     mcp: null,
+    capabilityAtlas: null,
     security: null,
     webhooks: webhookSurfaceInitial(),
     plugins: null,
@@ -2111,6 +2118,14 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // honest state: "off", "on but no servers", or the configured servers with
       // their connection status + tools + allowlists. REVIEW-ONLY.
       return { ...s, mcp: parseMcpStatus(env.data) };
+    }
+    case "capability.atlas": {
+      // The unified ARMED/INERT capability surface (skills + agents + apps +
+      // integrations). parseCapabilityAtlas NEVER returns null (a malformed
+      // payload yields an empty, honest snapshot rather than a stale one) and
+      // NEVER carries a secret — only capability names + credential PRESENCE.
+      // REVIEW-ONLY.
+      return { ...s, capabilityAtlas: parseCapabilityAtlas(env.data) };
     }
 
     case "webhook.received": {

@@ -24,6 +24,7 @@ import LatencyStrip from "./components/LatencyStrip";
 import LifeLogPanel from "./components/LifeLogPanel";
 import MarkForgePanel, { MARK_FORGE_APP_NAME } from "./components/MarkForgePanel";
 import McpPanel from "./components/McpPanel";
+import CapabilityAtlasPanel from "./components/CapabilityAtlasPanel";
 import ExtensibilityPanel from "./components/ExtensibilityPanel";
 import MemoryPanel from "./components/MemoryPanel";
 import NexusPanel, { NEXUS_APP_NAME } from "./components/NexusPanel";
@@ -559,6 +560,7 @@ export default function App() {
             running={state.runningApps.has(MARK_FORGE_APP_NAME)}
           />
           <McpPanel mcp={state.mcp} />
+          <CapabilityAtlasPanel atlas={state.capabilityAtlas} />
           <ExtensibilityPanel webhooks={state.webhooks} plugins={state.plugins} />
           <AuditPanel audit={state.audit} liveGate={state.liveGate} />
           <ActionPanel action={state.actionSurface} />

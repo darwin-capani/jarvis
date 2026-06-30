@@ -8622,3 +8622,136 @@ body,
     0 6px 22px -10px rgba(0, 6, 14, 0.7),
     0 0 22px rgba(26, 214, 255, 0.08);
 }
+
+/* ===================================================================
+   CAPABILITY ATLAS — the unified ARMED/INERT capability surface.
+   Read-only. ARMED reads cyan/green; INERT reads AMBER (an honest
+   "ships ON, inert without its dependency" — never RED, which is
+   reserved for alerts/errors).
+   =================================================================== */
+.atlas-body {
+  padding: 8px 12px 12px;
+  font-family: var(--mono);
+}
+.atlas-off {
+  padding: 6px 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ice-dim);
+}
+.atlas-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 2px 10px;
+}
+.atlas-count {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.atlas-armed-n {
+  color: var(--learn-green);
+  text-shadow: 0 0 10px rgba(92, 224, 168, 0.4);
+}
+.atlas-slash,
+.atlas-total-n {
+  color: var(--ice-dim);
+}
+.atlas-count-label {
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--ice-dim);
+}
+.atlas-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(26, 214, 255, 0.12);
+  overflow: hidden;
+}
+.atlas-bar-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--cyan-deep), var(--cyan) 60%, var(--cyan-bright));
+  box-shadow: 0 0 8px rgba(26, 214, 255, 0.5);
+  transition: width var(--dur) var(--ease-out);
+}
+.atlas-group {
+  margin-top: 8px;
+}
+.atlas-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 2px;
+  border-bottom: 1px dashed rgba(26, 214, 255, 0.2);
+  margin-bottom: 3px;
+}
+.atlas-group-label {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: var(--cyan-bright);
+}
+.atlas-group-count {
+  margin-left: auto;
+  font-size: 9px;
+  color: var(--ice-dim);
+  font-variant-numeric: tabular-nums;
+}
+.atlas-row {
+  display: grid;
+  grid-template-columns: 8px minmax(64px, max-content) 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 2px;
+  font-size: 10.5px;
+}
+.atlas-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.atlas-row.armed .atlas-dot {
+  background: var(--learn-green);
+  box-shadow: 0 0 6px rgba(92, 224, 168, 0.7);
+}
+.atlas-row.inert .atlas-dot {
+  background: var(--warn-amber);
+  box-shadow: 0 0 5px rgba(255, 180, 84, 0.45);
+}
+.atlas-name {
+  color: var(--ice);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.atlas-detail {
+  color: var(--ice-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.atlas-row.inert .atlas-detail {
+  color: var(--warn-amber);
+  opacity: 0.85;
+}
+.atlas-pill {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  padding: 2px 6px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.atlas-pill.armed {
+  color: var(--learn-green);
+  background: rgba(92, 224, 168, 0.1);
+  border: 1px solid rgba(92, 224, 168, 0.35);
+}
+.atlas-pill.inert {
+  color: var(--warn-amber);
+  background: rgba(255, 180, 84, 0.08);
+  border: 1px solid rgba(255, 180, 84, 0.32);
+}
