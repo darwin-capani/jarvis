@@ -615,6 +615,18 @@ fn tool_defs() -> &'static Value {
                 }
             },
             {
+                "name": "map_trace",
+                "description": "Map a stack trace or error dump onto the user's source code (the 'Cartographer'). Paste the trace text and it parses every cited frame (Rust/Python/JavaScript/TypeScript/Go/Java/Kotlin, or a generic `file.ext:line[:col]`), resolves each against a project root, shows a window of code around each cited line with the line marked, flags which frames are in the user's project vs a library, and names the likely culprit. READ-ONLY: confined to the project root (never reads outside it), changes nothing. Use whenever the user pastes a crash/traceback/error and wants to know where in THEIR code it points.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "trace": {"type": "string", "description": "The stack trace or error dump text to map"},
+                        "root": {"type": "string", "description": "Absolute path to the project root to resolve frames against; defaults to the user's home folder when omitted"}
+                    },
+                    "required": ["trace"]
+                }
+            },
+            {
                 "name": "open_path",
                 "description": "Open a specific file or folder in its default application. Only paths under the user's home folder or /Applications are permitted. Call this after search_files when the user wants the found file opened.",
                 "input_schema": {
@@ -7738,6 +7750,15 @@ async fn dispatch_tool(
         // EGRESS SNAPSHOT — read-only host outbound-connection view (lsof). NOT in
         // CONSEQUENTIAL_TOOLS (it changes nothing / never parks).
         "egress_snapshot" => crate::egress::snapshot().await,
+        // CARTOGRAPHER — read-only crash/error -> source mapper. NOT in
+        // CONSEQUENTIAL_TOOLS (confined reads only; changes nothing / never parks).
+        "map_trace" => match input.get("trace").and_then(Value::as_str) {
+            Some(trace) => {
+                let root = input.get("root").and_then(Value::as_str);
+                crate::cartographer::map_trace(trace, root).await
+            }
+            None => Err(anyhow!("map_trace needs a 'trace' string argument")),
+        },
         other => Err(anyhow!("unknown tool '{other}'")),
     };
     match result {
@@ -12122,6 +12143,7 @@ mod tests {
                 "search_files",
                 "oracle_ask",
                 "egress_snapshot",
+                "map_trace",
                 "open_path",
                 "open_url",
                 "web_search",

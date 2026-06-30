@@ -15,6 +15,7 @@ mod atlas;
 mod audio;
 mod audit;
 mod brief;
+mod cartographer;
 // DATA -> CHART (#41): a daemon ChartSpec {kind, series:[{label, points:[(x,y)]}],
 // x_axis, y_axis, title} emitted as a `chart.data` telemetry envelope from a data
 // path. The HUD's Chart component renders the EXACT emitted points (no
