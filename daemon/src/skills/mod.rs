@@ -155,6 +155,14 @@ pub struct SkillDef {
     /// shipped read-only and its `run` returns a "needs a data source" notice
     /// until one is configured — it NEVER fabricates. Defaults to `false`.
     pub source_gated: bool,
+    /// Known-vector eval: (args-as-JSON, expected output) pairs the skill MUST
+    /// reproduce through its pure `run`. [`Registry::new`] runs these at registry
+    /// build and REFUSES to admit a skill whose run does not match — an
+    /// eval-gated promotion: a skill cannot enter the live catalog unless it
+    /// passes its own declared eval. Empty (the default via [`SkillDef::new`])
+    /// skips the check, so existing skills are unaffected until they opt in via
+    /// [`SkillDef::with_eval_vectors`]. For PURE skills only.
+    pub eval_vectors: &'static [(&'static str, &'static str)],
 }
 
 impl SkillDef {
@@ -176,6 +184,7 @@ impl SkillDef {
             run,
             consequential: false,
             source_gated: false,
+            eval_vectors: &[],
         }
     }
 
@@ -194,6 +203,19 @@ impl SkillDef {
     #[allow(dead_code)] // Library-phase builder: a feed-dependent skill calls this; no source-gated skill ships THIS round
     pub const fn source_gated(mut self) -> Self {
         self.source_gated = true;
+        self
+    }
+
+    /// Attach known-vector evals (see [`SkillDef::eval_vectors`]). Each pair is
+    /// (args-as-JSON, expected output); the skill is REFUSED at registry build
+    /// unless its pure `run` reproduces every expected output exactly — the
+    /// eval-gated promotion bar.
+    #[allow(dead_code)] // Library-phase builder: a skill opts into eval-gating with this; the gate is live for when the catalog adopts vectors
+    pub const fn with_eval_vectors(
+        mut self,
+        vectors: &'static [(&'static str, &'static str)],
+    ) -> Self {
+        self.eval_vectors = vectors;
         self
     }
 
@@ -261,6 +283,34 @@ pub fn is_snake_case(name: &str) -> bool {
 /// per-module) order and a name index for O(1) lookup. Constructing it runs the
 /// uniqueness + `snake_case` guard, so an in-tree mistake fails loudly the first
 /// time the registry is built (a test exercises this) — never silently.
+/// Run a skill's declared known-vector eval: every (args-as-JSON, expected)
+/// pair must parse and reproduce `expected` exactly through the skill's pure
+/// `run`. Returns `Err` (fatal at registry build via [`Registry::new`]) on a
+/// parse failure, a run error, or a mismatch — so a skill can never enter the
+/// live catalog unless it passes its own eval. A skill with no vectors (the
+/// default) is trivially OK. For PURE skills (a consequential/source-gated skill
+/// does not compute a stable answer to assert against).
+fn check_eval_vectors(s: &SkillDef) -> Result<()> {
+    for &(args_json, expected) in s.eval_vectors {
+        let args: Value = serde_json::from_str(args_json).map_err(|e| {
+            anyhow!("skill '{}' eval-vector args are not valid JSON ({e}): {args_json}", s.name)
+        })?;
+        match (s.run)(&args) {
+            Ok(out) if out.as_str() == expected => {}
+            Ok(out) => {
+                return Err(anyhow!(
+                    "skill '{}' failed its eval: args {args_json} produced {out:?}, expected {expected:?}",
+                    s.name
+                ));
+            }
+            Err(e) => {
+                return Err(anyhow!("skill '{}' eval run errored on args {args_json}: {e}", s.name));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub struct Registry {
     skills: Vec<SkillDef>,
 }
@@ -307,6 +357,10 @@ impl Registry {
                     s.name
                 ));
             }
+            // Eval-gated promotion: a skill that declares known-vector evals must
+            // reproduce every one through its pure run, or it never enters the
+            // live catalog. Skills with no vectors (the default) pass trivially.
+            check_eval_vectors(s)?;
         }
 
         Ok(Registry { skills })
@@ -437,6 +491,29 @@ mod tests {
             assert!(seen.insert(s.name), "duplicate skill: {}", s.name);
             assert!(!s.description.is_empty(), "{} needs a description", s.name);
         }
+    }
+
+    #[test]
+    fn eval_gate_enforces_known_vectors() {
+        // A skill that declares known-vector evals must reproduce every one
+        // through its pure run, or the gate refuses it at registry build.
+        fn echo(v: &serde_json::Value) -> Result<String> {
+            Ok(v.get("x").and_then(|x| x.as_str()).unwrap_or("").to_string())
+        }
+        let ok = SkillDef::new("echo_ok", Category::Utilities, "echo x", &[], echo)
+            .with_eval_vectors(&[("{\"x\":\"hi\"}", "hi")]);
+        assert!(check_eval_vectors(&ok).is_ok(), "matching vectors pass the gate");
+
+        let mismatch = SkillDef::new("echo_bad", Category::Utilities, "echo x", &[], echo)
+            .with_eval_vectors(&[("{\"x\":\"hi\"}", "BYE")]);
+        assert!(check_eval_vectors(&mismatch).is_err(), "a wrong expected output fails the gate");
+
+        let bad_json = SkillDef::new("echo_badjson", Category::Utilities, "echo x", &[], echo)
+            .with_eval_vectors(&[("not json", "x")]);
+        assert!(check_eval_vectors(&bad_json).is_err(), "invalid args JSON fails the gate");
+
+        let none = SkillDef::new("echo_none", Category::Utilities, "echo x", &[], echo);
+        assert!(check_eval_vectors(&none).is_ok(), "no vectors -> trivially ok");
     }
 
     #[test]
