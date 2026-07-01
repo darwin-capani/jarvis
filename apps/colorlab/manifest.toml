@@ -1,0 +1,25 @@
+[app]
+name        = "colorlab"
+version     = "0.1.0"
+description = "Read-only color science panel: normalize a color to hex/rgb/hsl, compute relative luminance and WCAG contrast ratios vs white and black with AA/AAA pass flags. Pure, offline."
+entry       = "apps/colorlab/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/colorlab"]
+fs_write  = ["state/apps/colorlab"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["colorlab.status"]
+
+[intents]
+provides = ["colorlab.analyze"]
+
+[[tools.exposes]]
+name          = "colorlab.analyze"
+scopes        = ["fs_read"]
+consequential = false

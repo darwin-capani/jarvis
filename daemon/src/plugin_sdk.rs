@@ -522,6 +522,9 @@ mod tests {
             ("textkit", "textkit.stats"),
             ("hashkit", "hashkit.digest"),
             ("datalint", "datalint.inspect"),
+            ("colorlab", "colorlab.analyze"),
+            ("cronwise", "cronwise.explain"),
+            ("numbase", "numbase.convert"),
         ] {
             let path = apps_dir.join(name).join("manifest.toml");
             let raw = std::fs::read_to_string(&path)
