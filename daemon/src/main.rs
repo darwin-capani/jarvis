@@ -171,6 +171,7 @@ mod signals;
 mod skills;
 mod speech;
 mod standing;
+mod tcc;
 mod telemetry;
 // GATED UI AUTOMATION (#44, the CAPSTONE): the single most dangerous capability —
 // actually ACTUATING the macOS UI (click/type/key). A PURE single-action planner
