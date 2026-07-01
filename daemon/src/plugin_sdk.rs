@@ -506,4 +506,34 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn shipped_microapp_fleet_manifests_validate() {
+        // Every Python capability-module app in apps/ must pass the SAME validator
+        // the daemon runs at discovery, so each is a real, registrable app:
+        // name == dir, dotted-lowercase tool/intent ids, scopes allowed + backed,
+        // and every exposed tool READ-ONLY (no consequential surface).
+        let apps_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("apps");
+        for (name, tool) in [
+            ("codeglass", "codeglass.metrics"),
+            ("textkit", "textkit.stats"),
+            ("hashkit", "hashkit.digest"),
+            ("datalint", "datalint.inspect"),
+        ] {
+            let path = apps_dir.join(name).join("manifest.toml");
+            let raw = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+            let m = validate_manifest(&raw, name)
+                .unwrap_or_else(|e| panic!("{name} manifest must validate: {e}"));
+            assert_eq!(m.name(), name);
+            assert!(m.tools.exposes.iter().any(|t| t.name == tool), "{name} must expose {tool}");
+            assert!(
+                m.tools.exposes.iter().all(|t| !t.consequential),
+                "{name} tools must be read-only (non-consequential)"
+            );
+        }
+    }
 }

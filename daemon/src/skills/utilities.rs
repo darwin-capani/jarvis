@@ -186,6 +186,51 @@ pub fn skills() -> Vec<SkillDef> {
             ("{\"sql\":\"UPDATE traces SET x=1\"}", "REJECTED: must start with SELECT, WITH, or EXPLAIN (got 'UPDATE')"),
             ("{\"sql\":\"SELECT 1; DROP TABLE t\"}", "REJECTED: multiple statements are not allowed"),
         ]),
+        SkillDef::new(
+            "levenshtein",
+            Category::Utilities,
+            "Compute the Levenshtein edit distance (minimum single-character insertions, deletions, or substitutions) between strings 'a' and 'b'. Use for fuzzy matching, typo distance, or 'how different are these two strings'.",
+            &["levenshtein", "edit distance", "string distance", "how similar are two strings"],
+            levenshtein,
+        )
+        .with_eval_vectors(&[
+            ("{\"a\":\"kitten\",\"b\":\"sitting\"}", "3"),
+            ("{\"a\":\"\",\"b\":\"abc\"}", "3"),
+            ("{\"a\":\"same\",\"b\":\"same\"}", "0"),
+        ]),
+        SkillDef::new(
+            "hamming_distance",
+            Category::Utilities,
+            "Count the positions at which equal-length strings 'a' and 'b' differ (the Hamming distance). Errors if the lengths differ. Use to compare fixed-width codes, bit strings, or DNA sequences.",
+            &["hamming distance", "count differing positions", "bit difference"],
+            hamming_distance,
+        )
+        .with_eval_vectors(&[
+            ("{\"a\":\"karolin\",\"b\":\"kathrin\"}", "3"),
+            ("{\"a\":\"1011101\",\"b\":\"1001001\"}", "2"),
+        ]),
+        SkillDef::new(
+            "jaccard_similarity",
+            Category::Utilities,
+            "Word-set Jaccard similarity of texts 'a' and 'b' (|intersection| / |union| of their whitespace-split word sets), as a 0.00-1.00 ratio. Use to gauge how much two short texts overlap.",
+            &["jaccard similarity", "text overlap", "word set similarity", "how much do two texts overlap"],
+            jaccard_similarity,
+        )
+        .with_eval_vectors(&[
+            ("{\"a\":\"a b c\",\"b\":\"b c d\"}", "0.50"),
+            ("{\"a\":\"one two\",\"b\":\"one two\"}", "1.00"),
+        ]),
+        SkillDef::new(
+            "base32_encode",
+            Category::Utilities,
+            "Encode 'text' (UTF-8) to standard RFC 4648 Base32 (A-Z2-7, '=' padding). Use when a system expects Base32 (e.g. TOTP secrets, some DNS/URL contexts) rather than Base64.",
+            &["base32", "base32 encode", "rfc 4648 base32", "encode base32"],
+            base32_encode,
+        )
+        .with_eval_vectors(&[
+            ("{\"text\":\"foobar\"}", "MZXW6YTBOI======"),
+            ("{\"text\":\"f\"}", "MY======"),
+        ]),
     ]
 }
 
@@ -759,7 +804,7 @@ fn luhn_check(args: &Value) -> Result<String> {
         sum += v;
         double = !double;
     }
-    Ok(if sum % 10 == 0 {
+    Ok(if sum.is_multiple_of(10) {
         "valid".to_string()
     } else {
         "invalid".to_string()
@@ -861,6 +906,95 @@ fn classify_sql(sql: &str) -> String {
         }
     }
     "read-only: OK".to_string()
+}
+
+/// `levenshtein {a, b}` -> the edit distance (insert/delete/substitute) as an
+/// integer string. Two-row DP, O(|a|*|b|) time / O(|b|) space. Pure.
+fn levenshtein(args: &Value) -> Result<String> {
+    let a = require_str(args, "a", "levenshtein")?;
+    let b = require_str(args, "b", "levenshtein")?;
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr: Vec<usize> = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    Ok(prev[b.len()].to_string())
+}
+
+/// `hamming_distance {a, b}` -> the number of positions at which equal-length
+/// strings differ. Errors when the lengths differ. Pure.
+fn hamming_distance(args: &Value) -> Result<String> {
+    let a: Vec<char> = require_str(args, "a", "hamming_distance")?.chars().collect();
+    let b: Vec<char> = require_str(args, "b", "hamming_distance")?.chars().collect();
+    if a.len() != b.len() {
+        return Err(anyhow!(
+            "hamming_distance: strings must be equal length ({} vs {})",
+            a.len(),
+            b.len()
+        ));
+    }
+    Ok(a.iter().zip(b.iter()).filter(|(x, y)| x != y).count().to_string())
+}
+
+/// `jaccard_similarity {a, b}` -> |A∩B| / |A∪B| over the whitespace-split word
+/// sets, as a 2-dp ratio. Two empty texts are identical (1.00). Pure.
+fn jaccard_similarity(args: &Value) -> Result<String> {
+    use std::collections::HashSet;
+    let a = require_str(args, "a", "jaccard_similarity")?;
+    let b = require_str(args, "b", "jaccard_similarity")?;
+    let sa: HashSet<&str> = a.split_whitespace().collect();
+    let sb: HashSet<&str> = b.split_whitespace().collect();
+    if sa.is_empty() && sb.is_empty() {
+        return Ok("1.00".to_string());
+    }
+    let inter = sa.intersection(&sb).count();
+    let union = sa.union(&sb).count();
+    Ok(format!("{:.2}", inter as f64 / union as f64))
+}
+
+/// `base32_encode {text}` -> standard RFC 4648 Base32 of the UTF-8 bytes
+/// (A-Z2-7, '=' padding). Hand-rolled (no new dep), matching the SHA/CRC skills'
+/// "real algorithm, never an approximation" discipline. Pure.
+fn base32_encode(args: &Value) -> Result<String> {
+    const ALPHA: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let bytes = require_str(args, "text", "base32_encode")?.as_bytes();
+    let mut out = String::new();
+    for chunk in bytes.chunks(5) {
+        let mut b = [0u8; 5];
+        b[..chunk.len()].copy_from_slice(chunk);
+        let idx = [
+            b[0] >> 3,
+            ((b[0] & 0x07) << 2) | (b[1] >> 6),
+            (b[1] >> 1) & 0x1f,
+            ((b[1] & 0x01) << 4) | (b[2] >> 4),
+            ((b[2] & 0x0f) << 1) | (b[3] >> 7),
+            (b[3] >> 2) & 0x1f,
+            ((b[3] & 0x03) << 3) | (b[4] >> 5),
+            b[4] & 0x1f,
+        ];
+        // Output chars carrying real bits for this chunk length; the rest is '='.
+        let filled = match chunk.len() {
+            1 => 2,
+            2 => 4,
+            3 => 5,
+            4 => 7,
+            _ => 8,
+        };
+        for &i in idx.iter().take(filled) {
+            out.push(ALPHA[i as usize] as char);
+        }
+        for _ in filled..8 {
+            out.push('=');
+        }
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------

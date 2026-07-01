@@ -1,0 +1,25 @@
+[app]
+name        = "textkit"
+version     = "0.1.0"
+description = "Read-only text-statistics panel: character/word/sentence counts, average + longest word, unique words, and a words-per-sentence readability proxy. Pure, offline."
+entry       = "apps/textkit/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/textkit"]
+fs_write  = ["state/apps/textkit"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["textkit.status"]
+
+[intents]
+provides = ["textkit.stats"]
+
+[[tools.exposes]]
+name          = "textkit.stats"
+scopes        = ["fs_read"]
+consequential = false

@@ -1,0 +1,25 @@
+[app]
+name        = "datalint"
+version     = "0.1.0"
+description = "Read-only JSON inspector/validator panel: validity, parse error, root type, top-level key count, node count, and max nesting depth. Pure, offline (json stdlib only)."
+entry       = "apps/datalint/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/datalint"]
+fs_write  = ["state/apps/datalint"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["datalint.status"]
+
+[intents]
+provides = ["datalint.inspect"]
+
+[[tools.exposes]]
+name          = "datalint.inspect"
+scopes        = ["fs_read"]
+consequential = false
