@@ -90,6 +90,17 @@ describe("parseCapabilityAtlas (defensive)", () => {
     expect(() => parseCapabilityAtlas({ capabilities: "nope" })).not.toThrow();
     expect(parseCapabilityAtlas({ capabilities: "nope" }).capabilities).toEqual([]);
   });
+
+  it("caps a hostile oversized capabilities array", () => {
+    const many = Array.from({ length: 1000 }, (_, i) => ({
+      name: `c${i}`,
+      kind: "skill",
+      armed: true,
+      detail: "",
+    }));
+    const a = parseCapabilityAtlas({ capabilities: many });
+    expect(a.capabilities.length).toBe(500);
+  });
 });
 
 /* the reducer arm ---------------------------------------------------------- */

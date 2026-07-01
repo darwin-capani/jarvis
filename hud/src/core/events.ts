@@ -2851,6 +2851,9 @@ function coerceCapability(o: Record<string, unknown>): CapabilityEntry | null {
  *  yields an empty, honest snapshot rather than a stale one. `enabled` defaults
  *  to false; the counts fall back to derived values; malformed entries dropped.
  *  Never carries a secret. Never throws on junk. */
+/** Bound the atlas so a hostile capability.atlas frame can't flood state/DOM. */
+const CAPABILITY_ATLAS_CAP = 500;
+
 export function parseCapabilityAtlas(data: Record<string, unknown>): CapabilityAtlas {
   const rawCaps = data["capabilities"];
   const capabilities = Array.isArray(rawCaps)
@@ -2858,6 +2861,7 @@ export function parseCapabilityAtlas(data: Record<string, unknown>): CapabilityA
         .filter(isPlainObject)
         .map(coerceCapability)
         .filter((c): c is CapabilityEntry => c !== null)
+        .slice(0, CAPABILITY_ATLAS_CAP)
     : [];
   return {
     enabled: bool(data, "enabled") ?? false,
@@ -2948,8 +2952,10 @@ function coerceAttributionFlag(o: Record<string, unknown>): AttributionFlag | nu
   return {
     kind: str(o, "kind") ?? "capability",
     name,
-    turns: num(o, "turns") ?? 0,
-    rate: num(o, "rate") ?? 0,
+    // turns + rate are whole-number counts/percents — truncate a float or
+    // negative payload rather than render "6.7 turns · 45.7% success".
+    turns: nonNegIntOr0(o, "turns"),
+    rate: nonNegIntOr0(o, "rate"),
   };
 }
 
@@ -2989,12 +2995,17 @@ function coerceMcpTool(o: Record<string, unknown>): McpToolStatus | null {
  *  dropped). DELIBERATELY surfaces ONLY the secret-free fields — any extra field
  *  on the wire (there is none today) is ignored, so the panel can never render a
  *  secret. Never throws. */
+// Bound the MCP snapshot so a hostile mcp.status frame can't flood state/DOM.
+const MCP_SERVERS_CAP = 64;
+const MCP_AGENTS_CAP = 64;
+const MCP_TOOLS_CAP = 256;
+
 function coerceMcpServer(o: Record<string, unknown>): McpServerStatus | null {
   const name = str(o, "name");
   if (name === null || name.length === 0) return null;
   const rawAgents = o["agents"];
   const agents = Array.isArray(rawAgents)
-    ? rawAgents.filter((x): x is string => typeof x === "string")
+    ? rawAgents.filter((x): x is string => typeof x === "string").slice(0, MCP_AGENTS_CAP)
     : [];
   const rawTools = o["tools"];
   const tools = Array.isArray(rawTools)
@@ -3002,6 +3013,7 @@ function coerceMcpServer(o: Record<string, unknown>): McpServerStatus | null {
         .filter(isPlainObject)
         .map(coerceMcpTool)
         .filter((t): t is McpToolStatus => t !== null)
+        .slice(0, MCP_TOOLS_CAP)
     : [];
   return {
     name,
@@ -3026,6 +3038,7 @@ export function parseMcpStatus(data: Record<string, unknown>): McpStatus {
         .filter(isPlainObject)
         .map(coerceMcpServer)
         .filter((s): s is McpServerStatus => s !== null)
+        .slice(0, MCP_SERVERS_CAP)
     : [];
   return { enabled: bool(data, "enabled") ?? false, servers };
 }

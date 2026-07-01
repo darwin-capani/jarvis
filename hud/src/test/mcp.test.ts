@@ -241,6 +241,20 @@ describe("McpPanel (review-only, secret-free)", () => {
     expect(html).not.toContain("SECRET");
     expect(html).not.toContain("leak");
   });
+
+  it("caps a hostile oversized mcp.status payload (servers / agents / tools)", () => {
+    const s = parseMcpStatus({
+      enabled: true,
+      servers: Array.from({ length: 500 }, (_, i) => ({
+        name: `srv${i}`,
+        agents: Array.from({ length: 500 }, (_, a) => `agent${a}`),
+        tools: Array.from({ length: 2000 }, (_, t) => ({ name: `tool${t}`, consequential: false })),
+      })),
+    });
+    expect(s.servers.length).toBe(64); // MCP_SERVERS_CAP
+    expect(s.servers[0].agents.length).toBe(64); // MCP_AGENTS_CAP
+    expect(s.servers[0].tools.length).toBe(256); // MCP_TOOLS_CAP
+  });
 });
 
 /* ------------------------------------------------------------------------ *

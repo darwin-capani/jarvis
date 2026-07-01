@@ -73,6 +73,17 @@ describe("parseAttributionHealth (defensive)", () => {
     expect(() => parseAttributionHealth({ flags: "nope" })).not.toThrow();
     expect(parseAttributionHealth({ flags: "nope" }).flags).toEqual([]);
   });
+
+  it("truncates a non-integer / negative turns+rate to whole non-negative numbers", () => {
+    const h = parseAttributionHealth({
+      flags: [{ kind: "agent", name: "x", turns: 6.9, rate: 45.7 }],
+      promote: [{ kind: "skill", name: "y", turns: 10.2, rate: -5 }],
+    });
+    expect(h.flags[0].turns).toBe(6);
+    expect(h.flags[0].rate).toBe(45);
+    expect(h.promote[0].turns).toBe(10);
+    expect(h.promote[0].rate).toBe(0);
+  });
 });
 
 /* the reducer arm ---------------------------------------------------------- */
