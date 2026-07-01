@@ -2867,6 +2867,47 @@ export function parseCapabilityAtlas(data: Record<string, unknown>): CapabilityA
   };
 }
 
+// ---------------------------------------------------------------------------
+// TCC PERMISSION SENTINEL (tcc.snapshot / tcc.anomaly) — the ambient READ-ONLY
+// macOS app-privacy-grant status + new-grant/escalation alerts (fed by
+// daemon/src/tcc.rs). SECRET-FREE: bundle ids + counts only, never a token. The
+// parsers never throw; the status never returns null, so an unreadable TCC store
+// (needs Full Disk Access) is shown honestly rather than as a stale panel.
+// ---------------------------------------------------------------------------
+
+/** tcc.snapshot — the ambient permission status. `available=false` means macOS
+ *  blocked the read (grant Full Disk Access); the counts are meaningful only
+ *  when `available` is true. */
+export interface TccSentinel {
+  available: boolean;
+  grants: number;
+  highRiskAllowed: number;
+}
+
+/** Coerce a tcc.snapshot payload. NEVER returns null — an unavailable/malformed
+ *  read yields an honest `available=false` snapshot, never a stale one. */
+export function parseTccSnapshot(data: Record<string, unknown>): TccSentinel {
+  const available = bool(data, "available") ?? false;
+  return {
+    available,
+    grants: available ? num(data, "grants") ?? 0 : 0,
+    highRiskAllowed: available ? num(data, "high_risk_allowed") ?? 0 : 0,
+  };
+}
+
+/** Max anomaly lines retained/rendered (bounds an unbounded alert history). */
+export const TCC_ANOMALY_CAP = 20;
+
+/** Coerce a tcc.anomaly payload into its human-readable alert lines (new grant /
+ *  denied→allowed escalation). Drops non-strings; caps the list. Never throws. */
+export function parseTccAnomalies(data: Record<string, unknown>): string[] {
+  const raw = data["items"];
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((x): x is string => typeof x === "string" && x.length > 0)
+    .slice(0, TCC_ANOMALY_CAP);
+}
+
 function coerceMcpTool(o: Record<string, unknown>): McpToolStatus | null {
   const name = str(o, "name");
   if (name === null || name.length === 0) return null;

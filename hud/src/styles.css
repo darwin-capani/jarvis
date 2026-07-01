@@ -8851,3 +8851,65 @@ body,
   background: rgba(26, 214, 255, 0.08);
   border: 1px solid rgba(26, 214, 255, 0.3);
 }
+
+/* TCC // PERMISSION SENTINEL — ambient app-privacy-grant status + anomalies. */
+.tcc-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tcc-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.tcc-grants-n {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--cyan-bright);
+}
+.tcc-count-label {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--cyan-dim);
+}
+.tcc-hr {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 2px 6px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.tcc-hr.ok {
+  color: var(--cyan-dim);
+  border: 1px solid rgba(26, 214, 255, 0.25);
+}
+.tcc-hr.warn {
+  color: var(--warn-amber);
+  background: rgba(255, 180, 84, 0.1);
+  border: 1px solid rgba(255, 180, 84, 0.4);
+}
+.tcc-anomalies {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+}
+.tcc-anomalies-title {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--cyan-dim);
+}
+.tcc-anomaly {
+  font-size: 10px;
+  color: var(--cyan-bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tcc-anomaly.warn {
+  color: var(--warn-amber);
+}

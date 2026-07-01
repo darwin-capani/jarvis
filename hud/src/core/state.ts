@@ -41,6 +41,7 @@ import {
   InferencePerfStatus,
   LockdownStatus,
   CapabilityAtlas,
+  TccSentinel,
   McpStatus,
   WebhookSurface,
   PluginSurface,
@@ -128,6 +129,9 @@ import {
   parseEvalReport,
   parseForgeProposed,
   parseCapabilityAtlas,
+  parseTccSnapshot,
+  parseTccAnomalies,
+  TCC_ANOMALY_CAP,
   parseMcpStatus,
   parseWebhookEvent,
   applyWebhookEvent,
@@ -616,6 +620,13 @@ export interface HudState {
    *  counts, and every capability tagged armed/inert. Null until the daemon emits
    *  the startup snapshot. REVIEW-ONLY and SECRET-FREE. */
   capabilityAtlas: CapabilityAtlas | null;
+  /** The ambient macOS app-privacy (TCC) status (tcc.snapshot): availability +
+   *  grant count + count of HIGH-RISK grants currently allowed. Null until the
+   *  sentinel emits its first scan. REVIEW-ONLY and SECRET-FREE. */
+  tccSentinel: TccSentinel | null;
+  /** Accumulated TCC anomaly alerts (tcc.anomaly): new grants / denied→allowed
+   *  escalations, newest-first, deduped + capped. REVIEW-ONLY. */
+  tccAnomalies: string[];
   /** The AT-REST ENCRYPTION surface (security.status): the honest posture of the
    *  opt-in, ships-OFF whole-file SQLCipher encryption — the [security].encrypt_memory
    *  config intent, the GROUND-TRUTH `active` flag (the master key actually resolved
@@ -1172,6 +1183,8 @@ export function initialState(): HudState {
     uiActuate: null,
     mcp: null,
     capabilityAtlas: null,
+    tccSentinel: null,
+    tccAnomalies: [],
     security: null,
     webhooks: webhookSurfaceInitial(),
     plugins: null,
@@ -2126,6 +2139,25 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // NEVER carries a secret — only capability names + credential PRESENCE.
       // REVIEW-ONLY.
       return { ...s, capabilityAtlas: parseCapabilityAtlas(env.data) };
+    }
+
+    case "tcc.snapshot": {
+      // Ambient macOS app-privacy status (secret-free: availability + counts).
+      // parseTccSnapshot NEVER returns null — an unreadable TCC store yields an
+      // honest available=false, not a stale panel. REVIEW-ONLY.
+      return { ...s, tccSentinel: parseTccSnapshot(env.data) };
+    }
+
+    case "tcc.anomaly": {
+      // A batch of new-grant / denied->allowed escalation alerts. Each alert
+      // fires ONCE (when the baseline first sees it), so ACCUMULATE newest-first,
+      // dedupe, and cap. REVIEW-ONLY.
+      const fresh = parseTccAnomalies(env.data);
+      if (fresh.length === 0) return s;
+      const merged = [...fresh, ...s.tccAnomalies]
+        .filter((x, i, a) => a.indexOf(x) === i)
+        .slice(0, TCC_ANOMALY_CAP);
+      return { ...s, tccAnomalies: merged };
     }
 
     case "webhook.received": {

@@ -16,9 +16,13 @@
 //! block" capability is a SEPARATE gated increment — v1 observes and reports only.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
 use rusqlite::{Connection, OpenFlags};
+use serde_json::json;
+use tokio::sync::Mutex;
 
 /// The system TCC store (all-user, SIP-protected: needs Full Disk Access).
 const SYSTEM_TCC: &str = "/Library/Application Support/com.apple.TCC/TCC.db";
@@ -284,10 +288,204 @@ fn unavailable_message(reason: &str) -> String {
     )
 }
 
-// NOTE: the longitudinal baseline diff (new-grant / denied→allowed-escalation
-// detection over time) ships with the ambient TCC sentinel increment — the
-// periodic task + durable baseline store that actually exercise it — rather than
-// as unused code here. v1 is the on-demand read-only inventory + high-risk flag.
+// ---------------------------------------------------------------------------
+// Ambient sentinel — a durable baseline + a periodic scan that flags NEW grants
+// and denied→allowed escalations. The baseline diff is PURE (unit-tested); the
+// store is exercised via an in-memory DB; the periodic loop + the live TCC read
+// are runtime-only (inspection-verified, like audit_snapshot_task / egress run).
+// ---------------------------------------------------------------------------
+
+/// Generous startup delay (keep housekeeping out of the first exchanges) + a slow
+/// tick (the permission surface moves on the order of app installs, not seconds).
+const SENTINEL_STARTUP_DELAY: Duration = Duration::from_secs(30);
+const SENTINEL_INTERVAL: Duration = Duration::from_secs(300);
+
+/// A previously-recorded grant: (client, service, decision).
+type BaselineRow = (String, String, String);
+
+/// The durable TCC baseline (`state/tcc_baseline.db`). Its OWN dedicated SQLite
+/// file, plaintext or SQLCipher-encrypted exactly like `audit.db` (open /
+/// open_encrypted). An async Mutex serializes access (mirrors AuditLog). The
+/// baseline stores app grants JARVIS has already seen so a later scan can flag
+/// what is NEW — it is not sensitive, but it follows the same at-rest discipline.
+pub struct TccBaseline {
+    conn: Mutex<Connection>,
+}
+
+impl TccBaseline {
+    /// Open (or create) the baseline DB PLAINTEXT (the default, when
+    /// `[security].encrypt_memory` is off).
+    pub fn open(path: &Path) -> Result<Self> {
+        Self::init_conn(Connection::open(path)?)
+    }
+
+    /// Open (or create) the baseline DB ENCRYPTED (SQLCipher). `key` is applied
+    /// via `PRAGMA key` before any other statement — same seam as AuditLog.
+    pub fn open_encrypted(path: &Path, key: &crate::crypto::SecretKey) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        crate::crypto::apply_key(&conn, key)?;
+        Self::init_conn(conn)
+    }
+
+    /// Shared pragmas + schema, run AFTER any `PRAGMA key`.
+    fn init_conn(conn: Connection) -> Result<Self> {
+        conn.busy_timeout(Duration::from_millis(250))?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS tcc_baseline(
+                client TEXT NOT NULL,
+                service TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                first_seen INTEGER NOT NULL,
+                last_seen INTEGER NOT NULL,
+                PRIMARY KEY(client, service)
+            );",
+        )?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    /// In-memory baseline for tests (no disk). Same schema.
+    #[cfg(test)]
+    fn in_memory() -> Result<Self> {
+        Self::init_conn(Connection::open_in_memory()?)
+    }
+
+    /// True when no grant has ever been recorded (drives the silent cold-start
+    /// seed, so a first run / fresh install does not flood the user with "new
+    /// grant" alerts for every pre-existing permission).
+    async fn is_empty(&self) -> Result<bool> {
+        let conn = self.conn.lock().await;
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM tcc_baseline", [], |r| r.get(0))?;
+        Ok(n == 0)
+    }
+
+    /// Load the recorded (client, service, decision) rows.
+    async fn load(&self) -> Result<Vec<BaselineRow>> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare("SELECT client, service, decision FROM tcc_baseline")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Record/refresh the current grants (INSERT new, UPDATE decision + last_seen
+    /// on an existing (client, service)). Call AFTER diffing against the prior
+    /// baseline, since it overwrites the stored decision.
+    async fn upsert(&self, grants: &[Grant], now: i64) -> Result<()> {
+        let conn = self.conn.lock().await;
+        for g in grants {
+            conn.execute(
+                "INSERT INTO tcc_baseline(client, service, decision, first_seen, last_seen)
+                 VALUES(?1, ?2, ?3, ?4, ?4)
+                 ON CONFLICT(client, service) DO UPDATE SET decision = ?3, last_seen = ?4",
+                rusqlite::params![g.client, g.service, g.decision, now],
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Compare a fresh inventory against a recorded baseline and return
+/// human-readable anomaly lines: a grant never seen before, and a
+/// denied→allowed escalation on an existing one. Pure — the detection core.
+fn baseline_diff(baseline: &[BaselineRow], live: &[Grant]) -> Vec<String> {
+    let mut anomalies = Vec::new();
+    for g in live {
+        let prior = baseline
+            .iter()
+            .find(|(c, s, _)| c == &g.client && s == &g.service);
+        match prior {
+            None => {
+                let risk = if g.high_risk { " [HIGH-RISK]" } else { "" };
+                anomalies.push(format!("NEW grant: {} → {} ({}){risk}", g.client, g.kind, g.decision));
+            }
+            Some((_, _, prior_decision)) => {
+                if prior_decision == "denied" && g.decision == "allowed" {
+                    let risk = if g.high_risk { " [HIGH-RISK]" } else { "" };
+                    anomalies.push(format!(
+                        "ESCALATION: {} → {} went denied → allowed{risk}",
+                        g.client, g.kind
+                    ));
+                }
+            }
+        }
+    }
+    anomalies
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// One sentinel tick: inventory the grants, emit an ambient `tcc.snapshot` status
+/// for the HUD, and — once past the silent cold-start seed — diff against the
+/// baseline and emit `tcc.anomaly` for any new grant / escalation. READ-ONLY over
+/// TCC; only the daemon's own baseline store is written. Runtime-only (the live
+/// TCC read makes this inspection-verified; its store + diff cores are tested).
+pub async fn sentinel_tick(store: &TccBaseline) {
+    let collected = match tokio::task::spawn_blocking(collect_inventory).await {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let grants = match collected {
+        Ok(g) => g,
+        Err(_) => {
+            // TCC unreadable (needs Full Disk Access) — report honestly, do not
+            // touch the baseline, do not fabricate anomalies.
+            crate::telemetry::emit("system", "tcc.snapshot", json!({"available": false}));
+            return;
+        }
+    };
+    let high_risk_allowed = grants
+        .iter()
+        .filter(|g| g.high_risk && g.decision == "allowed")
+        .count();
+    crate::telemetry::emit(
+        "system",
+        "tcc.snapshot",
+        json!({"available": true, "grants": grants.len(), "high_risk_allowed": high_risk_allowed}),
+    );
+
+    let now = now_secs();
+    // Cold start: seed silently so a first run does not alert on every existing grant.
+    match store.is_empty().await {
+        Ok(true) => {
+            let _ = store.upsert(&grants, now).await;
+            return;
+        }
+        Ok(false) => {}
+        Err(_) => return,
+    }
+    let baseline = match store.load().await {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let anomalies = baseline_diff(&baseline, &grants);
+    let _ = store.upsert(&grants, now).await;
+    if !anomalies.is_empty() {
+        crate::telemetry::emit("system", "tcc.anomaly", json!({"items": anomalies}));
+    }
+}
+
+/// The ambient TCC sentinel loop (runtime-only; never run in tests). Mirrors
+/// `audit_snapshot_task`: a startup delay, then a slow periodic `sentinel_tick`.
+pub async fn sentinel_task(store: Arc<TccBaseline>) {
+    tokio::time::sleep(SENTINEL_STARTUP_DELAY).await;
+    loop {
+        sentinel_tick(&store).await;
+        tokio::time::sleep(SENTINEL_INTERVAL).await;
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -371,5 +569,74 @@ mod tests {
         assert!(m.contains("Full Disk Access"));
         assert!(m.contains("never change a permission"));
         assert!(!m.to_lowercase().contains("microphone"), "must not fabricate an inventory");
+    }
+
+    #[test]
+    fn baseline_diff_flags_new_and_escalation_only() {
+        let baseline = vec![
+            ("com.zoom.xos".to_string(), "kTCCServiceMicrophone".to_string(), "allowed".to_string()),
+            ("com.blocked.app".to_string(), "kTCCServiceAccessibility".to_string(), "denied".to_string()),
+        ];
+        let live = vec![
+            // Unchanged — no anomaly.
+            g("kTCCServiceMicrophone", "com.zoom.xos", "allowed"),
+            // denied -> allowed on a high-risk grant — ESCALATION.
+            g("kTCCServiceAccessibility", "com.blocked.app", "allowed"),
+            // Never seen before — NEW.
+            g("kTCCServiceScreenCapture", "com.new.tool", "allowed"),
+        ];
+        let anomalies = baseline_diff(&baseline, &live);
+        assert_eq!(anomalies.len(), 2, "got: {anomalies:?}");
+        assert!(anomalies.iter().any(|a| a.contains("ESCALATION")
+            && a.contains("com.blocked.app")
+            && a.contains("HIGH-RISK")));
+        assert!(anomalies.iter().any(|a| a.contains("NEW grant")
+            && a.contains("com.new.tool")
+            && a.contains("HIGH-RISK")));
+    }
+
+    #[tokio::test]
+    async fn baseline_store_round_trips_and_updates() {
+        let store = TccBaseline::in_memory().unwrap();
+        assert!(store.is_empty().await.unwrap());
+        let first = vec![
+            g("kTCCServiceMicrophone", "com.zoom.xos", "allowed"),
+            g("kTCCServiceAccessibility", "com.blocked.app", "denied"),
+        ];
+        store.upsert(&first, 1000).await.unwrap();
+        assert!(!store.is_empty().await.unwrap());
+        let rows = store.load().await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains(&(
+            "com.zoom.xos".to_string(),
+            "kTCCServiceMicrophone".to_string(),
+            "allowed".to_string()
+        )));
+        // Re-upsert with a changed decision updates in place (no duplicate row).
+        store
+            .upsert(&[g("kTCCServiceAccessibility", "com.blocked.app", "allowed")], 2000)
+            .await
+            .unwrap();
+        let rows = store.load().await.unwrap();
+        assert_eq!(rows.len(), 2, "same (client,service) must update, not duplicate");
+        assert!(rows.contains(&(
+            "com.blocked.app".to_string(),
+            "kTCCServiceAccessibility".to_string(),
+            "allowed".to_string()
+        )));
+    }
+
+    #[tokio::test]
+    async fn diff_against_seeded_store_flags_escalation() {
+        let store = TccBaseline::in_memory().unwrap();
+        store
+            .upsert(&[g("kTCCServiceAccessibility", "com.blocked.app", "denied")], 1000)
+            .await
+            .unwrap();
+        let baseline = store.load().await.unwrap();
+        let live = vec![g("kTCCServiceAccessibility", "com.blocked.app", "allowed")];
+        let anomalies = baseline_diff(&baseline, &live);
+        assert_eq!(anomalies.len(), 1);
+        assert!(anomalies[0].contains("ESCALATION"));
     }
 }
