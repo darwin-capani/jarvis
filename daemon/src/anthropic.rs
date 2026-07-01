@@ -651,6 +651,17 @@ fn tool_defs() -> &'static Value {
                 }
             },
             {
+                "name": "secret_scan",
+                "description": "Scan a project FOLDER for accidentally-exposed secrets: API keys, tokens (GitHub/AWS/Google/Slack/Stripe), private-key files, and secret-looking assignments (KEY/TOKEN/SECRET/PASSWORD = \"...\"). READ-ONLY + defensive: it reads files and reports, changes nothing, and NEVER reveals a secret — every finding is REDACTED (kind + file:line + a short fingerprint). Confined to the given folder, skips VCS/build/vendor dirs, bounded. Requires the project folder path (it does not scan your whole home directory). Use when the user asks to check for leaked/committed secrets or credentials in a project.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "root": {"type": "string", "description": "Absolute path to the project folder to scan"}
+                    },
+                    "required": ["root"]
+                }
+            },
+            {
                 "name": "connector_add",
                 "description": "Add an MCP connector (a new tool server) to JARVIS. CONSEQUENTIAL: this writes a vetted [[mcp.servers]] entry to the user's config and ALWAYS asks for a spoken confirmation first (it never auto-applies). It NEVER handles secrets — do NOT pass any token/key/password; if the connector needs one, set uses_token=true and the user stores it in the Keychain out-of-band. The connector is added INERT (no agent may use it, every tool gated) and connects on the next restart after the user grants agents. For http, give an https:// url; for stdio, give an absolute command path. Use when the user asks to add/install/connect an MCP server or tool connector by name.",
                 "input_schema": {
@@ -7947,6 +7958,13 @@ async fn dispatch_tool(
             }
             None => Err(anyhow!("map_trace needs a 'trace' string argument")),
         },
+        // SECRET SCAN — read-only exposed-credential sweep of a project folder.
+        // NOT in CONSEQUENTIAL_TOOLS (reads + reports, changes nothing); every
+        // finding is REDACTED inside secret_scan (a secret never reaches here).
+        "secret_scan" => match input.get("root").and_then(Value::as_str) {
+            Some(root) => crate::secret_scan::scan(root).await,
+            None => Err(anyhow!("secret_scan needs a 'root' folder path")),
+        },
         // CONNECTOR ADD — CONSEQUENTIAL (in CONSEQUENTIAL_TOOLS, so execute_tool
         // PARKS it for a spoken yes). gate(confirm): DryRun returns the preview the
         // user confirms; Execute appends a vetted, INERT [[mcp.servers]] block. It
@@ -12382,6 +12400,7 @@ mod tests {
                 "egress_snapshot",
                 "tcc_permission_snapshot",
                 "map_trace",
+                "secret_scan",
                 "connector_add",
                 "open_path",
                 "open_url",

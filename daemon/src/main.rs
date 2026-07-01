@@ -159,6 +159,7 @@ mod report;
 mod research;
 mod router;
 mod screen_context;
+mod secret_scan;
 mod selector;
 mod selfcheck;
 // NAMED SFX CUE CATALOG (Phase-2): a code-level catalog of named HUD cues
