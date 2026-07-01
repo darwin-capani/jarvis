@@ -76,10 +76,16 @@ import threading
 import time
 from pathlib import Path
 
-try:  # py3.11 stdlib (the venv interpreter is 3.11)
+try:  # py3.11 stdlib (the venv interpreter is normally 3.11)
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover - py<3.11 fallback
-    tomllib = None  # type: ignore[assignment]
+except ModuleNotFoundError:  # py<3.11: fall back to the tomli backport
+    try:
+        # tomli exposes the identical load(fh)/loads(text) API, so the reader
+        # functions below work unchanged — this makes preset LOAD robust on a
+        # 3.9/3.10 interpreter instead of hard-failing "tomllib unavailable".
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:  # pragma: no cover - no TOML reader at all
+        tomllib = None  # type: ignore[assignment]
 
 APP_NAME = "nexus"
 APP_DIR = Path(__file__).resolve().parent
