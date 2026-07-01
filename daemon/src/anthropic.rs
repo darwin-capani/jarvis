@@ -615,6 +615,14 @@ fn tool_defs() -> &'static Value {
                 }
             },
             {
+                "name": "tcc_permission_snapshot",
+                "description": "Read the host's macOS app privacy grants (TCC): which apps hold Microphone / Camera / Screen Recording / Accessibility / Input Monitoring / Full Disk Access / Contacts / Calendar, whether each is allowed or denied, and a loud flag on the HIGH-RISK grants that are currently allowed (the ones that let an app control the Mac, watch the screen, log keystrokes, or read every file). READ-ONLY + defensive (opens the TCC store read-only, changes nothing, never revokes a grant). Degrades honestly (asks for Full Disk Access) when macOS blocks the read — it never fabricates. Use when the user asks which apps have mic/camera/screen access, or to eyeball for a suspicious permission.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
                 "name": "map_trace",
                 "description": "Map a stack trace or error dump onto the user's source code (the 'Cartographer'). Paste the trace text and it parses every cited frame (Rust/Python/JavaScript/TypeScript/Go/Java/Kotlin, or a generic `file.ext:line[:col]`), resolves each against a project root, shows a window of code around each cited line with the line marked, flags which frames are in the user's project vs a library, and names the likely culprit. READ-ONLY: confined to the project root (never reads outside it), changes nothing. Use whenever the user pastes a crash/traceback/error and wants to know where in THEIR code it points.",
                 "input_schema": {
@@ -7766,6 +7774,10 @@ async fn dispatch_tool(
         // EGRESS SNAPSHOT — read-only host outbound-connection view (lsof). NOT in
         // CONSEQUENTIAL_TOOLS (it changes nothing / never parks).
         "egress_snapshot" => crate::egress::snapshot().await,
+        // TCC PERMISSION SNAPSHOT — read-only macOS app-privacy-grant inventory
+        // (opens the TCC store read-only, degrades honestly). NOT in
+        // CONSEQUENTIAL_TOOLS (it changes nothing / never revokes / never parks).
+        "tcc_permission_snapshot" => crate::tcc::snapshot().await,
         // CARTOGRAPHER — read-only crash/error -> source mapper. NOT in
         // CONSEQUENTIAL_TOOLS (confined reads only; changes nothing / never parks).
         "map_trace" => match input.get("trace").and_then(Value::as_str) {
@@ -12167,6 +12179,7 @@ mod tests {
                 "search_files",
                 "oracle_ask",
                 "egress_snapshot",
+                "tcc_permission_snapshot",
                 "map_trace",
                 "connector_add",
                 "open_path",
