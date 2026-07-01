@@ -1,0 +1,25 @@
+[app]
+name        = "explain"
+version     = "0.1.0"
+description = "On-device AI code explainer: explain what a code snippet does in plain language using the local LLM."
+entry       = "apps/explain/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["state/ipc/apps/generate.sock", "apps/explain"]
+fs_write  = ["state/apps/explain"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["explain.status"]
+
+[intents]
+provides = ["explain.run"]
+
+[[tools.exposes]]
+name          = "explain.run"
+scopes        = ["generate"]
+consequential = false

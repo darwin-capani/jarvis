@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Tests for sentiment: pure prompt-building + a MOCK generate-proxy end-to-end run."""
+import json
+import os
+import socket
+import tempfile
+import threading
+import main
+
+
+class MockProxy:
+    """A fake generate proxy: binds a unix socket, accepts ONE connection, reads
+    the request line (recorded in .request), and replies with the canned JSON."""
+    def __init__(self, reply):
+        self.reply = reply
+        self.request = None
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "generate.sock")
+
+    def __enter__(self):
+        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.srv.bind(self.path)
+        self.srv.listen(1)
+        threading.Thread(target=self._serve, daemon=True).start()
+        return self
+
+    def _serve(self):
+        conn, _ = self.srv.accept()
+        buf = b""
+        while b"\n" not in buf:
+            c = conn.recv(4096)
+            if not c:
+                break
+            buf += c
+        self.request = json.loads(buf.split(b"\n", 1)[0].decode())
+        conn.sendall((json.dumps(self.reply) + "\n").encode())
+        conn.close()
+
+    def __exit__(self, *a):
+        try:
+            self.srv.close()
+        except Exception:
+            pass
+
+
+def test_build_prompt_pure():
+    # A valid payload yields a non-empty prompt string that carries the input text
+    # and instructs the model to classify sentiment.
+    p = main.build_prompt({"text": "This is the best day ever!"})
+    assert isinstance(p, str) and p.strip(), p
+    assert "This is the best day ever!" in p, p
+    assert "positive" in p and "negative" in p and "neutral" in p, p
+    # Hostile / empty inputs return an {"error": ...} dict WITHOUT raising.
+    assert "error" in main.build_prompt({"text": "   "}), "blank text must error"
+    assert "error" in main.build_prompt({"text": 123}), "non-str text must error"
+    assert "error" in main.build_prompt({}), "missing text must error"
+    assert "error" in main.build_prompt("not a dict"), "non-dict must error"
+
+
+def test_compute_via_mock_proxy():
+    with MockProxy({"ok": True, "text": "  canned answer  "}) as mp:
+        r = main.compute({"text": "This is the best day ever!"}, sock_path=mp.path)
+    assert r == {"result": "canned answer"}, r
+    assert mp.request["op"] == "generate", mp.request
+    assert mp.request.get("text"), mp.request  # a non-empty prompt was sent
+
+
+def test_compute_proxy_error_never_raises():
+    with MockProxy({"ok": False, "error": "rate_limited"}) as mp:
+        r = main.compute({"text": "This is the best day ever!"}, sock_path=mp.path)
+    assert "error" in r, r
+
+
+def test_hostile_inputs_never_raise():
+    assert "error" in main.compute(None)
+    assert "error" in main.compute([1, 2, 3])
+
+
+if __name__ == "__main__":
+    for t in [test_build_prompt_pure, test_compute_via_mock_proxy, test_compute_proxy_error_never_raises, test_hostile_inputs_never_raise]:
+        t()
+        print("ok:", t.__name__)
+    print("ALL PASSED")

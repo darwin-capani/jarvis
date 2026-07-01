@@ -1,0 +1,25 @@
+[app]
+name        = "classify"
+version     = "0.1.0"
+description = "On-device AI text classifier: assign text to exactly one of the caller-provided labels using the local LLM."
+entry       = "apps/classify/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["state/ipc/apps/generate.sock", "apps/classify"]
+fs_write  = ["state/apps/classify"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["classify.status"]
+
+[intents]
+provides = ["classify.run"]
+
+[[tools.exposes]]
+name          = "classify.run"
+scopes        = ["generate"]
+consequential = false

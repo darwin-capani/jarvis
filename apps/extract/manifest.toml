@@ -1,0 +1,25 @@
+[app]
+name        = "extract"
+version     = "0.1.0"
+description = "On-device AI field extractor: pull requested fields from unstructured text as JSON using the local LLM."
+entry       = "apps/extract/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["state/ipc/apps/generate.sock", "apps/extract"]
+fs_write  = ["state/apps/extract"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["extract.status"]
+
+[intents]
+provides = ["extract.run"]
+
+[[tools.exposes]]
+name          = "extract.run"
+scopes        = ["generate"]
+consequential = false

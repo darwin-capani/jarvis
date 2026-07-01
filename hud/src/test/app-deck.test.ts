@@ -28,24 +28,25 @@ describe("AppDeckPanel", () => {
     const html = render(new Set());
     expect(html).toContain("APP // DECK");
     expect(html).toContain("REVIEW ONLY");
-    // Every fleet member is present (15-app toolkit).
+    // Every fleet member is present (23-app toolkit incl. the on-device-AI apps).
     for (const name of [
+      "Summarize", "Classify", "Extract", "Rewrite", "Explain", "Keywords", "Titlegen", "Sentiment",
       "Codeglass", "JSONPath", "RegexPad", "Diffscope", "Datalint", "CSVLens", "Numbase",
       "Hashkit", "JWTPeek", "Entropy", "Textkit", "Markmap", "Cronwise", "Timewarp", "Colorlab",
     ]) {
       expect(html).toContain(name);
     }
     // Their exposed tools are shown.
+    expect(html).toContain("summarize.run");
     expect(html).toContain("codeglass.metrics");
-    expect(html).toContain("jsonpath.query");
     expect(html).toContain("timewarp.convert");
-    // Category group headers are present.
-    for (const cat of ["DEV", "DATA", "SECURITY", "TEXT", "TIME", "DESIGN"]) {
+    // Category group headers are present (AI leads).
+    for (const cat of ["AI", "DEV", "DATA", "SECURITY", "TEXT", "TIME", "DESIGN"]) {
       expect(html).toContain(`>${cat}<`);
     }
-    // 0 of 15 live.
+    // 0 of 23 live.
     expect(html).toContain(">0<");
-    expect(html).toContain(">15<");
+    expect(html).toContain(">23<");
     // No app card is in the LIVE state (the state pill carries `deck-state live`).
     expect(html).not.toContain("deck-state live");
   });

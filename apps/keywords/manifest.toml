@@ -1,0 +1,25 @@
+[app]
+name        = "keywords"
+version     = "0.1.0"
+description = "On-device AI keyword extractor: pull the most important keywords/tags from text using the local LLM."
+entry       = "apps/keywords/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["state/ipc/apps/generate.sock", "apps/keywords"]
+fs_write  = ["state/apps/keywords"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["keywords.status"]
+
+[intents]
+provides = ["keywords.run"]
+
+[[tools.exposes]]
+name          = "keywords.run"
+scopes        = ["generate"]
+consequential = false

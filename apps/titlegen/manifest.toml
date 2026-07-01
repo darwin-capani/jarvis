@@ -1,0 +1,25 @@
+[app]
+name        = "titlegen"
+version     = "0.1.0"
+description = "On-device AI title generator: write a concise, compelling title/headline for text using the local LLM."
+entry       = "apps/titlegen/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["state/ipc/apps/generate.sock", "apps/titlegen"]
+fs_write  = ["state/apps/titlegen"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["titlegen.status"]
+
+[intents]
+provides = ["titlegen.run"]
+
+[[tools.exposes]]
+name          = "titlegen.run"
+scopes        = ["generate"]
+consequential = false

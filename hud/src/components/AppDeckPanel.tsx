@@ -28,11 +28,20 @@ type DeckApp = {
   cat: string;
 };
 
-// Categories in display order.
-const CATEGORIES = ["DEV", "DATA", "SECURITY", "TEXT", "TIME", "DESIGN"] as const;
+// Categories in display order (AI leads — the on-device-LLM apps).
+const CATEGORIES = ["AI", "DEV", "DATA", "SECURITY", "TEXT", "TIME", "DESIGN"] as const;
 
 // The curated micro-app fleet (each a real, validated capability module in apps/).
 const FLEET: DeckApp[] = [
+  // On-device AI (local LLM via the daemon generate proxy — offline, no cloud).
+  { id: "summarize", name: "Summarize", desc: "Condense text with the local LLM", tool: "summarize.run", cat: "AI" },
+  { id: "classify", name: "Classify", desc: "Label text into your categories", tool: "classify.run", cat: "AI" },
+  { id: "extract", name: "Extract", desc: "Pull fields as JSON from text", tool: "extract.run", cat: "AI" },
+  { id: "rewrite", name: "Rewrite", desc: "Rewrite text in any tone", tool: "rewrite.run", cat: "AI" },
+  { id: "explain", name: "Explain", desc: "Explain a code snippet in plain English", tool: "explain.run", cat: "AI" },
+  { id: "keywords", name: "Keywords", desc: "Extract key terms & tags", tool: "keywords.run", cat: "AI" },
+  { id: "titlegen", name: "Titlegen", desc: "Generate a headline for text", tool: "titlegen.run", cat: "AI" },
+  { id: "sentiment", name: "Sentiment", desc: "Sentiment + a one-line reason", tool: "sentiment.run", cat: "AI" },
   { id: "codeglass", name: "Codeglass", desc: "Code metrics — line, comment & TODO density", tool: "codeglass.metrics", cat: "DEV" },
   { id: "jsonpath", name: "JSONPath", desc: "Query a JSON document by path", tool: "jsonpath.query", cat: "DEV" },
   { id: "regexpad", name: "RegexPad", desc: "Test a regex, see matches & groups", tool: "regexpad.test", cat: "DEV" },

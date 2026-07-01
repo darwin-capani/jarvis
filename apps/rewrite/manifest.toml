@@ -1,0 +1,25 @@
+[app]
+name        = "rewrite"
+version     = "0.1.0"
+description = "On-device AI rewriter: rewrite text in a requested tone/style using the local LLM. Offline."
+entry       = "apps/rewrite/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["state/ipc/apps/generate.sock", "apps/rewrite"]
+fs_write  = ["state/apps/rewrite"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["rewrite.status"]
+
+[intents]
+provides = ["rewrite.run"]
+
+[[tools.exposes]]
+name          = "rewrite.run"
+scopes        = ["generate"]
+consequential = false

@@ -1,0 +1,25 @@
+[app]
+name        = "sentiment"
+version     = "0.1.0"
+description = "On-device AI sentiment analyzer: classify sentiment (positive/negative/neutral) with a one-line reason using the local LLM."
+entry       = "apps/sentiment/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["state/ipc/apps/generate.sock", "apps/sentiment"]
+fs_write  = ["state/apps/sentiment"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["sentiment.status"]
+
+[intents]
+provides = ["sentiment.run"]
+
+[[tools.exposes]]
+name          = "sentiment.run"
+scopes        = ["generate"]
+consequential = false

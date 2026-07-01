@@ -533,6 +533,15 @@ mod tests {
             ("timewarp", "timewarp.convert"),
             ("entropy", "entropy.assess"),
             ("markmap", "markmap.outline"),
+            // On-device-AI apps (they declare the `generate` proxy scope).
+            ("summarize", "summarize.run"),
+            ("classify", "classify.run"),
+            ("extract", "extract.run"),
+            ("rewrite", "rewrite.run"),
+            ("explain", "explain.run"),
+            ("keywords", "keywords.run"),
+            ("titlegen", "titlegen.run"),
+            ("sentiment", "sentiment.run"),
         ] {
             let path = apps_dir.join(name).join("manifest.toml");
             let raw = std::fs::read_to_string(&path)
