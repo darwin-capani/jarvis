@@ -1,0 +1,25 @@
+[app]
+name        = "codeglass"
+version     = "0.1.0"
+description = "Read-only code-metrics panel: line/blank/comment/code counts, longest line, and TODO/FIXME density for a pasted snippet. Pure, offline, no consequential surface."
+entry       = "apps/codeglass/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/codeglass"]
+fs_write  = ["state/apps/codeglass"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["codeglass.status"]
+
+[intents]
+provides = ["codeglass.metrics"]
+
+[[tools.exposes]]
+name          = "codeglass.metrics"
+scopes        = ["fs_read"]
+consequential = false

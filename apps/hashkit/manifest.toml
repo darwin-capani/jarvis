@@ -1,0 +1,25 @@
+[app]
+name        = "hashkit"
+version     = "0.1.0"
+description = "Read-only cryptographic-digest panel: MD5 / SHA1 / SHA256 of the input text plus its byte length. Uses only the Python stdlib hashlib. Offline."
+entry       = "apps/hashkit/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/hashkit"]
+fs_write  = ["state/apps/hashkit"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["hashkit.status"]
+
+[intents]
+provides = ["hashkit.digest"]
+
+[[tools.exposes]]
+name          = "hashkit.digest"
+scopes        = ["fs_read"]
+consequential = false
