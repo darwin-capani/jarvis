@@ -12,6 +12,7 @@ mod anthropic;
 mod anticipate;
 mod apps;
 mod atlas;
+mod attribution;
 mod audio;
 mod audit;
 mod brief;

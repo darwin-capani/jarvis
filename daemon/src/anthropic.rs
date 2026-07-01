@@ -607,6 +607,14 @@ fn tool_defs() -> &'static Value {
                 }
             },
             {
+                "name": "capability_report",
+                "description": "Get a READ-ONLY evidence report on which of JARVIS's own AGENTS and TOOLS/SKILLS are actually working, computed from the local outcome-labelled trace corpus. Returns a curated, opinionated summary: per-agent and per-tool/skill turn counts, success rate, and an honest flag (reliable / mixed / failing / insufficient data), with low-sample capabilities explicitly NOT judged. Use when the user asks which agent or skill performs best/worst, what's reliable, what's failing, or what's load-bearing vs unused. Distinct from oracle_ask (which runs raw SQL you write): this is the pre-built, sample-size-honest performance analysis. Changes nothing.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
                 "name": "egress_snapshot",
                 "description": "Read the host's CURRENT established outbound network connections (a read-only 'what is my Mac talking to right now?' view) and return them as a table of process | pid | remote | state. READ-ONLY + defensive (runs lsof, changes nothing). Use when the user asks what their machine is connected to, or to eyeball for an unexpected/suspicious outbound connection.",
                 "input_schema": {
@@ -7771,6 +7779,10 @@ async fn dispatch_tool(
             },
             None => Err(anyhow!("oracle_ask needs a 'sql' string argument")),
         },
+        // CAPABILITY REPORT — read-only attribution analysis over the trace
+        // corpus (which agents/skills work). NOT in CONSEQUENTIAL_TOOLS (it
+        // changes nothing / never parks); reaches the corpus via its process-global.
+        "capability_report" => crate::attribution::report().await,
         // EGRESS SNAPSHOT — read-only host outbound-connection view (lsof). NOT in
         // CONSEQUENTIAL_TOOLS (it changes nothing / never parks).
         "egress_snapshot" => crate::egress::snapshot().await,
@@ -12178,6 +12190,7 @@ mod tests {
                 "quit_app",
                 "search_files",
                 "oracle_ask",
+                "capability_report",
                 "egress_snapshot",
                 "tcc_permission_snapshot",
                 "map_trace",
