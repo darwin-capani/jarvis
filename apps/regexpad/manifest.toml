@@ -1,0 +1,25 @@
+[app]
+name        = "regexpad"
+version     = "0.1.0"
+description = "Read-only regex tester: test a pattern against text and report matches and capture groups. Pure, offline (re stdlib)."
+entry       = "apps/regexpad/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/regexpad"]
+fs_write  = ["state/apps/regexpad"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["regexpad.status"]
+
+[intents]
+provides = ["regexpad.test"]
+
+[[tools.exposes]]
+name          = "regexpad.test"
+scopes        = ["fs_read"]
+consequential = false

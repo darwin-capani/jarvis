@@ -1,0 +1,25 @@
+[app]
+name        = "markmap"
+version     = "0.1.0"
+description = "Read-only Markdown outline extractor: pull the ATX heading structure (a table of contents) from Markdown. Pure, offline."
+entry       = "apps/markmap/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/markmap"]
+fs_write  = ["state/apps/markmap"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["markmap.status"]
+
+[intents]
+provides = ["markmap.outline"]
+
+[[tools.exposes]]
+name          = "markmap.outline"
+scopes        = ["fs_read"]
+consequential = false

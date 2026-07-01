@@ -525,6 +525,14 @@ mod tests {
             ("colorlab", "colorlab.analyze"),
             ("cronwise", "cronwise.explain"),
             ("numbase", "numbase.convert"),
+            ("jsonpath", "jsonpath.query"),
+            ("jwtpeek", "jwtpeek.decode"),
+            ("diffscope", "diffscope.unified"),
+            ("csvlens", "csvlens.profile"),
+            ("regexpad", "regexpad.test"),
+            ("timewarp", "timewarp.convert"),
+            ("entropy", "entropy.assess"),
+            ("markmap", "markmap.outline"),
         ] {
             let path = apps_dir.join(name).join("manifest.toml");
             let raw = std::fs::read_to_string(&path)

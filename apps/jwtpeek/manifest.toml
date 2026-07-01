@@ -1,0 +1,25 @@
+[app]
+name        = "jwtpeek"
+version     = "0.1.0"
+description = "Read-only JWT inspector: base64url-decode a JWT header and payload for inspection. Does NOT verify the signature (no secret). Pure, offline."
+entry       = "apps/jwtpeek/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/jwtpeek"]
+fs_write  = ["state/apps/jwtpeek"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["jwtpeek.status"]
+
+[intents]
+provides = ["jwtpeek.decode"]
+
+[[tools.exposes]]
+name          = "jwtpeek.decode"
+scopes        = ["fs_read"]
+consequential = false

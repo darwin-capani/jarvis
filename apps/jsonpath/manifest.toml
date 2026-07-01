@@ -1,0 +1,25 @@
+[app]
+name        = "jsonpath"
+version     = "0.1.0"
+description = "Read-only JSON path query: navigate a JSON document with a dotted/bracket path and return the value at it. Pure, offline."
+entry       = "apps/jsonpath/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/jsonpath"]
+fs_write  = ["state/apps/jsonpath"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["jsonpath.status"]
+
+[intents]
+provides = ["jsonpath.query"]
+
+[[tools.exposes]]
+name          = "jsonpath.query"
+scopes        = ["fs_read"]
+consequential = false

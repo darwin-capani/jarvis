@@ -24,20 +24,28 @@ function feed(running: boolean): AppFeed {
 }
 
 describe("AppDeckPanel", () => {
-  it("always renders the curated fleet (all IDLE with no live apps)", () => {
+  it("always renders the curated fleet grouped by category (all IDLE with no live apps)", () => {
     const html = render(new Set());
     expect(html).toContain("APP // DECK");
     expect(html).toContain("REVIEW ONLY");
-    // Every fleet member is present.
-    for (const name of ["Codeglass", "Textkit", "Hashkit", "Datalint", "Colorlab", "Cronwise", "Numbase"]) {
+    // Every fleet member is present (15-app toolkit).
+    for (const name of [
+      "Codeglass", "JSONPath", "RegexPad", "Diffscope", "Datalint", "CSVLens", "Numbase",
+      "Hashkit", "JWTPeek", "Entropy", "Textkit", "Markmap", "Cronwise", "Timewarp", "Colorlab",
+    ]) {
       expect(html).toContain(name);
     }
     // Their exposed tools are shown.
     expect(html).toContain("codeglass.metrics");
-    expect(html).toContain("numbase.convert");
-    // 0 of 7 live.
+    expect(html).toContain("jsonpath.query");
+    expect(html).toContain("timewarp.convert");
+    // Category group headers are present.
+    for (const cat of ["DEV", "DATA", "SECURITY", "TEXT", "TIME", "DESIGN"]) {
+      expect(html).toContain(`>${cat}<`);
+    }
+    // 0 of 15 live.
     expect(html).toContain(">0<");
-    expect(html).toContain(">7<");
+    expect(html).toContain(">15<");
     // No app card is in the LIVE state (the state pill carries `deck-state live`).
     expect(html).not.toContain("deck-state live");
   });

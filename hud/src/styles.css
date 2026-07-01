@@ -9028,6 +9028,33 @@ body,
   letter-spacing: 0.16em;
   color: var(--cyan-dim);
 }
+.deck-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.deck-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+}
+.deck-group-label {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--cyan-bright);
+}
+.deck-group-rule {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(26, 214, 255, 0.25), transparent);
+}
+.deck-group-count {
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  color: var(--cyan-dim);
+}
 .deck-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));

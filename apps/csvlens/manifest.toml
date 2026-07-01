@@ -1,0 +1,25 @@
+[app]
+name        = "csvlens"
+version     = "0.1.0"
+description = "Read-only CSV profiler: row/column counts, headers, and per-column non-empty/empty tallies. Pure, offline (csv + io stdlib)."
+entry       = "apps/csvlens/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/csvlens"]
+fs_write  = ["state/apps/csvlens"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["csvlens.status"]
+
+[intents]
+provides = ["csvlens.profile"]
+
+[[tools.exposes]]
+name          = "csvlens.profile"
+scopes        = ["fs_read"]
+consequential = false

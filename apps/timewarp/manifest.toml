@@ -1,0 +1,25 @@
+[app]
+name        = "timewarp"
+version     = "0.1.0"
+description = "Read-only epoch converter: turn a Unix timestamp into a UTC ISO-8601 string and its calendar components. Pure, offline."
+entry       = "apps/timewarp/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/timewarp"]
+fs_write  = ["state/apps/timewarp"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["timewarp.status"]
+
+[intents]
+provides = ["timewarp.convert"]
+
+[[tools.exposes]]
+name          = "timewarp.convert"
+scopes        = ["fs_read"]
+consequential = false

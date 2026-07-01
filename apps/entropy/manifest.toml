@@ -1,0 +1,25 @@
+[app]
+name        = "entropy"
+version     = "0.1.0"
+description = "Read-only secret-strength estimator: character-set size, length, Shannon entropy bits, and a strength class for a candidate password/secret. Pure, offline; returns only stats, never the input."
+entry       = "apps/entropy/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/entropy"]
+fs_write  = ["state/apps/entropy"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["entropy.status"]
+
+[intents]
+provides = ["entropy.assess"]
+
+[[tools.exposes]]
+name          = "entropy.assess"
+scopes        = ["fs_read"]
+consequential = false
