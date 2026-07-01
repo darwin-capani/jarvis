@@ -20,7 +20,7 @@
 //! (was_delegated / contributed_to_success) and eval-gated AUTO-promotion of
 //! proven skills are documented follow-ons; this v1 analyzes what already exists.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -39,6 +39,9 @@ const MAX_ROWS_SHOWN: usize = 12;
 const RELIABLE_RATE: f64 = 0.8;
 /// Rate below which a well-sampled capability is "failing" (the propose-only flag).
 const FAILING_RATE: f64 = 0.5;
+/// Rate at or above which an eval-verified skill is a PROMOTION candidate — it
+/// must be excellent in live use, not merely reliable, to earn first-class status.
+const PROMOTE_RATE: f64 = 0.9;
 
 /// Ambient health cadence (runtime-only; never run in tests). A generous startup
 /// delay keeps it out of the first exchanges; a slow tick since the trace corpus
@@ -214,12 +217,18 @@ struct Health {
     failing: usize,
     /// The failing ones, detailed (the propose-only "needs attention" list).
     flags: Vec<CapFlag>,
+    /// Eval-verified skills that are also live-proven — PROMOTION candidates
+    /// (the "ready to elevate" half of the compound-growth loop).
+    promote: Vec<CapFlag>,
 }
 
-/// Compute capability health across agents + tools. Only WELL-SAMPLED
-/// capabilities (>= MIN_SAMPLE graded turns) are classified — the same
-/// sample-size honesty as the report. Pure, so the flag policy is unit-tested.
-fn health(traces: &[Trace]) -> Health {
+/// Compute capability health across agents + tools, plus promotion candidates.
+/// Only WELL-SAMPLED capabilities (>= MIN_SAMPLE graded turns) are classified —
+/// the same sample-size honesty as the report. `eval_skills` is the set of skill
+/// names that declared eval vectors (proven-correct at registry build); a skill
+/// in that set with a >= PROMOTE_RATE live record is a promotion candidate. Pure,
+/// so the flag + promote policy is unit-tested.
+fn health(traces: &[Trace], eval_skills: &HashSet<String>) -> Health {
     let mut reliable = 0;
     let mut failing = 0;
     let mut flags = Vec::new();
@@ -249,7 +258,82 @@ fn health(traces: &[Trace]) -> Health {
         reliable,
         failing,
         flags,
+        promote: promotion_candidates(traces, eval_skills),
     }
+}
+
+/// Eval-verified skills that are ALSO live-proven (>= PROMOTE_RATE over >=
+/// MIN_SAMPLE graded turns) — the promotion candidates. Only skills whose names
+/// are in `eval_skills` (declared eval vectors) qualify: correctness is proven at
+/// registry build, and this adds the live-performance evidence. Pure.
+fn promotion_candidates(traces: &[Trace], eval_skills: &HashSet<String>) -> Vec<CapFlag> {
+    tally(traces, tool_key)
+        .into_iter()
+        .filter_map(|(name, s)| {
+            if !eval_skills.contains(&name) || s.graded() < MIN_SAMPLE {
+                return None;
+            }
+            s.rate().filter(|r| *r >= PROMOTE_RATE).map(|r| CapFlag {
+                kind: "skill",
+                name,
+                turns: s.graded(),
+                rate_pct: (r * 100.0).round() as u32,
+            })
+        })
+        .collect()
+}
+
+/// The set of skill names that declared eval vectors (proven-correct at registry
+/// build). Impure (reads the process-global registry); kept out of the pure
+/// analysis so the policy stays unit-testable with a synthetic set.
+fn eval_verified_skill_names() -> HashSet<String> {
+    crate::skills::global()
+        .all()
+        .iter()
+        .filter(|s| !s.eval_vectors.is_empty())
+        .map(|s| s.name.to_string())
+        .collect()
+}
+
+/// Render the promotion-candidate report (the `promotion_candidates` tool). Honest
+/// when nothing qualifies — it says exactly what a candidate needs.
+fn format_promotions(cands: &[CapFlag], eval_total: usize) -> String {
+    if eval_total == 0 {
+        return "No skills declare eval vectors yet, so none can be promotion-graded.".to_string();
+    }
+    if cands.is_empty() {
+        return format!(
+            "No skill has earned promotion yet. A candidate must be eval-verified AND have >= {} \
+             graded turns at >= {:.0}% success. ({eval_total} skills are eval-verified.)",
+            MIN_SAMPLE,
+            PROMOTE_RATE * 100.0
+        );
+    }
+    let mut out = format!(
+        "Promotion candidates — eval-verified skills that are ALSO live-proven (>= {:.0}% over >= {} \
+         turns):\n",
+        PROMOTE_RATE * 100.0,
+        MIN_SAMPLE
+    );
+    for c in cands {
+        out.push_str(&format!("  {} — {} turns, {}% success\n", c.name, c.turns, c.rate_pct));
+    }
+    out.push_str(
+        "\n(PROPOSE-ONLY: these have earned first-class treatment — promote them yourself; I change \
+         nothing.)",
+    );
+    out
+}
+
+/// The `promotion_candidates` tool: cross-reference the eval-verified skills with
+/// the live trace corpus and report which have earned promotion. READ-ONLY.
+pub async fn promotion_report() -> Result<String> {
+    let store = crate::optimize::global_trace_store()
+        .ok_or_else(|| anyhow!("promotion_candidates: the trace store is not available"))?;
+    let traces = store.recent(MAX_TRACES).await?;
+    let eval = eval_verified_skill_names();
+    let cands = promotion_candidates(&traces, &eval);
+    Ok(format_promotions(&cands, eval.len()))
 }
 
 /// One health tick: read the recent corpus (read-only) and emit an
@@ -263,12 +347,12 @@ pub async fn health_tick() {
         Ok(t) => t,
         Err(_) => return,
     };
-    let h = health(&traces);
-    let flags: Vec<_> = h
-        .flags
-        .iter()
-        .map(|f| json!({"kind": f.kind, "name": f.name, "turns": f.turns, "rate": f.rate_pct}))
-        .collect();
+    let h = health(&traces, &eval_verified_skill_names());
+    let to_json = |v: &[CapFlag]| -> Vec<_> {
+        v.iter()
+            .map(|f| json!({"kind": f.kind, "name": f.name, "turns": f.turns, "rate": f.rate_pct}))
+            .collect()
+    };
     crate::telemetry::emit(
         "system",
         "attribution.health",
@@ -276,7 +360,8 @@ pub async fn health_tick() {
             "turns": h.turns,
             "reliable": h.reliable,
             "failing": h.failing,
-            "flags": flags,
+            "flags": to_json(&h.flags),
+            "promote": to_json(&h.promote),
         }),
     );
 }
@@ -419,7 +504,7 @@ mod tests {
         traces.push(t("jarvis", "shell_run", Outcome::Failed));
         traces.push(t("jarvis", "shell_run", Outcome::Failed));
 
-        let h = health(&traces);
+        let h = health(&traces, &HashSet::new());
         assert_eq!(h.turns, traces.len());
         // gcal_create (tool) is also reliable; pepper (agent) reliable -> 2 reliable.
         assert_eq!(h.reliable, 2, "pepper + gcal_create");
@@ -432,11 +517,56 @@ mod tests {
         assert_eq!(karen.kind, "agent");
         assert_eq!(karen.turns, 6);
         assert_eq!(karen.rate_pct, 17);
+        // No eval-verified skills passed -> no promotion candidates.
+        assert!(h.promote.is_empty());
     }
 
     #[test]
     fn health_of_empty_corpus_is_all_zero_no_flags() {
-        let h = health(&[]);
-        assert_eq!(h, Health { turns: 0, reliable: 0, failing: 0, flags: vec![] });
+        let h = health(&[], &HashSet::new());
+        assert_eq!(
+            h,
+            Health { turns: 0, reliable: 0, failing: 0, flags: vec![], promote: vec![] }
+        );
+    }
+
+    #[test]
+    fn promotion_needs_eval_verification_and_excellent_live_record() {
+        let mut traces = Vec::new();
+        // base64_encode: eval-verified skill, 9 success + 1 corrected -> 90% -> candidate.
+        for _ in 0..9 {
+            traces.push(t("jarvis", "base64_encode", Outcome::Success));
+        }
+        traces.push(t("jarvis", "base64_encode", Outcome::CorrectedNextTurn));
+        // rot13: eval-verified but only 60% -> reliable-ish, NOT promotion-grade.
+        for _ in 0..3 {
+            traces.push(t("jarvis", "rot13", Outcome::Success));
+        }
+        for _ in 0..2 {
+            traces.push(t("jarvis", "rot13", Outcome::Failed));
+        }
+        // word_count: excellent (100%) but NOT eval-verified -> excluded.
+        for _ in 0..6 {
+            traces.push(t("jarvis", "word_count", Outcome::Success));
+        }
+        let eval: HashSet<String> =
+            ["base64_encode".to_string(), "rot13".to_string()].into_iter().collect();
+
+        let cands = promotion_candidates(&traces, &eval);
+        assert_eq!(cands.len(), 1, "only base64_encode qualifies");
+        assert_eq!(cands[0].name, "base64_encode");
+        assert_eq!(cands[0].kind, "skill");
+        assert_eq!(cands[0].turns, 10);
+        assert_eq!(cands[0].rate_pct, 90);
+    }
+
+    #[test]
+    fn format_promotions_is_honest_when_empty() {
+        assert!(format_promotions(&[], 0).contains("No skills declare eval vectors"));
+        assert!(format_promotions(&[], 5).contains("No skill has earned promotion"));
+        let cand = vec![CapFlag { kind: "skill", name: "base64_encode".into(), turns: 10, rate_pct: 95 }];
+        let out = format_promotions(&cand, 5);
+        assert!(out.contains("base64_encode — 10 turns, 95% success"));
+        assert!(out.contains("PROPOSE-ONLY"));
     }
 }

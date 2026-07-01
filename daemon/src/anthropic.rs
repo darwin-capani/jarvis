@@ -615,6 +615,14 @@ fn tool_defs() -> &'static Value {
                 }
             },
             {
+                "name": "promotion_candidates",
+                "description": "Get a READ-ONLY report of which of JARVIS's skills have earned PROMOTION to first-class status: skills that are BOTH eval-verified (they passed their declared known-answer eval vectors at registry build) AND live-proven (a high success rate over enough real turns in the local trace corpus). PROPOSE-ONLY — it recommends, it changes nothing. Honest when none qualify (it states exactly what a candidate needs). Use when the user asks which skills are the strongest / most trusted / should be promoted or elevated.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
                 "name": "egress_snapshot",
                 "description": "Read the host's CURRENT established outbound network connections (a read-only 'what is my Mac talking to right now?' view) and return them as a table of process | pid | remote | state. READ-ONLY + defensive (runs lsof, changes nothing). Use when the user asks what their machine is connected to, or to eyeball for an unexpected/suspicious outbound connection.",
                 "input_schema": {
@@ -7886,6 +7894,9 @@ async fn dispatch_tool(
         // corpus (which agents/skills work). NOT in CONSEQUENTIAL_TOOLS (it
         // changes nothing / never parks); reaches the corpus via its process-global.
         "capability_report" => crate::attribution::report().await,
+        // PROMOTION CANDIDATES — read-only cross-reference of eval-verified skills
+        // with live corpus success. NOT in CONSEQUENTIAL_TOOLS (propose-only report).
+        "promotion_candidates" => crate::attribution::promotion_report().await,
         // EGRESS SNAPSHOT — read-only host outbound-connection view (lsof). NOT in
         // CONSEQUENTIAL_TOOLS (it changes nothing / never parks).
         "egress_snapshot" => crate::egress::snapshot().await,
@@ -12321,6 +12332,7 @@ mod tests {
                 "search_files",
                 "oracle_ask",
                 "capability_report",
+                "promotion_candidates",
                 "egress_snapshot",
                 "tcc_permission_snapshot",
                 "map_trace",

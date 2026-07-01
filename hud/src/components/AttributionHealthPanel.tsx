@@ -59,6 +59,20 @@ export default function AttributionHealthPanel({
               low-sample agents/skills are not judged. Review-only.
             </div>
           )}
+          {health.promote.length > 0 && (
+            <div className="attr-promote">
+              <div className="attr-promote-title">READY TO PROMOTE</div>
+              {health.promote.map((f) => (
+                <div className="attr-flag" key={`promote:${f.name}`}>
+                  <span className="attr-promote-name">{f.name}</span>
+                  <span className="attr-flag-kind">skill</span>
+                  <span className="attr-flag-stat">
+                    {f.turns} turns · {f.rate}% success
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </Frame>
     </div>

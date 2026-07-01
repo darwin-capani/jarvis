@@ -8981,3 +8981,18 @@ body,
   color: var(--cyan-dim);
   white-space: nowrap;
 }
+.attr-promote {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.attr-promote-title {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--learn-green, #5ce0a8);
+}
+.attr-promote-name {
+  color: var(--learn-green, #5ce0a8);
+  font-weight: 600;
+}

@@ -2931,6 +2931,8 @@ export interface AttributionHealth {
   reliable: number;
   failing: number;
   flags: AttributionFlag[];
+  /** Eval-verified skills that are also live-proven — ready-to-promote. */
+  promote: AttributionFlag[];
 }
 
 /** Max failing-capability flags retained/rendered. */
@@ -2950,20 +2952,23 @@ function coerceAttributionFlag(o: Record<string, unknown>): AttributionFlag | nu
 
 /** Coerce an attribution.health payload. NEVER returns null — a malformed
  *  payload yields an honest all-zero snapshot, never a stale one. */
-export function parseAttributionHealth(data: Record<string, unknown>): AttributionHealth {
-  const rawFlags = data["flags"];
-  const flags = Array.isArray(rawFlags)
-    ? rawFlags
+function coerceFlagList(raw: unknown): AttributionFlag[] {
+  return Array.isArray(raw)
+    ? raw
         .filter(isPlainObject)
         .map(coerceAttributionFlag)
         .filter((f): f is AttributionFlag => f !== null)
         .slice(0, ATTRIBUTION_FLAG_CAP)
     : [];
+}
+
+export function parseAttributionHealth(data: Record<string, unknown>): AttributionHealth {
   return {
     turns: num(data, "turns") ?? 0,
     reliable: num(data, "reliable") ?? 0,
     failing: num(data, "failing") ?? 0,
-    flags,
+    flags: coerceFlagList(data["flags"]),
+    promote: coerceFlagList(data["promote"]),
   };
 }
 

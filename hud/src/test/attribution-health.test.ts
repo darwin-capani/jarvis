@@ -34,6 +34,7 @@ const payload: Record<string, unknown> = {
   reliable: 3,
   failing: 1,
   flags: [{ kind: "agent", name: "karen", turns: 6, rate: 17 }],
+  promote: [{ kind: "skill", name: "base64_encode", turns: 10, rate: 95 }],
 };
 
 /* the defensive parser ----------------------------------------------------- */
@@ -45,12 +46,13 @@ describe("parseAttributionHealth (defensive)", () => {
       reliable: 3,
       failing: 1,
       flags: [{ kind: "agent", name: "karen", turns: 6, rate: 17 }],
+      promote: [{ kind: "skill", name: "base64_encode", turns: 10, rate: 95 }],
     });
   });
 
   it("defaults to an all-zero snapshot when fields are absent", () => {
     const h = parseAttributionHealth({});
-    expect(h).toEqual({ turns: 0, reliable: 0, failing: 0, flags: [] });
+    expect(h).toEqual({ turns: 0, reliable: 0, failing: 0, flags: [], promote: [] });
   });
 
   it("drops flags with no name and caps the list", () => {
@@ -93,7 +95,7 @@ describe("AttributionHealthPanel (review-only)", () => {
     expect(render(null)).toBe("");
   });
 
-  it("shows reliable/failing counts and names the failing capability", () => {
+  it("shows reliable/failing counts, the failing capability, and promotion candidates", () => {
     const html = render(parseAttributionHealth(payload));
     expect(html).toContain("REVIEW ONLY");
     expect(html).toContain("RELIABLE");
@@ -101,12 +103,17 @@ describe("AttributionHealthPanel (review-only)", () => {
     expect(html).toContain("NEEDS ATTENTION");
     expect(html).toContain("karen");
     expect(html).toContain("17% success");
+    // The promote section names the eval-verified, live-proven skill.
+    expect(html).toContain("READY TO PROMOTE");
+    expect(html).toContain("base64_encode");
+    expect(html).toContain("95% success");
   });
 
-  it("shows an all-healthy note when nothing is failing", () => {
-    const html = render({ turns: 30, reliable: 5, failing: 0, flags: [] });
+  it("shows an all-healthy note when nothing is failing, and no promote section when empty", () => {
+    const html = render({ turns: 30, reliable: 5, failing: 0, flags: [], promote: [] });
     expect(html).toContain("No well-sampled capability is failing");
     expect(html).not.toContain("NEEDS ATTENTION");
+    expect(html).not.toContain("READY TO PROMOTE");
   });
 
   it("is review-only — renders no action button", () => {
