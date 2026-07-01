@@ -1,0 +1,25 @@
+[app]
+name        = "numbase"
+version     = "0.1.0"
+description = "Read-only number-base converter: parse an integer given in a source base and render it in binary, octal, decimal, and hexadecimal. Pure, offline."
+entry       = "apps/numbase/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/numbase"]
+fs_write  = ["state/apps/numbase"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["numbase.status"]
+
+[intents]
+provides = ["numbase.convert"]
+
+[[tools.exposes]]
+name          = "numbase.convert"
+scopes        = ["fs_read"]
+consequential = false
