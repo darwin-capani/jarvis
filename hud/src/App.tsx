@@ -25,6 +25,7 @@ import LifeLogPanel from "./components/LifeLogPanel";
 import MarkForgePanel, { MARK_FORGE_APP_NAME } from "./components/MarkForgePanel";
 import McpPanel from "./components/McpPanel";
 import CapabilityAtlasPanel from "./components/CapabilityAtlasPanel";
+import TccSentinelPanel from "./components/TccSentinelPanel";
 import ConnectorMarketplacePanel from "./components/ConnectorMarketplacePanel";
 import ExtensibilityPanel from "./components/ExtensibilityPanel";
 import MemoryPanel from "./components/MemoryPanel";
@@ -562,6 +563,7 @@ export default function App() {
           />
           <McpPanel mcp={state.mcp} />
           <CapabilityAtlasPanel atlas={state.capabilityAtlas} />
+          <TccSentinelPanel sentinel={state.tccSentinel} anomalies={state.tccAnomalies} />
           <ConnectorMarketplacePanel mcp={state.mcp} />
           <ExtensibilityPanel webhooks={state.webhooks} plugins={state.plugins} />
           <AuditPanel audit={state.audit} liveGate={state.liveGate} />

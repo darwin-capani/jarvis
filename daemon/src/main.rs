@@ -467,6 +467,14 @@ fn open_trace_store(path: &Path, key: Option<&crypto::SecretKey>) -> Result<opti
     }
 }
 
+/// Open the TCC-sentinel baseline store honoring the resolved encryption state.
+fn open_tcc_baseline(path: &Path, key: Option<&crypto::SecretKey>) -> Result<tcc::TccBaseline> {
+    match key {
+        Some(k) => tcc::TccBaseline::open_encrypted(path, k),
+        None => tcc::TccBaseline::open(path),
+    }
+}
+
 /// daemon.log rotation bound (audit fix: the log was opened append-only and
 /// grew without bound on the always-on appliance, at DEBUG for the daemon's
 /// own crate). At the bound the live file is renamed to daemon.log.1
@@ -1487,6 +1495,11 @@ async fn main() -> Result<()> {
     // Install the config path so the CONSEQUENTIAL `connector_add` tool can append
     // a vetted [[mcp.servers]] block to jarvis.toml (same OnceLock pattern).
     connector::set_config_path(root.join("config").join("jarvis.toml"));
+    // The ambient TCC sentinel's durable baseline (plaintext/encrypted like audit.db).
+    let tcc_baseline = Arc::new(open_tcc_baseline(
+        &state_dir.join("tcc_baseline.db"),
+        master_key.as_ref(),
+    )?);
 
     // The EVAL scorecard's live, in-memory rolling state (eval.rs): bounded
     // windows of MEASURED per-turn latencies + cloud token usage. Held for the
@@ -1837,6 +1850,11 @@ async fn main() -> Result<()> {
     // chokepoints do that); when [audit].enabled is false it emits the honest
     // OFF payload so the panel shows the disabled state, never a stale one.
     tokio::spawn(audit_snapshot_task());
+    // Ambient TCC sentinel: a slow, READ-ONLY periodic scan of macOS app privacy
+    // grants that seeds a baseline on first run, then emits tcc.snapshot (status)
+    // and tcc.anomaly (new grant / denied->allowed escalation) for the HUD. It
+    // never mutates TCC; only its own baseline store is written.
+    tokio::spawn(tcc::sentinel_task(tcc_baseline));
     // Resolve the Anthropic API key eagerly (env var, then macOS Keychain) so
     // daemon.started reports whether the cloud path is available. Only the
     // bool ever leaves this call — the key itself stays out of logs and
