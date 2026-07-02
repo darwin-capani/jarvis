@@ -686,6 +686,19 @@ async fn sentinel_tick(
         "introspect.snapshot",
         json!({"apps": running, "drift": drift_count, "anomalies": anomaly_count}),
     );
+
+    // Declared-capability inventory (static, from manifests): the "what can each
+    // app DO" audit alongside the runtime "what is it doing". Secret-free (counts,
+    // never paths/hosts). Re-emitted each tick so a late-connecting HUD still gets
+    // it (fire-and-forget, small — a handful of apps).
+    let caps: Vec<serde_json::Value> = registry
+        .capability_inventory()
+        .await
+        .into_iter()
+        .map(|(name, caps)| json!({"name": name, "caps": caps}))
+        .collect();
+    crate::telemetry::emit("system", "introspect.capabilities", json!({"apps": caps}));
+
     debug!(running, drift_count, anomaly_count, "introspect tick");
 }
 

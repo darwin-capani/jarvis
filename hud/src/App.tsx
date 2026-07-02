@@ -569,7 +569,11 @@ export default function App() {
           <AppDeckPanel runningApps={state.runningApps} appFeeds={state.appFeeds} />
           <AttributionHealthPanel health={state.attributionHealth} />
           <TccSentinelPanel sentinel={state.tccSentinel} anomalies={state.tccAnomalies} />
-          <IntrospectPanel status={state.introspect} alerts={state.introspectAlerts} />
+          <IntrospectPanel
+            status={state.introspect}
+            alerts={state.introspectAlerts}
+            capabilities={state.introspectCapabilities}
+          />
           <ConnectorMarketplacePanel mcp={state.mcp} />
           <ExtensibilityPanel webhooks={state.webhooks} plugins={state.plugins} />
           <AuditPanel audit={state.audit} liveGate={state.liveGate} />

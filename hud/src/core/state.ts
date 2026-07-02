@@ -43,6 +43,7 @@ import {
   CapabilityAtlas,
   TccSentinel,
   IntrospectStatus,
+  IntrospectCapability,
   AttributionHealth,
   McpStatus,
   WebhookSurface,
@@ -139,6 +140,7 @@ import {
   introspectAnomalyLine,
   introspectModuleViolationLine,
   introspectSecurityLine,
+  parseIntrospectCapabilities,
   mergeIntrospectAlert,
   parseAttributionHealth,
   parseMcpStatus,
@@ -641,9 +643,12 @@ export interface HudState {
    *  emits its first tick. REVIEW-ONLY and SECRET-FREE. */
   introspect: IntrospectStatus | null;
   /** Accumulated introspection findings (introspect.profile_drift / .anomaly /
-   *  .module_violation) as human lines, newest-first, deduped + capped.
-   *  REVIEW-ONLY — the sentinel reports, it never acts. */
+   *  .module_violation / .security_event) as human lines, newest-first, deduped +
+   *  capped. REVIEW-ONLY — the sentinel reports, it never acts. */
   introspectAlerts: string[];
+  /** Per-app DECLARED capability inventory (introspect.capabilities): the static
+   *  "what can each app do" audit from manifests. Secret-free. REVIEW-ONLY. */
+  introspectCapabilities: IntrospectCapability[];
   /** The ambient capability-health snapshot (attribution.health): how many of
    *  JARVIS's own agents/skills are reliable vs failing, with the failing ones
    *  flagged. Null until the sentinel emits. PROPOSE-ONLY (flags, never acts). */
@@ -1208,6 +1213,7 @@ export function initialState(): HudState {
     tccAnomalies: [],
     introspect: null,
     introspectAlerts: [],
+    introspectCapabilities: [],
     attributionHealth: null,
     security: null,
     webhooks: webhookSurfaceInitial(),
@@ -2221,6 +2227,13 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       const line = introspectSecurityLine(env.data);
       if (line === null) return s;
       return { ...s, introspectAlerts: mergeIntrospectAlert(line, s.introspectAlerts) };
+    }
+
+    case "introspect.capabilities": {
+      // The static per-app DECLARED-capability audit (from manifests). Replaces
+      // the list wholesale each tick (it is a full inventory, not incremental).
+      // REVIEW-ONLY and SECRET-FREE.
+      return { ...s, introspectCapabilities: parseIntrospectCapabilities(env.data) };
     }
 
     case "attribution.health": {

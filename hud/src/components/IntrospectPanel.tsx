@@ -1,4 +1,4 @@
-import type { IntrospectStatus } from "../core/events";
+import type { IntrospectStatus, IntrospectCapability } from "../core/events";
 import Frame from "./Frame";
 
 /**
@@ -23,9 +23,11 @@ import Frame from "./Frame";
 export default function IntrospectPanel({
   status,
   alerts,
+  capabilities,
 }: {
   status: IntrospectStatus | null;
   alerts: string[];
+  capabilities: IntrospectCapability[];
 }) {
   // No tick yet (the sentinel has not emitted) — render nothing.
   if (status === null) return null;
@@ -64,6 +66,17 @@ export default function IntrospectPanel({
                   title={a}
                 >
                   {a}
+                </div>
+              ))}
+            </div>
+          )}
+          {capabilities.length > 0 && (
+            <div className="introspect-caps">
+              <div className="introspect-caps-title">DECLARED CAPABILITIES</div>
+              {capabilities.map((c) => (
+                <div className="introspect-cap" key={c.name}>
+                  <span className="introspect-cap-name">{c.name}</span>
+                  <span className="introspect-cap-list">{c.caps}</span>
                 </div>
               ))}
             </div>

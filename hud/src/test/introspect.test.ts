@@ -8,6 +8,7 @@ import {
   introspectAnomalyLine,
   introspectModuleViolationLine,
   introspectSecurityLine,
+  parseIntrospectCapabilities,
   mergeIntrospectAlert,
   INTROSPECT_ALERT_CAP,
 } from "../core/events";
@@ -92,6 +93,28 @@ describe("introspect finding formatters (defensive)", () => {
   });
 });
 
+describe("parseIntrospectCapabilities (defensive)", () => {
+  it("sorts by name, dedupes, and drops nameless entries", () => {
+    const caps = parseIntrospectCapabilities({
+      apps: [
+        { name: "vision", caps: "camera, screen" },
+        { name: "global-scan", caps: "net(2)" },
+        { name: "global-scan", caps: "net(2)" }, // dup -> collapsed
+        { caps: "orphan" }, // no name -> dropped
+        "junk",
+      ],
+    });
+    expect(caps).toEqual([
+      { name: "global-scan", caps: "net(2)" },
+      { name: "vision", caps: "camera, screen" },
+    ]);
+  });
+  it("returns [] for a missing/non-array payload and never throws", () => {
+    expect(parseIntrospectCapabilities({})).toEqual([]);
+    expect(() => parseIntrospectCapabilities({ apps: "nope" })).not.toThrow();
+  });
+});
+
 /* the reducer arms --------------------------------------------------------- */
 describe("introspect reducer", () => {
   it("sets the snapshot from introspect.snapshot", () => {
@@ -121,12 +144,23 @@ describe("introspect reducer", () => {
     const after = tel(before, env("introspect.module_violation", { app: "c" })); // no path
     expect(after.introspectAlerts).toEqual(before.introspectAlerts);
   });
+
+  it("replaces the capability inventory wholesale each tick", () => {
+    let s = tel(connected(), env("introspect.capabilities", { apps: [{ name: "a", caps: "net(1)" }] }));
+    expect(s.introspectCapabilities).toEqual([{ name: "a", caps: "net(1)" }]);
+    // A later tick fully replaces (not merges) the inventory.
+    s = tel(s, env("introspect.capabilities", { apps: [{ name: "b", caps: "gpu" }] }));
+    expect(s.introspectCapabilities).toEqual([{ name: "b", caps: "gpu" }]);
+  });
 });
 
 /* the panel (headless) ----------------------------------------------------- */
 describe("IntrospectPanel (review-only)", () => {
-  const render = (status: IntrospectStatus | null, alerts: string[] = []) =>
-    renderToStaticMarkup(createElement(IntrospectPanel, { status, alerts }));
+  const render = (
+    status: IntrospectStatus | null,
+    alerts: string[] = [],
+    capabilities: { name: string; caps: string }[] = [],
+  ) => renderToStaticMarkup(createElement(IntrospectPanel, { status, alerts, capabilities }));
 
   it("renders nothing before any tick", () => {
     expect(render(null)).toBe("");
@@ -141,6 +175,17 @@ describe("IntrospectPanel (review-only)", () => {
     expect(html).toContain("/tmp/inject.dylib");
     expect(html).toContain("RECENT FINDINGS");
     expect(html).toContain("REVIEW ONLY");
+  });
+
+  it("shows the declared-capability inventory when present", () => {
+    const html = render({ apps: 2, drift: 0, anomalies: 0 }, [], [
+      { name: "global-scan", caps: "net(2), fs_read(1)" },
+      { name: "vision", caps: "camera, screen" },
+    ]);
+    expect(html).toContain("DECLARED CAPABILITIES");
+    expect(html).toContain("global-scan");
+    expect(html).toContain("net(2), fs_read(1)");
+    expect(html).toContain("camera, screen");
   });
 
   it("is review-only — renders no action button", () => {

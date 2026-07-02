@@ -2988,6 +2988,32 @@ export function mergeIntrospectAlert(line: string, prev: string[]): string[] {
     .slice(0, INTROSPECT_ALERT_CAP);
 }
 
+/** One app's DECLARED capabilities (introspect.capabilities) — the "what can this
+ *  app do" audit from its manifest. `caps` is a compact secret-free summary. */
+export interface IntrospectCapability {
+  name: string;
+  caps: string;
+}
+
+/** Coerce an introspect.capabilities payload (`{apps:[{name,caps}]}`) into a
+ *  sorted, de-duplicated list; drops entries with no usable name. Never throws. */
+export function parseIntrospectCapabilities(
+  data: Record<string, unknown>,
+): IntrospectCapability[] {
+  const raw = data["apps"];
+  if (!Array.isArray(raw)) return [];
+  const out: IntrospectCapability[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!isPlainObject(item)) continue;
+    const name = str(item, "name");
+    if (name === null || name.length === 0 || seen.has(name)) continue;
+    seen.add(name);
+    out.push({ name, caps: str(item, "caps") ?? "" });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 // ---------------------------------------------------------------------------
 // CAPABILITY ATTRIBUTION HEALTH (attribution.health) — the PROPOSE-ONLY ambient
 // signal of which of JARVIS's own agents/skills are reliable vs failing, from

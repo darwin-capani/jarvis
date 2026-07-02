@@ -8975,6 +8975,34 @@ body,
 .introspect-alert.warn {
   color: var(--warn-amber);
 }
+.introspect-caps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+.introspect-caps-title {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--cyan-dim);
+}
+.introspect-cap {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10px;
+}
+.introspect-cap-name {
+  color: var(--cyan-bright);
+  white-space: nowrap;
+}
+.introspect-cap-list {
+  color: var(--cyan-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* CAPABILITY // HEALTH — propose-only agent/skill performance flags. */
 .attr-body {

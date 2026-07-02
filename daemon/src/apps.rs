@@ -305,6 +305,44 @@ pub fn canonical_permissions(p: &PermissionsSection) -> String {
     )
 }
 
+/// A compact, SECRET-FREE, human-readable summary of what a micro-app is DECLARED
+/// to be able to do (its granted capabilities from `[permissions]`) — the static
+/// "what can this app do" audit that complements the runtime introspection's "what
+/// is it doing". Lists ONLY granted capabilities (counts for the list-valued ones,
+/// never the paths/hosts themselves), so a locked-down app reads short. Pure.
+pub fn capability_summary(p: &PermissionsSection) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if p.audio {
+        parts.push("audio".to_string());
+    }
+    if p.gpu {
+        parts.push("gpu".to_string());
+    }
+    if p.camera {
+        parts.push("camera".to_string());
+    }
+    if p.screen {
+        parts.push("screen".to_string());
+    }
+    if p.jit {
+        parts.push("jit".to_string());
+    }
+    if !p.net_hosts.is_empty() {
+        parts.push(format!("net({})", p.net_hosts.len()));
+    }
+    if !p.fs_read.is_empty() {
+        parts.push(format!("fs_read({})", p.fs_read.len()));
+    }
+    if !p.fs_write.is_empty() {
+        parts.push(format!("fs_write({})", p.fs_write.len()));
+    }
+    if parts.is_empty() {
+        "sandboxed (no extra capabilities)".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
 /// The message the HMAC is computed over: `name || canonical(perms) || nonce`,
 /// joined with NUL so no field can bleed into the next (a name ending in the
 /// next field's prefix can never collide).
@@ -1256,6 +1294,19 @@ impl AppRegistry {
         apps.iter()
             .map(|(name, e)| (name.clone(), e.profile_path.clone(), e.running))
             .collect()
+    }
+
+    /// Read-only DECLARED-capability inventory: one `(name, capability_summary)`
+    /// per registered app, derived purely from each manifest's `[permissions]`.
+    /// SECRET-FREE (counts, never paths/hosts). Sorted by name for a stable readout.
+    pub async fn capability_inventory(&self) -> Vec<(String, String)> {
+        let apps = self.apps.lock().await;
+        let mut inv: Vec<(String, String)> = apps
+            .iter()
+            .map(|(name, e)| (name.clone(), capability_summary(&e.manifest.permissions)))
+            .collect();
+        inv.sort_by(|a, b| a.0.cmp(&b.0));
+        inv
     }
 }
 
@@ -2777,6 +2828,31 @@ mod tests {
             !verify_token_with_key(TEST_KEY, "vision", &scr, "nonce-A", &t),
             "flipping screen on must invalidate a token minted without it"
         );
+    }
+
+    #[test]
+    fn capability_summary_lists_only_granted_caps_with_counts() {
+        // A locked-down app reads short.
+        let bare = PermissionsSection::default();
+        assert_eq!(capability_summary(&bare), "sandboxed (no extra capabilities)");
+
+        // A grant set lists only what's granted, counts for the list-valued ones,
+        // and never the paths/hosts themselves (secret-free).
+        let p = PermissionsSection {
+            audio: true,
+            gpu: false,
+            camera: true,
+            screen: false,
+            jit: true,
+            net_hosts: vec!["a.com".into(), "b.com".into()],
+            fs_read: vec!["state/x".into()],
+            fs_write: vec![],
+        };
+        let s = capability_summary(&p);
+        assert_eq!(s, "audio, camera, jit, net(2), fs_read(1)");
+        assert!(!s.contains("a.com"), "must not leak the actual hosts");
+        assert!(!s.contains("gpu"), "an ungranted cap is omitted");
+        assert!(!s.contains("fs_write"), "an empty list is omitted");
     }
 
     #[test]
