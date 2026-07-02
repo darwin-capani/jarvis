@@ -1973,13 +1973,18 @@ async fn relay_line(
             // token was already verified above, so a different process can't forge
             // this. READ-ONLY: it reports, it never unloads/blocks anything.
             let total = modules.len();
+            // The introspect.* telemetry family keys the app on "app" (matching
+            // introspect.profile_drift / .anomaly / .security_event and the HUD
+            // parsers). Use "app" here too — NOT the "name" convention of the
+            // app.data/app.log relay — so the HUD's introspectModuleViolationLine
+            // (which reads "app") actually renders these instead of dropping them.
             match crate::introspect::attest_or_seed(name, &modules) {
                 None => {
                     // First report — baseline seeded silently.
                     telemetry::emit(
                         "system",
                         "introspect.modattest",
-                        json!({"name": name, "modules": total, "unexpected": 0, "seeded": true}),
+                        json!({"app": name, "modules": total, "unexpected": 0, "seeded": true}),
                     );
                 }
                 Some(att) => {
@@ -1987,7 +1992,7 @@ async fn relay_line(
                         "system",
                         "introspect.modattest",
                         json!({
-                            "name": name,
+                            "app": name,
                             "modules": att.total,
                             "unexpected": att.unexpected.len(),
                             "missing": att.missing_count,
@@ -2001,7 +2006,7 @@ async fn relay_line(
                         telemetry::emit(
                             "system",
                             "introspect.module_violation",
-                            json!({"name": name, "path": module.path, "uuid": module.uuid}),
+                            json!({"app": name, "path": module.path, "uuid": module.uuid}),
                         );
                     }
                 }

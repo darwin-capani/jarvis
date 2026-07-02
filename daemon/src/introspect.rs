@@ -627,7 +627,10 @@ fn sample_process(sys: &sysinfo::System, pid: u32) -> Option<ResourceSample> {
 async fn sentinel_tick(
     registry: &std::sync::Arc<crate::apps::AppRegistry>,
     sys: &mut sysinfo::System,
-    baselines: &mut HashMap<String, ResourceSample>,
+    // name -> (pid the baseline was seeded under, the baseline sample). The pid is
+    // tracked so a relaunched app (new pid, same name) re-seeds instead of being
+    // judged against the previous process's baseline.
+    baselines: &mut HashMap<String, (u32, ResourceSample)>,
     thresholds: &AnomalyThresholds,
 ) {
     let apps = registry.observed_apps().await;
@@ -682,16 +685,24 @@ async fn sentinel_tick(
         }
 
         // (b) resource sampling + classification.
-        if let Some(pid) = pids.get(name) {
-            if let Some(sample) = sample_process(sys, *pid) {
-                match baselines.get(name) {
+        if let Some(pid) = pids.get(name).copied() {
+            if let Some(sample) = sample_process(sys, pid) {
+                // Only compare against a baseline seeded for the SAME process. On a
+                // crash+restart the name persists but the pid changes, so the old
+                // process's baseline must NOT judge the new process (it would
+                // spuriously flag a restart that legitimately starts heavier) —
+                // re-seed instead. Mirrors reset_module_baseline for the module set.
+                let base = match baselines.get(name) {
+                    Some((base_pid, base_sample)) if *base_pid == pid => Some(*base_sample),
+                    _ => None,
+                };
+                match base {
                     None => {
-                        // Cold start for this app: seed silently (no classify), so
-                        // the first observation never alerts.
-                        baselines.insert(name.clone(), sample);
+                        // Cold start (or a new pid): seed silently, never alert.
+                        baselines.insert(name.clone(), (pid, sample));
                     }
                     Some(base) => {
-                        let anomalies = classify_anomalies(name, base, &sample, thresholds);
+                        let anomalies = classify_anomalies(name, &base, &sample, thresholds);
                         for a in &anomalies {
                             anomaly_count += 1;
                             record_finding(format!("{}: {} — {}", a.kind, a.app, a.detail));
@@ -705,7 +716,7 @@ async fn sentinel_tick(
                         // genuine leak/runaway keeps tripping instead of the baseline
                         // creeping up to absorb it.
                         if anomalies.is_empty() {
-                            baselines.insert(name.clone(), sample);
+                            baselines.insert(name.clone(), (pid, sample));
                         }
                     }
                 }
@@ -752,7 +763,7 @@ pub async fn sentinel_task(
     tokio::time::sleep(Duration::from_secs(startup_delay_secs)).await;
     let interval = Duration::from_secs(interval_secs.max(1));
     let mut sys = sysinfo::System::new();
-    let mut baselines: HashMap<String, ResourceSample> = HashMap::new();
+    let mut baselines: HashMap<String, (u32, ResourceSample)> = HashMap::new();
     loop {
         sentinel_tick(&registry, &mut sys, &mut baselines, &thresholds).await;
         tokio::time::sleep(interval).await;
