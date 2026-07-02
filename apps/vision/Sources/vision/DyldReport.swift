@@ -16,6 +16,20 @@ import Foundation
 #if canImport(Darwin)
 import Darwin
 import MachO
+import os  // OSAllocatedUnfairLock
+#endif
+
+#if canImport(Darwin)
+// Thread-safe "a new image was loaded" flag, set by the dyld add-image callback
+// (which runs on whatever thread performs the dlopen). The callback is a plain
+// C-callable function (no captures); it only flips the flag — it never touches
+// the socket — so there is no cross-thread emit or actor reentrancy.
+private let dyldChanged = OSAllocatedUnfairLock<Bool>(initialState: false)
+private nonisolated(unsafe) var dyldWatching = false
+
+private func dyldOnAddImage(_ header: UnsafePointer<mach_header>?, _ slide: Int) {
+    dyldChanged.withLock { $0 = true }
+}
 #endif
 
 /// One loaded module: its (logical) dyld image path and, when LC_UUID parsed, the
@@ -36,6 +50,34 @@ public enum DyldReport {
     /// Cap on images enumerated (bounds a pathological process; mirrors the
     /// daemon's MAX_MODULES and the Python stub).
     private static let maxImages = 8192
+
+    /// Register a dyld add-image callback so a LATER dlopen sets a "changed" flag.
+    /// Idempotent, macOS-only. Registration fires the callback for every already-
+    /// loaded image, so the flag is cleared right after — only future dlopens leave
+    /// it set. This matters for vision specifically: Vision / ScreenCaptureKit /
+    /// CoreML are lazy-loaded when capture STARTS, after the one-shot startup report.
+    public static func watch() {
+        #if canImport(Darwin)
+        guard !dyldWatching else { return }
+        dyldWatching = true
+        _dyld_register_func_for_add_image(dyldOnAddImage)  // fires for existing images
+        dyldChanged.withLock { $0 = false }                // discard the initial bulk
+        #endif
+    }
+
+    /// True (and resets the flag) iff an image was loaded since the last check or
+    /// since watch(). False if not watching or nothing changed.
+    public static func consumeChanged() -> Bool {
+        #if canImport(Darwin)
+        return dyldChanged.withLock { c in
+            let was = c
+            c = false
+            return was
+        }
+        #else
+        return false
+        #endif
+    }
 
     /// Every loaded dyld image as a DyldModule. Empty on non-Darwin.
     public static func collectLoadedModules() -> [DyldModule] {

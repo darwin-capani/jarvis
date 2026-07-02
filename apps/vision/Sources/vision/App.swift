@@ -137,6 +137,10 @@ struct VisionApp {
         // The daemon seeds a trust-on-first-use baseline from this and flags any
         // module a later report adds (injection / unexpected dlopen) — introspect.rs.
         await sink.emit(.modules(DyldReport.collectLoadedModules()))
+        // Watch for LATER dlopens too: Vision / ScreenCaptureKit / CoreML load
+        // lazily when capture STARTS, after the report above. The op loop below
+        // re-attests when the flag fires (checked after each host op).
+        DyldReport.watch()
 
         // The path resolver for analyze.file / watch.start(file:). The daemon
         // runs us with cwd = project root.
@@ -151,6 +155,11 @@ struct VisionApp {
                     return // rejected -> vision.error already emitted
                 }
                 await pipeline.handle(safeOp)
+                // If handling this op lazy-loaded new frameworks (capture start
+                // pulls in Vision/SCK/CoreML), re-attest the module set. READ-ONLY.
+                if DyldReport.consumeChanged() {
+                    await sink.emit(.modules(DyldReport.collectLoadedModules()))
+                }
             }
         } catch {
             FileHandle.standardError.write(Data("vision: connection error: \(error)\n".utf8))

@@ -347,6 +347,25 @@ final class VisionEventWireTests: XCTestCase {
         XCTAssertTrue(mods.contains { $0.uuid != nil }, "at least one image has a parsed LC_UUID")
     }
 
+    func testWatchFiresOnARuntimeDlopen() throws {
+        DyldReport.watch()
+        // Registration clears the initial bulk, so nothing has changed yet.
+        XCTAssertFalse(DyldReport.consumeChanged(), "no dlopen since watch() -> no change")
+        let before = DyldReport.collectLoadedModules().count
+        // dlopen a framework unlikely to be already loaded in the test binary.
+        for lib in ["/System/Library/Frameworks/NaturalLanguage.framework/NaturalLanguage",
+                    "/System/Library/Frameworks/Vision.framework/Vision",
+                    "/usr/lib/libcups.2.dylib"] {
+            if dlopen(lib, RTLD_NOW) != nil { break }
+        }
+        let after = DyldReport.collectLoadedModules().count
+        // If the dlopen actually added images, the watch flag must have fired.
+        if after > before {
+            XCTAssertTrue(DyldReport.consumeChanged(), "a runtime dlopen must set the changed flag")
+            XCTAssertFalse(DyldReport.consumeChanged(), "consumeChanged clears the flag")
+        }
+    }
+
     func testEveryTopicMatchesManifestDeclaredTopics() throws {
         // The relay drops any topic not declared in manifest.toml. These MUST
         // equal the manifest's telemetry_topics exactly (vision.screen for the OCR
