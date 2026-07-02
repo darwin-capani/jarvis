@@ -501,6 +501,27 @@ fn set_last_snapshot(apps: usize, drift: usize, anomalies: usize) {
     }
 }
 
+/// The last declared-capability inventory the sentinel computed, so the on-demand
+/// `status_summary` query can report "what can each app do" without re-reading the
+/// registry. SECRET-FREE (name + capability summary; counts, never paths/hosts).
+static LAST_CAPS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+fn set_last_caps(caps: Vec<(String, String)>) {
+    if let Ok(mut g) = LAST_CAPS.lock() {
+        *g = caps;
+    }
+}
+
+/// Pure: a concise " Declared capabilities: name [caps]; …." suffix, or "" if the
+/// inventory is empty. Tested directly.
+fn format_capabilities(caps: &[(String, String)]) -> String {
+    if caps.is_empty() {
+        return String::new();
+    }
+    let list: Vec<String> = caps.iter().map(|(n, c)| format!("{n} [{c}]")).collect();
+    format!(" Declared capabilities: {}.", list.join("; "))
+}
+
 /// A one-line introspection summary for `posture.rs`'s read-only report, or
 /// `None` if the sentinel has not ticked yet (so posture shows nothing stale).
 /// SECRET-FREE — counts only.
@@ -567,7 +588,10 @@ pub fn status_summary() -> String {
         .lock()
         .map(|q| q.iter().take(8).cloned().collect())
         .unwrap_or_default();
-    format_status(snapshot, violations, &recent)
+    let caps: Vec<(String, String)> = LAST_CAPS.lock().map(|g| g.clone()).unwrap_or_default();
+    let mut s = format_status(snapshot, violations, &recent);
+    s.push_str(&format_capabilities(&caps));
+    s
 }
 
 // ===========================================================================
@@ -691,9 +715,9 @@ async fn sentinel_tick(
     // app DO" audit alongside the runtime "what is it doing". Secret-free (counts,
     // never paths/hosts). Re-emitted each tick so a late-connecting HUD still gets
     // it (fire-and-forget, small — a handful of apps).
-    let caps: Vec<serde_json::Value> = registry
-        .capability_inventory()
-        .await
+    let inventory = registry.capability_inventory().await;
+    set_last_caps(inventory.clone()); // so the on-demand status query can report it
+    let caps: Vec<serde_json::Value> = inventory
         .into_iter()
         .map(|(name, caps)| json!({"name": name, "caps": caps}))
         .collect();
@@ -921,6 +945,19 @@ mod tests {
         assert!(s.contains("within its baseline"));
         // Never implies it acts.
         assert!(s.contains("I never kill, unload, or change a profile"));
+    }
+
+    #[test]
+    fn format_capabilities_is_concise_and_empty_safe() {
+        assert_eq!(format_capabilities(&[]), "");
+        let caps = vec![
+            ("global-scan".to_string(), "net(2), fs_read(1)".to_string()),
+            ("vision".to_string(), "camera, screen".to_string()),
+        ];
+        let s = format_capabilities(&caps);
+        assert!(s.contains("Declared capabilities:"));
+        assert!(s.contains("global-scan [net(2), fs_read(1)]"));
+        assert!(s.contains("vision [camera, screen]"));
     }
 
     #[test]
