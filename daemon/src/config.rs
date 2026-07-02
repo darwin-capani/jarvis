@@ -225,7 +225,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // (introspect.rs): SBPL profile-drift + per-app RSS/CPU anomaly surfacing.
     // `enabled` SHIPS ON (full-power default); it only observes jarvisd's own
     // children (same-UID, no entitlement) and never acts.
-    ("introspect", &["enabled"]),
+    ("introspect", &["enabled", "interval_secs", "startup_delay_secs", "cpu_alert_percent", "rss_growth_ratio"]),
     // [integrations] — `allow_consequential` is THE master gate for outward/
     // side-effecting actions. SHIPS ON (full-power default) — INERT-SAFE: a
     // CONFIRMED consequential action still clears confirm + voice-id + policy +
@@ -2245,12 +2245,28 @@ pub struct AppsConfig {
 pub struct IntrospectConfig {
     /// Master switch for the sentinel loop. SHIPS ON (read-only observability).
     pub enabled: bool,
+    /// Seconds between sentinel ticks (profile-drift + resource sample + caps).
+    pub interval_secs: u64,
+    /// Seconds to wait after boot before the first tick (let apps settle).
+    pub startup_delay_secs: u64,
+    /// Sustained CPU% above which an app is flagged (resource anomaly).
+    pub cpu_alert_percent: f32,
+    /// RSS growth multiple over baseline that counts as a leak/runaway.
+    pub rss_growth_ratio: f64,
 }
 
 impl Default for IntrospectConfig {
     fn default() -> Self {
         // On by default — it only observes jarvisd's own children and reports.
-        Self { enabled: true }
+        // The tuning defaults match introspect.rs's original constants, so an
+        // absent/partial [introspect] section behaves exactly as before.
+        Self {
+            enabled: true,
+            interval_secs: 60,
+            startup_delay_secs: 30,
+            cpu_alert_percent: 95.0,
+            rss_growth_ratio: 3.0,
+        }
     }
 }
 
@@ -4492,6 +4508,38 @@ mod tests {
         let (cfg, issues) = Config::parse(raw_bad);
         assert!(!issues.is_empty(), "a typo'd mapping field must be reported");
         assert!(cfg.webhooks.mappings.is_empty(), "the bad section falls back to defaults");
+    }
+
+    #[test]
+    fn introspect_full_section_parses_and_a_typo_is_caught() {
+        let raw = r#"
+            [introspect]
+            enabled = false
+            interval_secs = 120
+            startup_delay_secs = 5
+            cpu_alert_percent = 80.0
+            rss_growth_ratio = 2.5
+        "#;
+        let (cfg, issues) = Config::parse(raw);
+        assert!(issues.is_empty(), "clean [introspect] must parse: {issues:?}");
+        assert!(!cfg.introspect.enabled);
+        assert_eq!(cfg.introspect.interval_secs, 120);
+        assert_eq!(cfg.introspect.startup_delay_secs, 5);
+        assert_eq!(cfg.introspect.cpu_alert_percent, 80.0);
+        assert_eq!(cfg.introspect.rss_growth_ratio, 2.5);
+
+        // An absent section keeps the shipped defaults (unchanged behavior).
+        let (def, _) = Config::parse("");
+        assert!(def.introspect.enabled);
+        assert_eq!(def.introspect.interval_secs, 60);
+        assert_eq!(def.introspect.cpu_alert_percent, 95.0);
+
+        // A typo'd key is reported, not silently swallowed.
+        let (_c, issues) = Config::parse("[introspect]\ninterval_sec = 30\n");
+        assert!(
+            issues.iter().any(|i| i.contains("introspect.interval_sec")),
+            "a typo'd [introspect] key must be reported: {issues:?}"
+        );
     }
 
     /// A typo'd top-level [webhooks] key is reported, not silently swallowed.

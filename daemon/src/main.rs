@@ -1872,7 +1872,16 @@ async fn main() -> Result<()> {
     // runs. record_profile/record_child in apps.rs feed it regardless of the
     // flag; only this sampling loop is gated.
     if cfg.introspect.enabled {
-        tokio::spawn(introspect::sentinel_task(app_registry.clone()));
+        let thresholds = introspect::AnomalyThresholds::from_config(
+            cfg.introspect.rss_growth_ratio,
+            cfg.introspect.cpu_alert_percent,
+        );
+        tokio::spawn(introspect::sentinel_task(
+            app_registry.clone(),
+            cfg.introspect.startup_delay_secs,
+            cfg.introspect.interval_secs,
+            thresholds,
+        ));
     }
     // Resolve the Anthropic API key eagerly (env var, then macOS Keychain) so
     // daemon.started reports whether the cloud path is available. Only the

@@ -208,6 +208,11 @@ autostart = []
 # confirm + voice-id + policy + lockdown gates. SHIPS ON; inert until an app
 # runs. With it false the sentinel loop is not spawned.
 enabled = true
+# Sentinel cadence + anomaly sensitivity (defaults shown; absent = these values).
+interval_secs      = 60     # seconds between ticks (profile-drift + resource sample + caps)
+startup_delay_secs = 30     # wait after boot before the first tick (let apps settle)
+cpu_alert_percent  = 95.0   # sustained CPU% above which an app is flagged
+rss_growth_ratio   = 3.0    # RSS growth multiple over baseline that counts as a runaway
 
 [integrations]
 # Shared substrate for the Chart-2 integrations (GitHub, Slack, Google

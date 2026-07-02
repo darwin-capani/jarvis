@@ -36,10 +36,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tracing::debug;
 
-/// Startup delay before the first tick, and the slow steady-state interval —
-/// mirrors `tcc.rs`'s ambient sentinel cadence (observability, not a hot loop).
-const SENTINEL_STARTUP_DELAY: Duration = Duration::from_secs(30);
-const SENTINEL_INTERVAL: Duration = Duration::from_secs(60);
+// The sentinel cadence (startup delay + interval) and anomaly thresholds are
+// configurable via `[introspect]` (config.rs); the defaults there match this
+// subsystem's original constants, so an absent section behaves as before.
 
 // ===========================================================================
 // Pure cores (no I/O — unit-tested directly)
@@ -105,6 +104,19 @@ impl Default for AnomalyThresholds {
             rss_growth_ratio: 3.0,
             rss_floor_bytes: 64 * 1024 * 1024, // 64 MiB
             cpu_percent: 95.0,
+        }
+    }
+}
+
+impl AnomalyThresholds {
+    /// Build thresholds from the tunable `[introspect]` config values, keeping the
+    /// RSS noise floor at its default (not user-exposed — it only suppresses noise
+    /// on tiny processes and has no security-sensitivity meaning).
+    pub fn from_config(rss_growth_ratio: f64, cpu_percent: f32) -> Self {
+        Self {
+            rss_growth_ratio,
+            cpu_percent,
+            ..Self::default()
         }
     }
 }
@@ -616,6 +628,7 @@ async fn sentinel_tick(
     registry: &std::sync::Arc<crate::apps::AppRegistry>,
     sys: &mut sysinfo::System,
     baselines: &mut HashMap<String, ResourceSample>,
+    thresholds: &AnomalyThresholds,
 ) {
     let apps = registry.observed_apps().await;
     let expected = snapshot_expected();
@@ -678,8 +691,7 @@ async fn sentinel_tick(
                         baselines.insert(name.clone(), sample);
                     }
                     Some(base) => {
-                        let anomalies =
-                            classify_anomalies(name, base, &sample, &AnomalyThresholds::default());
+                        let anomalies = classify_anomalies(name, base, &sample, thresholds);
                         for a in &anomalies {
                             anomaly_count += 1;
                             record_finding(format!("{}: {} — {}", a.kind, a.app, a.detail));
@@ -727,15 +739,23 @@ async fn sentinel_tick(
 }
 
 /// The ambient introspect sentinel loop (runtime-only; never run in tests).
-/// Mirrors `tcc::sentinel_task`: a startup delay, then a slow periodic tick.
-/// Spawned from `main.rs` only when `[introspect].enabled` is true.
-pub async fn sentinel_task(registry: std::sync::Arc<crate::apps::AppRegistry>) {
-    tokio::time::sleep(SENTINEL_STARTUP_DELAY).await;
+/// Mirrors `tcc::sentinel_task`: a startup delay, then a slow periodic tick. The
+/// delay, interval, and anomaly thresholds come from `[introspect]` config (with
+/// defaults matching the original constants). Spawned from `main.rs` only when
+/// `[introspect].enabled` is true.
+pub async fn sentinel_task(
+    registry: std::sync::Arc<crate::apps::AppRegistry>,
+    startup_delay_secs: u64,
+    interval_secs: u64,
+    thresholds: AnomalyThresholds,
+) {
+    tokio::time::sleep(Duration::from_secs(startup_delay_secs)).await;
+    let interval = Duration::from_secs(interval_secs.max(1));
     let mut sys = sysinfo::System::new();
     let mut baselines: HashMap<String, ResourceSample> = HashMap::new();
     loop {
-        sentinel_tick(&registry, &mut sys, &mut baselines).await;
-        tokio::time::sleep(SENTINEL_INTERVAL).await;
+        sentinel_tick(&registry, &mut sys, &mut baselines, &thresholds).await;
+        tokio::time::sleep(interval).await;
     }
 }
 
