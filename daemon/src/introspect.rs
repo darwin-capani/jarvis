@@ -597,6 +597,42 @@ fn snapshot_expected() -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
+/// name -> whether the app declared `jit=true` (from its manifest), so the ES
+/// front-end can tell an EXPECTED executable mapping from a W^X violation.
+fn jit_declared() -> &'static Mutex<HashMap<String, bool>> {
+    static M: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    M.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record an app's declared `jit` bit at (re)launch. Called from `apps.rs` next
+/// to `record_child`; overwritten each launch (declared state is stable).
+pub fn record_app_jit(name: &str, jit: bool) {
+    if let Ok(mut m) = jit_declared().lock() {
+        m.insert(name.to_string(), jit);
+    }
+}
+
+/// Reverse-lookup: the `(app name, jit_declared)` for a tracked child pid, or
+/// `None` if the pid is not one of jarvisd's own micro-apps. The ES front-end
+/// uses this to key a kernel event to one of OUR apps (and ignore everything
+/// else). Only the feature-gated ES client + tests call it.
+#[allow(dead_code)]
+pub fn app_for_pid(pid: u32) -> Option<(String, bool)> {
+    let name = child_pids()
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(_, p)| **p == pid)
+        .map(|(n, _)| n.clone())?;
+    let jit = jit_declared()
+        .lock()
+        .ok()?
+        .get(&name)
+        .copied()
+        .unwrap_or(false);
+    Some((name, jit))
+}
+
 // ===========================================================================
 // Posture summary (read by posture.rs; updated each tick)
 // ===========================================================================
@@ -993,6 +1029,19 @@ mod tests {
             snapshot_expected().get("fp-test-app"),
             Some(&sbpl_fingerprint(profile))
         );
+    }
+
+    #[test]
+    fn app_for_pid_reverse_looks_up_name_and_jit() {
+        // The ES front-end keys a kernel event to one of OUR apps via its pid.
+        let _g = record_child("es-lookup-app", Some(59123));
+        record_app_jit("es-lookup-app", true);
+        assert_eq!(app_for_pid(59123), Some(("es-lookup-app".to_string(), true)));
+        // An app with no recorded jit bit defaults to false (not JIT-declared).
+        let _g2 = record_child("es-lookup-nojit", Some(59124));
+        assert_eq!(app_for_pid(59124), Some(("es-lookup-nojit".to_string(), false)));
+        // A pid that is not one of our children is not attributed.
+        assert_eq!(app_for_pid(1), None);
     }
 
     // -- module attestation --------------------------------------------------

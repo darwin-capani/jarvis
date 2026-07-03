@@ -52,6 +52,13 @@ mod drafts;
 mod durable_missions;
 mod egress;
 mod episodic;
+// LIVE ENDPOINT SECURITY NOTIFY client (feature `endpoint-security`, DEVICE-GATED).
+// OFF by default — the normal build never compiles it. When on, it feeds kernel
+// security events (mprotect-exec / MAP_JIT / get-task / signal on jarvisd's own
+// apps) into the tested introspect classifier. NOTIFY-only; needs root + the
+// restricted entitlement + notarization to actually run. See docs/INTROSPECT.md.
+#[cfg(feature = "endpoint-security")]
+mod es;
 mod eval;
 mod focus;
 mod forecast;
@@ -1882,6 +1889,11 @@ async fn main() -> Result<()> {
             cfg.introspect.interval_secs,
             thresholds,
         ));
+        // Live Endpoint Security NOTIFY client (feature-gated + device-gated). It
+        // reports its own availability honestly and never fails the daemon — if
+        // the entitlement/root aren't present the light path above is unaffected.
+        #[cfg(feature = "endpoint-security")]
+        es::start_and_report();
     }
     // Resolve the Anthropic API key eagerly (env var, then macOS Keychain) so
     // daemon.started reports whether the cloud path is available. Only the

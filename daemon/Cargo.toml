@@ -7,6 +7,19 @@ edition = "2021"
 name = "jarvisd"
 path = "src/main.rs"
 
+[features]
+# OFF by default — the normal build links no EndpointSecurity and adds no attack
+# surface. Turning it on compiles the ES C shim (build.rs) + the daemon/src/es.rs
+# NOTIFY client, which is DEVICE-GATED at runtime (needs root + the restricted
+# com.apple.developer.endpoint-security.client entitlement + a notarized host).
+# See docs/INTROSPECT.md.
+endpoint-security = []
+
+[build-dependencies]
+# Compiles csrc/es_shim.c when the endpoint-security feature is on. Present as a
+# plain build-dep (tiny, ubiquitous); build.rs only INVOKES it under the feature.
+cc = "1"
+
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }

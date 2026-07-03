@@ -1642,6 +1642,9 @@ async fn run_once(
     // updated app loads a different module set; persisting the old baseline across
     // the relaunch would false-flag every changed module as an injection.
     crate::introspect::reset_module_baseline(name);
+    // Record the app's declared jit bit so the (feature-gated) ES front-end can
+    // tell an EXPECTED executable mapping (jit=true) from a W^X violation.
+    crate::introspect::record_app_jit(name, manifest.permissions.jit);
 
     // Relay the child's stderr/stdout as app.log lines.
     if let Some(out) = child.stdout.take() {
