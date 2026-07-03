@@ -2107,7 +2107,7 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
         // holds NO consequential/remediation tool, not even a gated one.
         &[
             "conversation", "memory.recall", "recall_facts",
-            "aegis_breach_check", "aegis_posture", "aegis_introspect",
+            "aegis_breach_check", "aegis_posture", "aegis_introspect", "aegis_report",
          "world_query",],
     ),
     (
@@ -3728,7 +3728,7 @@ mod tests {
         let reg = AgentRegistry::canonical();
         let aegis = reg.get("aegis").expect("aegis is on the roster");
         // The read tools are present.
-        for read in ["aegis_breach_check", "aegis_posture", "aegis_introspect"] {
+        for read in ["aegis_breach_check", "aegis_posture", "aegis_introspect", "aegis_report"] {
             assert!(aegis.may_use(read), "aegis must hold the read tool {read}");
         }
         // No offensive or remediation tool is present — not under any plausible name.

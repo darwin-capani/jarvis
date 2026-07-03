@@ -91,6 +91,34 @@ pub async fn local_posture() -> Result<String> {
     Ok(build_report(run_real_command).await)
 }
 
+/// Compose the three READ-ONLY defensive reads into one "full security check"
+/// readout. Pure (the fetches live in `security_report`), so the section layout
+/// and honest framing are unit-tested. Each input is already a human summary that
+/// degrades honestly on its own; this only labels and orders them.
+fn compose_security_report(posture: &str, tcc: &str, introspect: &str) -> String {
+    format!(
+        "Full security check — READ-ONLY: I report where you stand; turning a \
+protection on or changing a permission is yours to do in System Settings.\n\n\
+1) Machine posture — {posture}\n\n\
+2) App privacy grants (TCC) — {tcc}\n\n\
+3) Micro-app introspection — {introspect}"
+    )
+}
+
+/// One combined defensive readout: machine posture (FileVault/firewall/SIP/updates)
+/// + macOS app-privacy grants (TCC) + the micro-app introspection sentinel. Each
+/// sub-read degrades honestly to a "couldn't read" line rather than failing the
+/// whole report. READ-ONLY — it reports; it changes nothing and holds no
+/// remediation path (turning a protection on is the user's own action).
+pub async fn security_report() -> Result<String> {
+    let posture = build_report(run_real_command).await;
+    let tcc = crate::tcc::snapshot()
+        .await
+        .unwrap_or_else(|e| format!("couldn't read the privacy database ({e})"));
+    let introspect = crate::introspect::status_summary();
+    Ok(compose_security_report(&posture, &tcc, &introspect))
+}
+
 /// Build the report by running each posture command through `run` (injected so
 /// tests can feed canned output) and folding each result through its pure parser.
 /// Pure of any real subprocess itself — the subprocess lives behind `run`.
@@ -254,6 +282,22 @@ fn parse_updates(out: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_security_report_labels_all_three_reads_and_stays_read_only() {
+        let s = compose_security_report(
+            "FileVault: ON; Firewall: ON",
+            "12 grants, 2 high-risk allowed",
+            "3 app(s) observed, 0 profile-drift",
+        );
+        // All three sub-reads are present and labeled in order.
+        assert!(s.contains("1) Machine posture — FileVault: ON"));
+        assert!(s.contains("2) App privacy grants (TCC) — 12 grants"));
+        assert!(s.contains("3) Micro-app introspection — 3 app(s) observed"));
+        // The read-only framing is stated and no remediation is implied.
+        assert!(s.contains("READ-ONLY"));
+        assert!(s.to_lowercase().contains("yours to do"));
+    }
 
     // -- the read-only command set is exactly the four status invocations -----
 

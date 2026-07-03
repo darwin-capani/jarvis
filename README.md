@@ -84,6 +84,8 @@ JARVIS **acts on the machine, not just talks about it.** The built-in actuator (
 | **Set volume / report status** | "volume to 40%", "system status" | live CPU/MEM/DISK/UPTIME from the telemetry cache |
 | **Remember & recall facts** | "my name is Dar", "what are my projects?" | durable facts in SQLite, folded into every later reply; corrections overwrite |
 | **Search your own docs, on-device** | "index my documents", "search my files for the lease clause" | **ON by default but inert until you allowlist a folder** (never a whole-disk scan); embeddings never leave the device; honest BM25 fallback that reports which method ran |
+| **Full security check** | "am I secure?", "run a security check" | one READ-ONLY readout combining machine posture (FileVault/firewall/SIP/updates) + app privacy grants (TCC) + micro-app introspection; it reports where you stand and **changes nothing** — turning a protection on is yours to do |
+| **Micro-app integrity check** | "are my apps healthy?", "any tampering?" | the read-only introspection sentinel over JARVIS's OWN sandboxed apps: seatbelt profile-drift, runaway CPU/RSS, and unexpected loaded modules (dyld injection) — it observes and reports, never kills or unloads (see [docs/INTROSPECT.md](docs/INTROSPECT.md)) |
 
 Heavy or low-confidence requests route to the cloud and run the **same** actions through an Anthropic Messages-API tool loop (bounded: ≤ 3 model calls, 75 s), so *"could you possibly get that browser thing going"* works as well as *"open Safari."* Every executed action emits an `action.executed` telemetry event.
 

@@ -412,7 +412,7 @@ persona_file = "inference/personas/aegis.txt"
 # dyld modules); it REPORTS only, never kills/unloads/changes a profile. NO offensive
 # capability: the user's own email + own machine only. Aegis holds NO consequential/
 # remediation tool, not even a gated one.
-tools = ["conversation", "memory.recall", "recall_facts", "aegis_breach_check", "aegis_posture", "aegis_introspect", "world_query"]
+tools = ["conversation", "memory.recall", "recall_facts", "aegis_breach_check", "aegis_posture", "aegis_introspect", "aegis_report", "world_query"]
 namespace = "agent.aegis"
 
 [[agent]]
