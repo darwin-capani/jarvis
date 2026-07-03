@@ -2914,8 +2914,12 @@ export function parseTccAnomalies(data: Record<string, unknown>): string[] {
 
 // ---------------------------------------------------------------------------
 // MICRO-APP INTROSPECTION (introspect.snapshot / introspect.profile_drift /
-// introspect.anomaly / introspect.module_violation) — the ambient READ-ONLY
-// sentinel over jarvisd's OWN sandboxed children (daemon/src/introspect.rs):
+// introspect.anomaly / introspect.module_violation / .security_event /
+// .capabilities). WIRE CONTRACT: the daemon builds these envelopes in ONE place
+// — daemon/src/introspect.rs's ev_* builders (asserted by its telemetry-contract
+// tests). Every SINGLE-APP event keys the app on "app" (NOT "name"); keep the
+// str(data, "app") reads below in lockstep with those builders.
+// The ambient READ-ONLY sentinel over jarvisd's OWN sandboxed children:
 // SBPL profile-drift, RSS/CPU anomalies, and cooperative dyld module attestation.
 // SECRET-FREE: app names + counts + module paths only, never a token or file
 // contents. Parsers never throw; the status never returns null.

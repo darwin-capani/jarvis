@@ -411,12 +411,71 @@ pub fn classify_security_event(
 pub fn ingest_security_event(app: &str, jit_declared: bool, ev: &SecurityEvent) {
     if let Some(f) = classify_security_event(app, jit_declared, ev) {
         record_finding(format!("{}: {}", f.kind, f.detail));
-        crate::telemetry::emit(
-            "system",
-            "introspect.security_event",
-            json!({"app": f.app, "kind": f.kind, "high": f.high, "detail": f.detail}),
-        );
+        let (event, payload) = ev_security(&f.app, f.kind, f.high, &f.detail);
+        crate::telemetry::emit("system", event, payload);
     }
+}
+
+// ===========================================================================
+// introspect.* telemetry contract — the SINGLE SOURCE OF TRUTH for the event
+// names and field names the HUD parsers (hud/src/core/events.ts) read.
+// ===========================================================================
+//
+// Every introspect envelope is built here, and the tests at the bottom of this
+// file assert every builder's exact shape. This anchors the cross-language wire
+// contract: a field rename now breaks a daemon test instead of silently making
+// the HUD drop the event (the `module_violation` "name"/"app" bug that two unit
+// suites each missed in isolation). INVARIANT: every SINGLE-APP event keys the
+// app on "app" — NOT the "name" convention of the app.data/app.log relay.
+
+pub const EV_SNAPSHOT: &str = "introspect.snapshot";
+pub const EV_CAPABILITIES: &str = "introspect.capabilities";
+pub const EV_PROFILE_DRIFT: &str = "introspect.profile_drift";
+pub const EV_ANOMALY: &str = "introspect.anomaly";
+pub const EV_MODATTEST: &str = "introspect.modattest";
+pub const EV_MODULE_VIOLATION: &str = "introspect.module_violation";
+pub const EV_SECURITY: &str = "introspect.security_event";
+
+pub fn ev_snapshot(apps: usize, drift: usize, anomalies: usize) -> (&'static str, serde_json::Value) {
+    (EV_SNAPSHOT, json!({"apps": apps, "drift": drift, "anomalies": anomalies}))
+}
+
+pub fn ev_capabilities(caps: &[(String, String)]) -> (&'static str, serde_json::Value) {
+    let apps: Vec<Value> = caps.iter().map(|(n, c)| json!({"name": n, "caps": c})).collect();
+    (EV_CAPABILITIES, json!({"apps": apps}))
+}
+
+pub fn ev_profile_drift(app: &str, expected_fp: &str, actual_fp: &str) -> (&'static str, serde_json::Value) {
+    (EV_PROFILE_DRIFT, json!({"app": app, "expected_fp": expected_fp, "actual_fp": actual_fp}))
+}
+
+pub fn ev_profile_missing(app: &str) -> (&'static str, serde_json::Value) {
+    (EV_PROFILE_DRIFT, json!({"app": app, "missing": true}))
+}
+
+pub fn ev_anomaly(app: &str, kind: &str, detail: &str) -> (&'static str, serde_json::Value) {
+    (EV_ANOMALY, json!({"app": app, "kind": kind, "detail": detail}))
+}
+
+pub fn ev_module_violation(app: &str, path: &str, uuid: &Option<String>) -> (&'static str, serde_json::Value) {
+    (EV_MODULE_VIOLATION, json!({"app": app, "path": path, "uuid": uuid}))
+}
+
+pub fn ev_modattest(
+    app: &str,
+    modules: usize,
+    unexpected: usize,
+    missing: usize,
+    seeded: bool,
+) -> (&'static str, serde_json::Value) {
+    (
+        EV_MODATTEST,
+        json!({"app": app, "modules": modules, "unexpected": unexpected, "missing": missing, "seeded": seeded}),
+    )
+}
+
+pub fn ev_security(app: &str, kind: &str, high: bool, detail: &str) -> (&'static str, serde_json::Value) {
+    (EV_SECURITY, json!({"app": app, "kind": kind, "high": high, "detail": detail}))
 }
 
 // ===========================================================================
@@ -660,26 +719,17 @@ async fn sentinel_tick(
                     if let Some(drift) = detect_profile_drift(name, expected_fp, &on_disk) {
                         drift_count += 1;
                         record_finding(format!("profile-drift: {name}"));
-                        crate::telemetry::emit(
-                            "system",
-                            "introspect.profile_drift",
-                            json!({
-                                "app": name,
-                                "expected_fp": drift.expected_fp,
-                                "actual_fp": drift.actual_fp,
-                            }),
-                        );
+                        let (event, payload) =
+                            ev_profile_drift(name, &drift.expected_fp, &drift.actual_fp);
+                        crate::telemetry::emit("system", event, payload);
                     }
                 }
                 Err(_) => {
                     // The profile file vanished while the app runs — also drift.
                     drift_count += 1;
                     record_finding(format!("profile-missing: {name}"));
-                    crate::telemetry::emit(
-                        "system",
-                        "introspect.profile_drift",
-                        json!({"app": name, "missing": true}),
-                    );
+                    let (event, payload) = ev_profile_missing(name);
+                    crate::telemetry::emit("system", event, payload);
                 }
             }
         }
@@ -706,11 +756,8 @@ async fn sentinel_tick(
                         for a in &anomalies {
                             anomaly_count += 1;
                             record_finding(format!("{}: {} — {}", a.kind, a.app, a.detail));
-                            crate::telemetry::emit(
-                                "system",
-                                "introspect.anomaly",
-                                json!({"app": a.app, "kind": a.kind, "detail": a.detail}),
-                            );
+                            let (event, payload) = ev_anomaly(&a.app, a.kind, &a.detail);
+                            crate::telemetry::emit("system", event, payload);
                         }
                         // Advance the baseline only while the app looks healthy, so a
                         // genuine leak/runaway keeps tripping instead of the baseline
@@ -728,11 +775,8 @@ async fn sentinel_tick(
     baselines.retain(|name, _| pids.contains_key(name));
 
     set_last_snapshot(running, drift_count, anomaly_count);
-    crate::telemetry::emit(
-        "system",
-        "introspect.snapshot",
-        json!({"apps": running, "drift": drift_count, "anomalies": anomaly_count}),
-    );
+    let (event, payload) = ev_snapshot(running, drift_count, anomaly_count);
+    crate::telemetry::emit("system", event, payload);
 
     // Declared-capability inventory (static, from manifests): the "what can each
     // app DO" audit alongside the runtime "what is it doing". Secret-free (counts,
@@ -740,11 +784,8 @@ async fn sentinel_tick(
     // it (fire-and-forget, small — a handful of apps).
     let inventory = registry.capability_inventory().await;
     set_last_caps(inventory.clone()); // so the on-demand status query can report it
-    let caps: Vec<serde_json::Value> = inventory
-        .into_iter()
-        .map(|(name, caps)| json!({"name": name, "caps": caps}))
-        .collect();
-    crate::telemetry::emit("system", "introspect.capabilities", json!({"apps": caps}));
+    let (event, payload) = ev_capabilities(&inventory);
+    crate::telemetry::emit("system", event, payload);
 
     debug!(running, drift_count, anomaly_count, "introspect tick");
 }
@@ -1061,5 +1102,66 @@ mod tests {
             q.iter().any(|l| l.starts_with("wx_violation:") && l.contains("ingest-sec-app")),
             "the violation must be recorded as a finding"
         );
+    }
+
+    // -- telemetry wire contract (anchors the field names the HUD reads) -----
+    //
+    // This is the guard that was MISSING when introspect.module_violation shipped
+    // with "name" while the HUD read "app". Every SINGLE-APP event MUST key the
+    // app on "app"; these asserts fail if a builder renames a field the HUD reads.
+
+    #[test]
+    fn every_single_app_event_keys_the_app_on_app_not_name() {
+        let uuid = Some("U".to_string());
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            ev_profile_drift("gs", "e", "a"),
+            ev_profile_missing("gs"),
+            ev_anomaly("gs", "cpu_spike", "hot"),
+            ev_module_violation("gs", "/x.dylib", &uuid),
+            ev_modattest("gs", 3, 1, 0, false),
+            ev_security("gs", "wx_violation", true, "d"),
+        ];
+        for (event, payload) in cases {
+            assert!(event.starts_with("introspect."), "{event} must be an introspect.* event");
+            assert_eq!(
+                payload.get("app").and_then(|v| v.as_str()),
+                Some("gs"),
+                "event {event} must key the app on \"app\" (HUD reads \"app\"): {payload}"
+            );
+            assert!(
+                payload.get("name").is_none(),
+                "event {event} must NOT use \"name\" for the app: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn module_violation_envelope_matches_the_hud_parser_shape() {
+        // HUD introspectModuleViolationLine reads app + path; parse_module_report /
+        // the HUD read uuid (nullable). Assert the exact shape.
+        let (event, p) = ev_module_violation("vision", "/tmp/inject.dylib", &Some("ABC".into()));
+        assert_eq!(event, "introspect.module_violation");
+        assert_eq!(p["app"], "vision");
+        assert_eq!(p["path"], "/tmp/inject.dylib");
+        assert_eq!(p["uuid"], "ABC");
+        // A nil uuid serializes to JSON null (the HUD's str() coerces it away).
+        let (_e, p2) = ev_module_violation("vision", "/tmp/x", &None);
+        assert!(p2["uuid"].is_null());
+    }
+
+    #[test]
+    fn snapshot_and_capabilities_envelopes_match_the_hud_parser_shape() {
+        let (e1, p1) = ev_snapshot(4, 1, 2);
+        assert_eq!(e1, "introspect.snapshot");
+        assert_eq!(p1["apps"], 4);
+        assert_eq!(p1["drift"], 1);
+        assert_eq!(p1["anomalies"], 2);
+
+        let (e2, p2) = ev_capabilities(&[("gs".into(), "net(2)".into())]);
+        assert_eq!(e2, "introspect.capabilities");
+        // capabilities ITEMS key on "name"+"caps" (the HUD reads item.name/item.caps);
+        // this is a list-item shape, distinct from the single-app "app" events.
+        assert_eq!(p2["apps"][0]["name"], "gs");
+        assert_eq!(p2["apps"][0]["caps"], "net(2)");
     }
 }
