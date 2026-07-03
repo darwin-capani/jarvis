@@ -1973,41 +1973,33 @@ async fn relay_line(
             // token was already verified above, so a different process can't forge
             // this. READ-ONLY: it reports, it never unloads/blocks anything.
             let total = modules.len();
-            // The introspect.* telemetry family keys the app on "app" (matching
-            // introspect.profile_drift / .anomaly / .security_event and the HUD
-            // parsers). Use "app" here too — NOT the "name" convention of the
-            // app.data/app.log relay — so the HUD's introspectModuleViolationLine
-            // (which reads "app") actually renders these instead of dropping them.
+            // Envelopes come from introspect.rs's telemetry-contract builders (the
+            // single source of truth for the field names the HUD reads), which key
+            // the app on "app" — NOT the "name" of the app.data/app.log relay.
             match crate::introspect::attest_or_seed(name, &modules) {
                 None => {
                     // First report — baseline seeded silently.
-                    telemetry::emit(
-                        "system",
-                        "introspect.modattest",
-                        json!({"app": name, "modules": total, "unexpected": 0, "seeded": true}),
-                    );
+                    let (event, payload) =
+                        crate::introspect::ev_modattest(name, total, 0, 0, true);
+                    telemetry::emit("system", event, payload);
                 }
                 Some(att) => {
-                    telemetry::emit(
-                        "system",
-                        "introspect.modattest",
-                        json!({
-                            "app": name,
-                            "modules": att.total,
-                            "unexpected": att.unexpected.len(),
-                            "missing": att.missing_count,
-                        }),
+                    let (event, payload) = crate::introspect::ev_modattest(
+                        name,
+                        att.total,
+                        att.unexpected.len(),
+                        att.missing_count,
+                        false,
                     );
+                    telemetry::emit("system", event, payload);
                     for module in &att.unexpected {
                         crate::introspect::record_finding(format!(
                             "module: {name} loaded unexpected {}",
                             module.path
                         ));
-                        telemetry::emit(
-                            "system",
-                            "introspect.module_violation",
-                            json!({"app": name, "path": module.path, "uuid": module.uuid}),
-                        );
+                        let (event, payload) =
+                            crate::introspect::ev_module_violation(name, &module.path, &module.uuid);
+                        telemetry::emit("system", event, payload);
                     }
                 }
             }
