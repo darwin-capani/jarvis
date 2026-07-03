@@ -168,6 +168,46 @@ pub fn classify_anomalies(
     out
 }
 
+/// What the sentinel should do with an app's resource baseline this tick. Pure —
+/// extracted from `sentinel_tick` (which is runtime-only and untested) so the
+/// pid-change reseed + classify + baseline-advance logic — where a real bug hid
+/// (a relaunched process judged against the old process's baseline) — IS tested.
+#[derive(Debug, PartialEq)]
+enum BaselineOutcome {
+    /// No comparable baseline (cold start OR the pid changed = a relaunch): seed
+    /// silently, never alert. The caller stores `(pid, sample)`.
+    Seed,
+    /// Same process, within baseline: advance the baseline (store `(pid, sample)`).
+    UpdateHealthy,
+    /// Same process, anomalous: report these anomalies but HOLD the baseline (do
+    /// not advance), so a genuine runaway keeps tripping instead of the baseline
+    /// creeping up to absorb it.
+    HoldAnomalous(Vec<Anomaly>),
+}
+
+/// Decide the baseline action for one app given its stored `(pid, baseline)` (if
+/// any) and the current `(pid, sample)`. Only a baseline seeded for the SAME pid
+/// is comparable — a relaunch (same name, new pid) re-seeds. PURE.
+fn resource_decision(
+    name: &str,
+    stored: Option<(u32, ResourceSample)>,
+    pid: u32,
+    sample: ResourceSample,
+    thresholds: &AnomalyThresholds,
+) -> BaselineOutcome {
+    match stored {
+        Some((base_pid, base)) if base_pid == pid => {
+            let anomalies = classify_anomalies(name, &base, &sample, thresholds);
+            if anomalies.is_empty() {
+                BaselineOutcome::UpdateHealthy
+            } else {
+                BaselineOutcome::HoldAnomalous(anomalies)
+            }
+        }
+        _ => BaselineOutcome::Seed, // cold start OR a pid change (relaunch)
+    }
+}
+
 // ===========================================================================
 // dyld module attestation (pure core + trust-on-first-use baseline)
 // ===========================================================================
@@ -744,37 +784,24 @@ async fn sentinel_tick(
             }
         }
 
-        // (b) resource sampling + classification.
+        // (b) resource sampling + classification (decision is the pure, tested
+        // resource_decision; a relaunch with a new pid re-seeds rather than being
+        // judged against the previous process's baseline).
         if let Some(pid) = pids.get(name).copied() {
             if let Some(sample) = sample_process(sys, pid) {
-                // Only compare against a baseline seeded for the SAME process. On a
-                // crash+restart the name persists but the pid changes, so the old
-                // process's baseline must NOT judge the new process (it would
-                // spuriously flag a restart that legitimately starts heavier) —
-                // re-seed instead. Mirrors reset_module_baseline for the module set.
-                let base = match baselines.get(name) {
-                    Some((base_pid, base_sample)) if *base_pid == pid => Some(*base_sample),
-                    _ => None,
-                };
-                match base {
-                    None => {
-                        // Cold start (or a new pid): seed silently, never alert.
+                match resource_decision(name, baselines.get(name).copied(), pid, sample, thresholds)
+                {
+                    BaselineOutcome::Seed | BaselineOutcome::UpdateHealthy => {
                         baselines.insert(name.clone(), (pid, sample));
                     }
-                    Some(base) => {
-                        let anomalies = classify_anomalies(name, &base, &sample, thresholds);
+                    BaselineOutcome::HoldAnomalous(anomalies) => {
                         for a in &anomalies {
                             anomaly_count += 1;
                             record_finding(format!("{}: {} — {}", a.kind, a.app, a.detail));
                             let (event, payload) = ev_anomaly(&a.app, a.kind, &a.detail);
                             crate::telemetry::emit("system", event, payload);
                         }
-                        // Advance the baseline only while the app looks healthy, so a
-                        // genuine leak/runaway keeps tripping instead of the baseline
-                        // creeping up to absorb it.
-                        if anomalies.is_empty() {
-                            baselines.insert(name.clone(), (pid, sample));
-                        }
+                        // Hold the baseline (do NOT advance) so a runaway keeps tripping.
                     }
                 }
             }
@@ -891,6 +918,53 @@ mod tests {
         let a = classify_anomalies("app", &base, &now, &th);
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].kind, "cpu_spike");
+    }
+
+    #[test]
+    fn resource_decision_seeds_on_cold_start() {
+        let th = AnomalyThresholds::default();
+        let now = ResourceSample { rss_bytes: 200 * 1024 * 1024, cpu_percent: 50.0 };
+        assert_eq!(resource_decision("app", None, 100, now, &th), BaselineOutcome::Seed);
+    }
+
+    #[test]
+    fn resource_decision_reseeds_on_pid_change_not_flags() {
+        // THE BUG GUARD: a relaunch (same name, NEW pid) must re-seed, never judge
+        // the new process against the old process's baseline — even if the new
+        // sample would look like a runaway vs the old one.
+        let th = AnomalyThresholds::default();
+        let old = (100u32, ResourceSample { rss_bytes: 50 * 1024 * 1024, cpu_percent: 1.0 });
+        let heavy_new = ResourceSample { rss_bytes: 500 * 1024 * 1024, cpu_percent: 99.0 };
+        assert_eq!(
+            resource_decision("app", Some(old), 200 /* new pid */, heavy_new, &th),
+            BaselineOutcome::Seed,
+            "a new pid must re-seed, not flag the relaunch as a runaway"
+        );
+    }
+
+    #[test]
+    fn resource_decision_updates_when_same_pid_and_healthy() {
+        let th = AnomalyThresholds::default();
+        let base = (100u32, ResourceSample { rss_bytes: 200 * 1024 * 1024, cpu_percent: 5.0 });
+        let now = ResourceSample { rss_bytes: 210 * 1024 * 1024, cpu_percent: 6.0 };
+        assert_eq!(
+            resource_decision("app", Some(base), 100, now, &th),
+            BaselineOutcome::UpdateHealthy
+        );
+    }
+
+    #[test]
+    fn resource_decision_holds_and_reports_when_same_pid_and_anomalous() {
+        let th = AnomalyThresholds::default();
+        let base = (100u32, ResourceSample { rss_bytes: 100 * 1024 * 1024, cpu_percent: 1.0 });
+        let runaway = ResourceSample { rss_bytes: 400 * 1024 * 1024, cpu_percent: 1.0 };
+        match resource_decision("app", Some(base), 100, runaway, &th) {
+            BaselineOutcome::HoldAnomalous(anomalies) => {
+                assert_eq!(anomalies.len(), 1);
+                assert_eq!(anomalies[0].kind, "rss_growth");
+            }
+            other => panic!("expected HoldAnomalous, got {other:?}"),
+        }
     }
 
     #[test]
