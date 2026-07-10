@@ -270,58 +270,25 @@ pub async fn read_master_key() -> Option<SecretKey> {
     }
 }
 
-/// security(1) timeout for the master-key write — the same 5s discipline as
-/// `oauth2::keychain_store` and the foundation reader.
-const KEYCHAIN_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// Generate a fresh 256-bit master key and WRITE it to the macOS Keychain at
-/// `MASTER_KEY_ACCOUNT` via `security add-generic-password -U` (update-or-add) —
-/// the same args-only, never-a-shell-string, never-logged pattern as
-/// `oauth2::keychain_store`. Returns the key so the caller can immediately re-key
-/// the stores. The hex key value rides as an argv value to security(1) ONLY; it is
-/// never logged (we log only that a key was written).
+/// `MASTER_KEY_ACCOUNT` via the shared ARGV-FREE writer (the secret rides
+/// security(1)'s stdin, never argv — see `integrations::keychain_write`). Returns
+/// the key so the caller can immediately re-key the stores. The hex key value is
+/// never logged (we log only that a key was written) and never placed in argv.
 ///
 /// PRODUCTION-ONLY: this is the runtime enable path. Tests NEVER call it — they
 /// inject an explicit `SecretKey` directly into `open_encrypted` (the test seam),
 /// so no test spawns security(1) or touches the real Keychain.
 pub fn generate_and_store_master_key() -> Result<SecretKey> {
     let key = SecretKey::generate()?;
-    let value = key.keychain_value(); // secret; handed only to security(1) argv.
-    let mut cmd = std::process::Command::new("/usr/bin/security");
-    cmd.args([
-        "add-generic-password",
-        "-U",
-        "-s",
-        "com.jarvis.daemon",
-        "-a",
-        MASTER_KEY_ACCOUNT,
-        "-w",
-        &value,
-    ]);
-    let mut child = cmd
-        .spawn()
-        .context("could not run security(1) to store the master key")?;
-    let deadline = std::time::Instant::now() + KEYCHAIN_WRITE_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => {
-                tracing::info!(
-                    account = MASTER_KEY_ACCOUNT,
-                    "crypto: at-rest master key written to keychain"
-                );
-                return Ok(key);
-            }
-            Ok(Some(_)) => return Err(anyhow::anyhow!("storing the master key in the keychain failed")),
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    return Err(anyhow::anyhow!("storing the master key timed out"));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            Err(e) => return Err(anyhow::anyhow!("waiting on security(1) failed: {e}")),
-        }
-    }
+    let value = key.keychain_value(); // secret; handed only to security(1) stdin.
+    crate::integrations::keychain_write(MASTER_KEY_ACCOUNT, &value)
+        .context("storing the at-rest master key in the keychain failed")?;
+    tracing::info!(
+        account = MASTER_KEY_ACCOUNT,
+        "crypto: at-rest master key written to keychain"
+    );
+    Ok(key)
 }
 
 // ---------------------------------------------------------------------------

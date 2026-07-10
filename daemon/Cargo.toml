@@ -24,6 +24,11 @@ cc = "1"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 cpal = "0.15"
+# Direct handle on the DEFLATE backend already in the tree (via zip + pdf-extract):
+# used ONLY by docsearch's PDF decompression-bomb probe to inflate FlateDecode
+# streams through a byte budget before handing a PDF to pdf-extract (which itself
+# decompresses with no ratio cap). No new download — pins the existing lock version.
+flate2 = "1"
 futures-util = "0.3"
 # Capability-token HMAC-SHA256 (RustCrypto): hmac + sha2 mint/verify the
 # per-app token, hex encodes it for the JSONL line and the launch env.

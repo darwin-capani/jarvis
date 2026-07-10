@@ -939,6 +939,7 @@ dependencies = [
  "cc",
  "chrono",
  "cpal",
+ "flate2",
  "futures-util",
  "hex",
  "hmac",

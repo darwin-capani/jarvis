@@ -25,13 +25,15 @@ global-scan/main.py CONTRACT):
   env JARVIS_APP_NAME    this app's name (defaults to "nexus").
 
   app -> host (one JSON object per line, token-stamped):
-    {"token": <env>, "type": "items", "data": {"topic", "payload"}}   telemetry
+    {"token": <env>, "type": "items", "data": {"topic", **fields}}     telemetry
     {"token": <env>, "type": "log",   "data": {"line"}}               a log line
   The daemon's app host only relays "items"/"status"/"log" types (apps.rs
   `classify_inbound_line`); a telemetry drop therefore rides "items" with its
-  topic + payload nested under `data` (the host routes on `data.topic`, which
-  must be a manifest-declared topic, and relays the whole `data`). This mirrors
-  the shipped binary app silicon-canvas (ops.rs `OutboundLine::telemetry`). The
+  payload fields FLATTENED into `data` alongside `topic` (the host routes on
+  `data.topic`, which must be a manifest-declared topic, and relays the whole
+  `data`). Flat — not a nested `payload` object — so the HUD parsers read the
+  fields directly, exactly like Vision and the flattened binary apps
+  (silicon-canvas / mark-forge `OutboundLine::telemetry`). The
   daemon VERIFIES the token on every inbound line (HMAC over name||perms||nonce)
   and drops anything that does not match; we simply stamp + write.
 
@@ -353,11 +355,14 @@ class HostLink:
         The daemon's app host (daemon/src/apps.rs `classify_inbound_line`) ONLY
         relays lines whose `type` is "items"/"status"/"log" — a "telemetry" type
         is DROPPED. It routes on `data.topic` (which must be one of the manifest's
-        declared topics) and relays the whole `data` object as the payload. So a
-        telemetry drop is `type:"items"` with `data = {topic, payload}` nested —
-        the exact shape the shipped binary app silicon-canvas uses (its
-        ops.rs `OutboundLine::telemetry`)."""
-        self.send("items", {"topic": topic, "payload": payload})
+        declared topics) and relays the whole `data` object as the payload. The
+        payload fields are FLATTENED into `data` alongside `topic` — i.e.
+        `data = {topic, **payload}`, NOT a nested `{topic, payload}` — because the
+        HUD parsers read the fields FLAT (`data["ch"]`, ...), exactly like Vision
+        and the flattened binary apps (silicon-canvas / mark-forge). A nested
+        `payload` object would leave every HUD field one level too deep and render
+        blank panels."""
+        self.send("items", {"topic": topic, **payload})
 
     def log(self, line: str) -> None:
         self.send("log", {"line": line})

@@ -431,12 +431,88 @@ fn office_text(bytes: &[u8], kind: OfficeKind, cap: usize) -> Result<String> {
     Ok(out)
 }
 
+/// Ceiling on TOTAL decompressed FlateDecode output for one PDF — the same 256 MiB
+/// bound `office_text` caps its ZIP members to. A born-digital PDF's real streams
+/// (text/fonts) inflate far below this; a decompression bomb does not.
+const PDF_DECOMPRESS_CEILING: u64 = 256 << 20;
+
+/// Naive substring search (no extra deps) — small needles over a bounded PDF.
+fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// DECOMPRESSION-BOMB GUARD for PDFs. `pdf-extract` (via lopdf) inflates a PDF's
+/// FlateDecode content/object streams into memory with NO ratio cap, so a ~2 MiB
+/// PDF whose stream inflates to ~2 GB (DEFLATE reaches ~1032x) passes the
+/// compressed-size gate yet OOMs the daemon during reindex — and a Rust allocation
+/// abort does NOT unwind, so the `catch_unwind` skip boundary cannot contain it
+/// (unlike a parser panic). So we pre-scan BEFORE handing bytes to pdf-extract:
+/// locate each `stream`..`endstream` blob and inflate it through a byte BUDGET with
+/// flate2, copying to a sink so the probe itself stays O(8 KiB) memory and O(budget)
+/// work. Non-zlib blobs (other filters, raw data) fail to inflate and cost nothing.
+/// If total inflated output would exceed `budget`, the PDF is a suspected bomb and
+/// we return false -> pdf_text errors -> honest skip. Heuristic + conservative: a
+/// missed stream is acceptable defense-in-depth, but a real bomb's Flate stream is
+/// a standard `stream`..`endstream` block and IS found.
+fn pdf_decompression_within_budget(bytes: &[u8], budget: u64) -> bool {
+    use flate2::read::ZlibDecoder;
+    // Bound the blobs probed so a file stuffed with millions of `stream` tokens
+    // cannot turn the probe itself into a DoS.
+    const MAX_STREAMS: usize = 4096;
+    let mut spent: u64 = 0;
+    let mut idx = 0usize;
+    let mut probed = 0usize;
+    while probed < MAX_STREAMS {
+        let Some(rel) = find_sub(&bytes[idx..], b"stream") else { break };
+        let kw = idx + rel;
+        idx = kw + b"stream".len();
+        // Skip the `stream` that is the tail of `endstream`.
+        if kw >= 3 && &bytes[kw - 3..kw] == b"end" {
+            continue;
+        }
+        // The compressed data starts after the EOL following `stream` (CRLF or LF).
+        let mut start = idx;
+        if bytes.get(start) == Some(&b'\r') {
+            start += 1;
+        }
+        if bytes.get(start) == Some(&b'\n') {
+            start += 1;
+        }
+        let Some(erel) = find_sub(&bytes[start..], b"endstream") else { break };
+        let end = start + erel;
+        idx = end + b"endstream".len();
+        probed += 1;
+        // FlateDecode is zlib (RFC 1950). `.take(remaining+1)` caps this stream's
+        // contribution; a non-zlib blob errors and is ignored. `+1` makes hitting
+        // the budget from a single stream detectable.
+        let remaining = budget.saturating_sub(spent).saturating_add(1);
+        let mut dec = ZlibDecoder::new(&bytes[start..end]).take(remaining);
+        if let Ok(n) = std::io::copy(&mut dec, &mut std::io::sink()) {
+            spent = spent.saturating_add(n);
+            if spent > budget {
+                return false; // suspected decompression bomb
+            }
+        }
+    }
+    true
+}
+
 /// Extract UTF-8 text from a born-digital PDF already loaded into `bytes`, via the
 /// pure-Rust `pdf-extract` crate (it decodes the content streams on-device). A
 /// scanned/image-only PDF has no text layer -> returns an (effectively) empty
 /// string the guard treats as an HONEST SKIP. An encrypted/malformed PDF errors
-/// here -> skip. Pure: no disk/network.
+/// here -> skip. Pure: no disk/network. A suspected DECOMPRESSION BOMB is refused
+/// here (before pdf-extract's uncapped inflate) -> honest skip, never an OOM.
 fn pdf_text(bytes: &[u8]) -> Result<String> {
+    if !pdf_decompression_within_budget(bytes, PDF_DECOMPRESS_CEILING) {
+        anyhow::bail!(
+            "pdf skipped: FlateDecode streams exceed the {PDF_DECOMPRESS_CEILING}-byte \
+             decompression budget (suspected decompression bomb)"
+        );
+    }
     pdf_extract::extract_text_from_mem(bytes).context("pdf text extraction failed")
 }
 
@@ -2029,6 +2105,43 @@ mod tests {
         let out = extract_text(Path::new("docs/x.docx"), FileKind::Office(OfficeKind::Docx), &bytes, 300)
             .expect("non-empty");
         assert!(out.len() <= 300, "extract_text honored the cap: {} bytes", out.len());
+    }
+
+    #[test]
+    fn pdf_decompression_bomb_probe_flags_an_inflating_flate_stream() {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        // Compress 4 MiB of zeros -> a few-KB blob that inflates back to 4 MiB: the
+        // shape of a decompression bomb (tiny compressed, large inflated).
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::best());
+        enc.write_all(&vec![0u8; 4 << 20]).unwrap();
+        let compressed = enc.finish().unwrap();
+        assert!(compressed.len() < 64 * 1024, "zeros compress tiny: {} B", compressed.len());
+
+        // Embed as a PDF FlateDecode stream block.
+        let mut pdf = Vec::new();
+        pdf.extend_from_slice(b"%PDF-1.7\n1 0 obj<< /Length 42 /Filter /FlateDecode >>\nstream\n");
+        pdf.extend_from_slice(&compressed);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        // A 1 MiB budget: the 4 MiB inflation exceeds it -> flagged as a bomb.
+        assert!(
+            !pdf_decompression_within_budget(&pdf, 1 << 20),
+            "4 MiB of inflation must exceed a 1 MiB budget"
+        );
+        // An 8 MiB budget: 4 MiB fits -> allowed (a legit PDF is not false-flagged).
+        assert!(
+            pdf_decompression_within_budget(&pdf, 8 << 20),
+            "4 MiB of inflation fits an 8 MiB budget"
+        );
+        // pdf_text refuses the bomb before pdf-extract when it exceeds the real
+        // ceiling — proven here with the probe; a >256 MiB fixture is avoided so the
+        // test stays cheap. A PDF with NO oversized stream passes the probe.
+        assert!(
+            pdf_decompression_within_budget(b"%PDF-1.7\n(no streams here)\n", PDF_DECOMPRESS_CEILING),
+            "a PDF with no inflating stream is within budget"
+        );
     }
 
     #[test]

@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -49,6 +49,12 @@ use crate::telemetry;
 /// what the caller sends. Micro-app summaries are one or two sentences; this
 /// dwarfs that while bounding any single call's cost on the local model.
 pub const PROXY_MAX_TOKENS: u32 = 256;
+/// Hard cap on ONE inbound proxy request line, mirroring `apps::MAX_APP_LINE_BYTES`
+/// (1 MiB). A generate request is small JSON; this bounds a malicious/compromised
+/// micro-app from OOMing the daemon by streaming a newline-free byte flood on this
+/// pre-auth socket. `read_line_bounded` errors once a line exceeds it, which drops
+/// the connection.
+const MAX_PROXY_LINE_BYTES: usize = 1024 * 1024;
 /// Floor for a missing / zero / non-positive `max_tokens`: a sane default so a
 /// caller that omits the field (or sends 0 or a negative number) still gets a
 /// usable generation rather than an empty one.
@@ -261,9 +267,18 @@ async fn handle_conn<F: Forwarder>(
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
+    // BOUNDED read: this socket is spoken to by SANDBOXED, potentially-compromised
+    // micro-apps, and the read happens BEFORE any token/rate check. An unbounded
+    // `read_line` would grow `line` without limit until a newline arrives, so a
+    // hostile app streaming a gigabyte with no `\n` could OOM (abort) the daemon.
+    // We share `apps::read_line_bounded` (caps at MAX_PROXY_LINE_BYTES, errors on
+    // overflow) — the same defense the sibling app-relay socket uses. `pending`
+    // carries partial bytes across reads (unused here — no select! cancellation —
+    // but required by the shared signature).
+    let mut pending: Vec<u8> = Vec::new();
     loop {
         line.clear();
-        match reader.read_line(&mut line).await {
+        match crate::apps::read_line_bounded(&mut reader, &mut pending, &mut line, MAX_PROXY_LINE_BYTES).await {
             Ok(0) => return, // app closed the socket
             Ok(_) => {
                 let reply = handle_line(line.trim(), registry, &forwarder, &limiter).await;

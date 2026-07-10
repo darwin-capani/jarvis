@@ -454,6 +454,11 @@ pub struct OutboundLine {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutboundData {
     pub topic: String,
+    // FLATTENED into `data` alongside `topic` so the wire shape is
+    // {topic, <payload fields>} — matching Vision's convention and the HUD parsers,
+    // which read fields FLAT. A nested {topic, payload:{…}} leaves every HUD field
+    // one level too deep and renders blank panels (the bug this closes).
+    #[serde(flatten)]
     pub payload: Telemetry,
 }
 
@@ -1071,6 +1076,10 @@ mod tests {
         let s = serde_json::to_string(&line).unwrap();
         assert!(s.contains(r#""type":"items""#));
         assert!(s.contains(r#""topic":"physics.step""#));
+        // FLAT wire contract: payload fields sit DIRECTLY in `data` (like Vision +
+        // the HUD parsers), NOT under a nested `payload` object.
+        assert!(!s.contains(r#""payload""#), "telemetry must be flat in data: {s}");
+        assert!(s.contains(r#""frames":1"#), "the step fields must be flattened into data: {s}");
     }
 
     #[test]
@@ -1162,8 +1171,11 @@ mod tests {
         assert!(get_out[1].contains(r#""topic":"physics.bodies""#));
         // The bodies frame's `frame` mirrors the cumulative counter (=3).
         let bodies: serde_json::Value = serde_json::from_str(&get_out[1]).unwrap();
-        assert_eq!(bodies["data"]["payload"]["frame"], 3);
-        assert_eq!(bodies["data"]["payload"]["bodies"][0]["id"], 0);
+        // FLAT wire: payload fields sit directly in `data` (not under `data.payload`),
+        // matching the HUD parsers.
+        assert!(bodies["data"]["payload"].is_null(), "telemetry must be flat (no payload wrapper)");
+        assert_eq!(bodies["data"]["frame"], 3);
+        assert_eq!(bodies["data"]["bodies"][0]["id"], 0);
     }
 
     // ----- token-on-every-line ---------------------------------------------
@@ -1404,7 +1416,7 @@ mod tests {
             .find(|l| l.contains(r#""topic":"physics.step""#))
             .expect("a physics.step line is published");
         let step: serde_json::Value = serde_json::from_str(step_line).unwrap();
-        assert_eq!(step["data"]["payload"]["frames"], MAX_STEPS_PER_CALL);
+        assert_eq!(step["data"]["frames"], MAX_STEPS_PER_CALL); // flat wire (no payload wrapper)
     }
 
     #[test]

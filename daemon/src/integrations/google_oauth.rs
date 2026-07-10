@@ -889,8 +889,6 @@ pub async fn run_consent_flow<T: HttpTransport>(
 // Keychain writer for the refresh token (production)
 // ---------------------------------------------------------------------------
 
-/// security(1) timeout — same 5s discipline as the foundation's reader.
-const KEYCHAIN_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Build the production [`RefreshTokenStore`] that writes the refresh token to
 /// the macOS Keychain under [`ACCOUNT_REFRESH_TOKEN`] via
@@ -899,50 +897,11 @@ const KEYCHAIN_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// runs ONLY in the real connect flow (device-gated); tests inject a recorder.
 fn keychain_store() -> RefreshTokenStore {
     Box::new(|token: &str| -> IntegrationResult<()> {
-        // -U updates an existing item or adds a new one; -s service, -a account,
-        // -w the secret value. argv-only (no shell). We block briefly with a
-        // timeout via a std Command in a spawn_blocking-free path: this is only
-        // ever called from the real async connect flow, so we use a std process
-        // with a wait_timeout-equivalent guard by setting a short timeout.
-        use std::process::Command;
-        let mut cmd = Command::new("/usr/bin/security");
-        cmd.args([
-            "add-generic-password",
-            "-U",
-            "-s",
-            "com.jarvis.daemon",
-            "-a",
-            ACCOUNT_REFRESH_TOKEN,
-            "-w",
-            token,
-        ]);
-        // Bounded wait: spawn and poll. (security add is near-instant; this
-        // mirrors the reader's 5s ceiling without pulling in extra crates.)
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("could not run security(1) to store the token: {e}"))?;
-        let deadline = std::time::Instant::now() + KEYCHAIN_WRITE_TIMEOUT;
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) if status.success() => {
-                    info!("google_oauth: refresh token written to keychain");
-                    return Ok(());
-                }
-                Ok(Some(_)) => {
-                    return Err(anyhow::anyhow!("storing the Google token in the keychain failed"));
-                }
-                Ok(None) => {
-                    if std::time::Instant::now() >= deadline {
-                        let _ = child.kill();
-                        return Err(anyhow::anyhow!("storing the Google token timed out"));
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!("waiting on security(1) failed: {e}"));
-                }
-            }
-        }
+        // ARGV-FREE write: the secret rides security(1)'s stdin, never argv. See
+        // `super::keychain_write`.
+        super::keychain_write(ACCOUNT_REFRESH_TOKEN, token)?;
+        info!("google_oauth: refresh token written to keychain");
+        Ok(())
     })
 }
 

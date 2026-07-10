@@ -1137,8 +1137,6 @@ pub async fn run_consent_flow<T: HttpTransport>(
 // Keychain writer for the refresh token (production)
 // ---------------------------------------------------------------------------
 
-/// security(1) timeout — same 5s discipline as the foundation's reader.
-const KEYCHAIN_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Build the production [`RefreshTokenStore`] that writes the refresh token to the
 /// macOS Keychain under `account` via `security add-generic-password -U`
@@ -1148,43 +1146,11 @@ const KEYCHAIN_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// allowlisted refresh-token account names (a fixed identifier, safe to log).
 pub(crate) fn keychain_store(account: &'static str) -> RefreshTokenStore {
     Box::new(move |token: &str| -> IntegrationResult<()> {
-        use std::process::Command;
-        let mut cmd = Command::new("/usr/bin/security");
-        cmd.args([
-            "add-generic-password",
-            "-U",
-            "-s",
-            "com.jarvis.daemon",
-            "-a",
-            account,
-            "-w",
-            token,
-        ]);
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("could not run security(1) to store the token: {e}"))?;
-        let deadline = std::time::Instant::now() + KEYCHAIN_WRITE_TIMEOUT;
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) if status.success() => {
-                    info!(account, "oauth2: refresh token written to keychain");
-                    return Ok(());
-                }
-                Ok(Some(_)) => {
-                    return Err(anyhow::anyhow!("storing the token in the keychain failed"));
-                }
-                Ok(None) => {
-                    if std::time::Instant::now() >= deadline {
-                        let _ = child.kill();
-                        return Err(anyhow::anyhow!("storing the token timed out"));
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!("waiting on security(1) failed: {e}"));
-                }
-            }
-        }
+        // ARGV-FREE write: the secret rides security(1)'s stdin, never argv. See
+        // `super::keychain_write`.
+        super::keychain_write(account, token)?;
+        info!(account, "oauth2: refresh token written to keychain");
+        Ok(())
     })
 }
 

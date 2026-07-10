@@ -485,6 +485,13 @@ pub struct CloudDispatcher<'a> {
     /// or its own per-agent persona (specialist) — threaded into the cloud
     /// system so each sub-task speaks in the right persona and caches per-agent.
     pub orchestrator: String,
+    /// Whether the mission was spawned from a TRUSTED, user-originated request
+    /// (`true`) or an UNTRUSTED origin (`false`: a `fury_mission` requested on a
+    /// tool continuation — possibly injected content — or a resumed/standing
+    /// mission). Passed to each sub-task's `complete_with_tools` as `context_trusted`
+    /// so an untrusted mission cannot reset the prompt-injection egress guard to
+    /// open on its sub-tasks' call 0. See anthropic.rs `tool_loop`.
+    pub context_trusted: bool,
 }
 
 impl Dispatcher for CloudDispatcher<'_> {
@@ -552,6 +559,9 @@ impl Dispatcher for CloudDispatcher<'_> {
                 agent_persona.as_deref(),
                 &world_context,
                 &personalization,
+                // Inherit the mission's trust: an untrusted mission keeps every
+                // sub-task's egress guard armed on its own call 0.
+                self.context_trusted,
             )
             .await
         })

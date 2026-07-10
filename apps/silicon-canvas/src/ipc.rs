@@ -1559,7 +1559,16 @@ mod tests {
         assert!(j.contains(r#""type":"items""#));
         assert!(j.contains(r#""topic":"canvas.selection""#));
         assert!(j.contains(r#""token":"tok""#));
-        // And the payload round-trips.
+        // FLAT wire contract: the payload fields sit DIRECTLY in `data` alongside
+        // `topic` (like Vision), NOT under a nested `payload` object. The HUD parsers
+        // read fields flat (num(data,"p50"), ...), so a `"payload":` wrapper here
+        // would render blank panels — assert it is absent.
+        assert!(
+            !j.contains(r#""payload""#),
+            "telemetry must be FLAT in data (no nested payload wrapper): {j}"
+        );
+        assert!(j.contains(r#""net""#), "the selection's fields must be flattened into data: {j}");
+        // And the payload round-trips back through the flattened shape.
         let back: OutboundLine = serde_json::from_str(&j).unwrap();
         assert_eq!(back.data.topic, crate::ops::TOPIC_SELECTION);
     }
