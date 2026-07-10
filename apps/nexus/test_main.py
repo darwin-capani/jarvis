@@ -57,9 +57,10 @@ class FakeLink:
 
     def telemetry(self, topic: str, payload: dict) -> None:
         # Same shape HostLink.telemetry produces: type "items", with the payload
-        # fields FLATTENED into data alongside topic ({topic, **payload}), matching
-        # Vision + the HUD parsers (no nested "payload" wrapper).
-        self.send("items", {"topic": topic, **payload})
+        # fields FLATTENED into data alongside topic ({**payload, "topic": topic}),
+        # matching Vision + the HUD parsers (no nested "payload" wrapper). topic is
+        # applied last so a stray payload "topic" key can't override routing.
+        self.send("items", {**payload, "topic": topic})
 
     def log(self, line: str) -> None:
         self.send("log", {"line": line})

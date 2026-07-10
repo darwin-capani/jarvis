@@ -1815,6 +1815,20 @@ pub(crate) async fn read_line_bounded(
             return Ok(n); // trailing line without newline at EOF
         }
         if let Some(i) = chunk.iter().position(|&b| b == b'\n') {
+            // The newline branch is subject to the SAME cap: a line whose bytes up to
+            // the newline (already-buffered `pending` + `i` in this chunk) exceed
+            // `max` is rejected EXACTLY, not returned. Without this, a line that ends
+            // in a newline within one fill_buf chunk could overshoot the cap by up to
+            // a buffer's worth — tightened because this reader is shared with the
+            // pre-auth generate proxy.
+            if pending.len().saturating_add(i) > max {
+                reader.consume(i + 1);
+                pending.clear();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "app line exceeds MAX_APP_LINE_BYTES",
+                ));
+            }
             let take = i + 1;
             pending.extend_from_slice(&chunk[..take]);
             reader.consume(take);
@@ -3483,6 +3497,26 @@ mod tests {
             std::io::ErrorKind::InvalidData,
             "overflow must be InvalidData so the caller drops the connection"
         );
+    }
+
+    /// The cap is EXACT even when the over-long line ends in a newline within one
+    /// read: a line whose bytes exceed `max` is rejected, not returned (closes the
+    /// one-buffer overshoot on the newline branch).
+    #[tokio::test]
+    async fn read_line_bounded_errors_on_an_overlong_line_that_ends_in_a_newline() {
+        let (mut client, server) = UnixStream::pair().expect("unix socketpair");
+        let (read_half, _write_half) = server.into_split();
+        let mut reader = BufReader::new(read_half);
+        let mut pending: Vec<u8> = Vec::new();
+        let mut line = String::new();
+        // 40 bytes then a newline, cap = 16 -> the whole line (incl. its terminator)
+        // arrives in one chunk; it must ERROR, not return a 40-byte line.
+        client.write_all(&[b'x'; 40]).await.expect("write body");
+        client.write_all(b"\n").await.expect("write newline");
+        let err = read_line_bounded(&mut reader, &mut pending, &mut line, 16)
+            .await
+            .expect_err("an over-cap line ending in a newline must still error");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
     /// DoS DEFENSE for the stdout/stderr LOG relay. An over-long line is TRUNCATED

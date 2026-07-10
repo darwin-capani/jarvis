@@ -1173,7 +1173,10 @@ mod tests {
         let bodies: serde_json::Value = serde_json::from_str(&get_out[1]).unwrap();
         // FLAT wire: payload fields sit directly in `data` (not under `data.payload`),
         // matching the HUD parsers.
-        assert!(bodies["data"]["payload"].is_null(), "telemetry must be flat (no payload wrapper)");
+        assert!(
+            bodies["data"].get("payload").is_none(),
+            "telemetry must be flat (no payload key at all)"
+        );
         assert_eq!(bodies["data"]["frame"], 3);
         assert_eq!(bodies["data"]["bodies"][0]["id"], 0);
     }

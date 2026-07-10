@@ -436,64 +436,67 @@ fn office_text(bytes: &[u8], kind: OfficeKind, cap: usize) -> Result<String> {
 /// (text/fonts) inflate far below this; a decompression bomb does not.
 const PDF_DECOMPRESS_CEILING: u64 = 256 << 20;
 
-/// Naive substring search (no extra deps) — small needles over a bounded PDF.
-fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || hay.len() < needle.len() {
-        return None;
+/// Inflate one FlateDecode (zlib) stream's RAW `content` through the REMAINING
+/// budget, adding decompressed bytes to `spent`. Returns `false` the moment `spent`
+/// exceeds `budget` (a suspected bomb). Bounded to O(8 KiB) memory via a fixed
+/// scratch buffer; `.take(remaining+1)` caps this one stream's contribution and the
+/// `+1` makes hitting the budget from a single stream detectable. A non-Flate blob
+/// (image / other filter / raw) fails to inflate and contributes 0 — the caller
+/// treats that as "no measurable inflation," not "safe."
+fn flate_stream_within_budget(content: &[u8], budget: u64, spent: &mut u64) -> bool {
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
+    let remaining = budget.saturating_sub(*spent).saturating_add(1);
+    let mut dec = ZlibDecoder::new(content).take(remaining);
+    let mut scratch = [0u8; 8192];
+    loop {
+        match dec.read(&mut scratch) {
+            Ok(0) => return true, // stream finished within budget
+            Ok(k) => {
+                *spent = spent.saturating_add(k as u64);
+                if *spent > budget {
+                    return false; // suspected decompression bomb
+                }
+            }
+            // Partial/invalid stream: we have counted whatever inflated so far, which
+            // is enough for the budget check; stop this stream.
+            Err(_) => return true,
+        }
     }
-    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 /// DECOMPRESSION-BOMB GUARD for PDFs. `pdf-extract` (via lopdf) inflates a PDF's
-/// FlateDecode content/object streams into memory with NO ratio cap, so a ~2 MiB
-/// PDF whose stream inflates to ~2 GB (DEFLATE reaches ~1032x) passes the
-/// compressed-size gate yet OOMs the daemon during reindex — and a Rust allocation
-/// abort does NOT unwind, so the `catch_unwind` skip boundary cannot contain it
-/// (unlike a parser panic). So we pre-scan BEFORE handing bytes to pdf-extract:
-/// locate each `stream`..`endstream` blob and inflate it through a byte BUDGET with
-/// flate2, copying to a sink so the probe itself stays O(8 KiB) memory and O(budget)
-/// work. Non-zlib blobs (other filters, raw data) fail to inflate and cost nothing.
-/// If total inflated output would exceed `budget`, the PDF is a suspected bomb and
-/// we return false -> pdf_text errors -> honest skip. Heuristic + conservative: a
-/// missed stream is acceptable defense-in-depth, but a real bomb's Flate stream is
-/// a standard `stream`..`endstream` block and IS found.
+/// FlateDecode content/object streams with NO ratio cap, so a ~2 MiB PDF whose
+/// stream inflates to ~2 GB (DEFLATE reaches ~1032x) passes the compressed-size gate
+/// yet OOMs the daemon during reindex — and a Rust allocation abort does NOT unwind,
+/// so the `catch_unwind` skip boundary cannot contain it (unlike a parser panic). So
+/// BEFORE handing bytes to pdf-extract we parse the PDF STRUCTURE with lopdf (which
+/// does NOT decompress on load, and is bounded by the file size), iterate the REAL
+/// stream objects — whose `content` has correct `/Length`-parsed boundaries, so
+/// there is no "endstream-in-data" byte-scan evasion and no unbounded stream count —
+/// and inflate each through a shared byte BUDGET with flate2 (O(8 KiB) memory). If
+/// the total would exceed `budget` the PDF is a suspected bomb and we return false
+/// -> pdf_text errors -> honest skip. If lopdf cannot PARSE the file we return true:
+/// pdf-extract (which also wraps lopdf) cannot inflate what it cannot parse, so it
+/// will error safely on the same input.
+///
+/// RESIDUAL (documented, accepted as defense-in-depth): a bomb ARMORED behind a
+/// non-Flate filter chain (e.g. `ASCII85Decode`/`LZWDecode` -> `FlateDecode`) has
+/// non-zlib `content` here, so its inner inflation is not measured and a *crafted
+/// filter-chained* bomb can still reach pdf-extract's uncapped inflate. The complete,
+/// filter-agnostic fix is a memory-jailed extraction subprocess (RLIMIT_AS) —
+/// deferred, because re-exec'ing the daemon per file fights the in-process test
+/// model. This guard closes the common naive single-FlateDecode bomb (the reported
+/// vector) with reliable boundaries.
 fn pdf_decompression_within_budget(bytes: &[u8], budget: u64) -> bool {
-    use flate2::read::ZlibDecoder;
-    // Bound the blobs probed so a file stuffed with millions of `stream` tokens
-    // cannot turn the probe itself into a DoS.
-    const MAX_STREAMS: usize = 4096;
+    let Ok(doc) = lopdf::Document::load_mem(bytes) else {
+        return true; // unparseable -> pdf-extract will error safely, not OOM
+    };
     let mut spent: u64 = 0;
-    let mut idx = 0usize;
-    let mut probed = 0usize;
-    while probed < MAX_STREAMS {
-        let Some(rel) = find_sub(&bytes[idx..], b"stream") else { break };
-        let kw = idx + rel;
-        idx = kw + b"stream".len();
-        // Skip the `stream` that is the tail of `endstream`.
-        if kw >= 3 && &bytes[kw - 3..kw] == b"end" {
-            continue;
-        }
-        // The compressed data starts after the EOL following `stream` (CRLF or LF).
-        let mut start = idx;
-        if bytes.get(start) == Some(&b'\r') {
-            start += 1;
-        }
-        if bytes.get(start) == Some(&b'\n') {
-            start += 1;
-        }
-        let Some(erel) = find_sub(&bytes[start..], b"endstream") else { break };
-        let end = start + erel;
-        idx = end + b"endstream".len();
-        probed += 1;
-        // FlateDecode is zlib (RFC 1950). `.take(remaining+1)` caps this stream's
-        // contribution; a non-zlib blob errors and is ignored. `+1` makes hitting
-        // the budget from a single stream detectable.
-        let remaining = budget.saturating_sub(spent).saturating_add(1);
-        let mut dec = ZlibDecoder::new(&bytes[start..end]).take(remaining);
-        if let Ok(n) = std::io::copy(&mut dec, &mut std::io::sink()) {
-            spent = spent.saturating_add(n);
-            if spent > budget {
-                return false; // suspected decompression bomb
+    for obj in doc.objects.values() {
+        if let lopdf::Object::Stream(stream) = obj {
+            if !flate_stream_within_budget(&stream.content, budget, &mut spent) {
+                return false;
             }
         }
     }
@@ -2108,39 +2111,45 @@ mod tests {
     }
 
     #[test]
-    fn pdf_decompression_bomb_probe_flags_an_inflating_flate_stream() {
+    fn flate_stream_budget_flags_a_decompression_bomb() {
         use flate2::write::ZlibEncoder;
         use flate2::Compression;
         use std::io::Write;
         // Compress 4 MiB of zeros -> a few-KB blob that inflates back to 4 MiB: the
-        // shape of a decompression bomb (tiny compressed, large inflated).
+        // shape of a decompression bomb (tiny compressed, large inflated). This is a
+        // real FlateDecode stream's raw `content` — the exact bytes lopdf hands us.
         let mut enc = ZlibEncoder::new(Vec::new(), Compression::best());
         enc.write_all(&vec![0u8; 4 << 20]).unwrap();
         let compressed = enc.finish().unwrap();
         assert!(compressed.len() < 64 * 1024, "zeros compress tiny: {} B", compressed.len());
 
-        // Embed as a PDF FlateDecode stream block.
-        let mut pdf = Vec::new();
-        pdf.extend_from_slice(b"%PDF-1.7\n1 0 obj<< /Length 42 /Filter /FlateDecode >>\nstream\n");
-        pdf.extend_from_slice(&compressed);
-        pdf.extend_from_slice(b"\nendstream\nendobj\n");
-
         // A 1 MiB budget: the 4 MiB inflation exceeds it -> flagged as a bomb.
+        let mut spent = 0u64;
         assert!(
-            !pdf_decompression_within_budget(&pdf, 1 << 20),
+            !flate_stream_within_budget(&compressed, 1 << 20, &mut spent),
             "4 MiB of inflation must exceed a 1 MiB budget"
         );
-        // An 8 MiB budget: 4 MiB fits -> allowed (a legit PDF is not false-flagged).
+
+        // An 8 MiB budget: 4 MiB fits -> allowed (a legit stream is not false-flagged).
+        let mut spent2 = 0u64;
         assert!(
-            pdf_decompression_within_budget(&pdf, 8 << 20),
+            flate_stream_within_budget(&compressed, 8 << 20, &mut spent2),
             "4 MiB of inflation fits an 8 MiB budget"
         );
-        // pdf_text refuses the bomb before pdf-extract when it exceeds the real
-        // ceiling — proven here with the probe; a >256 MiB fixture is avoided so the
-        // test stays cheap. A PDF with NO oversized stream passes the probe.
+        assert_eq!(spent2, 4 << 20, "the full stream was counted");
+
+        // A non-Flate blob contributes nothing (fails to inflate, counts 0).
+        let mut spent3 = 0u64;
+        assert!(flate_stream_within_budget(b"not a zlib stream at all", 1 << 20, &mut spent3));
+        assert_eq!(spent3, 0, "a non-Flate blob adds no inflated bytes");
+
+        // The budget ACCUMULATES across streams: two 4 MiB streams exceed a 6 MiB
+        // total budget even though each fits alone.
+        let mut acc = 0u64;
+        assert!(flate_stream_within_budget(&compressed, 6 << 20, &mut acc)); // 4 MiB spent
         assert!(
-            pdf_decompression_within_budget(b"%PDF-1.7\n(no streams here)\n", PDF_DECOMPRESS_CEILING),
-            "a PDF with no inflating stream is within budget"
+            !flate_stream_within_budget(&compressed, 6 << 20, &mut acc),
+            "cumulative inflation across streams must trip the shared budget"
         );
     }
 

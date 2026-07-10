@@ -361,8 +361,9 @@ class HostLink:
         HUD parsers read the fields FLAT (`data["ch"]`, ...), exactly like Vision
         and the flattened binary apps (silicon-canvas / mark-forge). A nested
         `payload` object would leave every HUD field one level too deep and render
-        blank panels."""
-        self.send("items", {"topic": topic, **payload})
+        blank panels. `topic` is applied AFTER `**payload` so the trusted routing
+        topic can never be overridden by a stray `topic` key in the payload."""
+        self.send("items", {**payload, "topic": topic})
 
     def log(self, line: str) -> None:
         self.send("log", {"line": line})
