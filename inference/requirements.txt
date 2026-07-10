@@ -8,12 +8,20 @@
 #   .venv/bin/pip install -r inference/requirements.txt
 #
 # MLX runs on the Apple GPU via Metal (Apple Silicon only).
+#
+# SUPPLY-CHAIN: direct deps are pinned to EXACT versions (`==`), not floating
+# `>=` lower bounds. A `>=` range silently pulls whatever the newest release is at
+# install time — so a single compromised or yanked PyPI upload lands in the
+# inference process (which loads models and runs on-device) with no review. These
+# pins are the known-good versions from the verified python3.11 venv. To upgrade
+# deliberately: bump a pin, reinstall, test, commit. To refresh from a working
+# venv: `.venv/bin/pip freeze | grep -iE '<the names below>'`.
 
-mlx>=0.20
-mlx-lm>=0.31.1    # classifier KV prompt cache uses mlx_lm.models.cache (make/trim_prompt_cache)
-mlx-whisper>=0.4
-numpy>=1.26
-coremltools>=8.0  # ANE groundwork: Core ML dispatch for Phase-3 aux models (scripts/ane_probe.py)
+mlx==0.31.2
+mlx-lm==0.31.3    # classifier KV prompt cache uses mlx_lm.models.cache (make/trim_prompt_cache)
+mlx-whisper==0.4.3
+numpy==2.4.6
+coremltools==9.0  # ANE groundwork: Core ML dispatch for Phase-3 aux models (scripts/ane_probe.py)
 
 # TTS ("speak" op): Kokoro-82M on MLX. English G2P comes from misaki — install
 # the pieces below explicitly instead of `misaki[en]`, because that extra pulls
@@ -21,12 +29,12 @@ coremltools>=8.0  # ANE groundwork: Core ML dispatch for Phase-3 aux models (scr
 # espeakng-loader ships a bundled espeak-ng (pip-only, no system install) used
 # only as misaki's OOV fallback. After install, fetch the spacy model once:
 #   .venv/bin/python -m spacy download en_core_web_sm
-mlx-audio>=0.4.4
-misaki>=0.9.4
-espeakng-loader
-num2words
-phonemizer-fork
-spacy>=3.8
+mlx-audio==0.4.4
+misaki==0.9.4
+espeakng-loader==0.2.4
+num2words==0.5.14
+phonemizer-fork==3.3.2
+spacy==3.8.14
 
 # OPTIONAL on-device VISION-LANGUAGE MODEL (op=describe_image). IMPORT-GUARDED:
 # server.py works (and py_compile passes) WITHOUT this installed — absent =>
