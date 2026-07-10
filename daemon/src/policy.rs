@@ -439,6 +439,28 @@ pub fn snapshot_global() -> Option<(bool, Vec<PolicyRule>)> {
     Some((*enabled, store.rules()))
 }
 
+/// Build the `policy.snapshot` telemetry payload from a resolved policy surface.
+/// Pure + total, so the exact wire shape the HUD's `parsePolicySnapshot` reads is
+/// unit-tested without the process-global. Each rule serializes as
+/// `{scope:{tool, agent?, recipient?}, decision}` with `decision` a lowercase
+/// `always|never|ask` (serde rename) — matching `coercePolicyRule` /
+/// `coercePolicyDecision`.
+fn snapshot_payload(enabled: bool, rules: &[PolicyRule]) -> serde_json::Value {
+    serde_json::json!({ "enabled": enabled, "rules": rules })
+}
+
+/// Emit the current policy surface as `policy.snapshot` telemetry for the HUD's
+/// AuditPanel policy editor. READ-ONLY: it REPORTS the installed policy (or the
+/// honest shipped-empty default `{enabled:false, rules:[]}` when the layer was
+/// never installed) and never mutates it — the same observability role
+/// `audit::emit_snapshot` plays for the audit timeline the panel shows alongside.
+/// Without this the HUD's `state.policy` stays null and the policy editor never
+/// populates (the daemon produced `snapshot_global()` but never emitted it).
+pub fn emit_snapshot() {
+    let (enabled, rules) = snapshot_global().unwrap_or((false, Vec::new()));
+    crate::telemetry::emit("system", "policy.snapshot", snapshot_payload(enabled, &rules));
+}
+
 // `#[cfg(test)]` override seam: lets a test pin a specific (enabled, store) on its
 // OWN thread WITHOUT touching the set-once GLOBAL (which other tests rely on being
 // empty). Production compiles this out and reads the OnceLock exactly.
@@ -699,6 +721,46 @@ mod tests {
             s.set(scope.clone(), *decision);
         }
         s
+    }
+
+    /// The `policy.snapshot` wire shape must match the HUD's `parsePolicySnapshot`
+    /// EXACTLY (top-level `enabled`+`rules`; each rule `{scope:{tool, agent?,
+    /// recipient?}, decision:"always|never|ask"}`) — the emitter/consumer field
+    /// contract this feature was silently missing (the daemon never emitted it, so
+    /// the HUD policy editor stayed empty). Asserted on the pure payload builder.
+    #[test]
+    fn snapshot_payload_matches_the_hud_wire_contract() {
+        // Shipped-empty default.
+        let empty = snapshot_payload(false, &[]);
+        assert_eq!(empty["enabled"], false);
+        assert_eq!(empty["rules"], serde_json::json!([]));
+
+        // A fully-scoped Always rule.
+        let rule = PolicyRule {
+            scope: PolicyScope {
+                tool: "gmail_send".into(),
+                agent: Some("agent.pepper".into()),
+                recipient: Some("#ops".into()),
+            },
+            decision: Decision::Always,
+        };
+        let p = snapshot_payload(true, std::slice::from_ref(&rule));
+        assert_eq!(p["enabled"], true);
+        let r = &p["rules"][0];
+        assert_eq!(r["scope"]["tool"], "gmail_send");
+        assert_eq!(r["scope"]["agent"], "agent.pepper");
+        assert_eq!(r["scope"]["recipient"], "#ops");
+        assert_eq!(r["decision"], "always", "Decision serializes lowercase for coercePolicyDecision");
+
+        // A bare Never rule: None agent/recipient are OMITTED (HUD reads them null).
+        let bare = PolicyRule {
+            scope: PolicyScope { tool: "x".into(), agent: None, recipient: None },
+            decision: Decision::Never,
+        };
+        let pb = snapshot_payload(false, std::slice::from_ref(&bare));
+        assert!(pb["rules"][0]["scope"].get("agent").is_none(), "None agent is skipped");
+        assert!(pb["rules"][0]["scope"].get("recipient").is_none(), "None recipient is skipped");
+        assert_eq!(pb["rules"][0]["decision"], "never");
     }
 
     // -- ships empty => ASK everywhere ----------------------------------------

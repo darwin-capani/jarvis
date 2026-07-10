@@ -844,6 +844,12 @@ async fn audit_snapshot_task() {
     tokio::time::sleep(AUDIT_SNAPSHOT_STARTUP_DELAY).await;
     loop {
         audit::emit_snapshot().await;
+        // The HUD's AuditPanel shows the POLICY editor alongside the audit timeline
+        // (App.tsx passes `policy={state.policy}`), and `state.policy` is fed ONLY by
+        // `policy.snapshot`. Emit it on the same cadence so the editor reflects the
+        // installed rules (or the honest shipped-empty default) instead of staying
+        // empty. READ-ONLY, like the audit snapshot next to it.
+        policy::emit_snapshot();
         tokio::time::sleep(AUDIT_SNAPSHOT_INTERVAL).await;
     }
 }
