@@ -1496,7 +1496,12 @@ async fn main() -> Result<()> {
     // `audit::record_global`. It never takes an action — it records the decisions
     // the gate already makes, secret-free + bounded. With [audit].enabled false the
     // record calls are no-ops and the chokepoints behave exactly as today.
-    let audit_log = Arc::new(open_audit(&state_dir.join("audit.db"), master_key.as_ref())?);
+    let audit_log = Arc::new(
+        open_audit(&state_dir.join("audit.db"), master_key.as_ref())?
+            // Honor the configured retention cap ([audit].max_entries) instead of the
+            // compile-time default — the knob was documented + parsed but never read.
+            .with_max_entries(cfg.audit.max_entries),
+    );
     audit::install(cfg.audit.enabled, audit_log);
 
     // The optimizer Trace Store: opened + held for the daemon's life exactly like
