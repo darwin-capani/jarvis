@@ -378,6 +378,12 @@ pub struct OutboundLine {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutboundData {
     pub topic: String,
+    // FLATTENED into `data` alongside `topic`, so the wire shape is
+    // {topic, <payload fields>} — matching Vision's convention and the HUD parsers,
+    // which read the fields FLAT (num(data,"p50"), ...). A nested {topic, payload:{…}}
+    // leaves every HUD field one level too deep and renders blank panels (the bug
+    // this closes). The daemon relays `data` verbatim; the HUD ignores `topic`.
+    #[serde(flatten)]
     pub payload: Telemetry,
 }
 

@@ -307,8 +307,10 @@ fn success_report(spec: &Spec) -> String {
     let account = mcp_token_account(&spec.name).unwrap_or_else(|| format!("mcp_{}_token", spec.name));
     let token_step = if spec.uses_token {
         format!(
-            "\n  1. Store its token in the Keychain yourself (I never see it): \
-             security add-generic-password -U -s com.jarvis.daemon -a {account} -w <YOUR_TOKEN> \
+            "\n  1. Store its token in the Keychain yourself (I never see it). Run this \
+             and paste the token at the prompt (so it never lands in your shell history \
+             or the process list): \
+             security add-generic-password -U -s com.jarvis.daemon -a {account} -w \
              (or paste it in Settings)."
         )
     } else {

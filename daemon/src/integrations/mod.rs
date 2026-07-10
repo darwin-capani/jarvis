@@ -310,6 +310,81 @@ fn keychain_query_args(account: &str) -> [&str; 6] {
     ]
 }
 
+/// Bounded wait for a Keychain WRITE to complete before giving up.
+const KEYCHAIN_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The security(1) argv for an ARGV-FREE Keychain WRITE of `account` — `-w` is the
+/// LAST token with NO value, so security(1) prompts and reads the secret from
+/// STDIN. Factored out (like [`keychain_query_args`]) so tests can assert the
+/// contract invocation without ever running security(1) or handling a real secret.
+fn keychain_write_args(account: &str) -> [&str; 7] {
+    [
+        "add-generic-password",
+        "-U", // update-or-add
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-a",
+        account,
+        "-w", // LAST, valueless -> prompt reads the secret from stdin (not argv)
+    ]
+}
+
+/// Write `secret` to the login Keychain under `account`, **ARGV-FREE**.
+///
+/// SECURITY (argv leak — the finding this closes): the earlier writers passed the
+/// secret as `security add-generic-password ... -w <secret>`, placing it in the
+/// child's ARGUMENT VECTOR — readable by any SAME-UID process via `ps` /
+/// KERN_PROCARGS2 for the child's lifetime, defeating the very Keychain ACL the
+/// item is stored under. Here `-w` is the last argument with NO value, so
+/// security(1) PROMPTS and reads the password from STDIN (verified on-device), and
+/// we feed the secret on the child's stdin — never argv, never a shell string,
+/// never logged. Keeping the security(1) CLI (rather than a SecItem/FFI rewrite)
+/// GUARANTEES the existing `find-generic-password` READ path finds the item
+/// unchanged. security(1)'s prompt asks for the value TWICE (enter + retype), so we
+/// write it twice, then drop stdin so it sees EOF and proceeds. Reads argv-clean
+/// already; this makes the writes match that discipline.
+pub(crate) fn keychain_write(account: &str, secret: &str) -> anyhow::Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("/usr/bin/security")
+        .args(keychain_write_args(account))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("could not run security(1) to store the secret: {e}"))?;
+    // Feed the secret on stdin (prompt asks twice), then close stdin -> EOF. The
+    // secret is tiny (a token/key), so it fits the pipe buffer and never blocks.
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("security(1) stdin was not captured"))?;
+        stdin
+            .write_all(secret.as_bytes())
+            .and_then(|()| stdin.write_all(b"\n"))
+            .and_then(|()| stdin.write_all(secret.as_bytes()))
+            .and_then(|()| stdin.write_all(b"\n"))
+            .map_err(|e| anyhow::anyhow!("feeding the secret to security(1) stdin failed: {e}"))?;
+        // stdin dropped here -> EOF so security(1) proceeds past the prompt.
+    }
+    let deadline = std::time::Instant::now() + KEYCHAIN_WRITE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => anyhow::bail!("storing the secret in the keychain failed"),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    anyhow::bail!("storing the secret in the keychain timed out");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(e) => anyhow::bail!("waiting on security(1) failed: {e}"),
+        }
+    }
+}
+
 /// Prefix/suffix bracketing a per-MCP-server Keychain account. An MCP server's
 /// optional auth token lives at `mcp_<server>_token` (one account per configured
 /// server), so — unlike the fixed integration accounts — the full set is not
@@ -1438,6 +1513,26 @@ mod tests {
         assert_eq!(
             keychain_query_args("github_pat"),
             ["find-generic-password", "-s", "com.jarvis.daemon", "-a", "github_pat", "-w"]
+        );
+    }
+
+    /// The WRITE argv must be ARGV-FREE of the secret: `-w` is the LAST token with
+    /// NO value after it, so the secret rides security(1)'s stdin, never the child's
+    /// argument vector (readable by same-UID `ps`). Asserted without running
+    /// security(1) or handling a real secret.
+    #[test]
+    fn keychain_write_argv_never_carries_the_secret() {
+        let args = keychain_write_args("github_pat");
+        assert_eq!(
+            args,
+            ["add-generic-password", "-U", "-s", "com.jarvis.daemon", "-a", "github_pat", "-w"]
+        );
+        // The LAST token is a bare `-w` (no value follows it in argv).
+        assert_eq!(*args.last().unwrap(), "-w", "-w must be the final, valueless arg");
+        // Belt-and-suspenders: no element is a placeholder for a secret value.
+        assert!(
+            !args.iter().any(|a| a.contains("token") || a.contains("secret") || a.contains("password data")),
+            "no secret value may appear in the write argv: {args:?}"
         );
     }
 

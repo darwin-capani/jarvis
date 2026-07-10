@@ -1142,6 +1142,10 @@ async fn standing_task(root: PathBuf, cfg: Arc<Config>, memory: Arc<Memory>, soc
                 max_tokens: 1024,
                 memory: &memory,
                 orchestrator: registry.orchestrator().name.clone(),
+                // A standing mission fires AUTONOMOUSLY on a schedule with no live
+                // user utterance — treat as UNTRUSTED so its sub-tasks stay
+                // egress-guarded (no unattended injection-driven outbound GET).
+                context_trusted: false,
             };
             let run = standing::run_one(mission, &registry, &planner, &dispatcher, cloud_reachable).await;
 

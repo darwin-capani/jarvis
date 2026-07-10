@@ -431,12 +431,101 @@ fn office_text(bytes: &[u8], kind: OfficeKind, cap: usize) -> Result<String> {
     Ok(out)
 }
 
+/// Ceiling on TOTAL decompressed FlateDecode output for one PDF — the same 256 MiB
+/// bound `office_text` caps its ZIP members to. A born-digital PDF's real streams
+/// (text/fonts) inflate far below this; a decompression bomb does not.
+const PDF_DECOMPRESS_CEILING: u64 = 256 << 20;
+
+/// Inflate one FlateDecode (zlib) stream's RAW `content` through the REMAINING
+/// budget, adding decompressed bytes to `spent`. Returns `false` the moment `spent`
+/// exceeds `budget` (a suspected bomb). Bounded to O(8 KiB) memory via a fixed
+/// scratch buffer; `.take(remaining+1)` caps this one stream's contribution and the
+/// `+1` makes hitting the budget from a single stream detectable. A non-Flate blob
+/// (image / other filter / raw) fails to inflate and contributes 0 — the caller
+/// treats that as "no measurable inflation," not "safe."
+fn flate_stream_within_budget(content: &[u8], budget: u64, spent: &mut u64) -> bool {
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
+    let remaining = budget.saturating_sub(*spent).saturating_add(1);
+    let mut dec = ZlibDecoder::new(content).take(remaining);
+    let mut scratch = [0u8; 8192];
+    loop {
+        match dec.read(&mut scratch) {
+            Ok(0) => return true, // stream finished within budget
+            Ok(k) => {
+                *spent = spent.saturating_add(k as u64);
+                if *spent > budget {
+                    return false; // suspected decompression bomb
+                }
+            }
+            // Partial/invalid stream: we have counted whatever inflated so far, which
+            // is enough for the budget check; stop this stream.
+            Err(_) => return true,
+        }
+    }
+}
+
+/// DECOMPRESSION-BOMB GUARD for PDFs. `pdf-extract` (via lopdf) inflates a PDF's
+/// FlateDecode content/object streams with NO ratio cap, so a ~2 MiB PDF whose
+/// stream inflates to ~2 GB (DEFLATE reaches ~1032x) passes the compressed-size gate
+/// yet OOMs the daemon during reindex — and a Rust allocation abort does NOT unwind,
+/// so the `catch_unwind` skip boundary cannot contain it (unlike a parser panic). So
+/// BEFORE handing bytes to pdf-extract we parse the PDF STRUCTURE with lopdf (which
+/// does NOT decompress on load, and is bounded by the file size), iterate the REAL
+/// stream objects — whose `content` has correct `/Length`-parsed boundaries, so
+/// there is no "endstream-in-data" byte-scan evasion and no unbounded stream count —
+/// and inflate each through a shared byte BUDGET with flate2 (O(8 KiB) memory). If
+/// the total would exceed `budget` the PDF is a suspected bomb and we return false
+/// -> pdf_text errors -> honest skip. If lopdf cannot PARSE the file we return true:
+/// pdf-extract (which also wraps lopdf) cannot inflate what it cannot parse, so it
+/// will error safely on the same input.
+///
+/// RESIDUALS (documented; a complete fix needs process-level isolation, see below):
+///   1. FILTER-CHAIN ARMOR — a bomb behind a non-Flate chain (`ASCII85Decode` /
+///      `LZWDecode` -> `FlateDecode`) has non-zlib `content` here, so its inner
+///      inflation is not measured and a *crafted* filter-chained bomb can still
+///      reach pdf-extract's uncapped inflate.
+///   2. STRUCTURAL-STREAM (parse-time) BOMBS — a bomb inside a cross-reference
+///      stream (XRefStm) or object stream (ObjStm) is decompressed by the PARSER
+///      itself (both this `load_mem` AND pdf-extract's own load must decode those to
+///      read the file). lopdf 0.38 exposes no decompression-size limit on load, so
+///      such a bomb OOMs during parse — and NO in-process guard can prevent it,
+///      because pdf-extract re-parses the same bytes unbounded regardless of what we
+///      check first (a Rust alloc-abort does not unwind, so `catch_unwind` can't
+///      contain it either).
+/// The ONLY complete, filter- and structure-agnostic fix is a memory-jailed
+/// extraction subprocess (RLIMIT_AS on a child) — deferred as an architectural
+/// follow-up (a per-file re-exec fights the in-process test model). This guard
+/// closes the common single-FlateDecode CONTENT-stream bomb (the reported vector)
+/// with reliable boundaries; the two residuals above are honestly out of its reach.
+fn pdf_decompression_within_budget(bytes: &[u8], budget: u64) -> bool {
+    let Ok(doc) = lopdf::Document::load_mem(bytes) else {
+        return true; // unparseable -> pdf-extract will error safely, not OOM
+    };
+    let mut spent: u64 = 0;
+    for obj in doc.objects.values() {
+        if let lopdf::Object::Stream(stream) = obj {
+            if !flate_stream_within_budget(&stream.content, budget, &mut spent) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Extract UTF-8 text from a born-digital PDF already loaded into `bytes`, via the
 /// pure-Rust `pdf-extract` crate (it decodes the content streams on-device). A
 /// scanned/image-only PDF has no text layer -> returns an (effectively) empty
 /// string the guard treats as an HONEST SKIP. An encrypted/malformed PDF errors
-/// here -> skip. Pure: no disk/network.
+/// here -> skip. Pure: no disk/network. A suspected DECOMPRESSION BOMB is refused
+/// here (before pdf-extract's uncapped inflate) -> honest skip, never an OOM.
 fn pdf_text(bytes: &[u8]) -> Result<String> {
+    if !pdf_decompression_within_budget(bytes, PDF_DECOMPRESS_CEILING) {
+        anyhow::bail!(
+            "pdf skipped: FlateDecode streams exceed the {PDF_DECOMPRESS_CEILING}-byte \
+             decompression budget (suspected decompression bomb)"
+        );
+    }
     pdf_extract::extract_text_from_mem(bytes).context("pdf text extraction failed")
 }
 
@@ -2029,6 +2118,49 @@ mod tests {
         let out = extract_text(Path::new("docs/x.docx"), FileKind::Office(OfficeKind::Docx), &bytes, 300)
             .expect("non-empty");
         assert!(out.len() <= 300, "extract_text honored the cap: {} bytes", out.len());
+    }
+
+    #[test]
+    fn flate_stream_budget_flags_a_decompression_bomb() {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        // Compress 4 MiB of zeros -> a few-KB blob that inflates back to 4 MiB: the
+        // shape of a decompression bomb (tiny compressed, large inflated). This is a
+        // real FlateDecode stream's raw `content` — the exact bytes lopdf hands us.
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::best());
+        enc.write_all(&vec![0u8; 4 << 20]).unwrap();
+        let compressed = enc.finish().unwrap();
+        assert!(compressed.len() < 64 * 1024, "zeros compress tiny: {} B", compressed.len());
+
+        // A 1 MiB budget: the 4 MiB inflation exceeds it -> flagged as a bomb.
+        let mut spent = 0u64;
+        assert!(
+            !flate_stream_within_budget(&compressed, 1 << 20, &mut spent),
+            "4 MiB of inflation must exceed a 1 MiB budget"
+        );
+
+        // An 8 MiB budget: 4 MiB fits -> allowed (a legit stream is not false-flagged).
+        let mut spent2 = 0u64;
+        assert!(
+            flate_stream_within_budget(&compressed, 8 << 20, &mut spent2),
+            "4 MiB of inflation fits an 8 MiB budget"
+        );
+        assert_eq!(spent2, 4 << 20, "the full stream was counted");
+
+        // A non-Flate blob contributes nothing (fails to inflate, counts 0).
+        let mut spent3 = 0u64;
+        assert!(flate_stream_within_budget(b"not a zlib stream at all", 1 << 20, &mut spent3));
+        assert_eq!(spent3, 0, "a non-Flate blob adds no inflated bytes");
+
+        // The budget ACCUMULATES across streams: two 4 MiB streams exceed a 6 MiB
+        // total budget even though each fits alone.
+        let mut acc = 0u64;
+        assert!(flate_stream_within_budget(&compressed, 6 << 20, &mut acc)); // 4 MiB spent
+        assert!(
+            !flate_stream_within_budget(&compressed, 6 << 20, &mut acc),
+            "cumulative inflation across streams must trip the shared budget"
+        );
     }
 
     #[test]

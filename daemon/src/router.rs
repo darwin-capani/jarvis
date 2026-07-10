@@ -868,6 +868,7 @@ pub async fn route(
             agent_persona.as_deref(),
             &world_context,
             &personalization,
+            true, // a direct user turn — trusted, user-originated
         )
         .await
         {
@@ -1880,6 +1881,7 @@ async fn route_capability(
                 // A focused world_update directive — no personalization grounding
                 // needed; pass an empty summary.
                 "",
+                true, // the user's own stated fact — trusted (and only world_update is offered)
             )
             .await
             {
@@ -1907,7 +1909,8 @@ async fn route_capability(
             // FURY's bounded mission engine. run_fury_mission degrades to a
             // friendly offline line WITHOUT planning/dispatching when no key
             // resolves, so it is safe to call regardless of cloud state.
-            let response = anthropic::run_fury_mission(text, memory).await;
+            // A mission the owner requested directly (Mission mode) — trusted.
+            let response = anthropic::run_fury_mission(text, memory, true).await;
             let fury = agents.get("fury").unwrap_or(prime);
             emit_agent_active(fury);
             Some(RouteOutcome {

@@ -36,7 +36,7 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Sha256;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex};
@@ -1792,7 +1792,11 @@ async fn handle_conn(
 /// `fill_buf`, which is itself cancellation-safe (it consumes nothing until we
 /// call `consume`), so no byte is ever read-and-lost. `pending` is cleared only
 /// when a complete line (or EOF/oversize) is returned.
-async fn read_line_bounded(
+///
+/// `pub(crate)` so the generate proxy (`genproxy.rs`), which reads the SAME
+/// untrusted-micro-app socket line protocol, shares this one audited bounded
+/// reader instead of an unbounded `read_line` that a hostile app could OOM.
+pub(crate) async fn read_line_bounded(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     pending: &mut Vec<u8>,
     line: &mut String,
@@ -1811,6 +1815,20 @@ async fn read_line_bounded(
             return Ok(n); // trailing line without newline at EOF
         }
         if let Some(i) = chunk.iter().position(|&b| b == b'\n') {
+            // The newline branch is subject to the SAME cap: a line whose bytes up to
+            // the newline (already-buffered `pending` + `i` in this chunk) exceed
+            // `max` is rejected EXACTLY, not returned. Without this, a line that ends
+            // in a newline within one fill_buf chunk could overshoot the cap by up to
+            // a buffer's worth — tightened because this reader is shared with the
+            // pre-auth generate proxy.
+            if pending.len().saturating_add(i) > max {
+                reader.consume(i + 1);
+                pending.clear();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "app line exceeds MAX_APP_LINE_BYTES",
+                ));
+            }
             let take = i + 1;
             pending.extend_from_slice(&chunk[..take]);
             reader.consume(take);
@@ -2164,15 +2182,70 @@ async fn host_wants_running(registry: &Arc<AppRegistry>, name: &str) -> bool {
     apps.get(name).map(|e| e.running).unwrap_or(false)
 }
 
+/// Read ONE line from a buffered stream, capping the retained bytes at `max`. If a
+/// line exceeds `max` before a newline, the first `max` bytes are kept and the rest
+/// (up to the next newline or EOF) is DRAINED WITHOUT BUFFERING — so a hostile
+/// micro-app streaming a newline-free flood on its stdout cannot grow the daemon's
+/// memory without bound, while logging RESYNCS on the next line. Returns `Ok(None)`
+/// at clean EOF, `Ok(Some(()))` when `out` holds a (possibly truncated) line. The
+/// sole `.await` is `fill_buf` (cancellation-safe), and peak memory is `max` + one
+/// fill_buf chunk. Generic over any buffered reader, so it bounds the stdout/stderr
+/// relay just as `read_line_bounded` bounds the socket relay.
+async fn read_capped_log_line<R>(
+    reader: &mut R,
+    out: &mut Vec<u8>,
+    max: usize,
+) -> std::io::Result<Option<()>>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    use tokio::io::AsyncBufReadExt;
+    out.clear();
+    let mut saw_any = false;
+    let mut overflowed = false; // cap reached: keep draining to the newline, stop buffering
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            return if saw_any { Ok(Some(())) } else { Ok(None) };
+        }
+        saw_any = true;
+        if let Some(i) = chunk.iter().position(|&b| b == b'\n') {
+            if !overflowed {
+                let room = max.saturating_sub(out.len());
+                out.extend_from_slice(&chunk[..room.min(i)]); // exclude the '\n'
+            }
+            reader.consume(i + 1);
+            return Ok(Some(()));
+        }
+        if !overflowed {
+            let room = max.saturating_sub(out.len());
+            if chunk.len() <= room {
+                out.extend_from_slice(chunk);
+            } else {
+                out.extend_from_slice(&chunk[..room]);
+                overflowed = true;
+            }
+        }
+        let n = chunk.len();
+        reader.consume(n);
+    }
+}
+
 /// Relay one of the child's stdio streams as app.log telemetry, line by line.
+/// BOUNDED per line (see [`read_capped_log_line`]): a micro-app fully controls its
+/// own stdout, and this relay is attached to EVERY launched app, so an unbounded
+/// `next_line()` would let a hostile app OOM the daemon with a newline-free flood.
 fn spawn_log_relay<R>(name: String, stream: R)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
-        let mut reader = BufReader::new(stream).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            if line.trim().is_empty() {
+        let mut reader = BufReader::new(stream);
+        let mut buf: Vec<u8> = Vec::new();
+        while let Ok(Some(())) = read_capped_log_line(&mut reader, &mut buf, MAX_APP_LINE_BYTES).await {
+            let line = String::from_utf8_lossy(&buf);
+            let line = line.trim();
+            if line.is_empty() {
                 continue;
             }
             telemetry::emit("system", "app.log", json!({"name": name, "line": line}));
@@ -3399,5 +3472,79 @@ mod tests {
         assert_eq!(line, "hello world\n", "line reassembled whole after cancellation");
         assert_eq!(n, "hello world\n".len());
         assert!(pending.is_empty(), "pending is cleared once a full line is returned");
+    }
+
+    /// DoS DEFENSE (shared by the app-relay socket AND the generate proxy). A line
+    /// that exceeds `max` with NO newline must ERROR (so the caller drops the
+    /// connection) rather than buffer unboundedly — a hostile app cannot OOM the
+    /// daemon by streaming a newline-free flood. We use a tiny `max` and a modest
+    /// over-cap write to prove the bound without allocating megabytes.
+    #[tokio::test]
+    async fn read_line_bounded_errors_on_an_overlong_line_with_no_newline() {
+        let (mut client, server) = UnixStream::pair().expect("unix socketpair");
+        let (read_half, _write_half) = server.into_split();
+        let mut reader = BufReader::new(read_half);
+        let mut pending: Vec<u8> = Vec::new();
+        let mut line = String::new();
+        // 64 bytes, no newline, cap = 16 -> must exceed and error. Keep `client`
+        // alive so the reader sees data (not EOF, which would return a trailing line).
+        client.write_all(&[b'x'; 64]).await.expect("write flood");
+        let err = read_line_bounded(&mut reader, &mut pending, &mut line, 16)
+            .await
+            .expect_err("an over-cap no-newline line must error, not buffer unboundedly");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::InvalidData,
+            "overflow must be InvalidData so the caller drops the connection"
+        );
+    }
+
+    /// The cap is EXACT even when the over-long line ends in a newline within one
+    /// read: a line whose bytes exceed `max` is rejected, not returned (closes the
+    /// one-buffer overshoot on the newline branch).
+    #[tokio::test]
+    async fn read_line_bounded_errors_on_an_overlong_line_that_ends_in_a_newline() {
+        let (mut client, server) = UnixStream::pair().expect("unix socketpair");
+        let (read_half, _write_half) = server.into_split();
+        let mut reader = BufReader::new(read_half);
+        let mut pending: Vec<u8> = Vec::new();
+        let mut line = String::new();
+        // 40 bytes then a newline, cap = 16 -> the whole line (incl. its terminator)
+        // arrives in one chunk; it must ERROR, not return a 40-byte line.
+        client.write_all(&[b'x'; 40]).await.expect("write body");
+        client.write_all(b"\n").await.expect("write newline");
+        let err = read_line_bounded(&mut reader, &mut pending, &mut line, 16)
+            .await
+            .expect_err("an over-cap line ending in a newline must still error");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// DoS DEFENSE for the stdout/stderr LOG relay. An over-long line is TRUNCATED
+    /// to the cap (memory bounded), the rest is drained, and logging RESYNCS on the
+    /// next line — a hostile app's newline-free flood can't OOM the daemon, and a
+    /// normal line after it is still relayed whole.
+    #[tokio::test]
+    async fn read_capped_log_line_truncates_flood_and_resyncs() {
+        // A 100-byte no-newline flood, a newline, then a normal line, then EOF.
+        let mut data = vec![b'A'; 100];
+        data.push(b'\n');
+        data.extend_from_slice(b"next line\n");
+        let mut reader = BufReader::new(&data[..]);
+        let mut buf: Vec<u8> = Vec::new();
+
+        // First line: capped to 16 bytes (the flood is truncated, not buffered whole).
+        read_capped_log_line(&mut reader, &mut buf, 16).await.unwrap().unwrap();
+        assert_eq!(buf.len(), 16, "over-long line truncated to the cap");
+        assert!(buf.iter().all(|&b| b == b'A'), "kept the leading bytes: {buf:?}");
+
+        // Second line: resynced past the flood, relayed WHOLE.
+        read_capped_log_line(&mut reader, &mut buf, 16).await.unwrap().unwrap();
+        assert_eq!(buf, b"next line", "logging resyncs on the next line");
+
+        // Clean EOF.
+        assert!(
+            read_capped_log_line(&mut reader, &mut buf, 16).await.unwrap().is_none(),
+            "clean EOF returns None"
+        );
     }
 }

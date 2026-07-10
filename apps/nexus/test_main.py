@@ -56,8 +56,11 @@ class FakeLink:
         self.lines.append(json.loads(line))
 
     def telemetry(self, topic: str, payload: dict) -> None:
-        # Same shape HostLink.telemetry produces: type "items", data {topic,payload}.
-        self.send("items", {"topic": topic, "payload": payload})
+        # Same shape HostLink.telemetry produces: type "items", with the payload
+        # fields FLATTENED into data alongside topic ({**payload, "topic": topic}),
+        # matching Vision + the HUD parsers (no nested "payload" wrapper). topic is
+        # applied last so a stray payload "topic" key can't override routing.
+        self.send("items", {**payload, "topic": topic})
 
     def log(self, line: str) -> None:
         self.send("log", {"line": line})
@@ -67,7 +70,9 @@ class FakeLink:
         out = []
         for ln in self.lines:
             if ln["type"] == "items" and ln["data"].get("topic") == topic:
-                out.append(ln["data"]["payload"])
+                # Flattened wire: payload fields sit in data alongside topic. Return
+                # just the fields (topic stripped) so callers assert on the payload.
+                out.append({k: v for k, v in ln["data"].items() if k != "topic"})
         return out
 
     def logs(self) -> list[str]:
@@ -158,12 +163,16 @@ class TestTelemetryWireShape(unittest.TestCase):
         link.telemetry("audio.levels", {"ch": []})
         self.assertEqual(link.lines[0]["type"], "items")
 
-    def test_telemetry_nests_topic_and_payload_under_data(self):
+    def test_telemetry_flattens_payload_fields_into_data(self):
+        # FLAT wire: payload fields sit DIRECTLY in data alongside topic (like Vision
+        # + the HUD parsers), NOT under a nested "payload" object — else every HUD
+        # field is one level too deep and the panel renders blank.
         link = FakeLink()
         link.telemetry("audio.spectrum", {"bands": [0.0] * 96})
         data = link.lines[0]["data"]
         self.assertEqual(data["topic"], "audio.spectrum")
-        self.assertEqual(data["payload"], {"bands": [0.0] * 96})
+        self.assertNotIn("payload", data, "telemetry must be flat (no nested payload wrapper)")
+        self.assertEqual(data["bands"], [0.0] * 96)
 
     def test_every_emitted_line_carries_the_token(self):
         link = FakeLink(token="cap-123")

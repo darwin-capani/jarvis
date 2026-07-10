@@ -1057,6 +1057,7 @@ impl CommandPipeline for LivePipeline {
             persona.as_deref(),
             &world_context,
             &personalization,
+            true, // a direct user turn — trusted, user-originated
         )
         .await
         {
@@ -1072,7 +1073,8 @@ impl CommandPipeline for LivePipeline {
     }
 
     async fn mission(&self, goal: &str) -> String {
-        crate::anthropic::run_fury_mission(goal, self.memory.as_ref()).await
+        // A mission the owner requested directly (Mission command) — trusted.
+        crate::anthropic::run_fury_mission(goal, self.memory.as_ref(), true).await
     }
 
     async fn roster(&self) -> String {
