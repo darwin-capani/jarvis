@@ -50,17 +50,29 @@ jobs:
     runs-on: macos-latest
 
     steps:
+      # SUPPLY-CHAIN: every third-party action is pinned to a full-length commit
+      # SHA, not a mutable tag/branch. A tag like `@v4` or a branch like `@stable`
+      # can be silently repointed at malicious code by a compromised action repo —
+      # and this job runs with `contents: write` AND the Apple signing + updater
+      # secrets, so a poisoned action could sign/publish malware under the owner's
+      # identity. The `# vX.Y.Z` trailing comment records the human-readable version
+      # each SHA corresponds to (bump the SHA to upgrade; Dependabot understands
+      # this format).
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
 
       - name: Set up the Rust toolchain (Apple Silicon target)
-        uses: dtolnay/rust-toolchain@stable
+        # dtolnay/rust-toolchain normally infers the channel from the git ref
+        # (`@stable`), so once pinned to a SHA the channel MUST be named explicitly
+        # via the `toolchain` input — otherwise the action has no ref to read.
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable channel
         with:
+          toolchain: stable
           # JARVIS is Apple-Silicon-only (arm64 + Metal/MLX/ANE), so we build for
           # aarch64 ONLY — a universal/x86_64 slice can't run the OS and breaks the
           # updater's latest.json signature matching (the renamed _universal artifact
@@ -68,7 +80,7 @@ jobs:
           targets: aarch64-apple-darwin
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -138,7 +150,7 @@ jobs:
       # the .app(.tar.gz)/.dmg + the `latest.json` updater manifest (the endpoint
       # tauri.conf.json points at). EVERY value is from secrets — nothing committed.
       - name: Build, sign, notarize, and publish
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           # Updater bundle signing (minisign). PRIVATE key + password from secrets.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

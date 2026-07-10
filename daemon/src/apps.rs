@@ -1613,9 +1613,24 @@ async fn run_once(
     for a in &argv {
         cmd.arg(a);
     }
-    // The app learns its socket + token from the env ONLY — never argv (argv
-    // is world-readable via ps; the env of a sandboxed child is not the
-    // daemon's). The session key never appears here, only the derived token.
+    // SECURITY: clear the INHERITED environment so no daemon secret crosses into a
+    // sandboxed micro-app. The SBPL profile filters files/mach/network — NOT env
+    // vars — so an inherited ANTHROPIC_API_KEY / ELEVENLABS_API_KEY / HF_TOKEN would
+    // sail past the default-deny sandbox and be readable by a malicious app via
+    // getenv(). We re-add ONLY a minimal, non-secret allowlist (mirrors shell.rs's
+    // sandboxed-shell spawn, which already env_clear()s). The app learns its socket +
+    // token from the env ONLY — never argv (argv is world-readable via ps). The
+    // session key never appears here, only the derived token.
+    cmd.env_clear();
+    cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    cmd.env("HOME", &registry.project_root);
+    // Forward the vision app's non-secret capability DECLARATIONS if the operator set
+    // them in the daemon env — these grant nothing (macOS TCC is the real gate).
+    for var in ["JARVIS_VISION_CAMERA", "JARVIS_VISION_SCREEN"] {
+        if let Ok(v) = std::env::var(var) {
+            cmd.env(var, v);
+        }
+    }
     cmd.env("JARVIS_APP_TOKEN", token);
     cmd.env("JARVIS_APP_SOCKET", abs(&registry.project_root, socket_path));
     cmd.env("JARVIS_APP_NAME", name);
@@ -1760,6 +1775,63 @@ async fn handle_conn(
     end
 }
 
+/// Read one newline-terminated line into `line`, buffering AT MOST `max` bytes.
+/// The stdlib/tokio `read_line` grows the target String without limit until it
+/// sees a newline, so a malicious/compromised micro-app that sends a huge line
+/// with no `\n` would OOM the daemon BEFORE any post-hoc `line.len()` check could
+/// run. This caps the buffer as it fills: `Ok(0)` on EOF, the byte count on a
+/// complete line, or an `InvalidData` error once `max` bytes arrive without a
+/// newline (the caller then drops the connection — a well-behaved app never sends
+/// a line anywhere near `MAX_APP_LINE_BYTES`).
+///
+/// CANCELLATION SAFETY: this future is used in a `tokio::select!` arm, so it can
+/// be DROPPED mid-read whenever another arm (a queued host->app op, a stop, a
+/// child exit) wins. The accumulator therefore lives in the CALLER's `pending`
+/// buffer, NOT a local one: bytes already pulled off the reader survive the drop
+/// and the next call resumes exactly where it left off. The single `.await` is
+/// `fill_buf`, which is itself cancellation-safe (it consumes nothing until we
+/// call `consume`), so no byte is ever read-and-lost. `pending` is cleared only
+/// when a complete line (or EOF/oversize) is returned.
+async fn read_line_bounded(
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    pending: &mut Vec<u8>,
+    line: &mut String,
+    max: usize,
+) -> std::io::Result<usize> {
+    use tokio::io::AsyncBufReadExt;
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            if pending.is_empty() {
+                return Ok(0); // clean EOF
+            }
+            *line = String::from_utf8_lossy(pending).into_owned();
+            let n = pending.len();
+            pending.clear();
+            return Ok(n); // trailing line without newline at EOF
+        }
+        if let Some(i) = chunk.iter().position(|&b| b == b'\n') {
+            let take = i + 1;
+            pending.extend_from_slice(&chunk[..take]);
+            reader.consume(take);
+            *line = String::from_utf8_lossy(pending).into_owned();
+            let n = pending.len();
+            pending.clear();
+            return Ok(n);
+        }
+        let take = chunk.len();
+        pending.extend_from_slice(chunk);
+        reader.consume(take);
+        if pending.len() > max {
+            pending.clear(); // drop the oversized accumulation; caller closes the conn
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "app line exceeds MAX_APP_LINE_BYTES with no newline",
+            ));
+        }
+    }
+}
+
 /// The connection service loop, factored out so [`handle_conn`] can put the op
 /// receiver back on every exit path without repeating it at each `return`.
 #[allow(clippy::too_many_arguments)]
@@ -1775,6 +1847,10 @@ async fn serve_conn(
     mut op_rx: Option<&mut mpsc::UnboundedReceiver<String>>,
 ) -> ConnEnd {
     let mut line = String::new();
+    // Persists ACROSS loop iterations so a partial line survives a select!
+    // cancellation (a queued op firing mid-read) — see read_line_bounded's
+    // cancellation-safety contract.
+    let mut pending: Vec<u8> = Vec::new();
     loop {
         line.clear();
         // A future that resolves to the next queued op line, or never resolves
@@ -1816,7 +1892,7 @@ async fn serve_conn(
                     None => {}
                 }
             }
-            read = reader.read_line(&mut line) => {
+            read = read_line_bounded(reader, &mut pending, &mut line, MAX_APP_LINE_BYTES) => {
                 match read {
                     Ok(0) => return ConnEnd::ConnClosed, // app closed the socket
                     Ok(_) => {
@@ -1995,7 +2071,15 @@ async fn relay_line(
                         false,
                     );
                     telemetry::emit("system", event, payload);
-                    for module in &att.unexpected {
+                    // Bound the per-report fan-out: a malicious app could report up
+                    // to MAX_MODULES unexpected entries, which unthrottled would be
+                    // MAX_MODULES telemetry emits + findings-ring evictions per line
+                    // (a telemetry-flood DoS + a way to evict real findings). The
+                    // aggregate `unexpected` count already rides the single
+                    // ev_modattest envelope above, so emit only the first K here and
+                    // summarize the rest.
+                    const MAX_VIOLATION_EMITS: usize = 16;
+                    for module in att.unexpected.iter().take(MAX_VIOLATION_EMITS) {
                         // Finding ring is user/cloud-facing -> redact the home
                         // prefix; the telemetry envelope below keeps the full path.
                         crate::introspect::record_finding(crate::introspect::redact_home(&format!(
@@ -2005,6 +2089,12 @@ async fn relay_line(
                         let (event, payload) =
                             crate::introspect::ev_module_violation(name, &module.path, &module.uuid);
                         telemetry::emit("system", event, payload);
+                    }
+                    if att.unexpected.len() > MAX_VIOLATION_EMITS {
+                        crate::introspect::record_finding(format!(
+                            "module: {name} +{} more unexpected modules (per-report cap)",
+                            att.unexpected.len() - MAX_VIOLATION_EMITS
+                        ));
                     }
                 }
             }
@@ -3270,5 +3360,44 @@ mod tests {
         assert!(err.contains("not running"), "{err}");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// read_line_bounded must be CANCELLATION-SAFE: dropped mid-read (a select!
+    /// arm losing the race) it must not lose bytes it already pulled off the
+    /// reader. We prove it by driving a partial line, cancelling the read via a
+    /// timer that wins a select!, then resuming — the reassembled line must be
+    /// WHOLE. (With the accumulator local to the future, as it was before, the
+    /// prefix would be consumed-then-dropped and the resumed read would return
+    /// only the tail — the exact desync this guards.)
+    #[tokio::test]
+    async fn read_line_bounded_is_cancellation_safe_across_a_dropped_read() {
+        let (mut client, server) = UnixStream::pair().expect("unix socketpair");
+        let (read_half, _write_half) = server.into_split();
+        let mut reader = BufReader::new(read_half);
+        let mut pending: Vec<u8> = Vec::new();
+        let mut line = String::new();
+
+        // App sends the FIRST half of a line — no newline yet.
+        client.write_all(b"hello wor").await.expect("write prefix");
+
+        // A read races a 50ms timer. read_line_bounded consumes "hello wor" (no
+        // newline) then awaits more data; the timer wins, so the read future is
+        // DROPPED. The consumed prefix must survive in `pending`.
+        tokio::select! {
+            _ = read_line_bounded(&mut reader, &mut pending, &mut line, MAX_APP_LINE_BYTES) => {
+                panic!("read must not complete before a newline arrives");
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+        assert_eq!(pending, b"hello wor", "consumed prefix must persist across the cancel");
+
+        // The rest of the line arrives; the next read must return the WHOLE line.
+        client.write_all(b"ld\n").await.expect("write suffix");
+        let n = read_line_bounded(&mut reader, &mut pending, &mut line, MAX_APP_LINE_BYTES)
+            .await
+            .expect("read completes");
+        assert_eq!(line, "hello world\n", "line reassembled whole after cancellation");
+        assert_eq!(n, "hello world\n".len());
+        assert!(pending.is_empty(), "pending is cleared once a full line is returned");
     }
 }

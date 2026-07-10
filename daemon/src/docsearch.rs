@@ -395,20 +395,32 @@ fn office_text(bytes: &[u8], kind: OfficeKind, cap: usize) -> Result<String> {
         .map(|n| n.to_string())
         .collect();
     members.sort();
+    // ZIP-BOMB GUARD. A member's UNCOMPRESSED size is attacker-controlled — a zip
+    // bomb inflates a few KB of compressed data to gigabytes, and the compressed
+    // file passed only the `max_file_bytes` gate (that bounds the ZIP on disk, NOT
+    // any member's decompressed stream). An unbounded `read_to_end` on the
+    // decompressing reader would follow the bomb to OOM. So we cap TOTAL
+    // decompressed bytes read across the whole document with a running budget and
+    // `Read::take` (which bounds the ACTUAL bytes read regardless of the member's
+    // declared, forgeable uncompressed size). We never need more XML than yields
+    // `cap` text chars (markup inflates that), so 64× cap is generous headroom;
+    // floored so a small cap still reads real parts whole, ceilinged so no
+    // document — however many members, however large each claims — exhausts memory.
+    // A bomb hits the budget and we return the real text extracted so far.
+    let mut budget_left: u64 = (cap as u64).saturating_mul(64).clamp(16 << 20, 256 << 20);
     let mut out = String::new();
     for name in members {
-        if out.len() >= cap {
+        if out.len() >= cap || budget_left == 0 {
             break;
         }
-        // Read the part's bytes (bounded by the file's own size, already <=
-        // max_file_bytes since we only opened a file that passed the size gate).
-        let Ok(mut part) = archive.by_name(&name) else {
+        let Ok(part) = archive.by_name(&name) else {
             continue;
         };
         let mut xml = Vec::new();
-        if part.read_to_end(&mut xml).is_err() {
+        if part.take(budget_left).read_to_end(&mut xml).is_err() {
             continue; // a bad member is skipped, not fatal
         }
+        budget_left = budget_left.saturating_sub(xml.len() as u64);
         let remaining = cap.saturating_sub(out.len());
         let piece = extract_office_part(&xml, spec.text_elements, remaining);
         if !piece.is_empty() {
@@ -2017,6 +2029,37 @@ mod tests {
         let out = extract_text(Path::new("docs/x.docx"), FileKind::Office(OfficeKind::Docx), &bytes, 300)
             .expect("non-empty");
         assert!(out.len() <= 300, "extract_text honored the cap: {} bytes", out.len());
+    }
+
+    #[test]
+    fn office_text_bounds_zip_bomb_decompression() {
+        // ZIP-BOMB DEFENSE. A member whose DECOMPRESSED stream dwarfs the read
+        // budget must be TRUNCATED, never followed to OOM. We prove the bound
+        // POSITIONALLY: a text run sits at the very start of word/document.xml and
+        // another past the 16 MiB floor budget, with a ~23 MiB run of text-free
+        // elements between them. With a small `cap` the per-document budget floors
+        // at 16 MiB, so `Read::take` cuts the decompressed read before the trailing
+        // marker is ever seen — the extractor returns the LEADING text but NEVER the
+        // trailing one. (Remove the take() bound and the whole member is read, so
+        // BOTH markers appear — that is exactly the regression this guards.)
+        let filler = "<w:noop></w:noop>".repeat(1_400_000); // ~23 MiB, yields no text
+        let document = format!(
+            r#"<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>LEADING_MARKER_TEXT</w:t></w:r></w:p>{filler}<w:p><w:r><w:t>TRAILING_MARKER_TEXT</w:t></w:r></w:p></w:body></w:document>"#
+        );
+        let docx = make_ooxml(&[
+            ("[Content_Types].xml", r#"<?xml version="1.0"?><Types></Types>"#),
+            ("word/document.xml", &document),
+        ]);
+        // cap=4096 -> budget floors at 16 MiB, below the ~23 MiB member.
+        let out = office_text(&docx, OfficeKind::Docx, 4096).expect("office_text must not error");
+        assert!(
+            out.contains("LEADING_MARKER_TEXT"),
+            "the leading text (before the budget) must still be extracted: {out:?}"
+        );
+        assert!(
+            !out.contains("TRAILING_MARKER_TEXT"),
+            "the trailing marker sits past the decompression budget — take() must cut before it"
+        );
     }
 
     #[test]

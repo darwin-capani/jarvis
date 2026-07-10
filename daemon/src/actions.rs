@@ -522,41 +522,13 @@ fn google_search_url(query: &str) -> String {
     format!("https://www.google.com/search?q={}", percent_encode(query))
 }
 
-/// Does this URL carry caller-supplied DATA in its query string or path —
-/// i.e. could it smuggle bytes out as an outbound GET? True when the URL has a
-/// non-empty `?query` OR a path that is more than the bare root `/`. A bare
-/// `https://host` / `https://host/` is NOT data-bearing.
-///
-/// This is the exfiltration test for the outward-GET tools (`open_url`,
-/// `web_search`): when a call is NOT the user's own utterance but a tool_loop
-/// continuation carrying possibly-injected fetched/MCP/email content, a
-/// data-bearing GET to an arbitrary host is the channel by which prompt-injected
-/// instructions exfiltrate recalled memory. Such a call is refused at the
-/// dispatch boundary (the URL is normalized first, so scheme/whitespace are
-/// already validated). A plain navigational open (bare host, no query) stays
-/// allowed so a continuation can still surface a homepage.
-pub fn url_is_data_bearing(url: &str) -> bool {
-    // Drop scheme; what's left is `authority[/path][?query][#frag]`.
-    let after_scheme = url.split_once("://").map(|x| x.1).unwrap_or(url);
-    // A query string anywhere is data-bearing.
-    let (before_query, query) = match after_scheme.split_once('?') {
-        Some((b, q)) => (b, q),
-        None => (after_scheme, ""),
-    };
-    if !query.is_empty() {
-        return true;
-    }
-    // Path beyond the bare root: split authority from the first '/'.
-    match before_query.split_once('/') {
-        // `host/<something>` with a non-empty, non-fragment-only tail.
-        Some((_authority, path)) => {
-            let path = path.split('#').next().unwrap_or(path);
-            !path.is_empty()
-        }
-        // No '/' at all -> bare host, not data-bearing.
-        None => false,
-    }
-}
+// NOTE: the outward-GET exfiltration guard used to distinguish "data-bearing"
+// URLs (query/path) from bare hosts and allow the latter on a tool continuation.
+// That was removed: a bare host still exfiltrates via an encoded SUBDOMAIN
+// (`https://<secret>.attacker.tld`), so the hostname itself is attacker data. The
+// guard in `anthropic::outward_get_egress_refusal` now refuses ANY non-user-
+// originated open_url/web_search/sage_research outright — there is no
+// "safe navigational open" carve-out to key off, so the old helper is gone.
 
 // ---------------------------------------------------------------------------
 // search_files
@@ -928,26 +900,6 @@ mod tests {
             normalize_url("apple.com:443").unwrap(),
             "https://apple.com:443"
         );
-    }
-
-    #[test]
-    fn url_is_data_bearing_flags_query_and_path_not_bare_hosts() {
-        // Bare hosts (the only thing a tool continuation may navigate to) are NOT
-        // data-bearing — with or without a trailing slash, scheme, or port.
-        assert!(!url_is_data_bearing("https://apple.com"));
-        assert!(!url_is_data_bearing("https://apple.com/"));
-        assert!(!url_is_data_bearing("http://example.org"));
-        assert!(!url_is_data_bearing("https://localhost:8080"));
-        assert!(!url_is_data_bearing("apple.com")); // pre-scheme form
-        // A query string is the exfil channel -> data-bearing.
-        assert!(url_is_data_bearing("https://evil.tld/?d=secret"));
-        assert!(url_is_data_bearing("https://evil.tld?d=secret"));
-        assert!(url_is_data_bearing("https://www.google.com/search?q=x"));
-        // A non-root PATH can carry data too (e.g. /collect/<base64>).
-        assert!(url_is_data_bearing("https://evil.tld/collect/AAAA"));
-        assert!(url_is_data_bearing("https://evil.tld/a"));
-        // A trailing fragment alone is not an outbound data channel.
-        assert!(!url_is_data_bearing("https://apple.com/#top"));
     }
 
     #[test]

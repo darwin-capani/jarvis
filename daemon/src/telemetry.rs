@@ -36,6 +36,36 @@ pub fn emit(source: &str, event: &str, data: Value) {
     let _ = hub.send(payload.to_string());
 }
 
+/// Whether a WebSocket Origin header may subscribe to the telemetry hub. The hub
+/// carries live user content (voice transcript, spoken replies, app logs), so a
+/// REMOTE web page — which always sends its own public-domain Origin and cannot
+/// forge it — must be refused. Allowed: an absent Origin (native/CLI clients; the
+/// Tauri webview may omit it), the `tauri://` custom scheme (the prod HUD), and a
+/// LOOPBACK http(s) host (the dev server `http://localhost:1420` and Tauri's
+/// `*.localhost` http hosts). Rejected: any http(s) Origin with a non-loopback
+/// host, or any other scheme — exactly the "a page you visited connected" attack.
+/// Note: DNS-rebinding can't defeat this — the Origin carries the page's own
+/// hostname, never the resolved loopback IP.
+fn origin_allowed(origin: Option<&str>) -> bool {
+    let Some(o) = origin.map(str::trim) else {
+        return true;
+    };
+    if o.is_empty() || o.starts_with("tauri://") {
+        return true;
+    }
+    match o.strip_prefix("http://").or_else(|| o.strip_prefix("https://")) {
+        Some(rest) => {
+            let hostport = rest.split('/').next().unwrap_or("");
+            let host = hostport.split(':').next().unwrap_or(hostport);
+            host == "localhost"
+                || host == "127.0.0.1"
+                || host == "tauri.localhost"
+                || host == "ipc.localhost"
+        }
+        None => false,
+    }
+}
+
 pub async fn serve(port: u16) {
     let addr = format!("127.0.0.1:{port}");
     let listener = match TcpListener::bind(&addr).await {
@@ -57,7 +87,28 @@ pub async fn serve(port: u16) {
         };
         let mut rx = HUB.get().expect("telemetry::init called first").subscribe();
         tokio::spawn(async move {
-            let ws = match tokio_tungstenite::accept_async(stream).await {
+            // SECURITY: validate the WebSocket Origin at the handshake BEFORE
+            // subscribing. The hub carries live user content (voice transcript,
+            // spoken replies, app logs), and a browser page the user visits can
+            // open ws://127.0.0.1:7177 (WS is exempt from same-origin at connect
+            // time) — a confused-deputy exfiltration channel. A browser ALWAYS
+            // sends its own public-domain Origin and cannot forge it; the Tauri HUD
+            // sends a tauri:// / loopback origin (or none for native clients). So we
+            // refuse any Origin that isn't absent, tauri://, or loopback.
+            use tokio_tungstenite::tungstenite::handshake::server::{Request, Response, ErrorResponse};
+            let check = |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+                let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
+                if origin_allowed(origin) {
+                    Ok(resp)
+                } else {
+                    warn!(?origin, "telemetry WS rejected: disallowed Origin");
+                    Err(tokio_tungstenite::tungstenite::http::Response::builder()
+                        .status(tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN)
+                        .body(Some("origin not allowed".to_string()))
+                        .expect("static 403 response builds"))
+                }
+            };
+            let ws = match tokio_tungstenite::accept_hdr_async(stream, check).await {
                 Ok(ws) => ws,
                 Err(e) => {
                     warn!(%peer, error = %e, "websocket handshake failed");
@@ -170,5 +221,32 @@ pub async fn system_load_task() {
                 "uptime_secs": snapshot.uptime_secs,
             }),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::origin_allowed;
+
+    #[test]
+    fn origin_allowed_blocks_web_pages_and_allows_the_hud() {
+        // ALLOWED: the HUD + native clients.
+        assert!(origin_allowed(None), "no Origin (native/CLI) is allowed");
+        assert!(origin_allowed(Some("tauri://localhost")), "prod Tauri webview");
+        assert!(origin_allowed(Some("http://localhost:1420")), "dev vite server");
+        assert!(origin_allowed(Some("http://tauri.localhost")), "Tauri http-scheme host");
+        assert!(origin_allowed(Some("http://127.0.0.1:5173")), "loopback dev");
+
+        // REJECTED: the actual attack — a web page you visited connecting.
+        assert!(!origin_allowed(Some("https://evil.com")));
+        assert!(!origin_allowed(Some("http://evil.com")));
+        assert!(!origin_allowed(Some("https://ads.example.net:443")));
+        // A page can't dodge it via a look-alike host — the Origin carries the
+        // page's real hostname, not the resolved loopback IP.
+        assert!(!origin_allowed(Some("https://localhost.evil.com")));
+        assert!(!origin_allowed(Some("https://127.0.0.1.evil.com")));
+        // Non-http schemes from a page are refused too.
+        assert!(!origin_allowed(Some("ws://evil.com")));
+        assert!(!origin_allowed(Some("file://")));
     }
 }
