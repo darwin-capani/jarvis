@@ -26,6 +26,19 @@ import sys
 TOKEN = os.environ.get("JARVIS_APP_TOKEN", "")
 SOCKET_PATH = os.environ.get("JARVIS_APP_SOCKET", "")
 
+# Optional, READ-ONLY dyld module self-report (docs/INTROSPECT.md). jarvisd runs
+# the app with the project root as CWD, and the manifest grants fs_read of
+# apps/_sdk, so the shared reference stub is importable. Bytecode writes are
+# disabled (no fs_write there) and every step is guarded — if the stub is absent
+# or import fails, the plugin runs exactly as before, just without attestation.
+dyld_report = None
+try:
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, os.path.join(os.getcwd(), "apps", "_sdk"))
+    import dyld_report  # noqa: E402 — optional, best-effort
+except Exception:  # noqa: BLE001 — attestation must never stop the plugin
+    dyld_report = None
+
 
 def send(conn, obj):
     """Send one JSONL line; every app->host line carries the capability token."""
@@ -38,6 +51,14 @@ def handle(conn, msg):
     op = msg.get("type")
     if op == "start":
         send(conn, {"type": "status", "data": {"tool": "example.read_status", "ready": True}})
+        # Attest our own loaded dyld modules once at start (READ-ONLY, best-effort).
+        # The daemon seeds a baseline on this first report, then flags any module a
+        # later report adds (injection / unexpected dlopen) — see introspect.rs.
+        if dyld_report is not None:
+            try:
+                send(conn, {"type": "modules", "data": dyld_report.modules_payload()})
+            except Exception:  # noqa: BLE001 — never break the plugin over telemetry
+                pass
     elif op == "refresh":
         # example.read_status — a tiny, side-effect-free status object.
         send(conn, {"type": "items", "data": {"status": "ok", "uptime_note": "example plugin alive"}})

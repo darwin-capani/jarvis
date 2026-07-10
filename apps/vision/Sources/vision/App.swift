@@ -133,6 +133,16 @@ struct VisionApp {
                                 cameraAuthorized: nil, screenAuthorized: nil,
                                 message: "vision app started"))
 
+        // Register the dyld watcher FIRST, then snapshot — so a dlopen in the gap
+        // between the snapshot and registration isn't missed (Vision / ScreenCapture
+        // Kit / CoreML load lazily when capture STARTS, after the report below).
+        DyldReport.watch()
+        // Attest our own loaded dyld modules once at startup (READ-ONLY, best-effort).
+        // The daemon seeds a trust-on-first-use baseline from this and flags any
+        // module a later report adds (injection / unexpected dlopen) — introspect.rs.
+        // The op loop below re-attests when the watch flag fires (after each host op).
+        await sink.emit(.modules(DyldReport.collectLoadedModules()))
+
         // The path resolver for analyze.file / watch.start(file:). The daemon
         // runs us with cwd = project root.
         let resolver = VideoPathResolver(projectRoot: FileManager.default.currentDirectoryPath)
@@ -146,6 +156,11 @@ struct VisionApp {
                     return // rejected -> vision.error already emitted
                 }
                 await pipeline.handle(safeOp)
+                // If handling this op lazy-loaded new frameworks (capture start
+                // pulls in Vision/SCK/CoreML), re-attest the module set. READ-ONLY.
+                if DyldReport.consumeChanged() {
+                    await sink.emit(.modules(DyldReport.collectLoadedModules()))
+                }
             }
         } catch {
             FileHandle.standardError.write(Data("vision: connection error: \(error)\n".utf8))

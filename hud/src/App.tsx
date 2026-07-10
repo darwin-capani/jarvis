@@ -26,6 +26,7 @@ import MarkForgePanel, { MARK_FORGE_APP_NAME } from "./components/MarkForgePanel
 import McpPanel from "./components/McpPanel";
 import CapabilityAtlasPanel from "./components/CapabilityAtlasPanel";
 import TccSentinelPanel from "./components/TccSentinelPanel";
+import IntrospectPanel from "./components/IntrospectPanel";
 import AttributionHealthPanel from "./components/AttributionHealthPanel";
 import AppDeckPanel from "./components/AppDeckPanel";
 import ConnectorMarketplacePanel from "./components/ConnectorMarketplacePanel";
@@ -568,6 +569,11 @@ export default function App() {
           <AppDeckPanel runningApps={state.runningApps} appFeeds={state.appFeeds} />
           <AttributionHealthPanel health={state.attributionHealth} />
           <TccSentinelPanel sentinel={state.tccSentinel} anomalies={state.tccAnomalies} />
+          <IntrospectPanel
+            status={state.introspect}
+            alerts={state.introspectAlerts}
+            capabilities={state.introspectCapabilities}
+          />
           <ConnectorMarketplacePanel mcp={state.mcp} />
           <ExtensibilityPanel webhooks={state.webhooks} plugins={state.plugins} />
           <AuditPanel audit={state.audit} liveGate={state.liveGate} />

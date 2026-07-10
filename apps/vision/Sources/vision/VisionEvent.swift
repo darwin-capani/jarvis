@@ -1,9 +1,15 @@
-// VisionEvent.swift — the APP -> HOST telemetry contract (FROZEN; module agents
-// AND the HUD agent build against it, must not change it).
+// VisionEvent.swift — the APP -> HOST telemetry contract (module agents AND the
+// HUD agent build against it). The items/status/log surface is FROZEN — do not
+// change it. The `modules` type below is a DELIBERATE, ADDITIVE extension (2026-07,
+// docs/INTROSPECT.md): it adds a new relay type without touching any existing case
+// or its serialization, and it mirrors the daemon's GENERIC `modules` handling
+// (daemon/src/apps.rs::classify_inbound_line already routes `modules` to the
+// introspection attestor, not to a vision.* topic), so it needs no daemon change
+// and cannot alter how the frozen events are relayed.
 //
 // WIRE FRAMING (daemon/src/apps.rs::relay_line / classify_inbound_line):
 // every app->host line is one JSON object:
-//     {"token": <hex>, "type": "items"|"status"|"log", "data": <obj|str>}
+//     {"token": <hex>, "type": "items"|"status"|"log"|"modules", "data": <obj|str>}
 //   - token is verified on EVERY line (HMAC-SHA256); a bad/missing token ->
 //     line dropped + app.auth_failed.
 //   - type "items" or "status" -> relayed as telemetry event "app.data" with
@@ -85,9 +91,10 @@ public struct ScreenReadMeta: Sendable, Equatable {
 
 /// The daemon `type` field for an app->host line.
 public enum RelayType: String, Sendable {
-    case items   // -> app.data
-    case status  // -> app.data
-    case log     // -> app.log
+    case items    // -> app.data
+    case status   // -> app.data
+    case log      // -> app.log
+    case modules  // -> introspect module attestation (docs/INTROSPECT.md)
 }
 
 /// A typed Vision telemetry event. `encodeData()` produces the `data` object
@@ -141,6 +148,14 @@ public enum VisionEvent: Sendable {
     case sound(timestamp: TimeInterval, source: String, classes: [SoundClass],
                classifier: String, computeUnit: String)
 
+    /// modules — the READ-ONLY dyld module self-report (docs/INTROSPECT.md).
+    /// `type:"modules"` (NOT relayed as app.data — the daemon routes it to the
+    /// introspection attestor, not to a vision.* topic). Carries only image PATHS
+    /// + LC_UUIDs; no pixels, no identity. This is an ADDITIVE extension of the
+    /// contract (see the header note) that mirrors the daemon's generic `modules`
+    /// message type, so it needs no daemon change.
+    case modules([DyldModule])
+
     /// The watch lifecycle states reported on vision.status.
     public enum WatchState: String, Sendable, Codable {
         case idle
@@ -154,6 +169,7 @@ public enum VisionEvent: Sendable {
         switch self {
         case .detections, .motion, .screen, .sound: return .items
         case .status, .perf, .error: return .status
+        case .modules: return .modules
         }
     }
 
@@ -167,6 +183,9 @@ public enum VisionEvent: Sendable {
         case .error:      return VisionTopic.error
         case .screen:     return VisionTopic.screen
         case .sound:      return VisionTopic.sound
+        // modules is NOT topic-routed (the daemon handles the `modules` type
+        // before topic resolution); return empty so the switch stays exhaustive.
+        case .modules:    return ""
         }
     }
 
@@ -249,6 +268,17 @@ public enum VisionEvent: Sendable {
             d["classes"] = classes.map { ["label": $0.label, "confidence": $0.confidence] }
             d["classifier"] = classifier
             d["compute_unit"] = computeUnit
+
+        case let .modules(mods):
+            // NOT topic-routed — return {"modules":[{"path","uuid"?}]} WITHOUT the
+            // topic key (the daemon's parse_module_report reads data.modules). uuid
+            // is omitted when nil (JSON has no null-friendly path here and the
+            // daemon treats an absent uuid as None).
+            return ["modules": mods.map { m -> [String: Any] in
+                var e: [String: Any] = ["path": m.path]
+                if let u = m.uuid { e["uuid"] = u }
+                return e
+            }]
         }
         return d
     }

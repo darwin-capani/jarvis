@@ -177,6 +177,29 @@ pub struct PermissionsSection {
     /// is not SBPL-grantable. `#[serde(default)]` (=> false) keeps all existing
     /// manifests parsing and screen-denied.
     pub screen: bool,
+    /// Dynamic code generation (JIT / writable-then-executable memory).
+    ///
+    /// DEFENSE-IN-DEPTH + AUDITABLE INTENT — NOT the primary gate. On Apple
+    /// Silicon a JARVIS micro-app already cannot obtain RWX / `MAP_JIT` memory:
+    /// the profile is `(deny default)` and the app runs under an unsigned/ad-hoc
+    /// interpreter (python3/node) with NO `com.apple.security.cs.allow-jit`
+    /// code-signing entitlement, and arm64e hardware W^X never maps a page
+    /// writable-and-executable at once (`pthread_jit_write_protect_np` toggles a
+    /// MAP_JIT region between `rw-` and `r-x`, never both). So `jit` here does
+    /// three things the platform deny does not: it makes the intent DECLARED and
+    /// auditable, it lets `generate_sbpl` emit an EXPLICIT `dynamic-code-generation`
+    /// deny/allow (reorder-safe, like `gpu`), and it BINDS the bit into the
+    /// per-launch HMAC token (see `canonical_permissions`) so a manifest that
+    /// flips `jit` after a token was minted fails verification. `#[serde(default)]`
+    /// (=> false) so every existing manifest parses unchanged and stays JIT-denied.
+    ///
+    /// HONESTY: `jit = true` is NECESSARY-BUT-NOT-SUFFICIENT — the seatbelt
+    /// `(allow dynamic-code-generation)` does not grant the hardened-runtime
+    /// entitlement, so under the current unsigned-interpreter launch it still does
+    /// not enable RWX. Treating `jit = true` as a CONSEQUENTIAL capability
+    /// declaration (an authored manifest edit, never a runtime auto-grant) is the
+    /// project rule; auto-promotion must ride confirm + voice-id + policy + lockdown.
+    pub jit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -262,15 +285,15 @@ pub fn canonical_permissions(p: &PermissionsSection) -> String {
         v.sort_unstable();
         format!("{label}=[{}]", v.join(","))
     }
-    // camera/screen are part of the bound permission set: a manifest that flips
-    // either after a token was minted must fail verification (same discipline as
-    // audio/gpu — see the token_is_bound_to_* tests). Appended AFTER the
-    // original fields so the canonical form stays a stable, readable suffix. The
-    // session HMAC key is regenerated every daemon boot and tokens are minted
-    // per launch from THIS function, so widening the canonical string does not
-    // strand any persisted token — there are none across a restart.
+    // camera/screen/jit are part of the bound permission set: a manifest that
+    // flips any of them after a token was minted must fail verification (same
+    // discipline as audio/gpu — see the token_is_bound_to_* tests). Appended
+    // AFTER the original fields so the canonical form stays a stable, readable
+    // suffix. The session HMAC key is regenerated every daemon boot and tokens
+    // are minted per launch from THIS function, so widening the canonical string
+    // does not strand any persisted token — there are none across a restart.
     format!(
-        "audio={};gpu={};{};{};{};camera={};screen={}",
+        "audio={};gpu={};{};{};{};camera={};screen={};jit={}",
         p.audio,
         p.gpu,
         joined("net_hosts", &p.net_hosts),
@@ -278,7 +301,46 @@ pub fn canonical_permissions(p: &PermissionsSection) -> String {
         joined("fs_write", &p.fs_write),
         p.camera,
         p.screen,
+        p.jit,
     )
+}
+
+/// A compact, SECRET-FREE, human-readable summary of what a micro-app is DECLARED
+/// to be able to do (its granted capabilities from `[permissions]`) — the static
+/// "what can this app do" audit that complements the runtime introspection's "what
+/// is it doing". Lists ONLY granted capabilities (counts for the list-valued ones,
+/// never the paths/hosts themselves), so a locked-down app reads short. Pure.
+pub fn capability_summary(p: &PermissionsSection) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if p.audio {
+        parts.push("audio".to_string());
+    }
+    if p.gpu {
+        parts.push("gpu".to_string());
+    }
+    if p.camera {
+        parts.push("camera".to_string());
+    }
+    if p.screen {
+        parts.push("screen".to_string());
+    }
+    if p.jit {
+        parts.push("jit".to_string());
+    }
+    if !p.net_hosts.is_empty() {
+        parts.push(format!("net({})", p.net_hosts.len()));
+    }
+    if !p.fs_read.is_empty() {
+        parts.push(format!("fs_read({})", p.fs_read.len()));
+    }
+    if !p.fs_write.is_empty() {
+        parts.push(format!("fs_write({})", p.fs_write.len()));
+    }
+    if parts.is_empty() {
+        "sandboxed (no extra capabilities)".to_string()
+    } else {
+        parts.join(", ")
+    }
 }
 
 /// The message the HMAC is computed over: `name || canonical(perms) || nonce`,
@@ -528,6 +590,31 @@ pub fn generate_sbpl(
         s.push_str("\n;; screen = false -> no screen capture. (deny default) already\n");
         s.push_str(";; blocks the window server; stated explicitly for clarity.\n");
         s.push_str("(deny mach-lookup (global-name \"com.apple.windowserver.active\"))\n");
+    }
+
+    // --- jit / dynamic code generation (defense-in-depth; NOT the sole gate) ---
+    // Only `dynamic-code-generation` is a current seatbelt operation — the
+    // legacy `dynamic-signature` op is NOT emitted (it is not a live operation on
+    // current macOS and would risk a profile-compile error, the class of failure
+    // deny_unknown_fields guards elsewhere). On Apple Silicon the RWX/MAP_JIT deny
+    // is PRIMARILY enforced by the platform (no com.apple.security.cs.allow-jit
+    // entitlement on the unsigned/ad-hoc interpreter + arm64e hardware W^X), so
+    // this line is defense-in-depth and auditable intent, not the primary barrier.
+    if !p.jit {
+        s.push_str("\n;; jit = false -> no dynamic code generation (JIT / RWX).\n");
+        s.push_str(";; Already denied by (deny default) AND, on Apple Silicon, by the\n");
+        s.push_str(";; platform (no allow-jit entitlement + arm64e W^X). Stated\n");
+        s.push_str(";; explicitly so a future allow-reorder can't open it.\n");
+        s.push_str("(deny dynamic-code-generation)\n");
+    } else {
+        s.push_str("\n;; jit = true -> DECLARED need for dynamic code generation (JIT).\n");
+        s.push_str(";; HONESTY: NECESSARY-BUT-NOT-SUFFICIENT. On a hardened/notarized\n");
+        s.push_str(";; build the PROCESS also needs the com.apple.security.cs.allow-jit\n");
+        s.push_str(";; code-signing entitlement (SBPL cannot grant it) and must use\n");
+        s.push_str(";; MAP_JIT + pthread_jit_write_protect_np to keep W^X. Under the\n");
+        s.push_str(";; current unsigned-interpreter launch this grant alone does NOT\n");
+        s.push_str(";; enable RWX — same best-effort caveat as camera/screen.\n");
+        s.push_str("(allow dynamic-code-generation)\n");
     }
 
     // Resolve the interpreter's REAL path once. The venv python3 is a SYMLINK
@@ -1197,6 +1284,30 @@ impl AppRegistry {
             Runtime::Binary => vec![interp.to_string_lossy().into_owned()],
         }
     }
+
+    /// Read-only snapshot for the introspect sentinel (introspect.rs): one
+    /// `(name, profile_path, running)` per registered app. Holds the apps lock
+    /// only long enough to clone the tuples — it reads, it changes nothing, and
+    /// it exposes no new authority (the paths are already derived at discover).
+    pub async fn observed_apps(&self) -> Vec<(String, PathBuf, bool)> {
+        let apps = self.apps.lock().await;
+        apps.iter()
+            .map(|(name, e)| (name.clone(), e.profile_path.clone(), e.running))
+            .collect()
+    }
+
+    /// Read-only DECLARED-capability inventory: one `(name, capability_summary)`
+    /// per registered app, derived purely from each manifest's `[permissions]`.
+    /// SECRET-FREE (counts, never paths/hosts). Sorted by name for a stable readout.
+    pub async fn capability_inventory(&self) -> Vec<(String, String)> {
+        let apps = self.apps.lock().await;
+        let mut inv: Vec<(String, String)> = apps
+            .iter()
+            .map(|(name, e)| (name.clone(), capability_summary(&e.manifest.permissions)))
+            .collect();
+        inv.sort_by(|a, b| a.0.cmp(&b.0));
+        inv
+    }
 }
 
 /// Normalize an app reference for matching: lowercase, strip everything but
@@ -1521,6 +1632,19 @@ async fn run_once(
     };
     info!(app = name, "micro-app launched under sandbox-exec");
     telemetry::emit("system", "app.started", json!({"name": name}));
+    // Record the child pid for the introspect sentinel to sample (read-only).
+    // The guard clears it on EVERY return path from here (StoppedByHost,
+    // ChildExited, or any early error), so a dead/reused pid is never sampled —
+    // same kill_on_drop discipline that reaps `child` itself.
+    let _pid_guard = crate::introspect::record_child(name, child.id());
+    // Fresh trust anchor per launch: drop any prior dyld module baseline so this
+    // launch's first `modules` report re-seeds (trust-on-first-use). A legitimately
+    // updated app loads a different module set; persisting the old baseline across
+    // the relaunch would false-flag every changed module as an injection.
+    crate::introspect::reset_module_baseline(name);
+    // Record the app's declared jit bit so the (feature-gated) ES front-end can
+    // tell an EXPECTED executable mapping (jit=true) from a W^X violation.
+    crate::introspect::record_app_jit(name, manifest.permissions.jit);
 
     // Relay the child's stderr/stdout as app.log lines.
     if let Some(out) = child.stdout.take() {
@@ -1723,6 +1847,9 @@ enum RelayDecision {
     Data { topic: String, payload: Value },
     /// log: relay as app.log with this line.
     Log { line: String },
+    /// modules: an app's in-proc dyld loaded-module report — attested against a
+    /// trust-on-first-use baseline in introspect.rs (defensive, observability-only).
+    Modules { modules: Vec<crate::introspect::Module> },
     /// Malformed JSON, an unknown message type, or an empty line — drop it.
     Drop,
 }
@@ -1753,6 +1880,9 @@ fn classify_inbound_line(manifest: &AppManifest, default_topic: &str, raw: &str)
                 .unwrap_or_else(|| data.to_string());
             RelayDecision::Log { line }
         }
+        "modules" => RelayDecision::Modules {
+            modules: crate::introspect::parse_module_report(&data),
+        },
         _ => RelayDecision::Drop,
     }
 }
@@ -1839,6 +1969,45 @@ async fn relay_line(
         }
         RelayDecision::Log { line } => {
             telemetry::emit("system", "app.log", json!({"name": name, "line": line}));
+        }
+        RelayDecision::Modules { modules } => {
+            // Cooperative dyld attestation: seed on first report, then flag any
+            // module the baseline never had (injection / unexpected dlopen). The
+            // token was already verified above, so a different process can't forge
+            // this. READ-ONLY: it reports, it never unloads/blocks anything.
+            let total = modules.len();
+            // Envelopes come from introspect.rs's telemetry-contract builders (the
+            // single source of truth for the field names the HUD reads), which key
+            // the app on "app" — NOT the "name" of the app.data/app.log relay.
+            match crate::introspect::attest_or_seed(name, &modules) {
+                None => {
+                    // First report — baseline seeded silently.
+                    let (event, payload) =
+                        crate::introspect::ev_modattest(name, total, 0, 0, true);
+                    telemetry::emit("system", event, payload);
+                }
+                Some(att) => {
+                    let (event, payload) = crate::introspect::ev_modattest(
+                        name,
+                        att.total,
+                        att.unexpected.len(),
+                        att.missing_count,
+                        false,
+                    );
+                    telemetry::emit("system", event, payload);
+                    for module in &att.unexpected {
+                        // Finding ring is user/cloud-facing -> redact the home
+                        // prefix; the telemetry envelope below keeps the full path.
+                        crate::introspect::record_finding(crate::introspect::redact_home(&format!(
+                            "module: {name} loaded unexpected {}",
+                            module.path
+                        )));
+                        let (event, payload) =
+                            crate::introspect::ev_module_violation(name, &module.path, &module.uuid);
+                        telemetry::emit("system", event, payload);
+                    }
+                }
+            }
         }
         RelayDecision::Drop => {
             warn!(app = name, "app sent an unhandled/empty line; dropping");
@@ -1935,8 +2104,12 @@ fn write_profile(
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating profile dir {}", parent.display()))?;
     }
-    std::fs::write(profile_path, profile)
+    std::fs::write(profile_path, &profile)
         .with_context(|| format!("writing profile {}", profile_path.display()))?;
+    // Record the fingerprint of exactly what we just wrote so the introspect
+    // sentinel can detect post-launch tampering of the on-disk profile (a
+    // same-UID edit of state/apps/<name>/<name>.sb after the daemon wrote it).
+    crate::introspect::record_profile(manifest.name(), &profile);
     Ok(())
 }
 
@@ -2415,6 +2588,50 @@ mod tests {
     }
 
     #[test]
+    fn sbpl_jit_defaults_denied_and_never_emits_legacy_dynamic_signature() {
+        // Every existing manifest omits `jit` -> jit=false -> explicit deny of the
+        // ONE current operation (dynamic-code-generation). The legacy
+        // `dynamic-signature` op must NEVER be emitted (not a live operation).
+        let p = gen_profile(&sample_manifest());
+        assert!(
+            p.contains("(deny dynamic-code-generation)"),
+            "jit=false must explicitly deny dynamic-code-generation"
+        );
+        assert!(
+            !p.contains("dynamic-signature"),
+            "the non-current dynamic-signature op must never be emitted"
+        );
+        assert!(
+            !p.contains("(allow dynamic-code-generation)"),
+            "jit=false must not allow dynamic-code-generation"
+        );
+    }
+
+    #[test]
+    fn sbpl_jit_true_allows_dynamic_code_generation_and_documents_the_entitlement_caveat() {
+        let mut m = sample_manifest();
+        m.permissions.jit = true;
+        let p = gen_profile(&m);
+        assert!(
+            p.contains("(allow dynamic-code-generation)"),
+            "jit=true must allow dynamic-code-generation"
+        );
+        assert!(
+            !p.contains("(deny dynamic-code-generation)"),
+            "jit=true must not also deny it"
+        );
+        // The best-effort honesty note (the process still needs the allow-jit
+        // entitlement) must be present so the profile never pretends SBPL alone
+        // enables JIT — same discipline as the camera/screen TCC caveat.
+        assert!(
+            p.contains("allow-jit"),
+            "jit=true must document that the process also needs cs.allow-jit"
+        );
+        // Still never the legacy op.
+        assert!(!p.contains("dynamic-signature"));
+    }
+
+    #[test]
     fn sbpl_camera_and_screen_default_deny_when_unset() {
         // An app that does NOT declare camera/screen (every existing one) must
         // get the explicit camera/screen denies and NONE of the best-effort
@@ -2616,6 +2833,48 @@ mod tests {
     }
 
     #[test]
+    fn capability_summary_lists_only_granted_caps_with_counts() {
+        // A locked-down app reads short.
+        let bare = PermissionsSection::default();
+        assert_eq!(capability_summary(&bare), "sandboxed (no extra capabilities)");
+
+        // A grant set lists only what's granted, counts for the list-valued ones,
+        // and never the paths/hosts themselves (secret-free).
+        let p = PermissionsSection {
+            audio: true,
+            gpu: false,
+            camera: true,
+            screen: false,
+            jit: true,
+            net_hosts: vec!["a.com".into(), "b.com".into()],
+            fs_read: vec!["state/x".into()],
+            fs_write: vec![],
+        };
+        let s = capability_summary(&p);
+        assert_eq!(s, "audio, camera, jit, net(2), fs_read(1)");
+        assert!(!s.contains("a.com"), "must not leak the actual hosts");
+        assert!(!s.contains("gpu"), "an ungranted cap is omitted");
+        assert!(!s.contains("fs_write"), "an empty list is omitted");
+    }
+
+    #[test]
+    fn token_is_bound_to_jit_flag() {
+        // jit joins the bound set: a token minted for a non-JIT app must NOT
+        // verify after the manifest flips jit on — same anti-privilege-escalation
+        // discipline as camera/screen/net_hosts. This is what makes auto-promoting
+        // an app to jit=true detectable rather than silent.
+        let base = perms(&["feeds.npr.org"]);
+        let t = compute_token(TEST_KEY, "algo-core", &base, "nonce-A");
+        assert!(verify_token_with_key(TEST_KEY, "algo-core", &base, "nonce-A", &t));
+        let mut jit = base.clone();
+        jit.jit = true;
+        assert!(
+            !verify_token_with_key(TEST_KEY, "algo-core", &jit, "nonce-A", &t),
+            "flipping jit on must invalidate a token minted without it"
+        );
+    }
+
+    #[test]
     fn canonical_permissions_is_order_independent() {
         let a = perms(&["b.com", "a.com"]);
         let b = perms(&["a.com", "b.com"]);
@@ -2743,6 +3002,30 @@ mod tests {
             classify_inbound_line(&m, "feed", r#"{"type":"exec","data":{}}"#),
             RelayDecision::Drop
         );
+    }
+
+    #[test]
+    fn inbound_modules_report_classifies_as_modules() {
+        let m = sample_manifest();
+        let line = r#"{"token":"x","type":"modules","data":{"modules":[
+            {"path":"/usr/lib/libSystem.B.dylib","uuid":"AAAA"},
+            {"path":"/app/main"}
+        ]}}"#;
+        match classify_inbound_line(&m, "feed", line) {
+            RelayDecision::Modules { modules } => {
+                assert_eq!(modules.len(), 2);
+                assert_eq!(modules[0].path, "/usr/lib/libSystem.B.dylib");
+                assert_eq!(modules[0].uuid.as_deref(), Some("AAAA"));
+                assert_eq!(modules[1].uuid, None);
+            }
+            other => panic!("expected Modules, got {other:?}"),
+        }
+        // A modules report with no usable entries still classifies as Modules
+        // (empty) — it is a valid type, just an empty inventory, not a Drop.
+        match classify_inbound_line(&m, "feed", r#"{"type":"modules","data":{}}"#) {
+            RelayDecision::Modules { modules } => assert!(modules.is_empty()),
+            other => panic!("expected empty Modules, got {other:?}"),
+        }
     }
 
     // -- hermetic socket + token handshake + relay + stop integration ---

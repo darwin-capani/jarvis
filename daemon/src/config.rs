@@ -26,6 +26,15 @@ pub struct Config {
     /// loosen a gate, enable a consequential action, or raise autonomy.
     pub focus: FocusConfig,
     pub apps: AppsConfig,
+    /// [introspect] — MICRO-APP INTROSPECTION (introspect.rs). `enabled` SHIPS ON
+    /// (full-power default). READ-ONLY DEFENSE: a slow sentinel over jarvisd's OWN
+    /// sandboxed children that flags SBPL profile-drift (on-disk tamper) and RSS/
+    /// CPU anomalies via sysinfo (same-UID, no entitlement, no ES/ptrace). It
+    /// emits telemetry for the HUD/posture and takes NO action — reacting to a
+    /// finding would be consequential and rides the existing gates. Inert until an
+    /// app runs; with it false the sentinel loop is not spawned (the cheap
+    /// record_profile/record_child hooks in apps.rs still populate their maps).
+    pub introspect: IntrospectConfig,
     pub integrations: IntegrationsConfig,
     pub standing: StandingConfig,
     /// [drafts] — AUTO-DRAFT (#25, drafts.rs). `enabled` SHIPS ON (full-power
@@ -212,6 +221,11 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // which non-consequential proactive intel surfaces, never loosens a gate.
     ("focus", &["profile"]),
     ("apps", &["autostart"]),
+    // [introspect] — the READ-ONLY micro-app introspection sentinel
+    // (introspect.rs): SBPL profile-drift + per-app RSS/CPU anomaly surfacing.
+    // `enabled` SHIPS ON (full-power default); it only observes jarvisd's own
+    // children (same-UID, no entitlement) and never acts.
+    ("introspect", &["enabled", "interval_secs", "startup_delay_secs", "cpu_alert_percent", "rss_growth_ratio"]),
     // [integrations] — `allow_consequential` is THE master gate for outward/
     // side-effecting actions. SHIPS ON (full-power default) — INERT-SAFE: a
     // CONFIRMED consequential action still clears confirm + voice-id + policy +
@@ -2221,6 +2235,41 @@ pub struct AppsConfig {
     pub autostart: Vec<String>,
 }
 
+/// [introspect] — the READ-ONLY micro-app introspection sentinel (introspect.rs).
+/// `enabled` SHIPS ON: like `[audit]`, it is pure accountability/observability —
+/// it watches jarvisd's own sandboxed children (SBPL profile-drift + RSS/CPU
+/// anomalies) and never acts, so enabling it loosens nothing. With it false the
+/// sentinel loop is simply not spawned.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct IntrospectConfig {
+    /// Master switch for the sentinel loop. SHIPS ON (read-only observability).
+    pub enabled: bool,
+    /// Seconds between sentinel ticks (profile-drift + resource sample + caps).
+    pub interval_secs: u64,
+    /// Seconds to wait after boot before the first tick (let apps settle).
+    pub startup_delay_secs: u64,
+    /// Sustained CPU% above which an app is flagged (resource anomaly).
+    pub cpu_alert_percent: f32,
+    /// RSS growth multiple over baseline that counts as a leak/runaway.
+    pub rss_growth_ratio: f64,
+}
+
+impl Default for IntrospectConfig {
+    fn default() -> Self {
+        // On by default — it only observes jarvisd's own children and reports.
+        // The tuning defaults match introspect.rs's original constants, so an
+        // absent/partial [introspect] section behaves exactly as before.
+        Self {
+            enabled: true,
+            interval_secs: 60,
+            startup_delay_secs: 30,
+            cpu_alert_percent: 95.0,
+            rss_growth_ratio: 3.0,
+        }
+    }
+}
+
 /// [integrations] — the shared Chart-2 integration substrate (integrations.rs).
 /// `allow_consequential` is THE master gate for outward/side-effecting actions
 /// (post a message, create an event). It SHIPS ON (true) — the headline of the
@@ -2852,6 +2901,7 @@ impl Config {
             proactive: section(&table, "proactive", &mut issues),
             focus: section(&table, "focus", &mut issues),
             apps: section(&table, "apps", &mut issues),
+            introspect: section(&table, "introspect", &mut issues),
             integrations: section(&table, "integrations", &mut issues),
             standing: section(&table, "standing", &mut issues),
             drafts: section(&table, "drafts", &mut issues),
@@ -4458,6 +4508,38 @@ mod tests {
         let (cfg, issues) = Config::parse(raw_bad);
         assert!(!issues.is_empty(), "a typo'd mapping field must be reported");
         assert!(cfg.webhooks.mappings.is_empty(), "the bad section falls back to defaults");
+    }
+
+    #[test]
+    fn introspect_full_section_parses_and_a_typo_is_caught() {
+        let raw = r#"
+            [introspect]
+            enabled = false
+            interval_secs = 120
+            startup_delay_secs = 5
+            cpu_alert_percent = 80.0
+            rss_growth_ratio = 2.5
+        "#;
+        let (cfg, issues) = Config::parse(raw);
+        assert!(issues.is_empty(), "clean [introspect] must parse: {issues:?}");
+        assert!(!cfg.introspect.enabled);
+        assert_eq!(cfg.introspect.interval_secs, 120);
+        assert_eq!(cfg.introspect.startup_delay_secs, 5);
+        assert_eq!(cfg.introspect.cpu_alert_percent, 80.0);
+        assert_eq!(cfg.introspect.rss_growth_ratio, 2.5);
+
+        // An absent section keeps the shipped defaults (unchanged behavior).
+        let (def, _) = Config::parse("");
+        assert!(def.introspect.enabled);
+        assert_eq!(def.introspect.interval_secs, 60);
+        assert_eq!(def.introspect.cpu_alert_percent, 95.0);
+
+        // A typo'd key is reported, not silently swallowed.
+        let (_c, issues) = Config::parse("[introspect]\ninterval_sec = 30\n");
+        assert!(
+            issues.iter().any(|i| i.contains("introspect.interval_sec")),
+            "a typo'd [introspect] key must be reported: {issues:?}"
+        );
     }
 
     /// A typo'd top-level [webhooks] key is reported, not silently swallowed.

@@ -62,6 +62,29 @@ To enable it:
    curl -fsSL https://raw.githubusercontent.com/darwin-capani/jarvis/main/install.sh | bash -s -- -y
    ```
 
+### Enable kernel-level security monitoring (optional — Endpoint Security)
+
+The micro-app introspection subsystem (`docs/INTROSPECT.md`) ships with a **live Endpoint Security (ES) NOTIFY client** behind a **default-off Cargo feature**, `endpoint-security`. With it on, `jarvisd` observes real kernel events about its OWN sandboxed micro-apps — a page made executable (`mprotect`/`MAP_JIT`) by an app that declared `jit=false` (a W^X violation), or another process acquiring an app's task port (`get_task` — the "a debugger/injector is attaching" signal) — and reports them through the introspection HUD/`aegis_report`. **READ-ONLY (NOTIFY-only): it observes and reports, it never blocks or kills anything.** The stock build never links ES, so it adds **zero** attack surface by default; the rest of JARVIS is unaffected either way.
+
+This is **not** installed by the one-command installer because ES is a **restricted Apple capability**: it needs a code-signing entitlement Apple must approve for your Developer Team ID, plus root and Full Disk Access. Without those, `jarvisd` logs an honest "endpoint-security unavailable" and keeps running on the light introspection path.
+
+To enable it (Apple Developer account required):
+
+1. Build the daemon with the feature:
+   ```bash
+   cargo build --release --features endpoint-security --manifest-path daemon/Cargo.toml
+   ```
+2. Request the **`com.apple.developer.endpoint-security.client`** entitlement from Apple (a one-time approval against your Team ID) and code-sign the binary with it + your Developer ID:
+   ```bash
+   # entitlements.plist must contain com.apple.developer.endpoint-security.client = true
+   codesign --force --options runtime --timestamp \
+     --entitlements entitlements.plist \
+     --sign "Developer ID Application: <Your Name> (<TEAMID>)" \
+     daemon/target/release/jarvisd
+   ```
+   Then grant the signed binary **Full Disk Access** (System Settings → Privacy & Security → Full Disk Access) and run it as **root**.
+3. On success, `jarvisd` emits `introspect.es {active:true}` and the HUD's introspection surfaces begin showing kernel security findings. (See `docs/INTROSPECT.md` for the full flow and the honest device-gating caveats — the client is compile/link-verified in CI, but only *runs* with the entitlement present.)
+
 ### Uninstall — one command, two confirmations
 
 ```bash
@@ -84,6 +107,8 @@ JARVIS **acts on the machine, not just talks about it.** The built-in actuator (
 | **Set volume / report status** | "volume to 40%", "system status" | live CPU/MEM/DISK/UPTIME from the telemetry cache |
 | **Remember & recall facts** | "my name is Dar", "what are my projects?" | durable facts in SQLite, folded into every later reply; corrections overwrite |
 | **Search your own docs, on-device** | "index my documents", "search my files for the lease clause" | **ON by default but inert until you allowlist a folder** (never a whole-disk scan); embeddings never leave the device; honest BM25 fallback that reports which method ran |
+| **Full security check** | "am I secure?", "run a security check" | one READ-ONLY readout combining machine posture (FileVault/firewall/SIP/updates) + app privacy grants (TCC) + micro-app introspection; it reports where you stand and **changes nothing** — turning a protection on is yours to do |
+| **Micro-app integrity check** | "are my apps healthy?", "any tampering?" | the read-only introspection sentinel over JARVIS's OWN sandboxed apps: seatbelt profile-drift, runaway CPU/RSS, and unexpected loaded modules (dyld injection) — it observes and reports, never kills or unloads (see [docs/INTROSPECT.md](docs/INTROSPECT.md)) |
 
 Heavy or low-confidence requests route to the cloud and run the **same** actions through an Anthropic Messages-API tool loop (bounded: ≤ 3 model calls, 75 s), so *"could you possibly get that browser thing going"* works as well as *"open Safari."* Every executed action emits an `action.executed` telemetry event.
 

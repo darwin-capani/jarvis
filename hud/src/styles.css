@@ -8914,6 +8914,96 @@ body,
   color: var(--warn-amber);
 }
 
+/* INTROSPECT // MICRO-APP SENTINEL — read-only sandbox-integrity findings. */
+.introspect-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.introspect-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.introspect-apps-n {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--cyan-bright);
+}
+.introspect-count-label {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--cyan-dim);
+}
+.introspect-flags {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 2px 6px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.introspect-flags.ok {
+  color: var(--cyan-dim);
+  border: 1px solid rgba(26, 214, 255, 0.25);
+}
+.introspect-flags.warn {
+  color: var(--warn-amber);
+  background: rgba(255, 180, 84, 0.1);
+  border: 1px solid rgba(255, 180, 84, 0.4);
+}
+.introspect-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+}
+.introspect-alerts-title {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--cyan-dim);
+}
+.introspect-alert {
+  font-size: 10px;
+  color: var(--cyan-bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.introspect-alert.warn {
+  color: var(--warn-amber);
+}
+.introspect-caps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+.introspect-caps-title {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--cyan-dim);
+}
+.introspect-cap {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10px;
+}
+.introspect-cap-name {
+  color: var(--cyan-bright);
+  white-space: nowrap;
+}
+.introspect-cap-list {
+  color: var(--cyan-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* CAPABILITY // HEALTH — propose-only agent/skill performance flags. */
 .attr-body {
   display: flex;

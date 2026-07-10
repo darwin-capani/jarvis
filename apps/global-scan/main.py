@@ -69,6 +69,18 @@ APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parents[1]
 FEEDS_PATH = APP_DIR / "feeds.toml"
 
+# Optional READ-ONLY dyld module self-report (docs/INTROSPECT.md). The manifest
+# grants fs_read of apps/_sdk; the import is guarded so the app runs unchanged if
+# the stub is absent or the import fails. Bytecode writes are disabled (no fs_write
+# there).
+_dyld_report = None
+try:
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(PROJECT_ROOT / "apps" / "_sdk"))
+    import dyld_report as _dyld_report
+except Exception:  # pragma: no cover - best-effort, never blocks the app
+    _dyld_report = None
+
 # Tunables.
 REFRESH_INTERVAL_S = 10 * 60       # ~10 min between cycles
 TOP_N = 20                         # items kept and emitted per cycle
@@ -606,6 +618,18 @@ def main() -> int:
     n_feeds = sum(len(v) for v in feeds.values())
     link.log(f"global-scan online: {n_feeds} feeds across {len(feeds)} categories")
 
+    # Attest our own loaded dyld modules once at startup (READ-ONLY, best-effort).
+    # The daemon seeds a trust-on-first-use baseline from this and flags any module
+    # a later report adds (injection / unexpected dlopen) — see introspect.rs.
+    if _dyld_report is not None:
+        try:
+            # Register the watch FIRST so a dlopen in the gap between the snapshot
+            # and registration isn't missed; the poll loop re-reports when it fires.
+            _dyld_report.watch()
+            link.send("modules", _dyld_report.modules_payload())
+        except Exception:  # pragma: no cover - never break the app over telemetry
+            pass
+
     stop_event = threading.Event()
     refresh_event = threading.Event()
     running = threading.Event()
@@ -619,6 +643,13 @@ def main() -> int:
                     run_cycle(feeds, link)
                 except Exception as exc:  # never let the loop die on one bad cycle
                     link.log(f"cycle error: {exc}")
+            # Re-attest our module set if a dlopen happened since the last check
+            # (READ-ONLY; the daemon re-attests against the seeded baseline).
+            if _dyld_report is not None and _dyld_report.modules_changed_and_clear():
+                try:
+                    link.send("modules", _dyld_report.modules_payload())
+                except Exception:  # pragma: no cover
+                    pass
             # Wait for the interval, an explicit refresh, or stop.
             refresh_event.wait(timeout=REFRESH_INTERVAL_S)
             refresh_event.clear()

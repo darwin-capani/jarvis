@@ -42,6 +42,8 @@ import {
   LockdownStatus,
   CapabilityAtlas,
   TccSentinel,
+  IntrospectStatus,
+  IntrospectCapability,
   AttributionHealth,
   McpStatus,
   WebhookSurface,
@@ -133,6 +135,13 @@ import {
   parseTccSnapshot,
   parseTccAnomalies,
   TCC_ANOMALY_CAP,
+  parseIntrospectSnapshot,
+  introspectDriftLine,
+  introspectAnomalyLine,
+  introspectModuleViolationLine,
+  introspectSecurityLine,
+  parseIntrospectCapabilities,
+  mergeIntrospectAlert,
   parseAttributionHealth,
   parseMcpStatus,
   parseWebhookEvent,
@@ -629,6 +638,17 @@ export interface HudState {
   /** Accumulated TCC anomaly alerts (tcc.anomaly): new grants / denied→allowed
    *  escalations, newest-first, deduped + capped. REVIEW-ONLY. */
   tccAnomalies: string[];
+  /** The micro-app introspection tally (introspect.snapshot): sandboxed apps
+   *  observed + profile-drift + resource-anomaly counts. Null until the sentinel
+   *  emits its first tick. REVIEW-ONLY and SECRET-FREE. */
+  introspect: IntrospectStatus | null;
+  /** Accumulated introspection findings (introspect.profile_drift / .anomaly /
+   *  .module_violation / .security_event) as human lines, newest-first, deduped +
+   *  capped. REVIEW-ONLY — the sentinel reports, it never acts. */
+  introspectAlerts: string[];
+  /** Per-app DECLARED capability inventory (introspect.capabilities): the static
+   *  "what can each app do" audit from manifests. Secret-free. REVIEW-ONLY. */
+  introspectCapabilities: IntrospectCapability[];
   /** The ambient capability-health snapshot (attribution.health): how many of
    *  JARVIS's own agents/skills are reliable vs failing, with the failing ones
    *  flagged. Null until the sentinel emits. PROPOSE-ONLY (flags, never acts). */
@@ -1191,6 +1211,9 @@ export function initialState(): HudState {
     capabilityAtlas: null,
     tccSentinel: null,
     tccAnomalies: [],
+    introspect: null,
+    introspectAlerts: [],
+    introspectCapabilities: [],
     attributionHealth: null,
     security: null,
     webhooks: webhookSurfaceInitial(),
@@ -2165,6 +2188,52 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
         .filter((x, i, a) => a.indexOf(x) === i)
         .slice(0, TCC_ANOMALY_CAP);
       return { ...s, tccAnomalies: merged };
+    }
+
+    case "introspect.snapshot": {
+      // Ambient sandboxed-child sentinel tally (secret-free counts). Never null —
+      // a malformed payload yields an honest all-zero snapshot. REVIEW-ONLY.
+      return { ...s, introspect: parseIntrospectSnapshot(env.data) };
+    }
+
+    case "introspect.profile_drift": {
+      // The on-disk seatbelt profile was tampered/removed since launch — a
+      // sandbox-integrity finding. Accumulate (deduped, capped). REVIEW-ONLY.
+      const line = introspectDriftLine(env.data);
+      if (line === null) return s;
+      return { ...s, introspectAlerts: mergeIntrospectAlert(line, s.introspectAlerts) };
+    }
+
+    case "introspect.anomaly": {
+      // A per-app RSS/CPU runaway the classifier flagged vs. its baseline.
+      const line = introspectAnomalyLine(env.data);
+      if (line === null) return s;
+      return { ...s, introspectAlerts: mergeIntrospectAlert(line, s.introspectAlerts) };
+    }
+
+    case "introspect.module_violation": {
+      // A dyld module an app loaded that its trust-on-first-use baseline never had
+      // (injection / unexpected dlopen). REVIEW-ONLY — reported, never unloaded.
+      const line = introspectModuleViolationLine(env.data);
+      if (line === null) return s;
+      return { ...s, introspectAlerts: mergeIntrospectAlert(line, s.introspectAlerts) };
+    }
+
+    case "introspect.security_event": {
+      // A kernel security event about a tracked app from the (deferred, device-
+      // gated) ES front-end — a W^X violation (jit=false app made memory
+      // executable), a task-port acquisition (attach/inject), or a signal.
+      // REVIEW-ONLY — surfaced, never blocked (the observer is NOTIFY-only).
+      const line = introspectSecurityLine(env.data);
+      if (line === null) return s;
+      return { ...s, introspectAlerts: mergeIntrospectAlert(line, s.introspectAlerts) };
+    }
+
+    case "introspect.capabilities": {
+      // The static per-app DECLARED-capability audit (from manifests). Replaces
+      // the list wholesale each tick (it is a full inventory, not incremental).
+      // REVIEW-ONLY and SECRET-FREE.
+      return { ...s, introspectCapabilities: parseIntrospectCapabilities(env.data) };
     }
 
     case "attribution.health": {

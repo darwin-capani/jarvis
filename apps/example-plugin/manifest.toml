@@ -27,8 +27,10 @@ audio     = false
 gpu       = false
 net_hosts = []                                   # fully offline — no network at all
 # The op-restricted generate proxy socket (NOT the raw inference.sock) backs the
-# "generate" scope; the plugin's own scratch dir backs "fs_read".
-fs_read   = ["state/ipc/apps/generate.sock", "apps/example-plugin"]
+# "generate" scope; the plugin's own scratch dir backs "fs_read". apps/_sdk holds
+# the shared read-only dyld module-report stub (docs/INTROSPECT.md) this plugin
+# imports to attest its own loaded modules — read-only, no extra capability.
+fs_read   = ["state/ipc/apps/generate.sock", "apps/example-plugin", "apps/_sdk"]
 fs_write  = ["state/apps/example-plugin"]        # cache / scratch (its own app dir)
 
 [ui]

@@ -407,9 +407,12 @@ persona_file = "inference/personas/aegis.txt"
 # aegis_posture reads the LOCAL machine's security posture (FileVault, firewall, SIP,
 # pending updates) with the same read-only system-command pattern the daemon already
 # uses — it REPORTS; turning a protection on is the user's own action in System
-# Settings. NO offensive capability: the user's own email + own machine only. Aegis
-# holds NO consequential/remediation tool, not even a gated one.
-tools = ["conversation", "memory.recall", "recall_facts", "aegis_breach_check", "aegis_posture", "world_query"]
+# Settings. aegis_introspect reports the READ-ONLY introspection sentinel's view of
+# jarvisd's OWN sandboxed micro-apps (SBPL profile-drift, RSS/CPU anomalies, unexpected
+# dyld modules); it REPORTS only, never kills/unloads/changes a profile. NO offensive
+# capability: the user's own email + own machine only. Aegis holds NO consequential/
+# remediation tool, not even a gated one.
+tools = ["conversation", "memory.recall", "recall_facts", "aegis_breach_check", "aegis_posture", "aegis_introspect", "aegis_report", "world_query"]
 namespace = "agent.aegis"
 
 [[agent]]

@@ -30,7 +30,10 @@ net_hosts = [
   "feeds.a.dj.com",            # WSJ public markets headlines — markets
   "feeds.content.dowjones.io", # MarketWatch top stories (post-redirect host) — markets
 ]
-fs_read   = ["state/ipc/apps/generate.sock"] # op-restricted generate proxy (NOT raw inference.sock)
+fs_read   = [
+  "state/ipc/apps/generate.sock", # op-restricted generate proxy (NOT raw inference.sock)
+  "apps/_sdk",                     # shared READ-ONLY dyld module-report stub (docs/INTROSPECT.md)
+]
 fs_write  = ["state/apps/global-scan"]       # cache / scratch (its own app dir)
 
 [ui]

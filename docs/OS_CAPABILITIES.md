@@ -22,6 +22,7 @@ The entire second section of the spec describes what jarvisd already is.
 | Local ultra-fast MLX model matrix for intent classification + offline tasks | ✅ **Built** | `inference/server.py` classify (Qwen3-4B on Metal), local handlers |
 | Dynamic fallback that routes to Anthropic **only when the task exceeds local hardware** | ✅ **Built** | `router.rs` — cloud iff `complexity=="heavy" \|\| confidence<0.6`; `anthropic::complete_with_tools` |
 | Continuously ingest its own error logs | ✅ **Built** | `heal.rs` — tails `state/logs/daemon.log`, edge-triggered error-burst detection |
+| Read-only introspection of its OWN sandboxed apps (integrity + resource + module attestation) | ✅ **Built** | `introspect.rs` — SBPL profile-drift, RSS/CPU anomalies, cooperative dyld module attestation, capability inventory; surfaced via `aegis_introspect`/`aegis_report` + HUD. See `docs/INTROSPECT.md` |
 | Write its own patches | ⚠️ **Skeleton, gated OFF** | `heal.rs` `CloudPatcher::propose_patch` (stub); design: Opus → unified diff |
 | Dynamically compile its modules on the fly | ⚠️ **Design only** | staging-copy + `cargo check` + human-gated hot-swap |
 
