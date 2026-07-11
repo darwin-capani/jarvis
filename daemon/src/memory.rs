@@ -155,6 +155,17 @@ impl Memory {
                 value TEXT NOT NULL,
                 confidence REAL DEFAULT 1.0
             );
+            -- PERF: index the fact KEY. `facts` is one shared, never-pruned store
+            -- (world/model/agent tiers + every remembered fact), so without this every
+            -- exact-key access is a full-table scan. The hottest path is WRITE
+            -- amplification: upsert_fact/get_fact/delete_fact are `WHERE key = ?`, and
+            -- the world-model + reflection loops upsert many rows per turn — each was a
+            -- full scan, now an index lookup (EXPLAIN QUERY PLAN: SEARCH ... USING INDEX
+            -- idx_facts_key (key=?)). Purely additive: results/ordering are unchanged.
+            -- (The parameterized `key LIKE ?||'%'` prefix reads still scan — SQLite's
+            -- LIKE optimization doesn't apply to a bound pattern — that rewrite is a
+            -- separate, behavior-touching change and is left as a follow-up.)
+            CREATE INDEX IF NOT EXISTS idx_facts_key ON facts(key);
             CREATE TABLE IF NOT EXISTS transcripts(
                 id INTEGER PRIMARY KEY,
                 ts TEXT NOT NULL,
@@ -948,6 +959,41 @@ mod tests {
     /// The injectable test key seam: an EXPLICIT in-test key, NEVER the Keychain.
     fn test_key() -> crate::crypto::SecretKey {
         crate::crypto::SecretKey::from_bytes([4u8; crate::crypto::KEY_BYTES])
+    }
+
+    /// PERF REGRESSION: the exact-key access path (upsert_fact/get_fact/delete_fact
+    /// `WHERE key = ?`) must use idx_facts_key, not a full-table scan of the shared,
+    /// never-pruned facts store. Proven via EXPLAIN QUERY PLAN so a future schema
+    /// edit that drops the index is caught.
+    #[tokio::test]
+    async fn facts_key_lookups_use_the_index_not_a_full_scan() {
+        let db = TempDb::new("facts-index");
+        let mem = Memory::open(&db.0).unwrap();
+        let conn = mem.conn.lock().await;
+        // The index exists.
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_facts_key'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1, "idx_facts_key must exist");
+        // The exact-key lookup plan uses the index (write-amplification win). Use the
+        // PRODUCTION predicate form — a bound `key = ?1` — so the plan reflects what
+        // upsert_fact/get_fact/delete_fact actually run, not an inlined literal.
+        let mut stmt = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT value FROM facts WHERE key = ?1")
+            .unwrap();
+        let details: Vec<String> = stmt
+            .query_map(rusqlite::params!["user.world.x"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            details.iter().any(|d| d.contains("idx_facts_key")),
+            "exact-key lookup must SEARCH via idx_facts_key, got plan: {details:?}"
+        );
     }
 
     #[tokio::test]
