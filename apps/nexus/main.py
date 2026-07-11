@@ -121,7 +121,8 @@ INTERNAL = -100
 
 # The ABI version this control plane is written against (core/src/ffi.rs
 # NEXUS_ABI_VERSION). A mismatch is a hard refusal — never run a stale core.
-EXPECTED_ABI_VERSION = 1
+# v2 adds the audio.clipping drain surface (nexus_clip_capacity/nexus_drain_clips).
+EXPECTED_ABI_VERSION = 2
 
 
 # --------------------------------------------------------------------------- #
@@ -165,6 +166,12 @@ class NexusCore:
         )
         if not self._engine:
             raise NexusCoreError("nexus_engine_create returned NULL")
+        # Pre-size the clip-drain receive buffers ONCE to the core's fixed
+        # accumulator capacity (a single drain empties it), so the telemetry poll
+        # reuses them instead of reallocating every tick.
+        self._clip_cap = int(self._lib.nexus_clip_capacity())
+        self._clip_chans = (ctypes.c_uint16 * self._clip_cap)()
+        self._clip_peaks = (ctypes.c_float * self._clip_cap)()
 
     def _bind_signatures(self) -> None:
         L = self._lib
@@ -215,6 +222,13 @@ class NexusCore:
         L.nexus_get_spectrum.restype = c_i32
         L.nexus_spectrum_band_count.argtypes = []
         L.nexus_spectrum_band_count.restype = c_size_t
+        # audio.clipping drain surface (ABI v2). Parallel arrays out: channels
+        # (uint16) + true-peaks (float), plus an out-count. See core/src/ffi.rs.
+        p_u16 = ctypes.POINTER(ctypes.c_uint16)
+        L.nexus_clip_capacity.argtypes = []
+        L.nexus_clip_capacity.restype = c_size_t
+        L.nexus_drain_clips.argtypes = [c_void_p, p_u16, p_f32, c_size_t, p_size]
+        L.nexus_drain_clips.restype = c_i32
         L.nexus_get_crosspoint.argtypes = [c_void_p, c_size_t, c_size_t, p_f32]
         L.nexus_get_crosspoint.restype = c_i32
         L.nexus_matrix_revision.argtypes = [c_void_p]
@@ -245,6 +259,33 @@ class NexusCore:
         # Negative clears the assignment (FFI contract).
         sel = -1 if output is None else int(output)
         self._check(self._lib.nexus_set_monitor_output(self._engine, sel), "set_monitor_output")
+
+    def process_block(
+        self,
+        inputs: list[list[float]],
+        out_channels: int,
+        channels: int = 1,
+        sample_rate: int = DEFAULT_SAMPLE_RATE,
+    ) -> list[list[float]]:
+        """Drive ONE realtime block through the core with synthesized buffers
+        (headless self-test only — on hardware the CoreAudio IOProc calls the core
+        directly, never Python). Each `inputs[i]` is one interleaved input buffer of
+        `frames * channels` samples; returns `out_channels` output buffers."""
+        n = len(inputs[0]) if inputs else 0
+        frames = n // max(channels, 1)
+        PF = ctypes.POINTER(ctypes.c_float)
+        in_bufs = [(ctypes.c_float * n)(*chan) for chan in inputs]
+        out_bufs = [(ctypes.c_float * n)() for _ in range(out_channels)]
+        in_arr = (PF * len(in_bufs))(*[ctypes.cast(b, PF) for b in in_bufs])
+        out_arr = (PF * len(out_bufs))(*[ctypes.cast(b, PF) for b in out_bufs])
+        self._check(
+            self._lib.nexus_process_block(
+                self._engine, in_arr, len(in_bufs), out_arr, len(out_bufs),
+                ctypes.c_size_t(frames), ctypes.c_uint16(channels), ctypes.c_uint32(sample_rate),
+            ),
+            "process_block",
+        )
+        return [list(b) for b in out_bufs]
 
     def inputs(self) -> int:
         n = ctypes.c_size_t(0)
@@ -286,6 +327,24 @@ class NexusCore:
         buf = (ctypes.c_float * n)()
         self._check(self._lib.nexus_get_spectrum(self._engine, buf, n), "spectrum")
         return list(buf)
+
+    def drain_clips(self) -> list[tuple[int, float]]:
+        """Drain the true-peak clip events accumulated by the realtime core since
+        the last call (SPEC §6 audio.clipping). Returns a list of
+        (channel, true_peak_dbfs); empty when nothing clipped. Each event is
+        reported once (the core clears them on drain)."""
+        count = ctypes.c_size_t(0)
+        self._check(
+            self._lib.nexus_drain_clips(
+                self._engine, self._clip_chans, self._clip_peaks,
+                ctypes.c_size_t(self._clip_cap), ctypes.byref(count),
+            ),
+            "drain_clips",
+        )
+        return [
+            (int(self._clip_chans[i]), float(self._clip_peaks[i]))
+            for i in range(count.value)
+        ]
 
     def _check(self, code: int, op: str) -> None:
         if code != OK:
@@ -580,6 +639,10 @@ def telemetry_loop(core: NexusCore, link: HostLink, dispatcher: OpDispatcher, st
         try:
             if now >= next_levels:
                 _emit_levels(core, link)
+                # Drain + publish any true-peak clip events on the same 30 Hz tick
+                # (they are audio-thread-fed like the levels). On-event: emits only
+                # when the core actually clipped, so quiet audio ships nothing.
+                _emit_clipping(core, link)
                 next_levels = now + 1.0 / LEVELS_HZ
             if now >= next_spectrum:
                 _emit_spectrum(core, link)
@@ -609,6 +672,18 @@ def _emit_levels(core: NexusCore, link: HostLink) -> None:
 def _emit_spectrum(core: NexusCore, link: HostLink) -> None:
     bands = [_finite(b) for b in core.spectrum()]
     link.telemetry("audio.spectrum", {"bands": bands})
+
+
+def _emit_clipping(core: NexusCore, link: HostLink) -> None:
+    """SPEC §6 audio.clipping (on event): drain the core's true-peak clip events
+    and ship one telemetry line per event. The HUD (hud/src/core/events.ts
+    parseNexusClipping) reads `channel` + `true_peak_dbfs` FLAT and flashes the
+    Nexus panel. Nothing is emitted when nothing clipped."""
+    for channel, true_peak_dbfs in core.drain_clips():
+        link.telemetry(
+            "audio.clipping",
+            {"channel": channel, "true_peak_dbfs": _finite(true_peak_dbfs)},
+        )
 
 
 def _finite(x: float) -> float | None:
@@ -724,6 +799,19 @@ def selftest() -> int:
     bands = core.spectrum()
     print(f"levels: peak={peak} rms={rms} lufs=({m},{s},{i}) spectrum_bands={len(bands)}")
     assert len(bands) == 96, "spectrum must fold to 96 bands"
+
+    # audio.clipping (ABI v2): drive a full-scale block through the realtime path
+    # and confirm the true-peak clip detector fires + drains through the FFI.
+    core.set_input_mute(0, False)  # undo the earlier mute so ch0 has signal
+    core.set_crosspoint(0, 0, 0.0)
+    core.set_monitor_output(0)
+    assert core.drain_clips() == [], "no clips before any audio"
+    core.process_block([[1.0] * DEFAULT_BLOCK_FRAMES], out_channels=1, channels=1)
+    clips = core.drain_clips()
+    assert clips and clips[0][0] == 0, f"expected a true-peak clip on ch0, got {clips!r}"
+    assert clips[0][1] >= -1.0, f"clip true-peak {clips[0][1]} dBFS should meet the -1 dBFS ceiling"
+    print(f"clip drain: ch{clips[0][0]} @ {clips[0][1]:.2f} dBTP — audio.clipping path verified")
+    assert core.drain_clips() == [], "clip events must be reported once (cleared on drain)"
 
     core.close()
     print("PASS: ctypes <-> cdylib contract verified (no device, no socket, no audio)")

@@ -14,9 +14,13 @@
 use crate::dsp::{self, ChannelChainState};
 use crate::error::{NexusError, Result};
 use crate::matrix::{MatrixSnapshot, MatrixState, SnapshotRing};
-use crate::metering::{block_meter, LoudnessMeterState, SpectrumFrame, SpectrumState};
+use crate::metering::{
+    block_meter, detect_clip_reusing, LoudnessMeterState, SpectrumFrame, SpectrumState,
+    TruePeakKernel,
+};
 use crate::types::{
-    AudioFormat, BlockMut, BlockRef, ChannelDsp, ChannelMeter, LoudnessMeter, Sample, MAX_CHANNELS,
+    AudioFormat, BlockMut, BlockRef, ChannelDsp, ChannelMeter, ClipEvent, LoudnessMeter, Sample,
+    MAX_CHANNELS,
 };
 
 /// Worst-case interleaved samples per `process_block` we preallocate audio-thread
@@ -27,6 +31,17 @@ use crate::types::{
 /// somehow exceeds this the engine degrades gracefully (it only meters the
 /// reserved prefix) rather than allocating.
 const MAX_BLOCK_SAMPLES: usize = 4096;
+
+/// Capacity of the realtime clip-event accumulator (SPEC §6 `audio.clipping`).
+/// `process_block` appends at most one event per active input per block; the
+/// control plane drains it at the telemetry rate (~30 Hz) while blocks run at
+/// ~750 Hz, so a modest bound comfortably holds the events produced between two
+/// drains even under sustained clipping. Pre-reserved at construction; the audio
+/// path pushes ONLY while `len < capacity` (drop-on-overflow) so it never
+/// reallocates on the hot path. Overflow can only occur if the control-plane
+/// drain stalls for many blocks, in which case the newest clips are dropped (the
+/// buffer already holds a clip, which is all the HUD flash needs).
+pub const MAX_CLIP_EVENTS: usize = 256;
 
 /// The whole Nexus core, owned by the control plane via an opaque pointer.
 pub struct Engine {
@@ -50,6 +65,17 @@ pub struct Engine {
     /// capacity — never reallocating on the hot path.
     chain_scratch: Vec<Sample>,
     mono_scratch: Vec<Sample>,
+    /// True-peak clip detector state (SPEC §3 step 4 / §6 `audio.clipping`),
+    /// PREALLOCATED at construction so the per-input clip taps in `process_block`
+    /// never heap-allocate. `clip_kernel` is the polyphase windowed-sinc kernel
+    /// designed ONCE here (its `design()` allocates a prototype `Vec`, which must
+    /// not happen on the audio thread); `clip_scratch` is the reusable
+    /// deinterleave buffer (one channel's lane at a time), sized to the max block
+    /// like `chain_scratch`/`mono_scratch`; `clip_events` is the bounded
+    /// drop-on-overflow accumulator the control plane drains via [`Self::drain_clips`].
+    clip_kernel: TruePeakKernel,
+    clip_scratch: Vec<Sample>,
+    clip_events: Vec<ClipEvent>,
     /// Per-input/output meter accumulators the FFI level getter reads.
     meters: Vec<ChannelMeter>,
     /// BS.1770-4 loudness meter for the monitored mix.
@@ -80,6 +106,11 @@ impl Engine {
             // (clear/extend within capacity) and never reallocates.
             chain_scratch: Vec::with_capacity(MAX_BLOCK_SAMPLES),
             mono_scratch: Vec::with_capacity(MAX_BLOCK_SAMPLES),
+            // Clip detector: design the kernel ONCE (allocates here, never on the
+            // audio path) and reserve the deinterleave scratch + event accumulator.
+            clip_kernel: TruePeakKernel::design(),
+            clip_scratch: Vec::with_capacity(MAX_BLOCK_SAMPLES),
+            clip_events: Vec::with_capacity(MAX_CLIP_EVENTS),
             meters: vec![ChannelMeter::default(); inputs.max(outputs).max(1)],
             loudness: LoudnessMeterState::new(sample_rate),
             spectrum: SpectrumState::new(sample_rate),
@@ -282,6 +313,28 @@ impl Engine {
             }
         }
 
+        // Per-input true-peak clip detection (SPEC §3 step 4 / §6 `audio.clipping`).
+        // Runs the 4× oversampling clip detector on the SAME processed lane 0 the
+        // level tap reads, so an inter-sample over that the studio chain creates
+        // (or a hot input on a bypassed chain) registers. Alloc-free: it reuses the
+        // engine's persistent `clip_kernel` and the pre-sized `clip_scratch`
+        // deinterleave buffer, and appends to the bounded `clip_events` accumulator
+        // ONLY while there's reserved room (drop-on-overflow) so the audio path
+        // never reallocates. `detect_clip_reusing` returns the event with the
+        // block-local lane index (0); we stamp the real engine input index `ch`,
+        // exactly as the level taps store at `meters[ch]`. The control plane drains
+        // these via `drain_clips` at telemetry rate.
+        for (ch, proc) in processed_refs.iter().enumerate().take(active_in) {
+            if let Some(mut ev) =
+                detect_clip_reusing(proc, 0, &self.clip_kernel, &mut self.clip_scratch)
+            {
+                if self.clip_events.len() < self.clip_events.capacity() {
+                    ev.channel = ch as u16;
+                    self.clip_events.push(ev);
+                }
+            }
+        }
+
         // Program meters (SPEC §6 LUFS + spectrum): feed the MONITORED output bus
         // (the assigned monitor output, else output 0) summed to mono into the
         // BS.1770-4 loudness meter and the 2048-pt FFT spectrum analyzer. These
@@ -329,6 +382,25 @@ impl Engine {
     /// The current 96-band spectrum (SPEC §6).
     pub fn spectrum(&self) -> SpectrumFrame {
         self.spectrum.read()
+    }
+
+    /// The clip-event accumulator's fixed capacity ([`MAX_CLIP_EVENTS`]), so the
+    /// control plane can size a drain buffer without hard-coding it.
+    pub fn clip_capacity(&self) -> usize {
+        MAX_CLIP_EVENTS
+    }
+
+    /// Drain the accumulated true-peak clip events (SPEC §6 `audio.clipping`) into
+    /// `out`, returning the number written. Copies up to `out.len()` events and
+    /// removes exactly those from the accumulator so each clip is reported once;
+    /// any tail that didn't fit is retained for the next drain. Called off the
+    /// audio path by the control-plane telemetry poll (mirroring the other meter
+    /// getters); the `drain` retains the Vec's capacity, so no reallocation.
+    pub fn drain_clips(&mut self, out: &mut [ClipEvent]) -> usize {
+        let n = out.len().min(self.clip_events.len());
+        out[..n].copy_from_slice(&self.clip_events[..n]);
+        self.clip_events.drain(..n);
+        n
     }
 
     /// Feed the monitored mix to the loudness + spectrum meters (agent-driven).
@@ -627,5 +699,97 @@ mod tests {
             ptr_chain = Some(pc);
             ptr_mono = Some(pm);
         }
+    }
+
+    #[test]
+    fn process_block_does_not_reallocate_under_sustained_clipping() {
+        // Mirror of the scratch-realloc proof, but for the CLIP path: drive a
+        // full-scale (0 dBFS, > -1 dBFS true-peak) signal so every block fires the
+        // per-input clip detector, and assert the clip deinterleave scratch AND the
+        // clip-event accumulator keep a STABLE capacity + backing pointer across
+        // hundreds of blocks — i.e. `detect_clip_reusing` + the drop-on-overflow
+        // accumulator never heap-allocate on the audio thread (SPEC §2).
+        let mut e = Engine::new(2, 2, FS).unwrap();
+        e.set_crosspoint(0, 0, 0.0).unwrap();
+        e.set_crosspoint(1, 0, 0.0).unwrap();
+        e.set_monitor_output(Some(0)).unwrap();
+
+        let cap_clip_scratch0 = e.clip_scratch.capacity();
+        let cap_clip_events0 = e.clip_events.capacity();
+        assert!(cap_clip_scratch0 >= MAX_BLOCK_SAMPLES);
+        assert!(cap_clip_events0 >= MAX_CLIP_EVENTS);
+        let ptr_clip_events0 = e.clip_events.as_ptr();
+
+        // Full-scale inputs: unity-routed to the monitored bus, the processed lane 0
+        // sits at 0 dBFS, whose true-peak exceeds the -1 dBFS clip ceiling.
+        let hot0 = vec![1.0f32; 128];
+        let hot1 = vec![1.0f32; 128];
+        let mut ptr_clip_scratch: Option<*const f32> = None;
+        for _ in 0..256 {
+            let mut o0 = vec![0.0f32; 128];
+            let mut o1 = vec![0.0f32; 128];
+            {
+                let inputs = [
+                    BlockRef { data: &hot0, format: AudioFormat::new(1, FS) },
+                    BlockRef { data: &hot1, format: AudioFormat::new(1, FS) },
+                ];
+                let mut outputs = [
+                    BlockMut { data: &mut o0, format: AudioFormat::new(1, FS) },
+                    BlockMut { data: &mut o1, format: AudioFormat::new(1, FS) },
+                ];
+                e.process_block(&inputs, &mut outputs);
+            }
+            // Neither the deinterleave scratch nor the event accumulator reallocate.
+            assert_eq!(e.clip_scratch.capacity(), cap_clip_scratch0, "clip scratch reallocated");
+            assert_eq!(e.clip_events.capacity(), cap_clip_events0, "clip events reallocated");
+            assert_eq!(e.clip_events.as_ptr(), ptr_clip_events0, "clip events pointer moved (realloc)");
+            let pcs = e.clip_scratch.as_ptr();
+            if let Some(prev) = ptr_clip_scratch {
+                assert_eq!(pcs, prev, "clip scratch pointer moved (realloc)");
+            }
+            ptr_clip_scratch = Some(pcs);
+        }
+        // The detector actually fired (the loop is exercised, not skipped) and the
+        // accumulator saturated at its bound (drop-on-overflow held the line).
+        assert!(!e.clip_events.is_empty(), "sustained clipping produced no clip events");
+        assert!(e.clip_events.len() <= cap_clip_events0, "clip events exceeded reserved capacity");
+    }
+
+    #[test]
+    fn drain_clips_reports_then_clears() {
+        // A hot input produces clip events that `drain_clips` reports once and then
+        // clears; a subsequent drain on quiet audio returns nothing.
+        let mut e = Engine::new(1, 1, FS).unwrap();
+        e.set_crosspoint(0, 0, 0.0).unwrap();
+        e.set_monitor_output(Some(0)).unwrap();
+        let fmt = AudioFormat::new(1, FS);
+
+        // One hot block -> at least one clip event on input 0.
+        let hot = vec![1.0f32; 128];
+        let mut out = vec![0.0f32; 128];
+        {
+            let inputs = [BlockRef { data: &hot, format: fmt }];
+            let mut outputs = [BlockMut { data: &mut out, format: fmt }];
+            e.process_block(&inputs, &mut outputs);
+        }
+
+        let mut sink = vec![ClipEvent { channel: 0, true_peak_dbfs: 0.0 }; e.clip_capacity()];
+        let n = e.drain_clips(&mut sink);
+        assert!(n >= 1, "expected a clip event from a full-scale block");
+        assert_eq!(sink[0].channel, 0, "clip event should carry the engine input index");
+        assert!(sink[0].true_peak_dbfs >= crate::types::CLIP_THRESHOLD_DBFS);
+
+        // Draining again immediately (no new audio) returns nothing — reported once.
+        assert_eq!(e.drain_clips(&mut sink), 0, "clip events were not cleared after drain");
+
+        // A quiet block produces no clips.
+        let quiet = sine(1000.0, 0.1, 128, FS);
+        let mut out2 = vec![0.0f32; 128];
+        {
+            let inputs = [BlockRef { data: &quiet, format: fmt }];
+            let mut outputs = [BlockMut { data: &mut out2, format: fmt }];
+            e.process_block(&inputs, &mut outputs);
+        }
+        assert_eq!(e.drain_clips(&mut sink), 0, "quiet audio must not clip");
     }
 }

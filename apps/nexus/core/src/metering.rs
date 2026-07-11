@@ -18,6 +18,10 @@
 //!   - BS.1770-4 K-weighting (stage-1 high-shelf + stage-2 RLB high-pass),
 //!     400 ms momentary / 3 s short-term windows, and ABSOLUTE (-70 LUFS) +
 //!     RELATIVE (-10 LU) gating for integrated loudness -> [`LoudnessMeter`].
+//!     Integrated loudness accumulates the gating blocks into a FIXED-SIZE
+//!     loudness histogram (BS.1770's own definition), so the audio-thread push
+//!     is O(1) with no allocation and the memory + poll cost stay constant for
+//!     the daemon's whole lifetime.
 //!   - a 2048-point real FFT (hand-written radix-2, std-only), Hann-windowed,
 //!     magnitude -> dBFS, folded into 96 log-spaced bands -> [`SpectrumFrame`]
 //!     (SPEC §6 `audio.spectrum`, 30 Hz).
@@ -108,7 +112,13 @@ const TP_TAPS_PER_PHASE: usize = 12;
 /// (`peak.max(raw)`), so a clip on the sample grid always registers even if the
 /// nearest reconstructed phase reads a hair under it. Built once per detector —
 /// the design is pure and depends only on the constants above.
-struct TruePeakKernel {
+///
+/// `pub(crate)` so the realtime [`crate::engine::Engine`] can own ONE persistent
+/// kernel (designed at construction) and reuse it every `process_block` via
+/// [`detect_clip_reusing`], instead of re-designing it per block on the audio
+/// thread (which would allocate `proto`). The self-contained [`detect_clip`]
+/// still designs its own kernel — it's the frozen off-path seam the tests use.
+pub(crate) struct TruePeakKernel {
     phases: [[f32; TP_TAPS_PER_PHASE]; TP_OVERSAMPLE],
 }
 
@@ -117,7 +127,9 @@ impl TruePeakKernel {
     /// Nyquist) sampled at the oversampled rate and split into `TP_OVERSAMPLE`
     /// phases, each normalized to unity DC gain so a full-scale signal maps to a
     /// full-scale reconstruction (no spurious gain that would over-report peaks).
-    fn design() -> Self {
+    /// Allocates `proto` (a `Vec`), so this is a CONSTRUCTION-TIME operation —
+    /// the engine designs it once and never on the audio path.
+    pub(crate) fn design() -> Self {
         let total = TP_TAPS_PER_PHASE * TP_OVERSAMPLE;
         // Center the sinc on the prototype filter so the fractional delays are
         // symmetric about the sample being interpolated.
@@ -178,19 +190,54 @@ fn blackman(k: usize, n: usize) -> f64 {
 /// The estimated true-peak (linear amplitude) of one interleaved channel of
 /// `block`, via 4× windowed-sinc oversampling. Always at least the raw sample
 /// peak (the polyphase phase-0 path), so it never under-reports a hard clip.
+///
+/// Owns a local deinterleave `Vec` (so it ALLOCATES); this is the off-audio-path
+/// form the metering unit tests call directly. The realtime path uses
+/// [`true_peak_linear_reusing`] with a caller-owned scratch instead. Both share
+/// the exact windowed-sinc math via that core, so this wrapper is a thin,
+/// self-contained convenience — its signature stays frozen for the tests.
 fn true_peak_linear(block: &BlockRef<'_>, channel: usize, kernel: &TruePeakKernel) -> f32 {
     let ch = block.format.channels as usize;
     if ch == 0 || channel >= ch {
         return 0.0;
     }
-    // Deinterleave the requested channel. Bounded by the block length; the FFI
-    // edge sizes blocks to the realtime buffer (64/128 frames) so this is small.
+    // Reserve exactly the lane length so the shared core never has to grow it.
     let mut lane: Vec<f32> = Vec::with_capacity(block.data.len() / ch + 1);
+    true_peak_linear_reusing(block, channel, kernel, &mut lane)
+}
+
+/// Alloc-free core of [`true_peak_linear`]: deinterleaves the requested channel
+/// into the caller-owned `scratch` and runs the 4× oversampling over it. `scratch`
+/// is `clear()`ed and refilled WITHIN its existing capacity — the realtime caller
+/// pre-sizes it (to the max block) so NO heap allocation occurs on the audio
+/// thread; the [`true_peak_linear`] wrapper reserves the exact lane length before
+/// calling. If the lane exceeds `scratch.capacity()` the reserved prefix is
+/// analyzed and the tail dropped (degrade gracefully rather than reallocate on the
+/// audio path) — neither caller ever triggers that, since both reserve enough.
+///
+/// PRECONDITION: `scratch` must have reserved capacity >= the channel's frame
+/// count (a zero-capacity `Vec` would read as silence). Both in-crate callers
+/// uphold this.
+fn true_peak_linear_reusing(
+    block: &BlockRef<'_>,
+    channel: usize,
+    kernel: &TruePeakKernel,
+    scratch: &mut Vec<f32>,
+) -> f32 {
+    let ch = block.format.channels as usize;
+    if ch == 0 || channel >= ch {
+        return 0.0;
+    }
+    // Deinterleave into `scratch`. `clear()` keeps the reserved capacity; pushing
+    // only while `len < capacity` guarantees no reallocation on the audio path.
+    scratch.clear();
+    let cap = scratch.capacity();
     let mut i = channel;
-    while i < block.data.len() {
-        lane.push(block.data[i]);
+    while i < block.data.len() && scratch.len() < cap {
+        scratch.push(block.data[i]);
         i += ch;
     }
+    let lane: &[f32] = scratch;
     if lane.is_empty() {
         return 0.0;
     }
@@ -235,6 +282,11 @@ fn true_peak_linear(block: &BlockRef<'_>, channel: usize, kernel: &TruePeakKerne
 /// inter-sample peak, compare against [`CLIP_THRESHOLD_DBFS`] (-1 dBFS). Returns
 /// `Some(ClipEvent)` carrying the measured true-peak in dBFS when it meets or
 /// exceeds the threshold, else `None`.
+///
+/// SELF-CONTAINED (designs its own kernel, owns its own deinterleave `Vec`), so
+/// it ALLOCATES — this is the FROZEN off-audio-path seam the metering unit tests
+/// exercise. The realtime `process_block` uses [`detect_clip_reusing`] with the
+/// engine's persistent kernel + scratch instead, which is alloc-free.
 pub fn detect_clip(block: &BlockRef<'_>, channel: usize) -> Option<ClipEvent> {
     let ch = block.format.channels as usize;
     if ch == 0 || channel >= ch {
@@ -242,7 +294,40 @@ pub fn detect_clip(block: &BlockRef<'_>, channel: usize) -> Option<ClipEvent> {
     }
     let kernel = TruePeakKernel::design();
     let tp = true_peak_linear(block, channel, &kernel);
-    let tp_dbfs = linear_to_db(tp);
+    clip_event_from_true_peak(channel, tp)
+}
+
+/// Alloc-free true-peak clip detection for the realtime audio thread. Detects
+/// exactly as [`detect_clip`] but reuses a caller-owned `kernel` (designed once
+/// at engine construction) and a caller-owned `scratch` deinterleave buffer
+/// (pre-sized to the max block), so it performs NO heap allocation on the hot
+/// path (SPEC §2 alloc-free contract). `scratch` is cleared and refilled within
+/// its reserved capacity each call. Returns `Some(ClipEvent)` on exceedance.
+///
+/// The returned event's `channel` is the requested `channel` argument; callers
+/// metering a per-input mono lane (lane 0) should overwrite it with the engine
+/// input index they hold, exactly as the per-input level taps do.
+pub(crate) fn detect_clip_reusing(
+    block: &BlockRef<'_>,
+    channel: usize,
+    kernel: &TruePeakKernel,
+    scratch: &mut Vec<f32>,
+) -> Option<ClipEvent> {
+    let ch = block.format.channels as usize;
+    if ch == 0 || channel >= ch {
+        return None;
+    }
+    let tp = true_peak_linear_reusing(block, channel, kernel, scratch);
+    clip_event_from_true_peak(channel, tp)
+}
+
+/// Shared threshold check: build a [`ClipEvent`] from a measured true-peak (linear)
+/// on `channel` when it meets/exceeds [`CLIP_THRESHOLD_DBFS`], else `None`. Keeps
+/// [`detect_clip`] and [`detect_clip_reusing`] bit-for-bit identical in their
+/// exceedance semantics.
+#[inline]
+fn clip_event_from_true_peak(channel: usize, true_peak_linear: f32) -> Option<ClipEvent> {
+    let tp_dbfs = linear_to_db(true_peak_linear);
     if tp_dbfs >= CLIP_THRESHOLD_DBFS {
         Some(ClipEvent { channel: channel as u16, true_peak_dbfs: tp_dbfs })
     } else {
@@ -379,6 +464,19 @@ const GATE_HOP_MS: f64 = 100.0;
 const MOMENTARY_MS: f64 = 400.0;
 const SHORT_TERM_MS: f64 = 3000.0;
 
+/// Bin width of the integrated-loudness histogram, in LU. BS.1770-4 / EBU R128
+/// define integrated loudness as the gated mean over a HISTOGRAM of 400 ms
+/// gating blocks, and recommend ~0.1 LU bins from the absolute gate upward.
+const HIST_BIN_LU: f64 = 0.1;
+/// Number of 0.1 LU histogram bins, spanning [-70 LU, +30 LU]. The lower edge is
+/// the absolute gate ([`LUFS_ABSOLUTE_GATE`]); blocks below it are discarded (as
+/// the gate would anyway) so they never enter the histogram, and blocks above the
+/// upper edge clamp into the top bin (their exact mean-square is still summed, so
+/// no energy is lost). +30 LU is far above any real K-weighted program level
+/// (a full-scale tone lands near -3 LUFS, +K-weighting a few LU higher), so the
+/// clamp is only a numerical backstop.
+const HIST_BINS: usize = 1000;
+
 /// A stateful loudness meter (BS.1770-4). Owns the K-weighting biquad memory (one
 /// state per channel), the running mean-square accumulators for the momentary /
 /// short-term sliding windows, and the gated-block history for integrated
@@ -409,8 +507,16 @@ pub struct LoudnessMeterState {
     hop_len: usize,
     block_count: usize,
     samples_since_hop: usize,
-    /// Mean-square of every completed 400 ms gating block (for the two-pass gate).
-    gating_blocks: Vec<f64>,
+    /// Fixed-size BS.1770 loudness histogram of the completed 400 ms gating
+    /// blocks, used for the two-pass (absolute + relative) gate. `hist_count[i]`
+    /// is the number of blocks whose loudness falls in the i-th 0.1 LU bin and
+    /// `hist_ms_sum[i]` the running sum of their (linear) mean-squares. Replaces
+    /// the old unbounded `Vec<f64>` of per-block mean-squares: the audio-thread
+    /// push is now an O(1) bin increment with NO allocation, and the memory is
+    /// constant (O([`HIST_BINS`])) for the daemon's whole lifetime. Both vectors
+    /// are allocated once in [`Self::new`] and never resized.
+    hist_count: Vec<u64>,
+    hist_ms_sum: Vec<f64>,
     /// Channel weights (BS.1770: L/R/C = 1.0, surround = 1.41). For <=2 channels
     /// all weights are 1.0; this meter is fed the mono monitor mix in practice.
     weights: Vec<f64>,
@@ -451,7 +557,8 @@ impl LoudnessMeterState {
             hop_len,
             block_count: 0,
             samples_since_hop: 0,
-            gating_blocks: Vec::new(),
+            hist_count: vec![0; HIST_BINS],
+            hist_ms_sum: vec![0.0; HIST_BINS],
             weights: vec![1.0],
             channels: 1,
         }
@@ -481,7 +588,9 @@ impl LoudnessMeterState {
         self.st_sum = 0.0;
         self.block_count = 0;
         self.samples_since_hop = 0;
-        self.gating_blocks.clear();
+        // Zero the histogram in place — keeps the buffers (never reallocates).
+        self.hist_count.iter_mut().for_each(|v| *v = 0);
+        self.hist_ms_sum.iter_mut().for_each(|v| *v = 0.0);
     }
 
     /// Ensure per-channel filter state + weights exist for `channels`.
@@ -554,8 +663,12 @@ impl LoudnessMeterState {
                 // block accumulator mean. For the canonical 400 ms block at any
                 // supported rate the short-term ring (3 s) always contains it.
                 let ms = self.trailing_mean_square(self.block_len);
-                if ms > 0.0 {
-                    self.gating_blocks.push(ms);
+                // Record the block in the fixed-size loudness histogram. This is
+                // an O(1), allocation-free bin increment on the audio thread —
+                // NOT a growing `Vec::push` (SPEC §2: no alloc on the hot path).
+                if let Some(bin) = Self::hist_bin(ms) {
+                    self.hist_count[bin] += 1;
+                    self.hist_ms_sum[bin] += ms;
                 }
             }
         }
@@ -589,6 +702,31 @@ impl LoudnessMeterState {
         }
     }
 
+    /// The histogram bin for a gating block of mean-square `ms`, or `None` when
+    /// the block falls below the absolute gate (-70 LUFS) — those are dropped
+    /// exactly as the absolute gate would drop them, so the histogram IS the
+    /// absolute-gated set. Blocks above the top bin's loudness clamp into it (the
+    /// exact `ms` is still summed by the caller, so no energy is lost). Runs at
+    /// the 10 Hz hop rate, so the single `log10` here is negligible.
+    #[inline]
+    fn hist_bin(ms: f64) -> Option<usize> {
+        // `ms_to_lufs` returns a finite value or -inf (never NaN), so a plain
+        // `<` correctly rejects both sub-gate and silent (ms <= 0) blocks.
+        let lufs = Self::ms_to_lufs(ms);
+        if lufs < LUFS_ABSOLUTE_GATE {
+            return None;
+        }
+        let idx = ((lufs - LUFS_ABSOLUTE_GATE) / HIST_BIN_LU).floor() as usize;
+        Some(idx.min(HIST_BINS - 1))
+    }
+
+    /// The center loudness (LUFS) of histogram bin `i` — the representative
+    /// loudness of the 0.1 LU interval `[-70 + i·0.1, -70 + (i+1)·0.1)`.
+    #[inline]
+    fn hist_bin_center_lufs(i: usize) -> f64 {
+        LUFS_ABSOLUTE_GATE + (i as f64 + 0.5) * HIST_BIN_LU
+    }
+
     /// Read the current momentary / short-term / integrated loudness (LUFS).
     pub fn read(&self) -> LoudnessMeter {
         let lufs_m = if self.mom_filled > 0 {
@@ -609,37 +747,55 @@ impl LoudnessMeterState {
         }
     }
 
-    /// BS.1770-4 gated integrated loudness over the collected 400 ms blocks:
+    /// BS.1770-4 gated integrated loudness over the loudness HISTOGRAM of 400 ms
+    /// blocks:
     ///   1. absolute gate at -70 LUFS,
     ///   2. compute the mean loudness of the surviving blocks,
     ///   3. relative gate at (that mean - 10 LU),
     ///   4. integrated loudness = LUFS of the mean-square of the twice-gated set.
+    ///
+    /// This is BS.1770's own definition (a histogram of gated blocks). It runs in
+    /// O([`HIST_BINS`]) with NO allocation — a constant cost independent of how
+    /// long the daemon has been running — replacing the old two full O(N) passes
+    /// over an ever-growing `Vec<f64>`. Blocks below the absolute gate were never
+    /// inserted (see [`Self::hist_bin`]), so the whole histogram IS the
+    /// absolute-gated set. The gate decisions quantize to the 0.1 LU bin width,
+    /// but each included bin contributes its EXACT summed mean-square, so the
+    /// gated mean is essentially unquantized — well inside the ±0.5 LU the
+    /// BS.1770 reference test asserts.
     fn integrated_lufs(&self) -> f64 {
-        if self.gating_blocks.is_empty() {
+        // Stage 1: absolute gate == the entire histogram.
+        let mut abs_count: u64 = 0;
+        let mut abs_ms_sum = 0.0f64;
+        for (&count, &ms_sum) in self.hist_count.iter().zip(self.hist_ms_sum.iter()) {
+            abs_count += count;
+            abs_ms_sum += ms_sum;
+        }
+        if abs_count == 0 {
             return f64::NEG_INFINITY;
         }
-        // Stage 1: absolute gate.
-        let abs_kept: Vec<f64> = self
-            .gating_blocks
-            .iter()
-            .copied()
-            .filter(|&ms| Self::ms_to_lufs(ms) >= LUFS_ABSOLUTE_GATE)
-            .collect();
-        if abs_kept.is_empty() {
-            return f64::NEG_INFINITY;
-        }
-        // Mean-square -> mean loudness of the absolute-gated set.
-        let abs_mean_ms = abs_kept.iter().sum::<f64>() / abs_kept.len() as f64;
+        // Mean-square -> mean loudness of the absolute-gated set -> relative gate.
+        let abs_mean_ms = abs_ms_sum / abs_count as f64;
         let relative_threshold = Self::ms_to_lufs(abs_mean_ms) + LUFS_RELATIVE_GATE;
-        // Stage 2: relative gate.
-        let rel_kept: Vec<f64> = abs_kept
-            .iter()
-            .copied()
-            .filter(|&ms| Self::ms_to_lufs(ms) >= relative_threshold)
-            .collect();
-        let kept = if rel_kept.is_empty() { abs_kept } else { rel_kept };
-        let mean_ms = kept.iter().sum::<f64>() / kept.len() as f64;
-        Self::ms_to_lufs(mean_ms)
+        // Stage 2: relative gate — keep bins whose center loudness clears the
+        // threshold, summing their exact mean-square energy.
+        let mut rel_count: u64 = 0;
+        let mut rel_ms_sum = 0.0f64;
+        for (i, (&count, &ms_sum)) in self.hist_count.iter().zip(self.hist_ms_sum.iter()).enumerate()
+        {
+            if count > 0 && Self::hist_bin_center_lufs(i) >= relative_threshold {
+                rel_count += count;
+                rel_ms_sum += ms_sum;
+            }
+        }
+        // If the relative gate empties the set (degenerate), fall back to the
+        // absolute-gated set — matches the pre-histogram behavior.
+        let (count, ms_sum) = if rel_count == 0 {
+            (abs_count, abs_ms_sum)
+        } else {
+            (rel_count, rel_ms_sum)
+        };
+        Self::ms_to_lufs(ms_sum / count as f64)
     }
 }
 
@@ -1019,6 +1175,57 @@ mod tests {
         assert!(detect_clip(&block, 0).is_none());
     }
 
+    #[test]
+    fn detect_clip_reusing_matches_detect_clip() {
+        // The alloc-free realtime variant must detect IDENTICALLY to the frozen
+        // self-contained form on the same inputs — both a clipping and a clean
+        // signal, across a couple of interleaved channels.
+        let fs = 48_000u32;
+        let kernel = TruePeakKernel::design();
+        let mut scratch: Vec<f32> = Vec::with_capacity(4096);
+
+        // Hot inter-sample-over tone (clips) and a clean -6 dBFS tone (doesn't).
+        let hot: Vec<f32> = (0..128)
+            .map(|i| {
+                let ph = 2.0 * PI * (fs as f32 / 4.0) * i as f32 / fs as f32 + PI / 4.0;
+                0.98 * ph.sin()
+            })
+            .collect();
+        let clean = sine(1000.0, 0.5, 128, fs);
+
+        for (buf, ch) in [(&hot, 0usize), (&clean, 0usize)] {
+            let block = BlockRef { data: buf, format: AudioFormat::new(1, fs) };
+            let a = detect_clip(&block, ch);
+            let b = detect_clip_reusing(&block, ch, &kernel, &mut scratch);
+            assert_eq!(a.is_some(), b.is_some(), "clip decision diverged");
+            if let (Some(a), Some(b)) = (a, b) {
+                assert_eq!(a.channel, b.channel);
+                assert!((a.true_peak_dbfs - b.true_peak_dbfs).abs() < 1e-6, "true-peak diverged");
+            }
+        }
+    }
+
+    #[test]
+    fn detect_clip_reusing_does_not_reallocate_scratch() {
+        // Under sustained clipping the reusing variant must keep the scratch's
+        // capacity + backing pointer STABLE — the alloc-free contract on the audio
+        // thread. Pre-size the scratch like the engine does.
+        let fs = 48_000u32;
+        let kernel = TruePeakKernel::design();
+        let mut scratch: Vec<f32> = Vec::with_capacity(4096);
+        let cap0 = scratch.capacity();
+        let ptr0 = scratch.as_ptr();
+        let hot = vec![1.0f32; 128]; // full-scale, clips every call
+
+        for _ in 0..512 {
+            let block = BlockRef { data: &hot, format: AudioFormat::new(1, fs) };
+            let ev = detect_clip_reusing(&block, 0, &kernel, &mut scratch);
+            assert!(ev.is_some(), "full-scale block must clip");
+            assert_eq!(scratch.capacity(), cap0, "scratch reallocated (capacity grew)");
+            assert_eq!(scratch.as_ptr(), ptr0, "scratch backing pointer moved (realloc)");
+        }
+    }
+
     // --- BS.1770-4 LUFS -----------------------------------------------------
 
     #[test]
@@ -1249,5 +1456,57 @@ mod tests {
         m.reset();
         let l = m.read();
         assert!(l.lufs_i.is_infinite() && l.lufs_m.is_infinite() && l.lufs_s.is_infinite());
+    }
+
+    #[test]
+    fn integrated_loudness_histogram_is_bounded_and_alloc_free() {
+        // The daemon runs for days; the integrated-loudness storage must be a
+        // FIXED-SIZE histogram, not a Vec that grows one entry per 100 ms hop.
+        // Feed a long program and prove the audio-thread push path never grows
+        // or reallocates the per-block storage (the old `Vec<f64>` would have
+        // doubled/memcpy'd itself ~a dozen times mid-callback over this run).
+        let fs = 48_000u32;
+        let mut m = LoudnessMeterState::new(fs);
+
+        // Histogram is a constant two-vector footprint, allocated once in new().
+        assert_eq!(m.hist_count.len(), HIST_BINS);
+        assert_eq!(m.hist_ms_sum.len(), HIST_BINS);
+        let count_cap = m.hist_count.capacity();
+        let sum_cap = m.hist_ms_sum.capacity();
+        let count_ptr = m.hist_count.as_ptr();
+        let sum_ptr = m.hist_ms_sum.as_ptr();
+
+        // ~60 s of a steady -23 LUFS tone => ~600 gating blocks (600 hops). Feed
+        // one continuous buffer in 100 ms chunks (as the engine does), so there
+        // are no chunk-boundary discontinuities.
+        let amp = 2.0f32.sqrt() * 10f32.powf(-23.0 / 20.0);
+        let chunk = (fs / 10) as usize; // 100 ms
+        let buf = sine(1000.0, amp, chunk * 600, fs);
+        for c in buf.chunks(chunk) {
+            m.push(c, 1);
+        }
+
+        // Storage is byte-for-byte the same buffer: no growth, no reallocation,
+        // no move. A single realloc on the audio thread would fail one of these.
+        assert_eq!(m.hist_count.len(), HIST_BINS, "histogram grew in length");
+        assert_eq!(m.hist_ms_sum.len(), HIST_BINS, "histogram grew in length");
+        assert_eq!(m.hist_count.capacity(), count_cap, "hist_count reallocated");
+        assert_eq!(m.hist_ms_sum.capacity(), sum_cap, "hist_ms_sum reallocated");
+        assert_eq!(m.hist_count.as_ptr(), count_ptr, "hist_count buffer moved");
+        assert_eq!(m.hist_ms_sum.as_ptr(), sum_ptr, "hist_ms_sum buffer moved");
+
+        // Many gating blocks were actually recorded (proving the push path ran),
+        // yet the memory is still O(HIST_BINS), independent of the run length.
+        let total_blocks: u64 = m.hist_count.iter().sum();
+        assert!(total_blocks > 500, "expected ~600 gating blocks, got {total_blocks}");
+
+        // And the histogram-gated integrated loudness still matches the BS.1770
+        // reference within tolerance after the long run.
+        let l = m.read();
+        assert!(
+            (l.lufs_i - (-23.0)).abs() < 0.5,
+            "LUFS-I {} should be ~ -23 after a long run",
+            l.lufs_i
+        );
     }
 }
