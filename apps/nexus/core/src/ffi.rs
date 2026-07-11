@@ -25,15 +25,18 @@
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use crate::engine::Engine;
+use crate::engine::{Engine, MAX_CLIP_EVENTS};
 use crate::error::{codes, NexusError};
 use crate::metering::SPECTRUM_BANDS_HINT;
-use crate::types::{AudioFormat, BlockMut, BlockRef};
+use crate::types::{AudioFormat, BlockMut, BlockRef, ClipEvent};
 
 /// ABI version of this FFI surface. Python reads it via [`nexus_abi_version`]
 /// and refuses to run against a mismatched core. Bump on any breaking change to
 /// a signature/struct below.
-pub const NEXUS_ABI_VERSION: u32 = 1;
+///
+/// v2 adds the `audio.clipping` drain surface ([`nexus_clip_capacity`] +
+/// [`nexus_drain_clips`]); the control plane pins EXPECTED_ABI_VERSION to match.
+pub const NEXUS_ABI_VERSION: u32 = 2;
 
 /// Map a `Result<(), NexusError>` to a C status code.
 #[inline]
@@ -353,6 +356,65 @@ pub extern "C" fn nexus_spectrum_band_count() -> usize {
     SPECTRUM_BANDS_HINT
 }
 
+/// `size_t nexus_clip_capacity(void);` — the clip-event accumulator's fixed
+/// capacity ([`MAX_CLIP_EVENTS`]) so Python can size its drain buffers without
+/// hard-coding it (mirrors [`nexus_spectrum_band_count`]).
+#[no_mangle]
+pub extern "C" fn nexus_clip_capacity() -> usize {
+    MAX_CLIP_EVENTS
+}
+
+/// `int32_t nexus_drain_clips(Engine* engine,`
+/// `    uint16_t* out_channels, float* out_true_peaks, size_t cap,`
+/// `    size_t* out_count);`
+///
+/// SPEC §6 `audio.clipping`: drain the true-peak clip events accumulated by the
+/// realtime `process_block` since the last drain. Writes up to `cap` events as
+/// two PARALLEL arrays — `out_channels[i]` is the input channel that clipped and
+/// `out_true_peaks[i]` its measured true-peak in dBFS — and sets `*out_count` to
+/// the number written. Each event is reported once (the drain removes it). A
+/// `cap` of 0 with non-null pointers is valid: it writes nothing and reports 0.
+/// The parallel-array form (not an array-of-structs) keeps the ctypes side free
+/// of struct-layout/alignment concerns, like the other getters' scalar out-params.
+///
+/// SAFETY: `out_channels` and `out_true_peaks` must each be valid for `cap`
+/// writes (`uint16_t`/`float` respectively) and `out_count` for one `size_t`.
+#[no_mangle]
+pub unsafe extern "C" fn nexus_drain_clips(
+    engine: *mut Engine,
+    out_channels: *mut u16,
+    out_true_peaks: *mut f32,
+    cap: usize,
+    out_count: *mut usize,
+) -> i32 {
+    guard(|| {
+        let e = engine_mut!(engine);
+        if out_count.is_null() {
+            return codes::NULL_POINTER;
+        }
+        // With a positive cap the data pointers must be valid; a zero cap needs no
+        // data buffer (report "no events written").
+        if cap > 0 && (out_channels.is_null() || out_true_peaks.is_null()) {
+            return codes::NULL_POINTER;
+        }
+        // Drain into a fixed stack buffer (no heap alloc; control-plane thread).
+        // Bounded by the engine's capacity so `want <= MAX_CLIP_EVENTS` always.
+        let mut tmp = [ClipEvent { channel: 0, true_peak_dbfs: 0.0 }; MAX_CLIP_EVENTS];
+        let want = cap.min(e.clip_capacity());
+        let n = e.drain_clips(&mut tmp[..want]);
+        // Scatter into the caller's parallel arrays. SAFETY: caller guarantees each
+        // array is valid for `cap` >= `want` >= `n` writes.
+        for (i, ev) in tmp[..n].iter().enumerate() {
+            unsafe {
+                *out_channels.add(i) = ev.channel;
+                *out_true_peaks.add(i) = ev.true_peak_dbfs;
+            }
+        }
+        unsafe { *out_count = n };
+        codes::OK
+    })
+}
+
 /// `int32_t nexus_get_crosspoint(const Engine*, size_t in, size_t out, float* out_gain_db);`
 /// Read one crosspoint (for `state.get` serialization on the Python side).
 #[no_mangle]
@@ -489,5 +551,62 @@ mod tests {
     fn abi_version_is_exposed() {
         assert_eq!(nexus_abi_version(), NEXUS_ABI_VERSION);
         assert_eq!(nexus_spectrum_band_count(), SPECTRUM_BANDS_HINT);
+        // v2 exposes the clip-drain surface; capacity matches the engine's bound.
+        assert_eq!(nexus_clip_capacity(), MAX_CLIP_EVENTS);
+    }
+
+    #[test]
+    fn drain_clips_empty_then_after_clipping() {
+        let e = nexus_engine_create(1, 1, 48_000);
+        assert!(!e.is_null());
+        let cap = nexus_clip_capacity();
+        let mut chans = vec![0u16; cap];
+        let mut peaks = vec![0.0f32; cap];
+        // SAFETY: `e` is a live handle; buffers are valid locals sized to `cap`.
+        unsafe {
+            // A fresh engine has no clip events.
+            let mut count = 99usize;
+            assert_eq!(
+                nexus_drain_clips(e, chans.as_mut_ptr(), peaks.as_mut_ptr(), cap, &mut count),
+                codes::OK
+            );
+            assert_eq!(count, 0);
+
+            // Push one full-scale block through the FFI process path: it clips.
+            assert_eq!(nexus_set_crosspoint(e, 0, 0, 0.0), codes::OK);
+            assert_eq!(nexus_set_monitor_output(e, 0), codes::OK);
+            let mut inbuf = vec![1.0f32; 64];
+            let mut outbuf = vec![0.0f32; 64];
+            let in_ptrs = [inbuf.as_mut_ptr() as *const f32];
+            let out_ptrs = [outbuf.as_mut_ptr()];
+            assert_eq!(
+                nexus_process_block(e, in_ptrs.as_ptr(), 1, out_ptrs.as_ptr(), 1, 64, 1, 48_000),
+                codes::OK
+            );
+
+            // Now a drain reports the clip once, then clears.
+            let mut count2 = 0usize;
+            assert_eq!(
+                nexus_drain_clips(e, chans.as_mut_ptr(), peaks.as_mut_ptr(), cap, &mut count2),
+                codes::OK
+            );
+            assert!(count2 >= 1, "expected a clip event after a full-scale block");
+            assert_eq!(chans[0], 0);
+            assert!(peaks[0].is_finite());
+
+            let mut count3 = 7usize;
+            assert_eq!(
+                nexus_drain_clips(e, chans.as_mut_ptr(), peaks.as_mut_ptr(), cap, &mut count3),
+                codes::OK
+            );
+            assert_eq!(count3, 0, "clip events must be reported once");
+
+            // Null out_count is rejected without a deref crash.
+            assert_eq!(
+                nexus_drain_clips(e, chans.as_mut_ptr(), peaks.as_mut_ptr(), cap, std::ptr::null_mut()),
+                codes::NULL_POINTER
+            );
+            nexus_engine_destroy(e);
+        }
     }
 }

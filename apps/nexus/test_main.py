@@ -174,6 +174,18 @@ class TestTelemetryWireShape(unittest.TestCase):
         self.assertNotIn("payload", data, "telemetry must be flat (no nested payload wrapper)")
         self.assertEqual(data["bands"], [0.0] * 96)
 
+    def test_clipping_payload_is_flat_channel_and_true_peak(self):
+        # audio.clipping rides the same FLAT wire as the other nexus topics:
+        # {channel, true_peak_dbfs} sit DIRECTLY in data alongside topic (what the
+        # HUD's parseNexusClipping reads), NOT under a nested payload wrapper.
+        link = FakeLink()
+        link.telemetry("audio.clipping", {"channel": 2, "true_peak_dbfs": -0.3})
+        data = link.lines[0]["data"]
+        self.assertEqual(data["topic"], "audio.clipping")
+        self.assertNotIn("payload", data)
+        self.assertEqual(data["channel"], 2)
+        self.assertEqual(data["true_peak_dbfs"], -0.3)
+
     def test_every_emitted_line_carries_the_token(self):
         link = FakeLink(token="cap-123")
         link.telemetry("audio.routes", {"revision": 1})
@@ -486,6 +498,22 @@ class TestCoreContract(unittest.TestCase):
     def test_loudness_returns_triplet(self):
         m, s, i = self.core.loudness()
         self.assertTrue(all(isinstance(x, float) for x in (m, s, i)))
+
+    def test_clip_drain_reports_once_then_clears(self):
+        # Fresh core: nothing has clipped, so the edge-triggered accumulator
+        # drains EMPTY (the ctypes out-array binding round-trips a zero count).
+        self.assertEqual(self.core.drain_clips(), [])
+        # Drive ONE full-scale block through the realtime path: 0 dBFS sits above
+        # the -1 dBFS true-peak ceiling, so the detector fires on channel 0.
+        self.core.set_crosspoint(0, 0, 0.0)
+        self.core.set_monitor_output(0)
+        self.core.process_block([[1.0] * nexus.DEFAULT_BLOCK_FRAMES], out_channels=1)
+        clips = self.core.drain_clips()
+        self.assertTrue(clips, "a full-scale block must enqueue a clip event")
+        self.assertEqual(clips[0][0], 0, "event must carry the input channel index")
+        self.assertGreaterEqual(clips[0][1], -1.0, "true-peak must meet the -1 dBFS ceiling")
+        # Edge-triggered: each event is delivered exactly once.
+        self.assertEqual(self.core.drain_clips(), [])
 
 
 if __name__ == "__main__":
