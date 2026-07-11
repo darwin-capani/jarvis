@@ -511,6 +511,7 @@ fn flate_stream_within_budget(content: &[u8], budget: u64, spent: &mut u64) -> b
 ///      because pdf-extract re-parses the same bytes unbounded regardless of what we
 ///      check first (a Rust alloc-abort does not unwind, so `catch_unwind` can't
 ///      contain it either).
+///
 /// The complete, filter- and structure-agnostic fix — a memory-jailed extraction
 /// subprocess (`RLIMIT_AS` on a short-lived child, [`pdf_text_jailed`]) — is now
 /// the PRODUCTION path: a bomb of any shape aborts the CHILD, never jarvisd. This
@@ -585,10 +586,11 @@ fn locate_pdfjail() -> Option<PathBuf> {
 
 /// Whether the memory-jail helper is present next to the RUNNING executable — the
 /// runtime counterpart to selfcheck's install-tree path probe (this one answers
-/// "will THIS process find the jail", which differs in a dev checkout). Surfaced
-/// on the HUD/telemetry status so a process silently on the weaker in-process
-/// guard is visible; unit-tested here.
-#[allow(dead_code)] // consumed by the status/telemetry surface + the unit test below
+/// "will THIS process find the jail", which differs in a dev checkout). NOT yet
+/// surfaced on the status/telemetry wire — today the runtime signals are the
+/// one-shot WARN below and selfcheck's path probe; wiring this into the status
+/// payload is a tracked follow-on. Unit-tested here (it locks the dispatch).
+#[allow(dead_code)] // used by the dispatch unit test; telemetry wiring is a follow-on
 pub fn pdfjail_available() -> bool {
     locate_pdfjail().is_some()
 }
@@ -1291,7 +1293,6 @@ impl DocIndex {
         embedder: &dyn Embedder,
     ) -> Result<IndexStatus> {
         self.forget().await?;
-        let discovered = walk(roots, bounds);
 
         // Gather (root, path, chunk) triples up to the chunk cap, reading content
         // ONLY here (after the confined+extension+size gates already passed).
@@ -1301,43 +1302,58 @@ impl DocIndex {
             byte_offset: usize,
             text: String,
         }
-        let mut pending: Vec<Pending> = Vec::new();
-        'files: for d in &discovered {
-            if pending.len() >= bounds.max_chunks {
-                break;
-            }
-            // Route by kind. A path the walk accepted always classifies, but a
-            // disappeared/renamed file mid-walk is skipped honestly.
-            let Some(kind) = classify(&d.path) else {
-                continue;
-            };
-            let Ok(bytes) = std::fs::read(&d.path) else {
-                continue;
-            };
-            // Per-file extraction (text-like = read+decode unchanged; PDF/Office =
-            // on-device extractor behind the panic-safe HONEST-SKIP guard). The
-            // extracted text is capped to `max_file_bytes` BEFORE chunking — the
-            // same ceiling the raw bytes already respect — so a document cannot
-            // exceed the established per-file bound. `None` => HONEST SKIP (logged):
-            // a corrupt/encrypted/scanned/image-only/empty file is never indexed.
-            let Some(content) = extract_text(&d.path, kind, &bytes, bounds.max_file_bytes) else {
-                continue;
-            };
-            let chunks = chunk_text(&content, bounds.chunk_chars, bounds.chunk_overlap);
-            let root = d.root.display().to_string();
-            let file_path = d.path.display().to_string();
-            for c in chunks {
+        // The whole gather phase is BLOCKING work — the walk's stats, the
+        // std::fs reads, and above all the extractors (pdf_text spawns the
+        // pdfjail subprocess and can sit in its watchdog for up to
+        // PDFJAIL_TIMEOUT per hostile PDF) — so it runs on the blocking pool,
+        // never pinning a tokio worker (the same contract as the Keychain
+        // writes). `bounds` is Copy; `roots` is cloned into the task.
+        let roots = roots.to_vec();
+        let bounds = *bounds;
+        let pending: Vec<Pending> = tokio::task::spawn_blocking(move || {
+            let discovered = walk(&roots, &bounds);
+            let mut pending: Vec<Pending> = Vec::new();
+            'files: for d in &discovered {
                 if pending.len() >= bounds.max_chunks {
-                    break 'files;
+                    break;
                 }
-                pending.push(Pending {
-                    root: root.clone(),
-                    file_path: file_path.clone(),
-                    byte_offset: c.byte_offset,
-                    text: c.text,
-                });
+                // Route by kind. A path the walk accepted always classifies, but a
+                // disappeared/renamed file mid-walk is skipped honestly.
+                let Some(kind) = classify(&d.path) else {
+                    continue;
+                };
+                let Ok(bytes) = std::fs::read(&d.path) else {
+                    continue;
+                };
+                // Per-file extraction (text-like = read+decode unchanged; PDF/Office =
+                // on-device extractor behind the panic-safe HONEST-SKIP guard). The
+                // extracted text is capped to `max_file_bytes` BEFORE chunking — the
+                // same ceiling the raw bytes already respect — so a document cannot
+                // exceed the established per-file bound. `None` => HONEST SKIP (logged):
+                // a corrupt/encrypted/scanned/image-only/empty file is never indexed.
+                let Some(content) = extract_text(&d.path, kind, &bytes, bounds.max_file_bytes)
+                else {
+                    continue;
+                };
+                let chunks = chunk_text(&content, bounds.chunk_chars, bounds.chunk_overlap);
+                let root = d.root.display().to_string();
+                let file_path = d.path.display().to_string();
+                for c in chunks {
+                    if pending.len() >= bounds.max_chunks {
+                        break 'files;
+                    }
+                    pending.push(Pending {
+                        root: root.clone(),
+                        file_path: file_path.clone(),
+                        byte_offset: c.byte_offset,
+                        text: c.text,
+                    });
+                }
             }
-        }
+            pending
+        })
+        .await
+        .context("document gather/extraction task failed")?;
 
         // Embed all chunk texts ON-DEVICE in one batched call. On ANY error (server
         // down / no embed op / wrong count), store WITHOUT vectors -> BM25 search.
