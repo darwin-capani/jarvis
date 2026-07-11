@@ -358,8 +358,12 @@ fn parse_list_depth(lexer: &mut Lexer<'_>, depth: usize) -> Result<Value, SexprE
 /// an atom, `-12.5` becomes a number).
 fn classify_atom(a: String) -> Value {
     // A pure integer/float? KiCad numbers never have unit suffixes here.
+    // `f64::parse` SATURATES an over-magnitude literal (e.g. "1e400") to
+    // ±Infinity rather than erroring, so require the parsed value to be finite —
+    // otherwise the guard's contract (keep inf/nan OUT of Value::Number) is
+    // silently defeated and the overflowing token falls through to Value::Atom.
     match a.parse::<f64>() {
-        Ok(n) if is_numeric_token(&a) => Value::Number(n),
+        Ok(n) if n.is_finite() && is_numeric_token(&a) => Value::Number(n),
         _ => Value::Atom(a),
     }
 }
@@ -474,6 +478,12 @@ mod tests {
         assert_eq!(items[1], Value::Atom("inf".to_string()));
         assert_eq!(items[2], Value::Atom("nan".to_string()));
         assert_eq!(items[3], Value::Atom("NaN".to_string()));
+        // An over-magnitude numeric literal parses to +Inf via f64::parse (which
+        // saturates rather than erroring) — it must NOT become Value::Number(inf);
+        // it falls through to an Atom, keeping inf/nan out of Value::Number.
+        let over = parse("(net 1e400 \"GND\")").unwrap();
+        let over_items = over.list().unwrap();
+        assert_eq!(over_items[1], Value::Atom("1e400".to_string()));
     }
 
     #[test]
