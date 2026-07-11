@@ -5643,6 +5643,11 @@ svg.tri circle {
 .docsearch-pill.neural { color: var(--learn-green); }
 .docsearch-pill.bm25 { color: var(--warn-amber); }
 .docsearch-pill.off { color: var(--fg-dim, rgba(255, 255, 255, 0.4)); }
+/* The PDF-extraction guard pill (docsearch.status): green when the memory-jail
+   helper is armed, amber when the daemon fell back to the weaker in-process
+   guard — the same ok/degraded palette as the NEURAL/BM25 pill beside it. */
+.docsearch-pill.jailed { color: var(--learn-green); }
+.docsearch-pill.unjailed { color: var(--warn-amber); }
 .docsearch-counts { display: flex; gap: 14px; flex-wrap: wrap; }
 .docsearch-count { display: flex; flex-direction: column; gap: 1px; }
 .docsearch-count-val {

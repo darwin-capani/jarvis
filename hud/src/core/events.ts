@@ -5616,7 +5616,7 @@ export function parseOptimizerProposal(
 /* ------------------------------------------------------------------------ *
  * DOC SEARCH — on-device file RAG (daemon/src/docsearch.rs).                      *
  *                                                                                *
- * Two SECRET-FREE local events feed the read-only DocSearchPanel:                *
+ * Three SECRET-FREE events feed the read-only DocSearchPanel:                    *
  *   - `local / docsearch.indexed` ({files, chunks, embedded_chunks}) — emitted   *
  *     by router.rs::handle_docsearch_index after a confined reindex over the     *
  *     EXPLICITLY-ALLOWLISTED [docsearch].roots. It carries only COUNTS — no file *
@@ -5630,6 +5630,11 @@ export function parseOptimizerProposal(
  *     transcript). `method` is the backend that ACTUALLY ran, so the panel never *
  *     claims neural when it fell back to BM25. The daemon NEVER fabricates a hit;  *
  *     the parser carries that forward — it surfaces ONLY real returned hits.     *
+ *   - `system / docsearch.status` ({pdfjail_available}) — emitted every audit-   *
+ *     snapshot tick (main.rs::audit_snapshot_task -> docsearch::emit_status):    *
+ *     whether the daemon found its pdfjail memory-jail helper, i.e. whether PDF  *
+ *     extraction runs jailed or on the weaker in-process fallback guard. One     *
+ *     boolean, so a production install silently on the fallback is VISIBLE.     *
  *                                                                                *
  * 100% ON-DEVICE: telemetry is the local 127.0.0.1 broadcast only — file         *
  * contents + embeddings never leave the device. SHIPPED-OFF: the feature is      *
@@ -5725,6 +5730,17 @@ export function parseDocSearchResult(data: Record<string, unknown>): DocSearchRe
     hits,
     method: str(data, "method") ?? "lexical-bm25",
   };
+}
+
+/** Parse a `docsearch.status` payload: whether the daemon's PDF memory-jail
+ *  helper (pdfjail) sits next to the running jarvisd, i.e. whether PDF text
+ *  extraction runs jailed or on the weaker in-process fallback guard. STRICT:
+ *  only a literal JSON `true` reports the jail armed — an absent, malformed, or
+ *  truthy-but-not-boolean field coerces to `false`, because overclaiming the
+ *  STRONGER guard is the dangerous direction (claiming in-process when actually
+ *  jailed is merely conservative). NEVER throws. */
+export function parsePdfJailAvailable(data: Record<string, unknown>): boolean {
+  return bool(data, "pdfjail_available") === true;
 }
 
 /* ------------------------------------------------------------------------ *

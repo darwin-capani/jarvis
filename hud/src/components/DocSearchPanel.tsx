@@ -23,24 +23,31 @@ import Frame from "./Frame";
  *     on-device embeddings, or lexical BM25 when the on-device embedder was down.
  *     The index status pill warns when some chunks are not embedded (search over
  *     them falls back to BM25).
- *   - TEXT-LIKE FILES, v1. PDFs/binaries are out of scope (a PDF needs a parser
- *     dependency) — they are skipped, never silently "indexed". Said in copy.
+ *   - HONEST EXTRACTORS + GUARD. Text-like files, born-digital PDFs and Office
+ *     docs are extracted on-device; a scanned/encrypted/corrupt file is SKIPPED
+ *     honestly, never guessed at. PDF decoding runs inside the daemon's
+ *     memory-jailed pdfjail subprocess when the helper is present — the guard
+ *     pill reports which guard is ACTUALLY active (`docsearch.status`), amber
+ *     when the daemon is silently on the weaker in-process fallback.
  *   - REVIEW-ONLY. There is NO button here that indexes, searches, or clears the
  *     index. Indexing/searching/forgetting are SPOKEN intents (the HUD never
  *     triggers a disk read or writes daemon config); this panel only SHOWS the
  *     state and the commands, mirroring the MCP / MEMORY surfaces.
  *
  * The reducer only ever sets `docIndex` from a defensively-parsed
- * `docsearch.indexed` (counts only, never a path) and `docSearch` from a parsed
- * `docsearch.searched` (only real returned hits, with the honest method), so
- * this component can trust the fields it is handed.
+ * `docsearch.indexed` (counts only, never a path), `docSearch` from a parsed
+ * `docsearch.searched` (only real returned hits, with the honest method), and
+ * `pdfJail` from a STRICT `docsearch.status` parse (only a literal `true`
+ * claims the jail is armed), so this component can trust the fields it is handed.
  */
 export default function DocSearchPanel({
   index,
   search,
+  pdfJail,
 }: {
   index: DocIndexStatus | null;
   search: DocSearchResult | null;
+  pdfJail: boolean | null;
 }) {
   // Nothing to show until the user has either built an index or run a search —
   // render nothing rather than a placeholder, mirroring the other event-fed
@@ -52,7 +59,7 @@ export default function DocSearchPanel({
     <div className="docsearch-panel">
       <Frame title="FILE SEARCH // ON-DEVICE" tag="PRIVATE · REVIEW ONLY">
         <div className="docsearch-body">
-          <IndexStatusRow index={index} />
+          <IndexStatusRow index={index} pdfJail={pdfJail} />
           <SearchResults search={search} />
 
           <div className="docsearch-foot dim-note">
@@ -61,8 +68,9 @@ export default function DocSearchPanel({
             embeddings NEVER leave this machine — the embedder is the on-device
             model and search runs locally. Results cite real indexed files; when
             the on-device embedder is down, search falls back to keyword (BM25)
-            ranking and says so. Text-like files only in v1 — PDFs are skipped
-            (they need a parser), never silently indexed. Say{" "}
+            ranking and says so. Text-like files, born-digital PDFs and Office
+            docs are extracted on-device; scanned/encrypted/corrupt files are
+            skipped honestly, never guessed at. Say{" "}
             <b>&ldquo;index my documents&rdquo;</b> to (re)build the index,{" "}
             <b>&ldquo;search my files for&hellip;&rdquo;</b> to query it, and{" "}
             <b>&ldquo;forget my file index&rdquo;</b> to clear it.
@@ -76,7 +84,13 @@ export default function DocSearchPanel({
 /** The index-status row: file/chunk counts + the NEURAL vs BM25 verdict. When no
  *  index has been built yet, an honest "not indexed yet" line with the enable +
  *  allowlist + index steps (never a fake count). */
-function IndexStatusRow({ index }: { index: DocIndexStatus | null }) {
+function IndexStatusRow({
+  index,
+  pdfJail,
+}: {
+  index: DocIndexStatus | null;
+  pdfJail: boolean | null;
+}) {
   if (index === null || index.chunks === 0) {
     return (
       <div className="docsearch-index">
@@ -114,6 +128,22 @@ function IndexStatusRow({ index }: { index: DocIndexStatus | null }) {
         >
           {fullyEmbedded ? "NEURAL" : "BM25 FALLBACK"}
         </span>
+        {/* The PDF-extraction guard that is ACTUALLY active (docsearch.status).
+            Null = no status frame yet (an older daemon) — claim nothing. Amber
+            when the daemon is on the weaker in-process guard, so a production
+            install missing its pdfjail helper is never silently degraded. */}
+        {pdfJail !== null && (
+          <span
+            className={`docsearch-pill ${pdfJail ? "jailed" : "unjailed"}`}
+            title={
+              pdfJail
+                ? "PDF text extraction runs in the memory-jailed pdfjail subprocess — a decompression bomb aborts the short-lived helper child, never jarvisd"
+                : "the pdfjail helper binary is missing next to jarvisd, so PDF extraction is on the weaker in-process guard (known filter-chain / parse-time bomb residuals) — rebuild the daemon (cargo build --release) or reinstall to restore the jail"
+            }
+          >
+            {pdfJail ? "PDF JAIL ARMED" : "PDF JAIL MISSING"}
+          </span>
+        )}
       </div>
       <div className="docsearch-counts">
         <Count label="FILES" value={index.files} />

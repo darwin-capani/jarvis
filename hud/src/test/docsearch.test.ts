@@ -5,6 +5,7 @@ import DocSearchPanel from "../components/DocSearchPanel";
 import {
   parseDocIndexStatus,
   parseDocSearchResult,
+  parsePdfJailAvailable,
   type DocIndexStatus,
   type DocSearchResult,
   type TelemetryEnvelope,
@@ -170,11 +171,41 @@ describe("parseDocSearchResult (defensive, cite-only)", () => {
  * The reducer arms. docsearch.indexed sets the status; docsearch.searched     *
  * sets the cited result. Both NEVER null after a frame.                       *
  * ------------------------------------------------------------------------ */
+describe("parsePdfJailAvailable (strict, never overclaims the jail)", () => {
+  it("reports armed only on a literal JSON true", () => {
+    expect(parsePdfJailAvailable({ pdfjail_available: true })).toBe(true);
+    expect(parsePdfJailAvailable({ pdfjail_available: false })).toBe(false);
+  });
+
+  it("coerces absent/malformed/truthy-but-not-boolean to false (the safe direction)", () => {
+    // Claiming the WEAKER guard when actually jailed is merely conservative;
+    // claiming the jail is armed when it is not would hide a degraded install.
+    expect(parsePdfJailAvailable({})).toBe(false);
+    expect(parsePdfJailAvailable({ pdfjail_available: "true" })).toBe(false);
+    expect(parsePdfJailAvailable({ pdfjail_available: 1 })).toBe(false);
+    expect(parsePdfJailAvailable({ pdfjail_available: null })).toBe(false);
+  });
+});
+
 describe("docsearch reducer", () => {
-  it("starts with no index and no search", () => {
+  it("starts with no index, no search, and an unknown (null) pdf-jail status", () => {
     const s = connected();
     expect(s.docIndex).toBeNull();
     expect(s.docSearch).toBeNull();
+    expect(s.pdfJailAvailable).toBeNull();
+  });
+
+  it("sets the pdf-jail guard status from docsearch.status (system channel)", () => {
+    let s = tel(connected(), env("docsearch.status", { pdfjail_available: true }, "system"));
+    expect(s.pdfJailAvailable).toBe(true);
+    // The fallback state arrives the same way (latest-wins) …
+    s = tel(s, env("docsearch.status", { pdfjail_available: false }, "system"));
+    expect(s.pdfJailAvailable).toBe(false);
+  });
+
+  it("a malformed docsearch.status frame reads as the in-process fallback, not armed", () => {
+    const s = tel(connected(), env("docsearch.status", { pdfjail_available: "yes" }, "system"));
+    expect(s.pdfJailAvailable).toBe(false);
   });
 
   it("sets the index status from docsearch.indexed", () => {
@@ -201,8 +232,38 @@ describe("docsearch reducer", () => {
  * honest method, no action button, honest off/empty states.                  *
  * ------------------------------------------------------------------------ */
 describe("DocSearchPanel (cited, honest, review-only)", () => {
-  const render = (index: DocIndexStatus | null, search: DocSearchResult | null) =>
-    renderToStaticMarkup(createElement(DocSearchPanel, { index, search }));
+  const render = (
+    index: DocIndexStatus | null,
+    search: DocSearchResult | null,
+    pdfJail: boolean | null = null,
+  ) => renderToStaticMarkup(createElement(DocSearchPanel, { index, search, pdfJail }));
+
+  it("shows the green ARMED guard pill when the daemon reports the pdf jail present", () => {
+    const html = render(parseDocIndexStatus(indexedNeural), null, true);
+    expect(html).toContain("PDF JAIL ARMED");
+    expect(html).not.toContain("PDF JAIL MISSING");
+    expect(html).toContain("docsearch-pill jailed");
+  });
+
+  it("shows the amber MISSING guard pill when the daemon is on the in-process fallback", () => {
+    const html = render(parseDocIndexStatus(indexedNeural), null, false);
+    expect(html).toContain("PDF JAIL MISSING");
+    expect(html).not.toContain("PDF JAIL ARMED");
+    expect(html).toContain("docsearch-pill unjailed");
+  });
+
+  it("claims nothing about the guard before a status frame arrives (older daemons)", () => {
+    const html = render(parseDocIndexStatus(indexedNeural), null, null);
+    expect(html).not.toContain("PDF JAIL");
+  });
+
+  it("the guard pill rides the indexed head only — the NOT-INDEXED state stays as-is", () => {
+    // Before any index exists no extraction has run, so the guard has nothing to
+    // qualify; the honest empty state is unchanged even when the helper is absent.
+    const html = render(parseDocIndexStatus({ files: 0, chunks: 0, embedded_chunks: 0 }), null, false);
+    expect(html).toMatch(/NOT INDEXED/i);
+    expect(html).not.toContain("PDF JAIL");
+  });
 
   it("renders nothing before any index or search", () => {
     expect(render(null, null)).toBe("");
@@ -269,10 +330,14 @@ describe("DocSearchPanel (cited, honest, review-only)", () => {
     expect(html).toContain("forget my file index");
   });
 
-  it("states the on-device / private / text-like-v1 honesty in the footer", () => {
+  it("states the on-device / private / honest-extraction contract in the footer", () => {
     const html = render(parseDocIndexStatus(indexedNeural), null);
     expect(html).toMatch(/on-device/i);
     expect(html).toMatch(/never leave|never scans|never silently/i);
-    expect(html).toMatch(/PDFs are skipped/i);
+    // The extractor claim is honest about what IS handled (text, born-digital
+    // PDFs, Office docs) and what is skipped (scanned/encrypted/corrupt files) —
+    // the old "PDFs are skipped" copy predates the docsearch extractors.
+    expect(html).toMatch(/born-digital PDFs and Office docs are extracted/i);
+    expect(html).toMatch(/skipped honestly/i);
   });
 });

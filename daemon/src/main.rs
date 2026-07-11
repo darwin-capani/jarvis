@@ -856,6 +856,12 @@ async fn audit_snapshot_task() {
         // installed rules (or the honest shipped-empty default) instead of staying
         // empty. READ-ONLY, like the audit snapshot next to it.
         policy::emit_snapshot();
+        // The DocSearchPanel likewise shows whether PDF extraction is memory-jailed
+        // (the pdfjail helper sits next to THIS executable) or silently on the
+        // weaker in-process fallback guard — a production install on the fallback
+        // must be VISIBLE, not just a one-shot log WARN + the CLI selfcheck board.
+        // One stat() per tick; READ-ONLY, like its two siblings above.
+        docsearch::emit_status();
         tokio::time::sleep(AUDIT_SNAPSHOT_INTERVAL).await;
     }
 }
