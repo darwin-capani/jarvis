@@ -979,12 +979,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(exists, 1, "idx_facts_key must exist");
-        // The exact-key lookup plan uses the index (write-amplification win).
+        // The exact-key lookup plan uses the index (write-amplification win). Use the
+        // PRODUCTION predicate form — a bound `key = ?1` — so the plan reflects what
+        // upsert_fact/get_fact/delete_fact actually run, not an inlined literal.
         let mut stmt = conn
-            .prepare("EXPLAIN QUERY PLAN SELECT value FROM facts WHERE key = 'user.world.x'")
+            .prepare("EXPLAIN QUERY PLAN SELECT value FROM facts WHERE key = ?1")
             .unwrap();
         let details: Vec<String> = stmt
-            .query_map([], |r| r.get::<_, String>(3))
+            .query_map(rusqlite::params!["user.world.x"], |r| r.get::<_, String>(3))
             .unwrap()
             .filter_map(Result::ok)
             .collect();
