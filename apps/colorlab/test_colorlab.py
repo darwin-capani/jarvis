@@ -116,24 +116,13 @@ def test_hostile_and_empty_inputs_never_raise():
         assert "error" in out, (c, out)
 
 
-if __name__ == "__main__":
-    test_white_hex()
-    test_black_hex()
-    test_short_hex_expands()
-    test_rgb_triplet_and_hue()
-    test_contrast_formula_gray()
-    test_wcag_flags_use_unrounded_contrast()
-    test_hostile_and_empty_inputs_never_raise()
-    print("all tests passed")
-
-
 # --- input-frame bounding (defense in depth) ---------------------------------
 # main()'s socket read loop routes every recv() chunk through main.drain_lines,
 # which DROPS a partial frame once it passes MAX_FRAME_BYTES with no newline, so a
 # peer streaming bytes without a newline cannot grow the read buffer without bound
 # (OOM). These assert that real helper — the daemon side is already bounded
 # (apps.rs read_line_bounded / genproxy MAX_PROXY_LINE_BYTES).
-import main as _frame_mod  # noqa: E402 — appended after the file's own imports/runner
+import main as _frame_mod  # noqa: E402 — deliberately mid-file, after the app's own imports
 
 
 def test_max_frame_bytes_is_8_mib():
@@ -155,3 +144,20 @@ def test_complete_lines_drain_and_partial_is_preserved():
     assert lines == [b'{"a":1}', b'{"b":2}']
     assert buf == b'{"c":3'
     assert overflowed is False
+
+
+if __name__ == "__main__":
+    # Script-style runs exercise the framing tests too — they are plain
+    # functions the runner below would otherwise never call.
+    test_max_frame_bytes_is_8_mib()
+    test_oversized_frame_is_dropped_not_accumulated()
+    test_complete_lines_drain_and_partial_is_preserved()
+    print("framing: 3 checks ok")
+    test_white_hex()
+    test_black_hex()
+    test_short_hex_expands()
+    test_rgb_triplet_and_hue()
+    test_contrast_formula_gray()
+    test_wcag_flags_use_unrounded_contrast()
+    test_hostile_and_empty_inputs_never_raise()
+    print("all tests passed")
