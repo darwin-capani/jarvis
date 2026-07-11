@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import AboutPanel from "./components/AboutPanel";
 import ActionPanel from "./components/ActionPanel";
 import AgentPanel from "./components/AgentPanel";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import AlertPanel from "./components/AlertPanel";
 import AudioIoPanel from "./components/AudioIoPanel";
 import AnswerSourcesPanel from "./components/AnswerSourcesPanel";
@@ -500,7 +501,7 @@ export default function App() {
       <div
         className={`panel-layer${bootPlaying && !revealed ? " pre-reveal" : ""}`}
       >
-        <StatusBar
+        <ErrorBoundary label="status bar"><StatusBar
           connected={state.connected}
           coreState={state.coreState}
           cloudKeyPresent={state.cloudKeyPresent}
@@ -520,23 +521,23 @@ export default function App() {
           onPanic={() => void panic()}
           onOpenSettings={() => setSettingsTab("credentials")}
           onOpenDeck={() => setDeckOpen(true)}
-        />
+        /></ErrorBoundary>
         <LatencyStrip timings={state.lastTimings} />
-        <div className="left-col">
+        <ErrorBoundary label="left column"><div className="left-col">
           <ReticleDial cpuPercent={state.gauges.cpuPercent} coreState={state.coreState} />
           <TranscriptPanel lines={state.transcript} intent={state.lastIntent} />
           <AudioIoPanel audio={state.audioIo} />
-        </div>
+        </div></ErrorBoundary>
         {/* Center column: the R3F core stays visible up top; the intel-feed
             panel slots into the lower half (CSS anchors it to the bottom and
             caps its height so the core sphere is never occluded). */}
-        <div className="center-col">
+        <ErrorBoundary label="center column"><div className="center-col">
           <GlobalScanPanel
             feed={state.appFeeds[GLOBAL_SCAN_APP]}
             running={state.runningApps.has(GLOBAL_SCAN_APP)}
           />
-        </div>
-        <div className="right-col">
+        </div></ErrorBoundary>
+        <ErrorBoundary label="right column"><div className="right-col">
           <AgentPanel active={state.activeAgent} />
           <SuggestionsPanel
             suggestions={state.suggestions}
@@ -599,7 +600,7 @@ export default function App() {
           <SkillsPanel skills={state.skills} />
           <InferencePerfPanel perf={state.inferencePerf} />
           <DiagnosticsPanel gauges={state.gauges} facts={state.facts} actions={state.actions} />
-        </div>
+        </div></ErrorBoundary>
         <Waveform connected={state.connected} />
       </div>
 

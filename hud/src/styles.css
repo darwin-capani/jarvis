@@ -9288,3 +9288,41 @@ body,
     animation: none;
   }
 }
+
+/* Error-boundary fallbacks (ErrorBoundary.tsx). Rare states, but they must be
+   VISIBLE on the dark HUD — an invisible fatal error is as bad as a blank screen. */
+.hud-fatal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: #05070a;
+  color: #cdd6e0;
+  letter-spacing: 0.12em;
+}
+.hud-fatal .big { font-size: 20px; color: #ff5c6c; }
+.hud-fatal .small { font-size: 13px; opacity: 0.7; }
+.hud-fatal button {
+  margin-top: 6px;
+  padding: 6px 20px;
+  background: transparent;
+  color: #cdd6e0;
+  border: 1px solid #33414f;
+  border-radius: 4px;
+  cursor: pointer;
+  letter-spacing: 0.1em;
+}
+.hud-fatal button:hover { border-color: #5b6b7a; }
+.panel-error {
+  padding: 8px 10px;
+  border: 1px dashed #5a3a3a;
+  border-radius: 4px;
+  color: #d09a9a;
+  font-size: 11px;
+  opacity: 0.65;
+  letter-spacing: 0.08em;
+}

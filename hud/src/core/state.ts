@@ -1372,7 +1372,12 @@ export function reduce(state: HudState, action: HudAction): HudState {
       // Idempotent: repeated failed reconnect attempts while already offline
       // must not churn state (full-tree re-render every backoff tick).
       if (!state.connected && state.coreState === "offline") return state;
-      return setCore({ ...state, connected: false }, "offline", action.at);
+      // Clear the in-flight agent when the link drops: `offline`/`idle` are not
+      // TRANSIENT, so the 12s stale-decay never runs from them, and a mid-turn
+      // disconnect (before pipeline.completed/route.failed) would otherwise leave
+      // `activeAgent` set forever — a phantom "ACTIVE: <agent>" chip + agent core
+      // hue after reconnect, violating the "activeAgent is null when idle" invariant.
+      return setCore({ ...state, connected: false, activeAgent: null }, "offline", action.at);
     }
     case "tick": {
       let next = state;
@@ -2595,8 +2600,11 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // and never renders a bad badge.
       const activity = parseNotebookActivity(env.data);
       if (activity.card === null) {
-        // Nothing new to surface; keep whatever real card we last showed.
-        return s.notebook === null ? s : { ...s };
+        // Nothing new to surface; keep whatever real card we last showed. Return the
+        // SAME reference (notebook is unchanged either way) so React bails out — a
+        // bare `{ ...s }` clone would churn a full-tree re-render (incl. the WebGL
+        // core) on every no-op notebook verb, violating this file's anti-churn rule.
+        return s;
       }
       return { ...s, notebook: activity };
     }

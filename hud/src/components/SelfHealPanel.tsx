@@ -413,7 +413,13 @@ export default function SelfHealPanel({
     <div className="self-heal-panel">
       <Frame className="self-heal attn" title="SELF-REPAIR // PROPOSALS" tag={tag}>
         {proposal ? (
-          <Proposal proposal={proposal} onDismiss={onDismiss} />
+          // Key by proposal identity so a NEW proposal remounts <Proposal> with a
+          // fresh apply state machine. Without it, when the reducer swaps one
+          // proposal for another directly (two heal.proposal frames with no
+          // intervening diagnosing/dismiss null), React reuses the instance and the
+          // brand-new proposal inherits the prior one's terminal "applied"/"failed"
+          // apply UI — reading as already-healed and blocking APPLY.
+          <Proposal key={proposal.refTs ?? "no-ref"} proposal={proposal} onDismiss={onDismiss} />
         ) : diagnosing ? (
           <Diagnosing diag={diagnosing} />
         ) : null}

@@ -174,9 +174,13 @@ describe("notebook.card reducer", () => {
   it("a save_none no-op KEEPS the prior real card (never blanks the panel)", () => {
     let s = tel(connected(), env("notebook.card", revisitCited));
     expect(s.notebook?.card?.topic).toBe("the JWST");
+    const before = s;
     // A bare "save this research" with no recent run: nothing to surface.
     s = tel(s, env("notebook.card", saveNone));
     expect(s.notebook?.card?.topic).toBe("the JWST"); // prior card preserved
+    // ...AND the SAME state reference so React bails the re-render — a bare `{ ...s }`
+    // clone would churn a full-tree re-render (incl. the WebGL core) on every no-op.
+    expect(s).toBe(before);
   });
 
   it("a no-op before any card leaves nothing to render (stays null)", () => {
