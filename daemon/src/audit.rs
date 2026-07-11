@@ -203,6 +203,10 @@ impl ChainStatus {
 /// prune ever DELETEs, and nothing UPDATEs a stored entry's content.
 pub struct AuditLog {
     conn: Mutex<Connection>,
+    /// Retention cap: past this many entries the oldest are pruned and the chain
+    /// re-rooted. Defaults to [`MAX_ENTRIES`]; overridden from `[audit].max_entries`
+    /// via [`with_max_entries`](AuditLog::with_max_entries) at construction.
+    max_entries: usize,
 }
 
 impl AuditLog {
@@ -242,7 +246,19 @@ impl AuditLog {
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            max_entries: MAX_ENTRIES,
         })
+    }
+
+    /// Override the retention cap from `[audit].max_entries`. A value of 0 (or an
+    /// absent config) keeps the [`MAX_ENTRIES`] default — a config typo can never
+    /// disable retention (which would let the log grow unbounded). Chainable at
+    /// construction, before the log is installed / Arc-wrapped.
+    pub fn with_max_entries(mut self, n: usize) -> Self {
+        if n > 0 {
+            self.max_entries = n;
+        }
+        self
     }
 
     /// In-memory audit log for tests (no disk). Same schema, same chain logic.
@@ -264,6 +280,7 @@ impl AuditLog {
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            max_entries: MAX_ENTRIES,
         })
     }
 
@@ -343,8 +360,8 @@ impl AuditLog {
 
         // Bounded retention: prune + re-root if we are over the cap.
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM audit", [], |r| r.get(0))?;
-        if count as usize > MAX_ENTRIES {
-            Self::prune_and_reroot(&conn, MAX_ENTRIES)?;
+        if count as usize > self.max_entries {
+            Self::prune_and_reroot(&conn, self.max_entries)?;
         }
 
         Ok(entry)
@@ -711,6 +728,35 @@ mod tests {
         log.record("agent.pepper", "slack_post_message", "#ops", Decision::Never, Outcome::BlockedByPolicy)
             .await
             .unwrap();
+    }
+
+    /// The CONFIGURED retention cap ([audit].max_entries) is honored, not the
+    /// compile-time `MAX_ENTRIES` — the knob was documented + parsed but never read.
+    #[tokio::test]
+    async fn retention_honors_a_custom_max_entries() {
+        // A tiny cap (3), far below the 10_000 default.
+        let log = AuditLog::in_memory().unwrap().with_max_entries(3);
+        for i in 0..6 {
+            log.record("agent.jarvis", "open_url", &format!("t{i}"), Decision::Ask, Outcome::Parked)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            log.len().await.unwrap(),
+            3,
+            "retention pruned to the CONFIGURED cap, not MAX_ENTRIES"
+        );
+        // The chain stays intact across the re-root.
+        assert!(log.verify_chain().await.unwrap().is_ok(), "chain re-roots cleanly at the custom cap");
+
+        // A 0 / absent config keeps the default cap — a typo can never DISABLE
+        // retention (which would let the log grow unbounded). A handful of records
+        // stays unpruned (5 < MAX_ENTRIES).
+        let dflt = AuditLog::in_memory().unwrap().with_max_entries(0);
+        for i in 0..5 {
+            dflt.record("a", "t", &format!("{i}"), Decision::Ask, Outcome::Parked).await.unwrap();
+        }
+        assert_eq!(dflt.len().await.unwrap(), 5, "with_max_entries(0) keeps the default (no premature prune)");
     }
 
     // -- at-rest encryption (#11) ---------------------------------------------
