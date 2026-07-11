@@ -4,8 +4,14 @@ import base64
 import binascii
 import json
 import os
+import re
 import socket
 import sys
+
+# The strict base64url alphabet (RFC 4648 §5): letters, digits, '-' and '_'.
+# A JWT segment carries NO '=' padding, so anything else — standard-base64
+# '+'/'/', whitespace, or junk — means the segment is not valid base64url.
+_B64URL_RE = re.compile(r"[A-Za-z0-9_-]+\Z")
 
 TOKEN = os.environ.get("JARVIS_APP_TOKEN", "")
 SOCKET_PATH = os.environ.get("JARVIS_APP_SOCKET", "")
@@ -19,6 +25,12 @@ def send(conn, obj):
 def _b64url_json(segment):
     """Decode one base64url JWT segment to a JSON value. Returns (value, error)."""
     # segment is guaranteed a non-empty str by the caller.
+    # Reject anything outside the base64url alphabet up front: urlsafe_b64decode
+    # with the default validate=False silently tolerates standard-base64 '+'/'/'
+    # (and discards other stray bytes), which would let a NON-base64url token
+    # decode and be reported as valid. An explicit alphabet check is required.
+    if _B64URL_RE.match(segment) is None:
+        return None, "not valid base64url"
     # base64url uses '-'/'_' and omits '=' padding; restore padding to a multiple of 4.
     padding = (-len(segment)) % 4
     padded = segment + ("=" * padding)

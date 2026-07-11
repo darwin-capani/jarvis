@@ -47,21 +47,32 @@ def _tokenize_path(path):
             steps.append(("key", path[i:j]))
             i = j
         elif ch == "[":
+            if i + 1 < n and path[i + 1] in ("'", '"'):
+                # Quoted key: it may contain ']' literally, so find the MATCHING
+                # close quote first, then require the ']' immediately after it. A
+                # naive find(']') would stop at a ']' inside the quotes and make a
+                # key like 'a]b' unreachable.
+                quote = path[i + 1]
+                q = path.find(quote, i + 2)
+                if q == -1:
+                    raise ValueError("unterminated quoted key")
+                if q + 1 >= n or path[q + 1] != "]":
+                    raise ValueError("expected ']' after quoted key")
+                steps.append(("key", path[i + 2:q]))
+                i = q + 2
+                continue
+            # Unquoted subscript: an integer array index.
             close = path.find("]", i + 1)
             if close == -1:
                 raise ValueError("unclosed '['")
             inner = path[i + 1:close]
             if inner == "":
                 raise ValueError("empty subscript '[]'")
-            if (len(inner) >= 2 and inner[0] == inner[-1] and inner[0] in ("'", '"')):
-                # Quoted key: allows dots/brackets inside as a literal object key.
-                steps.append(("key", inner[1:-1]))
-            else:
-                stripped = inner.strip()
-                try:
-                    steps.append(("index", int(stripped, 10)))
-                except ValueError:
-                    raise ValueError("bad array index %r" % inner)
+            stripped = inner.strip()
+            try:
+                steps.append(("index", int(stripped, 10)))
+            except ValueError:
+                raise ValueError("bad array index %r" % inner)
             i = close + 1
         elif ch == "]":
             raise ValueError("unexpected ']'")

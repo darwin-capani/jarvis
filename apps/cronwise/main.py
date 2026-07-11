@@ -29,7 +29,8 @@ _FIELDS = [
     ("hour", "hour", 0, 23, {}),
     ("day_of_month", "day-of-month", 1, 31, {}),
     ("month", "month", 1, 12, _MONTHS),
-    ("day_of_week", "day-of-week", 0, 6, _DOW),
+    # Standard cron accepts day-of-week 0-7 where BOTH 0 and 7 mean Sunday.
+    ("day_of_week", "day-of-week", 0, 7, _DOW),
 ]
 _UNIT_PLURAL = {
     "minute": "minutes",
@@ -45,6 +46,7 @@ _MONTH_NAMES = {
 _DOW_NAMES = {
     0: "Sunday", 1: "Monday", 2: "Tuesday", 3: "Wednesday",
     4: "Thursday", 5: "Friday", 6: "Saturday",
+    7: "Sunday",  # cron's alternate Sunday (0 and 7 both denote Sunday)
 }
 
 

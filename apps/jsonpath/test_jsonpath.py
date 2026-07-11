@@ -120,6 +120,11 @@ def main():
     r = compute({"json": "[[1,2],[3,4]]", "path": "[1][0]"})
     check("2d array", r.get("value") == 3)
 
+    # 22) A quoted bracket key may itself contain ']' — the parser finds the
+    #     matching close quote, not the first ']' inside the quotes.
+    r = compute({"json": '{"a]b": 42}', "path": "['a]b']"})
+    check("quoted key with bracket", r.get("value") == 42)
+
     print("ALL PASS")
     sys.exit(0)
 
