@@ -625,7 +625,7 @@ mod tests {
     /// A no-op Keychain store so building a `ProviderAuth` never touches the real
     /// Keychain.
     fn noop_store() -> RefreshTokenStore {
-        Box::new(|_t: &str| Ok(()))
+        std::sync::Arc::new(|_t: &str| Ok(()))
     }
 
     /// Canned Google refresh response so `auth.bearer()` mints `FAKE_ACCESS`

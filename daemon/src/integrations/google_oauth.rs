@@ -36,7 +36,7 @@
 //!   * Every token exchange / refresh / API call in tests goes through the
 //!     foundation's `MockTransport` with canned Google JSON — zero network.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -533,7 +533,12 @@ struct TokenError {
 /// A function that PERSISTS the refresh token to the Keychain. Injected so tests
 /// substitute an in-memory recorder and never touch the real Keychain. The
 /// production impl ([`keychain_store`]) shells out to `security add-generic-password`.
-pub type RefreshTokenStore = Box<dyn Fn(&str) -> IntegrationResult<()> + Send + Sync>;
+///
+/// `Arc` (not `Box`) so `exchange_code` can `clone()` it into a
+/// [`tokio::task::spawn_blocking`] closure — the production write drives a
+/// synchronous `security(1)` child (see [`super::keychain_write`]) that would
+/// otherwise pin the tokio worker for the write's duration.
+pub type RefreshTokenStore = Arc<dyn Fn(&str) -> IntegrationResult<()> + Send + Sync>;
 
 /// The in-memory access token + its expiry. Held behind a Mutex inside
 /// [`GoogleAuth`]; never logged (only presence/expiry as bool/time).
@@ -647,7 +652,16 @@ impl<T: HttpTransport> GoogleAuth<T> {
                 "Google did not return a refresh token — reconnect and grant offline access"
             ));
         }
-        (self.store)(&refresh)?;
+        // Persist off the async worker: the store drives a synchronous security(1)
+        // child (see `super::keychain_write`), so run it on the blocking pool rather
+        // than pinning this runtime thread for the write's duration.
+        {
+            let store = self.store.clone();
+            let token = refresh.clone();
+            tokio::task::spawn_blocking(move || store(&token))
+                .await
+                .map_err(|e| anyhow::anyhow!("keychain write task failed: {e}"))??;
+        }
         if let Ok(mut rt) = self.refresh_token.lock() {
             *rt = refresh;
         }
@@ -896,7 +910,7 @@ pub async fn run_consent_flow<T: HttpTransport>(
 /// argv value to security(1) only (never a shell string, never logged). This
 /// runs ONLY in the real connect flow (device-gated); tests inject a recorder.
 fn keychain_store() -> RefreshTokenStore {
-    Box::new(|token: &str| -> IntegrationResult<()> {
+    Arc::new(|token: &str| -> IntegrationResult<()> {
         // ARGV-FREE write: the secret rides security(1)'s stdin, never argv. See
         // `super::keychain_write`.
         super::keychain_write(ACCOUNT_REFRESH_TOKEN, token)?;
@@ -990,7 +1004,7 @@ mod tests {
     fn recording_store() -> (RefreshTokenStore, Arc<Mutex<Vec<String>>>) {
         let log = Arc::new(Mutex::new(Vec::<String>::new()));
         let log2 = log.clone();
-        let store: RefreshTokenStore = Box::new(move |t: &str| {
+        let store: RefreshTokenStore = Arc::new(move |t: &str| {
             log2.lock().unwrap().push(t.to_string());
             Ok(())
         });

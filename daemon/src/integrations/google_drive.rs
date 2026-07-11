@@ -499,7 +499,7 @@ mod tests {
     /// A no-op refresh-token store: the Drive tests never trigger a Keychain
     /// write (no `exchange_code`), but `GoogleAuth::new` requires a store.
     fn noop_store() -> RefreshTokenStore {
-        Box::new(|_t: &str| Ok(()))
+        std::sync::Arc::new(|_t: &str| Ok(()))
     }
 
     /// Build a `GoogleAuth<MockTransport>` whose token endpoint returns

@@ -242,7 +242,16 @@ impl<T: HttpTransport> MetaAuth<T> {
                 "Meta did not return a long-lived token — reconnect in Settings"
             ));
         }
-        (self.store)(&long)?;
+        // Persist off the async worker: the store drives a synchronous security(1)
+        // child (see `super::keychain_write`), so run it on the blocking pool rather
+        // than pinning this runtime thread for the write's duration.
+        {
+            let store = self.store.clone();
+            let token = long.clone();
+            tokio::task::spawn_blocking(move || store(&token))
+                .await
+                .map_err(|e| anyhow::anyhow!("keychain write task failed: {e}"))??;
+        }
         if let Ok(mut c) = self.cached.lock() {
             c.long_lived_token = long;
         }
@@ -1039,7 +1048,7 @@ mod tests {
     fn recording_store() -> (RefreshTokenStore, Arc<Mutex<Vec<String>>>) {
         let log = Arc::new(Mutex::new(Vec::<String>::new()));
         let log2 = log.clone();
-        let store: RefreshTokenStore = Box::new(move |t: &str| {
+        let store: RefreshTokenStore = Arc::new(move |t: &str| {
             log2.lock().unwrap().push(t.to_string());
             Ok(())
         });
