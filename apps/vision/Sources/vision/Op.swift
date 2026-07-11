@@ -244,9 +244,13 @@ extension Op {
             // headlessly testable over a confined file, like read.screen.
             // `interval_secs` is OPTIONAL: absent/invalid -> 30s (the daemon's
             // [screen_context].interval_secs default), floored at use.
-            let interval = (json["interval_secs"] as? Double)
+            let rawInterval = (json["interval_secs"] as? Double)
                 ?? (json["interval_secs"] as? NSNumber)?.doubleValue
                 ?? 30
+            // Clamp to a sane, FINITE range: an unbounded / NaN / infinite
+            // interval_secs would trap the Double->UInt64 nanoseconds conversion in
+            // the sleep and crash the app. 0…86_400s (one day); non-finite -> 30s.
+            let interval = rawInterval.isFinite ? min(max(rawInterval, 0), 86_400) : 30
             if json["source"] == nil {
                 return .screenContextStart(source: .screen, intervalSecs: interval)
             }

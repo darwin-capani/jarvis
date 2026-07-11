@@ -76,9 +76,12 @@ public struct ScreenReadout: Sendable, Equatable {
 /// transform, so the unit tests drive it with literal detections.
 public enum ScreenStructurer {
 
-    /// A row-banding tolerance (fraction of the unit height): two blocks whose
-    /// vertical centers are within this are treated as the SAME reading row, so
-    /// they sort left-to-right rather than by a sub-pixel y jitter.
+    /// The row-band GRID height (fraction of the unit height). Each block's vertical
+    /// center is floored onto a fixed grid of bands — `floor(centerY / rowBandTolerance)`
+    /// — and blocks in the same band are one reading row (sorted left-to-right) rather
+    /// than ordered by sub-pixel y jitter. A FIXED grid (not a pairwise
+    /// `|Δcenter| <= tolerance` test) keeps the ordering TRANSITIVE, which is the
+    /// strict-weak-ordering contract `sorted(by:)` requires.
     public static let rowBandTolerance = 0.02
 
     /// Max words for a block to be a plausible CONTROL label. Buttons/menu items
@@ -108,23 +111,28 @@ public enum ScreenStructurer {
     }
 
     /// Sort detections into reading order. Vision boxes use an origin at the
-    /// BOTTOM-LEFT, so a higher `y` is HIGHER on screen and must read first. We
-    /// band rows by vertical center (within `rowBandTolerance`) so a row of
-    /// labels reads left-to-right instead of by tiny y differences.
+    /// BOTTOM-LEFT, so a higher `y` is HIGHER on screen and reads first. Each block's
+    /// vertical center is floored onto a fixed grid of bands (`rowBandTolerance` tall);
+    /// bands read top-to-bottom and, within a band, left-to-right — a transitive order.
     static func readingOrder(_ dets: [Detection]) -> [Detection] {
         // Stable indices so equal keys keep input order (deterministic).
         let indexed = Array(dets.enumerated())
+        // Quantize each vertical center onto a FIXED band grid. Comparing bands
+        // pairwise by |Δcenter| <= tolerance is NOT transitive — three labels whose
+        // centers chain across the boundary form a sort cycle, so `sorted(by:)` gets
+        // an invalid strict weak ordering and can scramble the reading order. A fixed
+        // grid makes "same band" transitive: rows read top-to-bottom (Vision's origin
+        // is bottom-left, so a HIGHER band is higher on screen and reads first) and,
+        // within a band, left-to-right by x.
+        func band(_ box: DetectionBox) -> Int { Int((centerY(box) / rowBandTolerance).rounded(.down)) }
         let sorted = indexed.sorted { a, b in
-            let ay = centerY(a.element.boundingBox)
-            let by = centerY(b.element.boundingBox)
-            // Same row (within band)? -> left-to-right by x. Higher y first.
-            if abs(ay - by) <= rowBandTolerance {
-                let ax = a.element.boundingBox.x
-                let bx = b.element.boundingBox.x
-                if abs(ax - bx) > 1e-9 { return ax < bx }
-                return a.offset < b.offset    // stable tiebreak
-            }
-            return ay > by                    // higher on screen reads first
+            let aband = band(a.element.boundingBox)
+            let bband = band(b.element.boundingBox)
+            if aband != bband { return aband > bband }   // higher on screen reads first
+            let ax = a.element.boundingBox.x
+            let bx = b.element.boundingBox.x
+            if abs(ax - bx) > 1e-9 { return ax < bx }     // same row -> left-to-right
+            return a.offset < b.offset                    // stable tiebreak
         }
         return sorted.map(\.element)
     }

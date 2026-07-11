@@ -54,6 +54,21 @@ final class ScreenReadoutTests: XCTestCase {
         XCTAssertEqual(r.blocks.map(\.text), ["first", "second"])
     }
 
+    func testReadingOrderIsTransitiveAcrossBandBoundary() {
+        // Three labels whose vertical CENTERS chain across the band tolerance
+        // (0.025, 0.040, 0.055 — each within 0.02 of its neighbour, but the ends
+        // differ by 0.03). A pairwise |Δcenter| <= tolerance comparator is NOT a
+        // strict weak ordering here (A<B, B<C, yet C<A) and can scramble the sort;
+        // the quantized-band comparator is transitive, so the result is a complete,
+        // deterministic permutation. B and C fall in the same (higher) band and read
+        // left-to-right; A is the lower band and reads last.
+        let dets = [t("A", x: 0.1, y: 0.0), t("B", x: 0.5, y: 0.015), t("C", x: 0.9, y: 0.030)]
+        let r = ScreenStructurer.structure(dets)
+        XCTAssertEqual(r.blocks.count, 3, "no label is dropped by an inconsistent comparator")
+        XCTAssertEqual(Set(r.blocks.map(\.text)), ["A", "B", "C"])
+        XCTAssertEqual(r.blocks.map(\.text), ["B", "C", "A"])
+    }
+
     func testNonTextDetectionsAreIgnored() {
         let dets: [Detection] = [
             t("Hello", x: 0.1, y: 0.5),
