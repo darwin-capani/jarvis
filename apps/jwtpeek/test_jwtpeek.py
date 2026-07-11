@@ -54,6 +54,13 @@ def main():
     out = compute({"token": "." + _b64url(pld) + ".sig"})
     assert "error" in out, out
 
+    # 7b) A segment carrying a non-base64url character (standard-base64 '+', which
+    #     is illegal in base64url) is rejected as malformed — NOT leniently decoded
+    #     and reported valid. The header "eyJ4IjogIj4+Pj4ifQ" contains a '+'.
+    out = compute({"token": "eyJ4IjogIj4+Pj4ifQ.eyJzIjogMX0.sig"})
+    assert "error" in out, out
+    assert "base64url" in out["error"], out
+
     # 8) Hostile / empty / wrong-type inputs must NOT raise, always return {"error": ...}.
     for bad in [
         {},                          # missing token

@@ -71,6 +71,21 @@ def test_contrast_formula_gray():
     assert r2["contrast_white"] < r["contrast_white"], (r, r2)
 
 
+def test_wcag_flags_use_unrounded_contrast():
+    # 0,126,183 has a true WCAG contrast vs white of 4.4986 — just below the 4.5
+    # AA threshold. The flag must be False even though the DISPLAYED ratio rounds
+    # to 4.5 (the flag must not be computed from the pre-rounded value).
+    r = compute({"color": "0,126,183"})
+    assert "error" not in r, r
+    assert r["contrast_white"] == 4.5, r  # display value rounds up...
+    assert r["aa_on_white"] is False, r   # ...but the flag uses the raw 4.4986
+    # 0,60,248 has a true contrast of ~6.996 vs white — just below the 7.0 AAA
+    # threshold; the displayed value rounds to 7.0 but AAA must still fail.
+    r2 = compute({"color": "0,60,248"})
+    assert "error" not in r2, r2
+    assert r2["aaa_on_white"] is False, r2
+
+
 def test_hostile_and_empty_inputs_never_raise():
     # None payload, missing key, wrong types, malformed strings, out-of-range —
     # every one must return an {"error": ...} dict and never raise.
@@ -107,5 +122,6 @@ if __name__ == "__main__":
     test_short_hex_expands()
     test_rgb_triplet_and_hue()
     test_contrast_formula_gray()
+    test_wcag_flags_use_unrounded_contrast()
     test_hostile_and_empty_inputs_never_raise()
     print("all tests passed")

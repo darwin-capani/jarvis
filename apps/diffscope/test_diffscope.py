@@ -47,6 +47,21 @@ def test_cap_200_lines():
     assert n <= 200, n
 
 
+def test_content_lines_starting_with_plusplus_are_counted():
+    # A content line whose data begins with "++"/"--" (C's "++i", a "--flag",
+    # a YAML "---") is emitted by unified_diff as "+++i"/"---x". These must be
+    # counted as real insertions/deletions, not skipped as file headers.
+    r = compute({"a": "a\nb", "b": "a\n++i\nb"})
+    assert "error" not in r, r
+    assert r["added"] == 1, r
+    assert r["removed"] == 0, r
+    # Symmetric: a deleted line starting with "--".
+    r2 = compute({"a": "a\n--flag\nb", "b": "a\nb"})
+    assert "error" not in r2, r2
+    assert r2["removed"] == 1, r2
+    assert r2["added"] == 0, r2
+
+
 def test_hostile_inputs_never_raise():
     # None payload.
     assert "error" in compute(None)
@@ -70,5 +85,6 @@ if __name__ == "__main__":
     test_identical_no_diff()
     test_missing_fields_default_empty()
     test_cap_200_lines()
+    test_content_lines_starting_with_plusplus_are_counted()
     test_hostile_inputs_never_raise()
     print("ok")

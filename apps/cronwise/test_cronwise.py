@@ -48,6 +48,18 @@ class TestCronwiseExplain(unittest.TestCase):
         self.assertEqual(r3["month"], "on month January")
         self.assertEqual(r3["day_of_week"], "on day-of-week Monday")
 
+    def test_day_of_week_seven_is_sunday(self):
+        # Standard cron allows day-of-week 0-7 with both 0 and 7 = Sunday.
+        r = compute({"cron": "0 0 * * 7"})
+        self.assertTrue(r["valid"], r)
+        self.assertEqual(r["day_of_week"], "on day-of-week Sunday")
+        # A range through 7 (Fri-Sun) is valid too.
+        r2 = compute({"cron": "0 0 * * 5-7"})
+        self.assertTrue(r2["valid"], r2)
+        self.assertEqual(
+            r2["day_of_week"], "every day-of-week from Friday through Sunday"
+        )
+
     def test_step_variants(self):
         # Stepped range and stepped single-start.
         r = compute({"cron": "0 0-23/2 * * *"})

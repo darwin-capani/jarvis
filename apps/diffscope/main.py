@@ -22,11 +22,13 @@ def compute(payload):
     Computes a unified line-diff via difflib.unified_diff on a.splitlines()
     and b.splitlines() (lineterm=""), then returns:
       {"diff": "\\n".join of the diff lines capped at 200 lines,
-       "added": count of "+"-prefixed non-header lines,
-       "removed": count of "-"-prefixed non-header lines}.
-    "+"-prefixed header lines ("+++") and "-"-prefixed header lines ("---")
-    are excluded from the added/removed counts. On any bad input returns
-    {"error": ...}. Never raises.
+       "added": count of inserted content lines,
+       "removed": count of deleted content lines}.
+    The two file-header lines ("--- "/"+++ ") and the "@@" hunk headers are
+    excluded from the counts by POSITION, not prefix: a content line whose data
+    starts with "++"/"--" (e.g. C's "++i", a "--flag" doc, a YAML "---") is
+    emitted as "+++i"/"---x" and must not be mistaken for a file header. On any
+    bad input returns {"error": ...}. Never raises.
     """
     try:
         if not isinstance(payload, dict):
@@ -56,10 +58,16 @@ def compute(payload):
 
         added = 0
         removed = 0
-        for line in lines:
-            if line.startswith("+") and not line.startswith("+++"):
+        for idx, line in enumerate(lines):
+            # unified_diff emits the two file-header lines ("--- "/"+++ ") first,
+            # then "@@" hunk headers, then content lines. Classify content by
+            # POSITION so a line whose data starts with "++"/"--" (emitted as
+            # "+++i"/"---x") is counted, not mistaken for a file header.
+            if idx < 2 or line.startswith("@@"):
+                continue
+            if line.startswith("+"):
                 added += 1
-            elif line.startswith("-") and not line.startswith("---"):
+            elif line.startswith("-"):
                 removed += 1
 
         capped = lines[:200]

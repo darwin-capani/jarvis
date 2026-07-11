@@ -115,17 +115,21 @@ def compute(payload):
     lum_black = _relative_luminance(0, 0, 0)  # 0.0
     contrast_white = _contrast(lum, lum_white)
     contrast_black = _contrast(lum, lum_black)
-    contrast_white = round(contrast_white, 2)
-    contrast_black = round(contrast_black, 2)
+    # WCAG pass flags are derived from the UNROUNDED ratio — a true 4.4986 must
+    # fail AA. Rounding to 2 decimals first would inflate it to 4.50 and report a
+    # sub-threshold color as passing (and likewise 6.998 -> 7.00 for AAA). Round
+    # only the reported ratios, below.
+    aa_on_white = contrast_white >= 4.5
+    aaa_on_white = contrast_white >= 7
     return {
         "hex": "#{:02x}{:02x}{:02x}".format(r, g, b),
         "rgb": [r, g, b],
         "hsl": list(_rgb_to_hsl(r, g, b)),
         "relative_luminance": round(lum, 4),
-        "contrast_white": contrast_white,
-        "contrast_black": contrast_black,
-        "aa_on_white": contrast_white >= 4.5,
-        "aaa_on_white": contrast_white >= 7,
+        "contrast_white": round(contrast_white, 2),
+        "contrast_black": round(contrast_black, 2),
+        "aa_on_white": aa_on_white,
+        "aaa_on_white": aaa_on_white,
     }
 
 
