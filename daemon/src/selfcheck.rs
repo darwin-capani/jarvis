@@ -155,6 +155,21 @@ pub fn filesystem_checks(root: &Path) -> Vec<Check> {
         ));
     }
 
+    // pdfjail memory-jail helper — the sibling subprocess that extracts PDF text
+    // under an RLIMIT_AS cap so a decompression bomb aborts the CHILD, never
+    // jarvisd. PASS when present; SKIP (not FAIL) when absent so a dev checkout
+    // reports honestly — but the daemon logs a runtime WARN and silently falls
+    // back to the weaker in-process guard, so a production install should have it.
+    let jail = root.join("daemon").join("target").join("release").join("pdfjail");
+    if is_executable(&jail) {
+        checks.push(Check::pass("pdfjail", format!("{} present (PDF memory-jail armed)", jail.display())));
+    } else {
+        checks.push(Check::skip(
+            "pdfjail",
+            format!("{} not built — cargo build --release (PDF extraction falls back to the in-process guard)", jail.display()),
+        ));
+    }
+
     // The four runtime state subdirs (created at startup; here we report).
     for sub in ["ipc", "logs", "tmp"] {
         let d = root.join("state").join(sub);
