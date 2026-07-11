@@ -9318,6 +9318,10 @@ body,
 }
 .hud-fatal button:hover { border-color: #5b6b7a; }
 .panel-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 8px 10px;
   border: 1px dashed #5a3a3a;
   border-radius: 4px;
@@ -9326,3 +9330,14 @@ body,
   opacity: 0.65;
   letter-spacing: 0.08em;
 }
+.panel-error-retry {
+  padding: 2px 8px;
+  background: transparent;
+  color: #d09a9a;
+  border: 1px solid #5a3a3a;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+.panel-error-retry:hover { border-color: #8a5a5a; color: #e0b0b0; }

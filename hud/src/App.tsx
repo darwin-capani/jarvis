@@ -501,7 +501,7 @@ export default function App() {
       <div
         className={`panel-layer${bootPlaying && !revealed ? " pre-reveal" : ""}`}
       >
-        <ErrorBoundary label="status bar"><StatusBar
+        <ErrorBoundary label="status bar" resetKeys={[state.connected]}><StatusBar
           connected={state.connected}
           coreState={state.coreState}
           cloudKeyPresent={state.cloudKeyPresent}
@@ -523,7 +523,7 @@ export default function App() {
           onOpenDeck={() => setDeckOpen(true)}
         /></ErrorBoundary>
         <LatencyStrip timings={state.lastTimings} />
-        <ErrorBoundary label="left column"><div className="left-col">
+        <ErrorBoundary label="left column" resetKeys={[state.connected]}><div className="left-col">
           <ReticleDial cpuPercent={state.gauges.cpuPercent} coreState={state.coreState} />
           <TranscriptPanel lines={state.transcript} intent={state.lastIntent} />
           <AudioIoPanel audio={state.audioIo} />
@@ -531,13 +531,13 @@ export default function App() {
         {/* Center column: the R3F core stays visible up top; the intel-feed
             panel slots into the lower half (CSS anchors it to the bottom and
             caps its height so the core sphere is never occluded). */}
-        <ErrorBoundary label="center column"><div className="center-col">
+        <ErrorBoundary label="center column" resetKeys={[state.connected]}><div className="center-col">
           <GlobalScanPanel
             feed={state.appFeeds[GLOBAL_SCAN_APP]}
             running={state.runningApps.has(GLOBAL_SCAN_APP)}
           />
         </div></ErrorBoundary>
-        <ErrorBoundary label="right column"><div className="right-col">
+        <ErrorBoundary label="right column" resetKeys={[state.connected]}><div className="right-col">
           <AgentPanel active={state.activeAgent} />
           <SuggestionsPanel
             suggestions={state.suggestions}
