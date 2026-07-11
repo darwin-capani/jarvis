@@ -734,6 +734,22 @@ fn params_refusal(patch: &ParamsPatch) -> Option<String> {
             }
         }
     }
+    // Damping is a per-substep velocity RETENTION factor (world.rs integrate_
+    // velocities: `vel *= damping`), so its physical range is [0, 1] (1.0 = no
+    // damping). A value > 1 AMPLIFIES velocity every substep until it overflows
+    // to +Inf; a negative value flips the velocity sign each substep (non-
+    // physical). Finiteness alone (checked above) is not enough — reject any
+    // damping outside [0, 1].
+    for (value, name) in [
+        (patch.linear_damping, "linear_damping"),
+        (patch.angular_damping, "angular_damping"),
+    ] {
+        if let Some(v) = value {
+            if !(0.0..=1.0).contains(&v) {
+                return Some(format!("{name} must be in [0, 1]; set.params refused"));
+            }
+        }
+    }
     None
 }
 
@@ -1484,6 +1500,20 @@ mod tests {
         // dt at exactly the cap boundary is accepted (inclusive upper bound).
         let boundary = ParamsPatch { dt: Some(MAX_DT), ..Default::default() };
         assert!(params_refusal(&boundary).is_none(), "dt == MAX_DT is accepted");
+    }
+
+    #[test]
+    fn set_params_out_of_range_damping_is_refused() {
+        // Damping is a velocity RETENTION factor in [0, 1]; a value > 1 amplifies
+        // velocity toward +Inf and a negative value flips its sign each substep.
+        // Finiteness alone (already checked) is not enough — both out-of-range
+        // values must be refused.
+        assert!(params_refusal(&ParamsPatch { linear_damping: Some(2.0), ..Default::default() }).is_some());
+        assert!(params_refusal(&ParamsPatch { linear_damping: Some(-0.1), ..Default::default() }).is_some());
+        assert!(params_refusal(&ParamsPatch { angular_damping: Some(1.5), ..Default::default() }).is_some());
+        // The endpoints of the valid range are accepted.
+        assert!(params_refusal(&ParamsPatch { linear_damping: Some(0.0), ..Default::default() }).is_none());
+        assert!(params_refusal(&ParamsPatch { angular_damping: Some(1.0), ..Default::default() }).is_none());
     }
 
     // ----- set.gravity finite gate: non-finite/absurd gravity rejected -----

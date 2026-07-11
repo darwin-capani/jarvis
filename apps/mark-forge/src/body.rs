@@ -136,7 +136,35 @@ impl Body {
     /// This is the single spawn constructor `body.spawn` (SPEC §7) and the tests
     /// use, so the mass→inverse-inertia derivation lives in exactly one place.
     pub fn new(shape: Shape, pos: Vec3, mass: f64, material: Material) -> Body {
-        let static_body = shape.is_static_shape() || !(mass > 0.0) || !mass.is_finite();
+        // Enforce the material contract ON SPAWN (see the field docs + SPEC §2/§6):
+        // restitution ∈ 0..=1, friction ≥ 0, both finite. Without this a hostile
+        // or degenerate value survives to contact time and poisons the pairwise
+        // combine: a negative friction makes `combine_friction = sqrt(a*b)` = NaN,
+        // which crashes the solver's `f64::clamp(-max, max)` (assert min<=max fires
+        // in release too); an unclamped restitution injects energy every bounce
+        // until velocities/positions overflow to Inf (both break the SPEC §1
+        // no-NaN/Inf invariant). clamp() alone can't be trusted — it returns NaN
+        // for a NaN input — so map non-finite fields to the sane default first.
+        let material = Material {
+            restitution: if material.restitution.is_finite() {
+                material.restitution.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            friction: if material.friction.is_finite() {
+                material.friction.max(0.0)
+            } else {
+                0.0
+            },
+        };
+        // DYNAMIC only when the reciprocal mass is guaranteed finite: a positive,
+        // finite mass whose `1.0 / mass` does not overflow. A subnormal mass is
+        // positive and finite yet `1.0 / mass` = +Inf, and an infinite mass has a
+        // finite (0.0) reciprocal — so all three checks are needed. Everything else
+        // (inherently-static shapes, mass <= 0, NaN, ±Inf, or an overflowing
+        // reciprocal) is STATIC, so no infinite inv_mass reaches the integrator.
+        let has_finite_inv_mass = mass > 0.0 && mass.is_finite() && (1.0 / mass).is_finite();
+        let static_body = shape.is_static_shape() || !has_finite_inv_mass;
         let (inv_mass, inv_inertia) = if static_body {
             (0.0, Mat3::ZERO)
         } else {
@@ -246,5 +274,41 @@ mod tests {
     fn negative_mass_falls_back_to_static() {
         let b = Body::new(Shape::Sphere { radius: 1.0 }, Vec3::ZERO, -3.0, Material::default());
         assert!(b.is_static());
+    }
+
+    #[test]
+    fn hostile_material_is_clamped_on_spawn() {
+        // A negative friction makes combine_friction = sqrt(neg) = NaN and crashes
+        // the solver's f64::clamp; a restitution > 1 injects energy every bounce.
+        // Both must be clamped to their sane range ON SPAWN so they never reach the
+        // solver.
+        let hostile = Material { restitution: 50.0, friction: -1.0 };
+        let b = Body::new(Shape::Sphere { radius: 1.0 }, Vec3::ZERO, 1.0, hostile);
+        assert_eq!(b.material.restitution, 1.0, "restitution clamped to <= 1");
+        assert_eq!(b.material.friction, 0.0, "negative friction clamped to 0");
+        // The combined friction with any sane surface is now finite (no NaN).
+        let mu = Material::combine_friction(b.material, Material::default());
+        assert!(mu.is_finite(), "combined friction must be finite: {mu}");
+    }
+
+    #[test]
+    fn nonfinite_material_falls_back_to_sane_defaults() {
+        // f64::clamp returns NaN for a NaN input, so a NaN/Inf field must be mapped
+        // to a sane default, not merely clamped.
+        let poison = Material { restitution: f64::NAN, friction: f64::INFINITY };
+        let b = Body::new(Shape::Sphere { radius: 1.0 }, Vec3::ZERO, 1.0, poison);
+        assert!(b.material.restitution.is_finite() && (0.0..=1.0).contains(&b.material.restitution));
+        assert!(b.material.friction.is_finite() && b.material.friction >= 0.0);
+    }
+
+    #[test]
+    fn subnormal_mass_falls_back_to_static() {
+        // A subnormal mass is > 0 and finite, but 1/mass overflows to +Inf; the body
+        // must be treated as static so no infinite inv_mass/inv_inertia reaches the
+        // integrator (SPEC §1).
+        let b = Body::new(Shape::Sphere { radius: 0.5 }, Vec3::ZERO, 1e-320, Material::default());
+        assert!(b.is_static(), "a mass whose reciprocal is +Inf is static");
+        assert_eq!(b.inv_mass, 0.0);
+        assert_eq!(b.inv_inertia, Mat3::ZERO);
     }
 }
