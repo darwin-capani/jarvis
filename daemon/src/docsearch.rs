@@ -45,6 +45,7 @@ use std::collections::HashSet;
 use std::io::{Cursor, Read};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -820,6 +821,40 @@ struct ChunkRow {
     vector: Option<Vec<f64>>,
 }
 
+/// Citation + vector metadata for one cached chunk, kept PARALLEL to
+/// [`CachedCorpus::facts`] (same length, same order — `meta[i]` and `facts[i]`
+/// describe the same chunk).
+struct ChunkMeta {
+    root: String,
+    file_path: String,
+    byte_offset: i64,
+    /// The on-device embedding, ALREADY DESERIALIZED (the JSON parse happened once
+    /// at corpus-build time, not per query). `None` => the chunk is BM25-ranked.
+    vector: Option<Vec<f64>>,
+}
+
+/// The materialized search corpus, built ONCE from the store and reused across
+/// queries (see [`StoreState::cache`]). Every stored chunk arrives here with its
+/// embedding vector already parsed out of JSON and its BM25 [`Fact`] already
+/// constructed, so the interactive [`DocIndex::search`] path no longer re-reads
+/// the whole `doc_chunks` table, re-parses every JSON vector, and re-clones every
+/// chunk text on EVERY query.
+struct CachedCorpus {
+    /// Per-chunk citation anchor + optional on-device vector.
+    meta: Vec<ChunkMeta>,
+    /// Per-chunk BM25 document: `key` empty (docsearch has no namespaced key),
+    /// `value` OWNS the chunk text (moved out of the row once). The lexical path
+    /// scores over this slice directly — no per-query clone — and a hit's snippet
+    /// is derived from `value`.
+    facts: Vec<Fact>,
+}
+
+impl CachedCorpus {
+    fn is_empty(&self) -> bool {
+        self.facts.is_empty()
+    }
+}
+
 /// One CITED search result: the file it came from, the chunk's byte offset (the
 /// citation anchor), a bounded snippet of the chunk, and the relevance score.
 /// Only ever built from a REAL stored chunk — never fabricated.
@@ -852,12 +887,26 @@ pub struct IndexStatus {
     pub embedded_chunks: u64,
 }
 
+/// The mutable store state behind ONE async mutex: the SQLite connection PLUS the
+/// materialized-corpus cache for the hot search path. They share a single lock so
+/// invalidation is trivially correct — every write path clears `cache` in the SAME
+/// critical section that mutates `conn`, so a search can never observe a corpus
+/// that predates a committed write (nor keep serving a citation a FORGET removed).
+struct StoreState {
+    conn: Connection,
+    /// The deserialized corpus, built ONCE and reused across queries (paying the
+    /// per-vector JSON parse + chunk-text alloc once, not per query). `None` means
+    /// "cold" — the next search rebuilds it from `conn`. Set to `None` by every
+    /// write ([`DocIndex::insert_chunk`], [`DocIndex::forget`]).
+    cache: Option<Arc<CachedCorpus>>,
+}
+
 /// The bounded, local, FORGETTABLE chunk-vector store. Mirrors the `memory.rs`
 /// SQLite pattern: open/migrate, WAL, an async Mutex so `&DocIndex` is shareable.
 /// The store NEVER reaches the network; it only persists chunks the confined
 /// indexer produced.
 pub struct DocIndex {
-    conn: Mutex<Connection>,
+    state: Mutex<StoreState>,
 }
 
 impl DocIndex {
@@ -897,7 +946,7 @@ impl DocIndex {
             CREATE INDEX IF NOT EXISTS idx_doc_chunks_file ON doc_chunks(file_path);",
         )?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            state: Mutex::new(StoreState { conn, cache: None }),
         })
     }
 
@@ -916,34 +965,45 @@ impl DocIndex {
             Some(v) => Some(serde_json::to_string(v)?),
             None => None,
         };
-        let conn = self.conn.lock().await;
-        conn.execute(
+        let mut st = self.state.lock().await;
+        st.conn.execute(
             "INSERT INTO doc_chunks(root, file_path, byte_offset, chunk_text, vector)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![root, file_path, byte_offset as i64, chunk_text, vec_json],
         )?;
-        Ok(conn.last_insert_rowid())
+        let id = st.conn.last_insert_rowid();
+        // A write invalidates the search cache IN THE SAME critical section as the
+        // insert: the next search rebuilds from the store, so a freshly inserted
+        // chunk is never missed and a concurrent search cannot pin a pre-insert
+        // corpus (this also drops any partial corpus a search cached mid-reindex).
+        st.cache = None;
+        Ok(id)
     }
 
     /// FORGET: clear the entire index (every stored chunk + vector), returning how
     /// many chunk rows were removed and VACUUMing so the file actually shrinks. The
     /// forgettable contract — a user can make JARVIS forget every indexed file.
     pub async fn forget(&self) -> Result<u64> {
-        let conn = self.conn.lock().await;
-        let deleted = conn.execute("DELETE FROM doc_chunks", [])?;
+        let mut st = self.state.lock().await;
+        let deleted = st.conn.execute("DELETE FROM doc_chunks", [])?;
         if deleted > 0 {
-            conn.execute_batch("VACUUM")?;
+            st.conn.execute_batch("VACUUM")?;
         }
+        // Invalidate the cache in the SAME critical section as the delete, so no
+        // search can serve a citation that FORGET just removed (the forgettable
+        // contract must hold for the in-memory corpus, not only the on-disk store).
+        st.cache = None;
         Ok(deleted as u64)
     }
 
     /// The current index status (files / chunks / embedded-chunks) for telemetry.
     pub async fn status(&self) -> Result<IndexStatus> {
-        let conn = self.conn.lock().await;
-        let chunks: i64 = conn.query_row("SELECT COUNT(*) FROM doc_chunks", [], |r| r.get(0))?;
-        let files: i64 =
-            conn.query_row("SELECT COUNT(DISTINCT file_path) FROM doc_chunks", [], |r| r.get(0))?;
-        let embedded: i64 = conn.query_row(
+        let st = self.state.lock().await;
+        let chunks: i64 = st.conn.query_row("SELECT COUNT(*) FROM doc_chunks", [], |r| r.get(0))?;
+        let files: i64 = st
+            .conn
+            .query_row("SELECT COUNT(DISTINCT file_path) FROM doc_chunks", [], |r| r.get(0))?;
+        let embedded: i64 = st.conn.query_row(
             "SELECT COUNT(*) FROM doc_chunks WHERE vector IS NOT NULL",
             [],
             |r| r.get(0),
@@ -955,10 +1015,20 @@ impl DocIndex {
         })
     }
 
-    /// Load every stored chunk (bounded by the store's own size). Internal to
-    /// search; materializes the vectors from their JSON.
+    /// Load every stored chunk (bounded by the store's own size), materializing the
+    /// vectors from their JSON. Used by the graph build ([`Self::chunks_for_graph`])
+    /// and the tests; the hot SEARCH path instead reuses the cached corpus
+    /// ([`Self::cached_corpus`]) so it does not re-run this whole-table read per query.
     async fn all_chunks(&self) -> Result<Vec<ChunkRow>> {
-        let conn = self.conn.lock().await;
+        let st = self.state.lock().await;
+        Self::read_all_chunk_rows(&st.conn)
+    }
+
+    /// The raw SELECT-all + per-row JSON vector parse, shared by [`Self::all_chunks`]
+    /// and [`Self::load_corpus`]. This is the EXPENSIVE step (a whole-table scan that
+    /// re-parses every embedding out of JSON TEXT and allocates every chunk text) that
+    /// the search cache exists to run ONCE per generation instead of once per query.
+    fn read_all_chunk_rows(conn: &Connection) -> Result<Vec<ChunkRow>> {
         let mut stmt = conn.prepare(
             "SELECT id, root, file_path, byte_offset, chunk_text, vector FROM doc_chunks",
         )?;
@@ -979,6 +1049,47 @@ impl DocIndex {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Build the materialized [`CachedCorpus`] from the store, CONSUMING each row so
+    /// the chunk text is MOVED into its BM25 [`Fact`] (no clone) and the vector is
+    /// carried already-deserialized. Called only on a cache miss.
+    fn load_corpus(conn: &Connection) -> Result<CachedCorpus> {
+        let rows = Self::read_all_chunk_rows(conn)?;
+        let mut meta = Vec::with_capacity(rows.len());
+        let mut facts = Vec::with_capacity(rows.len());
+        for r in rows {
+            meta.push(ChunkMeta {
+                root: r.root,
+                file_path: r.file_path,
+                byte_offset: r.byte_offset,
+                vector: r.vector,
+            });
+            // `key` empty (docsearch has no namespaced key); `value` OWNS the chunk
+            // text, moved out of the row. The snippet is later derived from `value`.
+            facts.push(Fact {
+                key: String::new(),
+                value: r.chunk_text,
+            });
+        }
+        Ok(CachedCorpus { meta, facts })
+    }
+
+    /// Return the materialized corpus for the search path, building + caching it on
+    /// a miss. The state lock is held across the (cold-path) DB read, so the cache
+    /// check, the rebuild, and every write's invalidation are ALL serialized by the
+    /// one mutex: a `Some` cache is therefore always consistent with the committed
+    /// store (any write since would have taken this lock and cleared it). The
+    /// returned `Arc` is scored OUTSIDE the lock, so concurrent queries never
+    /// serialize on the CPU-bound ranking work.
+    async fn cached_corpus(&self) -> Result<Arc<CachedCorpus>> {
+        let mut st = self.state.lock().await;
+        if let Some(corpus) = &st.cache {
+            return Ok(Arc::clone(corpus));
+        }
+        let corpus = Arc::new(Self::load_corpus(&st.conn)?);
+        st.cache = Some(Arc::clone(&corpus));
+        Ok(corpus)
     }
 
     /// Every stored chunk reduced to what the KNOWLEDGE-GRAPH build
@@ -1103,8 +1214,16 @@ impl DocIndex {
         embedder: &dyn Embedder,
     ) -> DocSearchResult {
         let k = k.clamp(1, DOCSEARCH_MAX_K);
-        let chunks = self.all_chunks().await.unwrap_or_default();
-        if chunks.is_empty() || query.trim().is_empty() {
+        // Reuse the materialized corpus (deserialized ONCE, cached until a write) —
+        // no whole-table scan / JSON re-parse / chunk-text re-alloc per query. A
+        // failed store read degrades to an honest empty result.
+        let Ok(corpus) = self.cached_corpus().await else {
+            return DocSearchResult {
+                hits: Vec::new(),
+                method: RankMethod::Lexical,
+            };
+        };
+        if corpus.is_empty() || query.trim().is_empty() {
             // Nothing to rank (or a contentless query): honest empty. Report the
             // backend that WOULD run lexically (no embed call made).
             return DocSearchResult {
@@ -1116,16 +1235,17 @@ impl DocIndex {
         // Prefer NEURAL only when every chunk has a stored vector — a mixed store
         // (some embedded, some not) cannot be ranked coherently by cosine, so it
         // falls back to BM25 wholesale (honest: the method names what actually ran).
-        let all_embedded = chunks.iter().all(|c| c.vector.is_some());
+        let all_embedded = corpus.meta.iter().all(|m| m.vector.is_some());
         if all_embedded {
             if let Ok(qvecs) = embedder.embed(&[query.to_string()]).await {
                 if qvecs.len() == 1 && !qvecs[0].is_empty() {
                     let qvec = &qvecs[0];
-                    let mut scored: Vec<(usize, f64)> = chunks
+                    let mut scored: Vec<(usize, f64)> = corpus
+                        .meta
                         .iter()
                         .enumerate()
-                        .map(|(i, c)| {
-                            let sim = c
+                        .map(|(i, m)| {
+                            let sim = m
                                 .vector
                                 .as_ref()
                                 .map(|v| cosine_similarity(qvec, v))
@@ -1135,7 +1255,7 @@ impl DocIndex {
                         })
                         .collect();
                     return DocSearchResult {
-                        hits: rank_and_cite(&chunks, &mut scored, k),
+                        hits: rank_and_cite(&corpus, &mut scored, k),
                         method: RankMethod::Embedding,
                     };
                 }
@@ -1143,23 +1263,18 @@ impl DocIndex {
             // Query embed failed / degenerate -> fall through to BM25, honestly.
         }
 
-        // LEXICAL BM25 over the chunk text (reusing recall.rs's shipped ranker).
+        // LEXICAL BM25 over the chunk text (reusing recall.rs's shipped ranker). The
+        // BM25 documents are the corpus's cached `facts` — built ONCE when the corpus
+        // was materialized — so the search path no longer clones every chunk text
+        // into a fresh `Fact` per query; it scores over the borrowed slice directly.
         let lexical = LexicalProvider {
             params: Bm25Params::default(),
         };
-        // recall::score wants Facts; the chunk text IS the searchable value.
         use crate::recall::EmbeddingProvider;
-        let facts: Vec<Fact> = chunks
-            .iter()
-            .map(|c| Fact {
-                key: String::new(),
-                value: c.chunk_text.clone(),
-            })
-            .collect();
-        let scores = lexical.score(query, &facts);
+        let scores = lexical.score(query, &corpus.facts);
         let mut scored: Vec<(usize, f64)> = scores.into_iter().enumerate().collect();
         DocSearchResult {
-            hits: rank_and_cite(&chunks, &mut scored, k),
+            hits: rank_and_cite(&corpus, &mut scored, k),
             method: RankMethod::Lexical,
         }
     }
@@ -1170,7 +1285,7 @@ impl DocIndex {
 /// CITED [`DocHit`] for each from the real chunk. No-match -> empty (no
 /// fabrication). The snippet is a bounded, char-boundary-safe preview of the
 /// stored chunk text.
-fn rank_and_cite(chunks: &[ChunkRow], scored: &mut [(usize, f64)], k: usize) -> Vec<DocHit> {
+fn rank_and_cite(corpus: &CachedCorpus, scored: &mut [(usize, f64)], k: usize) -> Vec<DocHit> {
     scored.sort_by(|a, b| {
         b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -1181,12 +1296,15 @@ fn rank_and_cite(chunks: &[ChunkRow], scored: &mut [(usize, f64)], k: usize) -> 
         .filter(|(_, s)| s.is_finite() && *s > 0.0)
         .take(k)
         .filter_map(|(i, s)| {
-            let c = chunks.get(*i)?;
+            let m = corpus.meta.get(*i)?;
+            // `facts[i].value` is the chunk text (moved in at build time), parallel
+            // to `meta[i]`; the snippet is a bounded preview of it.
+            let chunk_text = &corpus.facts.get(*i)?.value;
             Some(DocHit {
-                file_path: c.file_path.clone(),
-                root: c.root.clone(),
-                byte_offset: c.byte_offset,
-                snippet: snippet_of(&c.chunk_text),
+                file_path: m.file_path.clone(),
+                root: m.root.clone(),
+                byte_offset: m.byte_offset,
+                snippet: snippet_of(chunk_text),
                 score: *s,
             })
         })
@@ -1684,6 +1802,114 @@ mod tests {
         // A search after forget is honestly empty (never a stale citation).
         let result = idx.search("something", 5, &DownEmbedder).await;
         assert!(result.hits.is_empty(), "no citation survives a forget");
+    }
+
+    // =====================================================================
+    // SEARCH CACHE FRESHNESS: a materialized corpus must NEVER outlive a write.
+    // Each test WARMS the cache (a search first), THEN mutates the store, THEN
+    // searches again — so a missing invalidation would surface as a STALE hit
+    // (the whole correctness risk of caching the corpus).
+    // =====================================================================
+
+    #[tokio::test]
+    async fn search_cache_refreshes_after_reindex_bm25() {
+        let t = TempTree::new("cache-reindex-bm25");
+        t.write("docs/a.md", "the quarterly budget review and forecast");
+        let idx = DocIndex::open(&t.db_path()).unwrap();
+        let roots = roots_of(&t, "docs");
+        let bounds = IndexBounds::default();
+        idx.reindex(&roots, &bounds, &DownEmbedder).await.unwrap();
+
+        // WARM the cache: the first search materializes + caches the corpus.
+        let first = idx.search("quarterly budget forecast", 5, &DownEmbedder).await;
+        assert!(!first.hits.is_empty(), "the budget chunk is found before reindex");
+
+        // Replace the file's content entirely, then reindex (a full rebuild).
+        t.write("docs/a.md", "notes about gardening tomatoes and basil");
+        idx.reindex(&roots, &bounds, &DownEmbedder).await.unwrap();
+
+        // The stale "budget" query must now cite NOTHING — reindex invalidated the
+        // warm cache, so this search rebuilt from the fresh store (no budget chunk).
+        let stale = idx.search("quarterly budget forecast", 5, &DownEmbedder).await;
+        assert!(
+            stale.hits.is_empty(),
+            "reindex must invalidate the cache: a stale budget hit survived: {:?}",
+            stale.hits
+        );
+
+        // ...and the NEW content is retrievable from the refreshed corpus.
+        let fresh = idx.search("gardening tomatoes basil", 5, &DownEmbedder).await;
+        assert!(!fresh.hits.is_empty(), "the reindexed content must be searchable");
+        assert!(
+            fresh.hits[0].snippet.contains("gardening"),
+            "the fresh snippet is the NEW chunk text: {:?}",
+            fresh.hits
+        );
+    }
+
+    #[tokio::test]
+    async fn search_cache_refreshes_after_forget() {
+        let t = TempTree::new("cache-forget");
+        t.write("docs/a.md", "a corgi named Watson naps in the sun");
+        let idx = DocIndex::open(&t.db_path()).unwrap();
+        idx.reindex(&roots_of(&t, "docs"), &IndexBounds::default(), &DownEmbedder)
+            .await
+            .unwrap();
+
+        // WARM the cache with a search that finds the corgi chunk.
+        let warm = idx.search("corgi watson", 5, &DownEmbedder).await;
+        assert!(!warm.hits.is_empty(), "the corgi chunk is found before forget");
+
+        // FORGET must invalidate the warm cache in the same breath as the delete.
+        let cleared = idx.forget().await.unwrap();
+        assert!(cleared > 0, "forget removed the stored chunks");
+
+        // A search after forget is honestly empty — never served from the warm cache.
+        let after = idx.search("corgi watson", 5, &DownEmbedder).await;
+        assert!(
+            after.hits.is_empty(),
+            "forget must invalidate the warm cache: a stale hit survived: {:?}",
+            after.hits
+        );
+    }
+
+    #[tokio::test]
+    async fn search_neural_cache_refreshes_after_reindex() {
+        let t = TempTree::new("cache-reindex-neural");
+        t.write("docs/car.md", "I drive a blue Subaru Outback wagon");
+        let idx = DocIndex::open(&t.db_path()).unwrap();
+        let roots = roots_of(&t, "docs");
+        let bounds = IndexBounds::default();
+        idx.reindex(&roots, &bounds, &KeywordEmbedder).await.unwrap();
+
+        // WARM the cache on the NEURAL path (every chunk is embedded).
+        let warm = idx.search("what car do I drive", 5, &KeywordEmbedder).await;
+        assert_eq!(warm.method, RankMethod::Embedding, "all chunks embedded -> neural");
+        assert!(!warm.hits.is_empty(), "the car chunk is found before reindex");
+
+        // Remove the car file, add a pet file, and reindex — the cached car vector
+        // must not survive.
+        fs::remove_file(t.join("docs/car.md")).unwrap();
+        t.write("docs/pet.md", "a corgi named Watson is my dog");
+        idx.reindex(&roots, &bounds, &KeywordEmbedder).await.unwrap();
+
+        // The car chunk is gone: a car query (orthogonal to the pet chunk) cites
+        // nothing — the stale cached car vector did NOT survive the reindex.
+        let after_car = idx.search("what car do I drive", 5, &KeywordEmbedder).await;
+        assert!(
+            after_car.hits.is_empty(),
+            "reindex must invalidate the neural cache: a stale car hit survived: {:?}",
+            after_car.hits
+        );
+
+        // ...and the NEW pet chunk is retrievable + cites the new file.
+        let pet = idx.search("my pet corgi", 5, &KeywordEmbedder).await;
+        assert!(!pet.hits.is_empty(), "the reindexed pet chunk is searchable");
+        assert!(
+            pet.hits[0].file_path.contains("pet.md"),
+            "the fresh hit cites the NEW pet file: {:?}",
+            pet.hits
+        );
     }
 
     // =====================================================================
