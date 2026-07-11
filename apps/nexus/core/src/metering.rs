@@ -112,7 +112,13 @@ const TP_TAPS_PER_PHASE: usize = 12;
 /// (`peak.max(raw)`), so a clip on the sample grid always registers even if the
 /// nearest reconstructed phase reads a hair under it. Built once per detector —
 /// the design is pure and depends only on the constants above.
-struct TruePeakKernel {
+///
+/// `pub(crate)` so the realtime [`crate::engine::Engine`] can own ONE persistent
+/// kernel (designed at construction) and reuse it every `process_block` via
+/// [`detect_clip_reusing`], instead of re-designing it per block on the audio
+/// thread (which would allocate `proto`). The self-contained [`detect_clip`]
+/// still designs its own kernel — it's the frozen off-path seam the tests use.
+pub(crate) struct TruePeakKernel {
     phases: [[f32; TP_TAPS_PER_PHASE]; TP_OVERSAMPLE],
 }
 
@@ -121,7 +127,9 @@ impl TruePeakKernel {
     /// Nyquist) sampled at the oversampled rate and split into `TP_OVERSAMPLE`
     /// phases, each normalized to unity DC gain so a full-scale signal maps to a
     /// full-scale reconstruction (no spurious gain that would over-report peaks).
-    fn design() -> Self {
+    /// Allocates `proto` (a `Vec`), so this is a CONSTRUCTION-TIME operation —
+    /// the engine designs it once and never on the audio path.
+    pub(crate) fn design() -> Self {
         let total = TP_TAPS_PER_PHASE * TP_OVERSAMPLE;
         // Center the sinc on the prototype filter so the fractional delays are
         // symmetric about the sample being interpolated.
@@ -182,19 +190,54 @@ fn blackman(k: usize, n: usize) -> f64 {
 /// The estimated true-peak (linear amplitude) of one interleaved channel of
 /// `block`, via 4× windowed-sinc oversampling. Always at least the raw sample
 /// peak (the polyphase phase-0 path), so it never under-reports a hard clip.
+///
+/// Owns a local deinterleave `Vec` (so it ALLOCATES); this is the off-audio-path
+/// form the metering unit tests call directly. The realtime path uses
+/// [`true_peak_linear_reusing`] with a caller-owned scratch instead. Both share
+/// the exact windowed-sinc math via that core, so this wrapper is a thin,
+/// self-contained convenience — its signature stays frozen for the tests.
 fn true_peak_linear(block: &BlockRef<'_>, channel: usize, kernel: &TruePeakKernel) -> f32 {
     let ch = block.format.channels as usize;
     if ch == 0 || channel >= ch {
         return 0.0;
     }
-    // Deinterleave the requested channel. Bounded by the block length; the FFI
-    // edge sizes blocks to the realtime buffer (64/128 frames) so this is small.
+    // Reserve exactly the lane length so the shared core never has to grow it.
     let mut lane: Vec<f32> = Vec::with_capacity(block.data.len() / ch + 1);
+    true_peak_linear_reusing(block, channel, kernel, &mut lane)
+}
+
+/// Alloc-free core of [`true_peak_linear`]: deinterleaves the requested channel
+/// into the caller-owned `scratch` and runs the 4× oversampling over it. `scratch`
+/// is `clear()`ed and refilled WITHIN its existing capacity — the realtime caller
+/// pre-sizes it (to the max block) so NO heap allocation occurs on the audio
+/// thread; the [`true_peak_linear`] wrapper reserves the exact lane length before
+/// calling. If the lane exceeds `scratch.capacity()` the reserved prefix is
+/// analyzed and the tail dropped (degrade gracefully rather than reallocate on the
+/// audio path) — neither caller ever triggers that, since both reserve enough.
+///
+/// PRECONDITION: `scratch` must have reserved capacity >= the channel's frame
+/// count (a zero-capacity `Vec` would read as silence). Both in-crate callers
+/// uphold this.
+fn true_peak_linear_reusing(
+    block: &BlockRef<'_>,
+    channel: usize,
+    kernel: &TruePeakKernel,
+    scratch: &mut Vec<f32>,
+) -> f32 {
+    let ch = block.format.channels as usize;
+    if ch == 0 || channel >= ch {
+        return 0.0;
+    }
+    // Deinterleave into `scratch`. `clear()` keeps the reserved capacity; pushing
+    // only while `len < capacity` guarantees no reallocation on the audio path.
+    scratch.clear();
+    let cap = scratch.capacity();
     let mut i = channel;
-    while i < block.data.len() {
-        lane.push(block.data[i]);
+    while i < block.data.len() && scratch.len() < cap {
+        scratch.push(block.data[i]);
         i += ch;
     }
+    let lane: &[f32] = scratch;
     if lane.is_empty() {
         return 0.0;
     }
@@ -239,6 +282,11 @@ fn true_peak_linear(block: &BlockRef<'_>, channel: usize, kernel: &TruePeakKerne
 /// inter-sample peak, compare against [`CLIP_THRESHOLD_DBFS`] (-1 dBFS). Returns
 /// `Some(ClipEvent)` carrying the measured true-peak in dBFS when it meets or
 /// exceeds the threshold, else `None`.
+///
+/// SELF-CONTAINED (designs its own kernel, owns its own deinterleave `Vec`), so
+/// it ALLOCATES — this is the FROZEN off-audio-path seam the metering unit tests
+/// exercise. The realtime `process_block` uses [`detect_clip_reusing`] with the
+/// engine's persistent kernel + scratch instead, which is alloc-free.
 pub fn detect_clip(block: &BlockRef<'_>, channel: usize) -> Option<ClipEvent> {
     let ch = block.format.channels as usize;
     if ch == 0 || channel >= ch {
@@ -246,7 +294,40 @@ pub fn detect_clip(block: &BlockRef<'_>, channel: usize) -> Option<ClipEvent> {
     }
     let kernel = TruePeakKernel::design();
     let tp = true_peak_linear(block, channel, &kernel);
-    let tp_dbfs = linear_to_db(tp);
+    clip_event_from_true_peak(channel, tp)
+}
+
+/// Alloc-free true-peak clip detection for the realtime audio thread. Detects
+/// exactly as [`detect_clip`] but reuses a caller-owned `kernel` (designed once
+/// at engine construction) and a caller-owned `scratch` deinterleave buffer
+/// (pre-sized to the max block), so it performs NO heap allocation on the hot
+/// path (SPEC §2 alloc-free contract). `scratch` is cleared and refilled within
+/// its reserved capacity each call. Returns `Some(ClipEvent)` on exceedance.
+///
+/// The returned event's `channel` is the requested `channel` argument; callers
+/// metering a per-input mono lane (lane 0) should overwrite it with the engine
+/// input index they hold, exactly as the per-input level taps do.
+pub(crate) fn detect_clip_reusing(
+    block: &BlockRef<'_>,
+    channel: usize,
+    kernel: &TruePeakKernel,
+    scratch: &mut Vec<f32>,
+) -> Option<ClipEvent> {
+    let ch = block.format.channels as usize;
+    if ch == 0 || channel >= ch {
+        return None;
+    }
+    let tp = true_peak_linear_reusing(block, channel, kernel, scratch);
+    clip_event_from_true_peak(channel, tp)
+}
+
+/// Shared threshold check: build a [`ClipEvent`] from a measured true-peak (linear)
+/// on `channel` when it meets/exceeds [`CLIP_THRESHOLD_DBFS`], else `None`. Keeps
+/// [`detect_clip`] and [`detect_clip_reusing`] bit-for-bit identical in their
+/// exceedance semantics.
+#[inline]
+fn clip_event_from_true_peak(channel: usize, true_peak_linear: f32) -> Option<ClipEvent> {
+    let tp_dbfs = linear_to_db(true_peak_linear);
     if tp_dbfs >= CLIP_THRESHOLD_DBFS {
         Some(ClipEvent { channel: channel as u16, true_peak_dbfs: tp_dbfs })
     } else {
@@ -1092,6 +1173,57 @@ mod tests {
         let buf = sine(1000.0, 0.5, 256, fs); // -6 dBFS amplitude
         let block = BlockRef { data: &buf, format: AudioFormat::new(1, fs) };
         assert!(detect_clip(&block, 0).is_none());
+    }
+
+    #[test]
+    fn detect_clip_reusing_matches_detect_clip() {
+        // The alloc-free realtime variant must detect IDENTICALLY to the frozen
+        // self-contained form on the same inputs — both a clipping and a clean
+        // signal, across a couple of interleaved channels.
+        let fs = 48_000u32;
+        let kernel = TruePeakKernel::design();
+        let mut scratch: Vec<f32> = Vec::with_capacity(4096);
+
+        // Hot inter-sample-over tone (clips) and a clean -6 dBFS tone (doesn't).
+        let hot: Vec<f32> = (0..128)
+            .map(|i| {
+                let ph = 2.0 * PI * (fs as f32 / 4.0) * i as f32 / fs as f32 + PI / 4.0;
+                0.98 * ph.sin()
+            })
+            .collect();
+        let clean = sine(1000.0, 0.5, 128, fs);
+
+        for (buf, ch) in [(&hot, 0usize), (&clean, 0usize)] {
+            let block = BlockRef { data: buf, format: AudioFormat::new(1, fs) };
+            let a = detect_clip(&block, ch);
+            let b = detect_clip_reusing(&block, ch, &kernel, &mut scratch);
+            assert_eq!(a.is_some(), b.is_some(), "clip decision diverged");
+            if let (Some(a), Some(b)) = (a, b) {
+                assert_eq!(a.channel, b.channel);
+                assert!((a.true_peak_dbfs - b.true_peak_dbfs).abs() < 1e-6, "true-peak diverged");
+            }
+        }
+    }
+
+    #[test]
+    fn detect_clip_reusing_does_not_reallocate_scratch() {
+        // Under sustained clipping the reusing variant must keep the scratch's
+        // capacity + backing pointer STABLE — the alloc-free contract on the audio
+        // thread. Pre-size the scratch like the engine does.
+        let fs = 48_000u32;
+        let kernel = TruePeakKernel::design();
+        let mut scratch: Vec<f32> = Vec::with_capacity(4096);
+        let cap0 = scratch.capacity();
+        let ptr0 = scratch.as_ptr();
+        let hot = vec![1.0f32; 128]; // full-scale, clips every call
+
+        for _ in 0..512 {
+            let block = BlockRef { data: &hot, format: AudioFormat::new(1, fs) };
+            let ev = detect_clip_reusing(&block, 0, &kernel, &mut scratch);
+            assert!(ev.is_some(), "full-scale block must clip");
+            assert_eq!(scratch.capacity(), cap0, "scratch reallocated (capacity grew)");
+            assert_eq!(scratch.as_ptr(), ptr0, "scratch backing pointer moved (realloc)");
+        }
     }
 
     // --- BS.1770-4 LUFS -----------------------------------------------------
