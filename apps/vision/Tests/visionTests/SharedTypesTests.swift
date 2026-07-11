@@ -248,6 +248,19 @@ final class OpDecodeTests: XCTestCase {
             .screenContextStart(source: .file(path: "ui.png"), intervalSecs: 5))
     }
 
+    func testScreenContextStartClampsAbsurdInterval() {
+        // A huge (finite) interval_secs would still overflow the seconds->UInt64
+        // nanoseconds conversion in the sleep (secs * 1e9 exceeds UInt64.max) and
+        // TRAP, crashing the app — so it is clamped to a sane maximum on decode.
+        XCTAssertEqual(
+            Op.decode(line: #"{"type":"op","op":"screen.context.start","interval_secs":1e19}"#),
+            .screenContextStart(source: .screen, intervalSecs: 86_400))
+        // A negative interval floors to 0.
+        XCTAssertEqual(
+            Op.decode(line: #"{"type":"op","op":"screen.context.start","interval_secs":-5}"#),
+            .screenContextStart(source: .screen, intervalSecs: 0))
+    }
+
     func testScreenContextStartFileWithoutPathIsUnknown() {
         if case .unknown = Op.decode(line: #"{"type":"op","op":"screen.context.start","source":"file"}"#) {
             // expected — a file source needs a path.

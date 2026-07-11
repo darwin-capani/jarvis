@@ -807,7 +807,11 @@ public actor Pipeline {
             // loop cleanly (CancellationError) — caught so we always emit the
             // watching=false exit status below.
             do {
-                try await Task.sleep(nanoseconds: UInt64(max(0, intervalSeconds) * 1_000_000_000))
+                // Saturate seconds->nanoseconds so an out-of-range or non-finite
+                // interval can never trap Double->UInt64 and crash the app (the IPC
+                // decode already clamps; this guards direct callers too). Cap at 1 day.
+                let sleepSeconds = intervalSeconds.isFinite ? min(max(intervalSeconds, 0), 86_400) : 0
+                try await Task.sleep(nanoseconds: UInt64(sleepSeconds * 1_000_000_000))
             } catch {
                 break
             }

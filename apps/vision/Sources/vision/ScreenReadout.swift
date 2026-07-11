@@ -114,17 +114,22 @@ public enum ScreenStructurer {
     static func readingOrder(_ dets: [Detection]) -> [Detection] {
         // Stable indices so equal keys keep input order (deterministic).
         let indexed = Array(dets.enumerated())
+        // Quantize each vertical center onto a FIXED band grid. Comparing bands
+        // pairwise by |Δcenter| <= tolerance is NOT transitive — three labels whose
+        // centers chain across the boundary form a sort cycle, so `sorted(by:)` gets
+        // an invalid strict weak ordering and can scramble the reading order. A fixed
+        // grid makes "same band" transitive: rows read top-to-bottom (Vision's origin
+        // is bottom-left, so a HIGHER band is higher on screen and reads first) and,
+        // within a band, left-to-right by x.
+        func band(_ box: DetectionBox) -> Int { Int((centerY(box) / rowBandTolerance).rounded(.down)) }
         let sorted = indexed.sorted { a, b in
-            let ay = centerY(a.element.boundingBox)
-            let by = centerY(b.element.boundingBox)
-            // Same row (within band)? -> left-to-right by x. Higher y first.
-            if abs(ay - by) <= rowBandTolerance {
-                let ax = a.element.boundingBox.x
-                let bx = b.element.boundingBox.x
-                if abs(ax - bx) > 1e-9 { return ax < bx }
-                return a.offset < b.offset    // stable tiebreak
-            }
-            return ay > by                    // higher on screen reads first
+            let aband = band(a.element.boundingBox)
+            let bband = band(b.element.boundingBox)
+            if aband != bband { return aband > bband }   // higher on screen reads first
+            let ax = a.element.boundingBox.x
+            let bx = b.element.boundingBox.x
+            if abs(ax - bx) > 1e-9 { return ax < bx }     // same row -> left-to-right
+            return a.offset < b.offset                    // stable tiebreak
         }
         return sorted.map(\.element)
     }
