@@ -97,7 +97,7 @@ Every event the daemon actually emits, and what it drives. Sources and payloads 
 | Event (source) | Payload | Drives |
 |---|---|---|
 | `system.load` (system, every 2 s) | `cpu_percent`, `mem_used_bytes`, `mem_total_bytes` | System gauges (bottom-left arc pair); particle drift speed |
-| `daemon.started` (system) | `root` | "JARVISD ONLINE" boot stinger; clears any stale-connection banner |
+| `daemon.started` (system) | `root`, `cloud_key_present` | "JARVISD ONLINE" boot stinger; clears any stale-connection banner |
 | `utterance.captured` (audio) | `path` | Ends listening; pre-arms thinking (dim); transcript feed shows a pending slot |
 | `stt.transcript` (local) | `text` | Fills the pending transcript slot, typed-on at 80 chars/s |
 | `stt.empty` (local) | `path` | Pending slot collapses; brief alarm flick (low intensity) |
@@ -107,7 +107,7 @@ Every event the daemon actually emits, and what it drives. Sources and payloads 
 | `intent.handled` (local) | `intent`, `text` | Tick mark on the intent chip |
 | `route.completed` (local\|cloud) | `routed_to`, `response` | Response text rendered under the transcript in `--ice` |
 | `response.speaking` (local) | `text` | Core → speaking; spoken text highlighted word-window style as a karaoke band |
-| `pipeline.completed` (system) | `stt_ms`, `classify_ms`, `route_ms`, `speak_ms`, `total_ms` | Latency ribbon fills: per-stage bars vs targets (STT < 1000, classify < 300, first-token < 500 per ARCHITECTURE.md); over-target segments amber; appends to the rolling 50-utterance sparkline; core → idle |
+| `pipeline.completed` (system) | `queue_ms`, `stt_ms`, `classify_ms`, `route_ms`, `first_audio_ms`, `speak_ms`, `total_ms` | Latency ribbon fills: per-stage bars vs targets (STT < 1000, classify < 300, first-token < 500 per ARCHITECTURE.md); over-target segments amber; appends to the rolling 50-utterance sparkline; core → idle |
 | `route.failed` (system) | `intent`, `error` | Alarm flash; error line in the feed, red |
 | `inference.unavailable` (system) | `op`, `error` | Alarm flash; persistent "LOCAL INFERENCE OFFLINE" banner until the next successful event from source `local` |
 | `heal.suppressed` / `heal.triggered` (system) | `errors_last_60s`, … | Amber heartbeat dot in the status bar with the burst count |
@@ -152,7 +152,7 @@ Per `docs/SANDBOX.md`, micro-apps never open windows; the HUD composites their s
 
 Two transport tiers, matching the roadmap honestly:
 
-1. **Phase 2 (this spec): data-driven panels.** No micro-apps run yet — the supervisor is Phase 4. The HUD ships the panel framework rendering from **telemetry topics**: a panel definition maps topics (e.g. `fab.progress`, `algo.pnl`) to built-in widgets (time series, level meter, matrix grid, polyline layer). Each app's SPEC.md defines its payload schemas; the HUD renders any topic that has a definition and ignores the rest.
+1. **Phase 2 (this spec): data-driven panels.** The supervisor and `app.data` relay have shipped (`daemon/src/apps.rs`), and the first micro-app, Global-Scan, runs live with a `panel`-class HUD surface (`hud/src/components/GlobalScanPanel.tsx`); only the IOSurface/embedded-webview compositing below is reserved for Phase 4. The HUD ships the panel framework rendering from **telemetry topics**: a panel definition maps topics (e.g. `fab.progress`, `algo.pnl`) to built-in widgets (time series, level meter, matrix grid, polyline layer). Each app's SPEC.md defines its payload schemas; the HUD renders any topic that has a definition and ignores the rest.
 2. **Phase 4: composited surfaces.** Apps that need real rendering (Silicon Canvas) share an **IOSurface** with the HUD: the app draws with its own Metal device (manifest `gpu = true`), the HUD samples the surface as an external texture. Webview-class apps embed as Tauri child webviews. Input: the HUD routes pointer/keyboard to the focused surface and forwards them as JSONL input events over the app's daemon socket — apps never see raw input devices.
 
 Panels carry the owning app's name and a sandbox badge (net hosts count, audio grant) — the security state of an app is always visible.

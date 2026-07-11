@@ -191,6 +191,7 @@ import asyncio
 import itertools
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -238,7 +239,7 @@ def load_agent_persona(name):
         return _AGENT_PERSONA_CACHE[name]
     path = PERSONAS_DIR / f"{name}.txt"
     try:
-        text = path.read_text(encoding="utf-8").strip()
+        text = path.read_text(encoding="utf-8").strip() or None
     except OSError:
         log.warning("persona file for agent %r not found at %s; using base persona", name, path)
         text = None
@@ -4875,6 +4876,8 @@ def parse_classification(raw):
             return fallback
         if complexity not in ("light", "heavy"):
             return fallback
+        if not math.isfinite(confidence):
+            return fallback
         confidence = max(0.0, min(1.0, confidence))
         args = obj.get("args")
         if not isinstance(args, dict):
@@ -5507,8 +5510,8 @@ class InferenceServer:
 
             if op == "classify":
                 text = req.get("text")
-                if not text:
-                    raise ValueError("'text' is required for op=classify")
+                if not text or not isinstance(text, str):
+                    raise ValueError("'text' must be a non-empty string for op=classify")
                 result = await asyncio.to_thread(self.engine.classify, text)
                 return {
                     "id": rid,
@@ -5612,8 +5615,8 @@ class InferenceServer:
 
             if op == "extract_facts":
                 text = req.get("text")
-                if not text:
-                    raise ValueError("'text' is required for op=extract_facts")
+                if not text or not isinstance(text, str):
+                    raise ValueError("'text' must be a non-empty string for op=extract_facts")
                 response = req.get("response")
                 if response is not None and not isinstance(response, str):
                     raise ValueError("'response' must be a string")

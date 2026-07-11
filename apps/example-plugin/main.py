@@ -8,7 +8,9 @@ EVERY line — exactly like global-scan. It exposes the two READ-ONLY tools its
 manifest declares:
 
   - example.read_status : reports a tiny status object (no side effect).
-  - example.summarize   : asks the daemon-mediated generate proxy for a neutral
+  - example.summarize   : a MANIFEST-CONTRACT declaration only — this reference
+                          handler does NOT yet serve it. When implemented it would
+                          ask the daemon-mediated generate proxy for a neutral
                           one-line summary (op=generate ONLY; the proxy structurally
                           refuses any other op — see docs/SANDBOX.md finding #4).
 

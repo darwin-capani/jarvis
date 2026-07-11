@@ -18,8 +18,12 @@ tauri = { version = "2", features = [] }
 # in tauri.conf.json -> plugins.updater) and verifies the bundle's minisign
 # signature against the OWNER's PUBLIC updater key. The matching PRIVATE key
 # (TAURI_SIGNING_PRIVATE_KEY) lives ONLY in CI secrets — it is NEVER in this repo.
-# With the pubkey placeholder + no real endpoint payload, the in-app check no-ops
-# cleanly (see check_for_updates in lib.rs). Pinned to the 2.x line that matches
+# ARMED: tauri.conf.json carries the owner's REAL updater pubkey (the placeholder
+# was swapped for v1.0.0), so the in-app check is live against the pinned GitHub
+# Releases endpoint. updater_unarmed() in updates.rs stays as a defensive
+# regression guard that short-circuits to a clean "not_configured" result if the
+# committed key ever regresses to the placeholder/empty (see check_for_updates in
+# updates.rs). Pinned to the 2.x line that matches
 # tauri 2.11.x.
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }

@@ -27,9 +27,11 @@ per-launch capability token. The app:
 3. Polls every feed over HTTPS (stdlib `urllib` + `xml.etree`, no heavy deps),
    parses title/link/published/source, dedupes by URL, sorts newest-first,
    keeps the top 20.
-4. If `state/ipc/inference.sock` is reachable, asks the local LLM (`op=generate`,
-   neutral instruction, low `max_tokens`) for a one-line summary per top item
-   and a 2-sentence brief; on any failure falls back to extractive summaries
+4. If the daemon-mediated generate proxy at `state/ipc/apps/generate.sock` is
+   reachable, asks the local LLM through it (`op=generate` only, token-gated,
+   256-token cap, rate-limited — the raw `inference.sock` is not reachable) with
+   a neutral instruction and low `max_tokens` for a one-line summary per top
+   item and a 2-sentence brief; on any failure falls back to extractive summaries
    (headline + first feed sentence). Real headline/source/time always shown.
 5. Emits to the host socket, every line stamped with the token:
    - `{"type":"items","data":{"brief","items":[…],"fetched_at"}}`

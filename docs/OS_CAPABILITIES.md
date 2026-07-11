@@ -23,8 +23,8 @@ The entire second section of the spec describes what jarvisd already is.
 | Dynamic fallback that routes to Anthropic **only when the task exceeds local hardware** | ✅ **Built** | `router.rs` — cloud iff `complexity=="heavy" \|\| confidence<0.6`; `anthropic::complete_with_tools` |
 | Continuously ingest its own error logs | ✅ **Built** | `heal.rs` — tails `state/logs/daemon.log`, edge-triggered error-burst detection |
 | Read-only introspection of its OWN sandboxed apps (integrity + resource + module attestation) | ✅ **Built** | `introspect.rs` — SBPL profile-drift, RSS/CPU anomalies, cooperative dyld module attestation, capability inventory; surfaced via `aegis_introspect`/`aegis_report` + HUD. See `docs/INTROSPECT.md` |
-| Write its own patches | ⚠️ **Skeleton, gated OFF** | `heal.rs` `CloudPatcher::propose_patch` (stub); design: Opus → unified diff |
-| Dynamically compile its modules on the fly | ⚠️ **Design only** | staging-copy + `cargo check` + human-gated hot-swap |
+| Write its own patches | ✅ **Built** (propose-only) | `heal.rs` — on a confirmed crash-loop, Opus drafts a unified diff; it is validated and written to `state/heal/proposals/<ts>/`; a human applies it via `scripts/apply_heal.sh` |
+| Dynamically compile its modules on the fly | ✅ **Built**, human-gated | `scripts/apply_heal.sh` — revalidates the patch in a staging copy (`cargo check` + `cargo test`), then applies to `daemon/` + `--release` rebuild; never automatic |
 
 **The honest carve-out on self-healing:** the mechanical version of "writes its
 own patches and recompiles unsupervised" is buildable, but a daemon that
@@ -70,7 +70,8 @@ the read-only `doc_search` tool owned by Mnemosyne. Honest properties:
 
 - **Ships ON, inert without roots** — `[docsearch].enabled = true`, `roots = []`. It indexes
   ONLY the folders the user explicitly allowlists — **never a whole-disk scan** —
-  and only text-like files (markdown / txt / code / json / csv …).
+  text-like files (markdown / txt / code / json / csv …) plus born-digital PDF +
+  Office (`.docx` / `.xlsx` / `.pptx`) text (see below).
 - **On-device + private** — file contents and their embeddings **never leave the
   device**. Embedding is the on-device MLX `embed` op; when that model is down,
   search falls back to lexical **BM25** and **reports which method actually ran**
@@ -80,8 +81,13 @@ the read-only `doc_search` tool owned by Mnemosyne. Honest properties:
   nothing, never an invented citation.
 - **Bounded + forgettable** — an evict-oldest cap; "forget my file index" wipes
   the whole index.
-- **PDFs / binaries are out of scope in v1** — they need a parser dependency, so
-  they are **skipped, never silently indexed** (do not assume a PDF was read).
+- **Born-digital PDF + Office text IS extracted on-device** — `.pdf` and
+  `.docx / .xlsx / .pptx` text is mined by pure-Rust, on-device extractors
+  (`docsearch.rs`); PDFs run inside a **memory-jailed helper subprocess**
+  (`src/bin/pdfjail.rs`, `RLIMIT_AS` + decompression-bomb guards) so a malformed
+  or bomb file aborts the child, never jarvisd. Extraction stays within the
+  allowlisted roots. **Scanned/image-only or encrypted files yield no text → an
+  honest skip, never silently indexed** (do not assume such a PDF was read).
   This is distinct from the Spotlight filename *Find files* lookup, which is a
   one-off name/Spotlight search, not a semantic index of file *contents*.
 
@@ -89,7 +95,8 @@ the read-only `doc_search` tool owned by Mnemosyne. Honest properties:
 
 ## 3. What this changes architecturally
 
-Today the daemon has **7 hardcoded tools**. To host an open-ended capability
+Today the daemon has **~100+ hardcoded, agent-scoped tools** (`anthropic.rs`
+`tool_defs()`). To host an open-ended capability
 matrix without rewriting the router each time, three pieces are added:
 
 1. **Capability modules** — each domain (IoT, Health, Data, System) is a
@@ -140,12 +147,13 @@ self-healing pipeline up to (not past) the human gate.
   `watch_source` / `latest_signals` tools. Builds directly on the web tools.
 
 ### 1.5 — Self-healing pipeline to the gate (self-heal core)
-- Implement `CloudPatcher::propose_patch`: on a confirmed crash-loop, send the
+- The patch drafter (`heal.rs`, shipped): on a confirmed crash-loop, send the
   error excerpt + relevant module source to Opus, get a unified diff.
 - Apply to a **staging copy** of the tree, run `cargo check`, capture the result.
 - **Stop there**: emit a "patch proposed, cargo check {passed/failed}" telemetry
-  event for human review. No application, no hot-swap. Still gated behind
-  `[self_heal] enabled=false`.
+  event for human review. No autonomous application, no hot-swap. Ships ON
+  (`[self_heal] enabled=true`), **propose-only** (`mode = "propose"`), and inert
+  without a cloud key.
 
 ### Explicitly deferred / reframed (not in Phase 1, stated honestly)
 - **IoT/Home control** (area 1): shipped as the **Dum-E** agent over the user's

@@ -1968,8 +1968,12 @@ fn classify_inbound_line(manifest: &AppManifest, default_topic: &str, raw: &str)
             payload: data,
         },
         "log" => {
+            // Apps ship logs as data={"line":str} per the app contract; accept
+            // that first, then a bare string, then any other JSON as-is.
             let line = data
-                .as_str()
+                .get("line")
+                .and_then(Value::as_str)
+                .or_else(|| data.as_str())
                 .map(str::to_string)
                 .unwrap_or_else(|| data.to_string());
             RelayDecision::Log { line }
@@ -3156,6 +3160,11 @@ mod tests {
         let m = sample_manifest();
         assert_eq!(
             classify_inbound_line(&m, "feed", r#"{"type":"log","data":"hello"}"#),
+            RelayDecision::Log { line: "hello".into() }
+        );
+        // The shape every shipped app actually sends: data={"line":str}.
+        assert_eq!(
+            classify_inbound_line(&m, "feed", r#"{"type":"log","data":{"line":"hello"}}"#),
             RelayDecision::Log { line: "hello".into() }
         );
         // Empty, non-JSON, and unknown types all drop.
