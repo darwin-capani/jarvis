@@ -76,9 +76,12 @@ public struct ScreenReadout: Sendable, Equatable {
 /// transform, so the unit tests drive it with literal detections.
 public enum ScreenStructurer {
 
-    /// A row-banding tolerance (fraction of the unit height): two blocks whose
-    /// vertical centers are within this are treated as the SAME reading row, so
-    /// they sort left-to-right rather than by a sub-pixel y jitter.
+    /// The row-band GRID height (fraction of the unit height). Each block's vertical
+    /// center is floored onto a fixed grid of bands — `floor(centerY / rowBandTolerance)`
+    /// — and blocks in the same band are one reading row (sorted left-to-right) rather
+    /// than ordered by sub-pixel y jitter. A FIXED grid (not a pairwise
+    /// `|Δcenter| <= tolerance` test) keeps the ordering TRANSITIVE, which is the
+    /// strict-weak-ordering contract `sorted(by:)` requires.
     public static let rowBandTolerance = 0.02
 
     /// Max words for a block to be a plausible CONTROL label. Buttons/menu items
@@ -108,9 +111,9 @@ public enum ScreenStructurer {
     }
 
     /// Sort detections into reading order. Vision boxes use an origin at the
-    /// BOTTOM-LEFT, so a higher `y` is HIGHER on screen and must read first. We
-    /// band rows by vertical center (within `rowBandTolerance`) so a row of
-    /// labels reads left-to-right instead of by tiny y differences.
+    /// BOTTOM-LEFT, so a higher `y` is HIGHER on screen and reads first. Each block's
+    /// vertical center is floored onto a fixed grid of bands (`rowBandTolerance` tall);
+    /// bands read top-to-bottom and, within a band, left-to-right — a transitive order.
     static func readingOrder(_ dets: [Detection]) -> [Detection] {
         // Stable indices so equal keys keep input order (deterministic).
         let indexed = Array(dets.enumerated())
