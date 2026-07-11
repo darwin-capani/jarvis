@@ -187,15 +187,20 @@ impl Schedule {
                 if !past_fire {
                     return false;
                 }
-                // Already ran today? "today" = within the last (local) day window.
-                // We compare last_run against now minus the seconds since local
-                // midnight is not available here, so we use a conservative 23h
-                // guard: if it ran within the last 23 hours it has already fired
-                // for today's window. First run (last_run == 0) always fires.
+                // Already ran today? First run (last_run == 0) always fires. Else it
+                // fires again only once last_run PREDATES today's local midnight:
+                // more than the seconds-since-local-midnight must have elapsed since
+                // the last run. A 60s margin absorbs the minute-granular
+                // local_minute (seconds-since-midnight can read up to ~59s short), so
+                // a Daily mission fires at most ONCE per local calendar day at any
+                // fire hour. (The old fixed 23h window let a 00:xx-hour mission
+                // re-fire 23h later — the SAME calendar day.)
                 if last_run == 0 {
                     return true;
                 }
-                now.saturating_sub(last_run) >= 23 * 3_600
+                let secs_since_local_midnight =
+                    (local_hour as u64) * 3_600 + (local_minute as u64) * 60;
+                now.saturating_sub(last_run) > secs_since_local_midnight + 60
             }
             Schedule::Interval { secs } => {
                 let secs = clamp_interval(*secs);
@@ -659,6 +664,27 @@ mod tests {
         assert!(!s.is_due(now, 10, 0, now - 3_600, &[]), "must not fire twice in a day");
         // Ran 24h ago -> due again.
         assert!(s.is_due(now, 9, 0, now - 24 * 3_600, &[]));
+    }
+
+    /// REGRESSION: a MIDNIGHT-hour Daily mission must not fire twice in one local
+    /// day. The old fixed 23h window (< 24h) let a 00:00 mission become due again
+    /// exactly 23h later — still the same calendar day.
+    #[test]
+    fn daily_midnight_mission_does_not_fire_twice_in_one_local_day() {
+        let s = Schedule::Daily { hour: 0, minute: 0 };
+        let t0 = 1_000_000u64;
+        // 00:00, never run -> fires (last_run becomes t0).
+        assert!(s.is_due(t0, 0, 0, 0, &[]));
+        // 23:00 the SAME day (23h later): ran at 00:00 -> must NOT fire again today.
+        assert!(
+            !s.is_due(t0 + 23 * 3_600, 23, 0, t0, &[]),
+            "a midnight Daily mission must not re-fire 23h later the same day"
+        );
+        // Next local day at 00:00 (~24h later) -> fires again.
+        assert!(
+            s.is_due(t0 + 24 * 3_600, 0, 0, t0, &[]),
+            "fires again the next local day"
+        );
     }
 
     #[test]

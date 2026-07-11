@@ -645,13 +645,16 @@ fn has_redirect_cue(lower: &str) -> bool {
         "no i wanted",
         "no i want",
     ];
+    // BOTH phrase and single-word cues match on WORD BOUNDARIES (contains_word
+    // boundary-checks the literal needle's outer edges, internal spaces included),
+    // so a cue can never trip inside a longer word: "no ask" no longer matches
+    // "pia[no ask]s", nor "try again" inside "re[try again]". A benign follow-up
+    // must not be mislabeled a routing correction in the optimizer corpus.
     for c in PHRASE_CUES {
-        if lower.contains(c) {
+        if agents::contains_word(lower, c) {
             return true;
         }
     }
-    // Single-word cues only on a word boundary (reuse the router's rule so the
-    // predicate agrees with how the live router tokenizes).
     const WORD_CUES: &[&str] = &["wrong", "incorrect"];
     WORD_CUES.iter().any(|w| agents::contains_word(lower, w))
 }
@@ -2102,6 +2105,17 @@ mod tests {
         assert!(
             !is_correction(&prior, "action", "hercules", "tell me another fact about it"),
             "an incidental substring is not a redirect cue"
+        );
+        // A PHRASE cue inside longer words must not trip either: "no ask" occurs in
+        // "pia[no ask]s" and "try again" in "re[try again]" — benign follow-ups, not
+        // reroutes. (Phrase cues are now word-boundary matched.)
+        assert!(
+            !is_correction(&prior, "action", "hercules", "the piano asks for tuning"),
+            "'no ask' inside 'piano asks' is not a redirect cue"
+        );
+        assert!(
+            !is_correction(&prior, "action", "hercules", "please retry again the upload"),
+            "'try again' inside 'retry again' is not a redirect cue"
         );
     }
 

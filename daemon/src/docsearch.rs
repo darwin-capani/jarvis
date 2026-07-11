@@ -643,10 +643,15 @@ fn cap_chars(s: &str, cap: usize) -> String {
 // CHUNKING — overlapping windows with a citation offset
 // ---------------------------------------------------------------------------
 
-/// One chunk carved from a file: its text and the BYTE offset of its start in the
-/// file, kept for citation ("path:offset"). Chunking is over CHARACTERS (so a
-/// window never splits a UTF-8 codepoint) but the offset is the byte position of
-/// the window's first character, so a caller can seek the original file exactly.
+/// One chunk carved from a file: its text and the BYTE offset of its start within
+/// the EXTRACTED TEXT, kept as a stable citation anchor ("path:offset"). Chunking is
+/// over CHARACTERS (so a window never splits a UTF-8 codepoint); the offset is the
+/// byte position of the window's first character IN THE EXTRACTED CONTENT. For a
+/// plain-text source that is valid UTF-8 this equals the original file byte offset
+/// (the extraction is identity); for a PDF/Office source, or a text file that needed
+/// LOSSY UTF-8 decoding (a stray invalid byte becomes a 3-byte U+FFFD, shifting later
+/// offsets), it is an offset into the extracted text, NOT the raw file — it is a
+/// citation anchor, not a guaranteed raw-file seek position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
     pub text: String,

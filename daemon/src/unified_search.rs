@@ -560,8 +560,14 @@ fn rank_candidates(candidates: Vec<Candidate>, k: usize) -> Vec<UnifiedHit> {
     //    We rank ts lexically over canonical RFC3339 (the stores write UTC), so
     //    no clock is read — the newest among the candidates gets recency 1.0,
     //    the oldest 0.0; a single timestamp gets 1.0.
+    // Only the candidates that SURVIVE the relevance filter (step 3) shape the
+    // recency scale. Including a dropped (relevance <= 0) candidate's timestamp
+    // shifts the normalization denominator + positions of the surviving hits, which
+    // can reorder — even flip the top — results that ARE returned, for an item that
+    // never appears in the output.
     let mut timestamps: Vec<String> = candidates
         .iter()
+        .filter(|c| c.relevance.is_finite() && c.relevance > 0.0)
         .filter_map(|c| c.ts.clone())
         .collect();
     timestamps.sort_unstable();
@@ -1078,6 +1084,45 @@ mod tests {
             Citation::GmailMessage { message_id } => assert_eq!(message_id, "new"),
             other => panic!("expected newer gmail first, got {other:?}"),
         }
+    }
+
+    /// REGRESSION: a dropped (relevance <= 0) candidate must NOT reorder the hits
+    /// that ARE returned. The recency scale was built from ALL candidates (including
+    /// dropped ones), so a never-surfaced item shifted the normalization and could
+    /// flip the order of the real results. The scale is now derived only from the
+    /// surviving hits, so adding/removing a dropped candidate leaves the order
+    /// unchanged — asserted independently of the exact recency weight.
+    #[test]
+    fn a_dropped_zero_relevance_candidate_does_not_reorder_the_surviving_hits() {
+        let a = cloud_msg(Source::Gmail, "A", "2026-06-20T00:00:00Z", "budget", 0.87);
+        let b = cloud_msg(Source::Gmail, "B", "2026-06-15T00:00:00Z", "budget", 1.00);
+        let d = cloud_msg(Source::Gmail, "D", "2026-06-10T00:00:00Z", "budget", 0.0);
+        let order = |cands: Vec<Candidate>| -> Vec<String> {
+            fold(
+                &FanoutInputs {
+                    gmail: Some(CloudInput::connected(cands)),
+                    ..Default::default()
+                },
+                UNIFIED_DEFAULT_K,
+            )
+            .hits
+            .iter()
+            .filter_map(|h| match &h.citation {
+                Citation::GmailMessage { message_id } => Some(message_id.clone()),
+                _ => None,
+            })
+            .collect()
+        };
+        let without_d = order(vec![a.clone(), b.clone()]);
+        let with_d = order(vec![a, b, d]);
+        assert_eq!(
+            without_d, with_d,
+            "a dropped candidate must not reorder the surviving hits"
+        );
+        assert!(
+            !with_d.contains(&"D".to_string()),
+            "the zero-relevance candidate is dropped from the output"
+        );
     }
 
     #[test]

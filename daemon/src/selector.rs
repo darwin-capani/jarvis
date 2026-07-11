@@ -270,15 +270,31 @@ fn has_recurring_cue(text: &str) -> bool {
 /// interval phrasing `standing::Schedule::parse` accepts, so the selector and the
 /// schedule parser agree on what counts as recurring.
 fn has_numeric_interval(text: &str) -> bool {
+    // The unit word must BE a time unit (optionally pluralized), not a longer word
+    // that merely CONTAINS a unit substring — else "every 4 items on monday" trips
+    // on "day" inside "monday" (and "every 5 reminders" on "min" inside "reminder"),
+    // wrongly routing a one-shot to a recurring-autonomy proposal.
+    fn is_unit(word: &str) -> bool {
+        const UNITS: &[&str] = &["hour", "minute", "min", "day", "week"];
+        let w = word.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
+        UNITS
+            .iter()
+            .any(|u| w.strip_prefix(u).is_some_and(|r| r.is_empty() || r == "s"))
+    }
     let mut rest = text;
     while let Some(pos) = rest.find("every ") {
         let after = &rest[pos + "every ".len()..];
-        // The next token after "every " must START with a digit (e.g. "6 hours").
-        let token: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
-        if token.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
-            const UNITS: &[&str] = &["hour", "minute", "min", "day", "week"];
-            if UNITS.iter().any(|u| after.contains(u)) {
-                return true;
+        let mut words = after.split_whitespace();
+        // The first token after "every " must START with a digit (e.g. "6 hours").
+        if let Some(first) = words.next() {
+            if first.starts_with(|c: char| c.is_ascii_digit()) {
+                // The unit is either fused onto the number ("6hours") or the very
+                // NEXT word ("6 hours") — check ONLY that word, as a whole unit.
+                let fused = first.trim_start_matches(|c: char| c.is_ascii_digit());
+                let unit_word = if fused.is_empty() { words.next().unwrap_or("") } else { fused };
+                if is_unit(unit_word) {
+                    return true;
+                }
             }
         }
         rest = after;
@@ -382,15 +398,19 @@ fn has_world_query_cue(text: &str) -> bool {
         "when is the ",
         "when's the ",
     ];
-    if STATE_PHRASES.iter().any(|c| text.contains(c)) {
-        // For the broad "how is the / when is the / where does" shapes, only treat
-        // as a world query when an entity word is present (otherwise "how is the
-        // weather" is a plain one-shot).
-        const BROAD: &[&str] = &["how is the ", "how's the ", "when is the ", "when's the ", "where does "];
-        if BROAD.iter().any(|b| text.contains(b)) {
-            return ENTITY_WORDS.iter().any(|w| text.contains(w));
-        }
-        return true;
+    // For the broad "how is the / when is the / where does" shapes, only treat as a
+    // world query when an entity word is present (otherwise "how is the weather" is a
+    // plain one-shot). But the entity gate applies ONLY when the match is
+    // EXCLUSIVELY broad: a SPECIFIC phrase like "what's due" classifies
+    // unconditionally, even if a broad phrase co-occurs ("what's due, and how's the
+    // office coffee?") — otherwise a co-occurring broad phrase would suppress a real
+    // world query.
+    const BROAD: &[&str] = &["how is the ", "how's the ", "when is the ", "when's the ", "where does "];
+    if STATE_PHRASES.iter().any(|c| text.contains(c) && !BROAD.contains(c)) {
+        return true; // a specific state phrase matched
+    }
+    if BROAD.iter().any(|b| text.contains(b)) {
+        return ENTITY_WORDS.iter().any(|w| text.contains(w));
     }
     false
 }
@@ -603,6 +623,42 @@ mod tests {
                 "should be world_query: {q}"
             );
         }
+    }
+
+    /// REGRESSION: "every N <non-time-noun> ... <word-containing-a-unit-substring>"
+    /// must NOT be read as a recurring interval. The old code scanned the whole
+    /// remainder for a unit SUBSTRING, so "day" inside "monday" (and "min" inside
+    /// "reminders") wrongly routed a one-shot to Standing (a recurring-autonomy
+    /// proposal). A genuine cadence still routes to Standing.
+    #[test]
+    fn every_n_with_a_non_time_unit_is_not_a_recurring_interval() {
+        for q in ["buy every 4 items on monday", "batch every 5 reminders now"] {
+            assert_ne!(
+                classify_mode(q, &no_signal()),
+                Selection::Route(Mode::Standing),
+                "no genuine cadence, must not route to Standing: {q}"
+            );
+        }
+        // A REAL numeric cadence (unit or plural) still routes to Standing.
+        for q in ["ping the server every 6 hours", "back up every 2 days"] {
+            assert_eq!(
+                classify_mode(q, &no_signal()),
+                Selection::Route(Mode::Standing),
+                "genuine cadence: {q}"
+            );
+        }
+    }
+
+    /// REGRESSION: a SPECIFIC world-query cue ("what's due") classifies as
+    /// WorldQuery even when a BROAD shape ("how's the ...", which needs an entity
+    /// word) co-occurs. The old code applied the entity gate whenever ANY broad
+    /// phrase was present, suppressing a real world query.
+    #[test]
+    fn a_specific_world_cue_survives_a_co_occurring_broad_phrase() {
+        assert_eq!(
+            classify_mode("what's due, and how's the office coffee?", &no_signal()),
+            Selection::Route(Mode::WorldQuery),
+        );
     }
 
     #[test]

@@ -2177,15 +2177,17 @@ fn extract_music_prompt(lower: &str) -> String {
     // "song about the rain" -> "about the rain".
     const OBJECTS: &[&str] = &["song", "track", "tune", "beat", "jingle", "melody", "riff"];
     for obj in OBJECTS {
-        for lead in [format!("{obj} "), obj.to_string()] {
-            if s == *obj {
-                s = String::new();
-                break;
-            }
-            if let Some(rest) = s.strip_prefix(&lead) {
-                s = rest.trim().to_string();
-                break;
-            }
+        // Exact match: the residual IS just the object noun ("compose a song").
+        if s == *obj {
+            s = String::new();
+            break;
+        }
+        // Otherwise strip only a BOUNDARY-anchored lead ("song ..."), never a bare
+        // prefix: a bare `obj` prefix strips the object noun even when it is merely
+        // the start of a longer word ("beatles" -> "les"), corrupting the prompt.
+        if let Some(rest) = s.strip_prefix(&format!("{obj} ")) {
+            s = rest.trim().to_string();
+            break;
         }
     }
 
@@ -7789,6 +7791,10 @@ mod tests {
         // generic prompt (never an empty string the op can't compose).
         let bare = c("compose a song").expect("bare compose still matches");
         assert!(!bare.is_empty(), "bare compose must yield a non-empty prompt");
+        // REGRESSION: a music-object noun that is only a PREFIX of a longer word must
+        // NOT be stripped — "beatles" must survive (the bug stripped the bare "beat"
+        // lead -> "les song").
+        assert_eq!(c("compose a beatles song").as_deref(), Some("beatles song"));
     }
 
     #[test]

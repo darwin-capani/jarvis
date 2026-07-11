@@ -788,8 +788,12 @@ impl SpectrumState {
         fft_radix2(&mut re, &mut im);
 
         // Magnitude -> per-band peak energy. Normalize by the window's coherent
-        // gain (sum of window) and the single-sided convention (×2 for non-DC
-        // bins) so a full-scale sine reads ~0 dBFS in its band.
+        // gain (sum of window) and the single-sided convention (×2) so a full-scale
+        // sine reads ~0 dBFS in its band. The ×2 applies ONLY to interior positive-
+        // frequency bins (1..half): DC (bin 0) and Nyquist (bin half) are
+        // self-mirrored (no conjugate partner) and must use ×1, else a pure Nyquist
+        // tone over-reads its (top) band by 6 dB. DC is already dropped from the
+        // bands (bin_band == usize::MAX); halving it too keeps the factor correct.
         let half = FFT_SIZE / 2;
         let norm = 2.0 / self.window_sum.max(1e-12);
         let mut band_max = [0.0f32; SPECTRUM_BANDS];
@@ -798,7 +802,8 @@ impl SpectrumState {
             if band == usize::MAX {
                 continue;
             }
-            let mag = (re[bin] * re[bin] + im[bin] * im[bin]).sqrt() * norm;
+            let factor = if bin == 0 || bin == half { norm * 0.5 } else { norm };
+            let mag = (re[bin] * re[bin] + im[bin] * im[bin]).sqrt() * factor;
             if mag > band_max[band] {
                 band_max[band] = mag;
             }
@@ -1153,6 +1158,28 @@ mod tests {
         // Bands far from the tone should be much quieter.
         let far = frame.bands[(expected_band + 30) % SPECTRUM_BANDS];
         assert!(far < loud_db - 20.0, "off-band {} not well below peak {}", far, loud_db);
+    }
+
+    /// REGRESSION: a full-scale NYQUIST tone (alternating ±1.0 = cos at fs/2, true
+    /// amplitude 1.0) must read ~0 dBFS in the top band, NOT +6 dB. The single-sided
+    /// ×2 convention applies only to interior bins with a conjugate mirror; the
+    /// self-mirrored Nyquist bin was wrongly doubled, over-reporting by 6 dB.
+    #[test]
+    fn spectrum_nyquist_tone_is_not_over_reported_by_6db() {
+        let fs = 48_000u32;
+        let mut s = SpectrumState::new(fs);
+        // cos(π·n) = (-1)^n — the full-scale Nyquist tone (a plain sine at fs/2 is
+        // identically 0, so it can't exercise the Nyquist bin).
+        let buf: Vec<f32> = (0..FFT_SIZE * 2)
+            .map(|n| if n % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        s.push(&buf);
+        let top = s.read().bands[SPECTRUM_BANDS - 1]; // Nyquist folds into the top band
+        assert!(top > -3.0, "full-scale Nyquist tone reads too quiet: {top} dBFS");
+        assert!(
+            top < 3.0,
+            "Nyquist bin over-reported by the single-sided x2 bug: {top} dBFS (expected ~0)"
+        );
     }
 
     #[test]
