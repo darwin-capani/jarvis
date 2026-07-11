@@ -95,25 +95,30 @@ which reverts every consequential action to a dry-run preview.) Verify the basic
 - Ask **"list my agents"** → JARVIS names the 27-agent roster (deterministic, grounded).
 - A pure read: **"what's on my calendar"** (Friday/Pepper, needs Google connected) or
   **"list my open PRs on &lt;owner/repo&gt;"** (Steve, needs GitHub).
-- A consequential request **while the switch is still OFF** → JARVIS replies with a faithful
-  **dry-run preview** ("I would post … to #channel") and fires nothing. Confirm the preview
-  names the exact target/content — that's what you'll be confirming later.
+- A consequential request → because the switch ships armed, JARVIS **parks the exact action**
+  and speaks a faithful preview ("I would post … to #channel"), firing nothing until you say
+  **"confirm"**. (If you disarmed with `allow_consequential = false`, the same request returns
+  a dry-run preview that can't fire even if confirmed.) Either way, confirm the preview names
+  the exact target/content — that's what you'll be confirming later.
 
 ---
 
-## 5. Enable consequential actions + prove ONE gated action end to end
+## 5. Prove ONE gated action end to end
 
-Do this only once reads work and the previews look right.
+The master switch already ships armed, so there is nothing to "enable" — this step just proves
+the per-action confirm gate. Do this only once reads work and the previews look right.
 
 1. **Pick the safest first action.** Use something reversible and free — e.g. a **Slack
    message to a throwaway test channel** you own, or a **GitHub issue comment on a personal
    test repo**. **Do not** make ad-spend, email-send, or a public post your first live test.
-2. **Flip the master switch.** Edit `config/jarvis.toml`:
+2. **Confirm the master switch is armed.** It ships `allow_consequential = true`, so no edit is
+   needed — unless you disarmed it during the smoke test, in which case set it back in
+   `config/jarvis.toml`:
    ```toml
    [integrations]
    allow_consequential = true
    ```
-   **Restart the daemon** (config is read at startup).
+   and **restart the daemon** (config is read at startup).
 3. **Run the end-to-end gated flow:**
    - You: *"Post 'JARVIS online' to #jarvis-test on Slack."*
    - JARVIS **parks the exact action**, speaks the faithful preview, and asks:
@@ -213,4 +218,6 @@ exponential backoff + jitter instead of failing the first op after a server rest
 
 *Safety posture recap:* nothing outward-facing fires without (1) you connecting the
 service's credentials, (2) `allow_consequential = true`, and (3) a spoken confirmation of
-the specific action. All three are off/absent by default.
+the specific action. The master switch ships `true` (armed by default), but a service's
+credentials are absent until you connect it and the spoken confirm is required fresh on
+every consequential action — so the outward path stays inert until you supply all three.

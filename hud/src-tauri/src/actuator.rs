@@ -375,8 +375,12 @@ fn listen_loop() {
         match conn {
             Ok(stream) => {
                 // One request = one actuation = one connection. Handle inline (the
-                // post is fast and we want strictly one-at-a-time actuation); a
-                // panic in handling must not kill the listener, so isolate it.
+                // post is fast and we want strictly one-at-a-time actuation). The
+                // catch_unwind only isolates a handler panic in DEV builds; the
+                // release profile sets panic = "abort" (see src-tauri/Cargo.toml),
+                // so in the shipped binary a handler panic aborts the process
+                // instead of being caught here. handle_connection is kept total
+                // so no panic path exists in practice.
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     handle_connection(&root, stream);
                 }));

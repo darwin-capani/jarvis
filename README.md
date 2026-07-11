@@ -28,8 +28,8 @@ The installer presents a **futuristic, full-screen progress UI** and does the "e
 - creates the install home at `~/Library/Application Support/JARVIS`,
 - provisions the Python 3.11 venv and installs `inference/requirements.txt`,
 - **builds every release artifact fresh** (`jarvisd` + the HUD + the Swift/Rust micro-apps — it never ships a prebuilt binary),
-- downloads the MLX LLM + Whisper STT weights into the per-machine HuggingFace cache,
-- initializes the SQLite memory store,
+- downloads the MLX LLM + Whisper STT weights into the **install-home** HuggingFace cache (`HF_HOME` → `~/Library/Application Support/JARVIS/models`, never the shared per-machine HF cache),
+- leaves the SQLite memory store to be created by `jarvisd` on first start (the installer never seeds it),
 - and (optionally) installs the two LaunchAgents so JARVIS comes up on login.
 
 Prefer to read before you run? Clone and use the local entrypoint — same steps, same UI:
@@ -110,11 +110,11 @@ JARVIS **acts on the machine, not just talks about it.** The built-in actuator (
 | **Full security check** | "am I secure?", "run a security check" | one READ-ONLY readout combining machine posture (FileVault/firewall/SIP/updates) + app privacy grants (TCC) + micro-app introspection; it reports where you stand and **changes nothing** — turning a protection on is yours to do |
 | **Micro-app integrity check** | "are my apps healthy?", "any tampering?" | the read-only introspection sentinel over JARVIS's OWN sandboxed apps: seatbelt profile-drift, runaway CPU/RSS, and unexpected loaded modules (dyld injection) — it observes and reports, never kills or unloads (see [docs/INTROSPECT.md](docs/INTROSPECT.md)) |
 
-Heavy or low-confidence requests route to the cloud and run the **same** actions through an Anthropic Messages-API tool loop (bounded: ≤ 3 model calls, 75 s), so *"could you possibly get that browser thing going"* works as well as *"open Safari."* Every executed action emits an `action.executed` telemetry event.
+Heavy or low-confidence requests route to the cloud and run the **same** actions through an Anthropic Messages-API tool loop (bounded: ≤ 6 model calls, 400 s), so *"could you possibly get that browser thing going"* works as well as *"open Safari."* Every executed action emits an `action.executed` telemetry event.
 
 ### The 27-agent constellation
 
-A single local engine + per-agent profiles (not 27 separate models) gives JARVIS a routed "council" — the prime orchestrator (`jarvis`) hears every request and delegates to the right specialist: `friday` (daily intel), `vision` (research/OSINT), `ultron` (defensive security/automation), `steve` (CTO/builds), `gecko` (markets), `pepper` (personal EA/reflection), `hulk` (offline survival mode), and 20 more. Profiles live in `config/agents.toml`; isolation between them is the real security win, not the count.
+A single local engine + per-agent profiles (not 27 separate models) gives JARVIS a routed "council" — the prime orchestrator (`jarvis`) hears every request and delegates to the right specialist: `friday` (daily intel), `vision` (research/OSINT), `ultron` (defensive security/automation), `steve` (CTO/builds), `gecko` (markets), `pepper` (personal EA/reflection), `hulk` (offline survival mode), and 19 more. Profiles live in `config/agents.toml`; isolation between them is the real security win, not the count.
 
 ### The voice & persona
 

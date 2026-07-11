@@ -3,7 +3,7 @@
 Status: **IMPLEMENTED (validator + register-on-launch handshake).** The pure
 manifest validator (`daemon/src/plugin_sdk.rs::validate_manifest`) and the
 register-on-launch handshake (`register_plugin`) are live; the LIVE handshake on
-autostart is gated by `[plugin_sdk].enabled` (ships **OFF**). A reference plugin
+autostart is gated by `[plugin_sdk].enabled` (ships **ON**). A reference plugin
 ships at `apps/example-plugin/`.
 
 A *plugin* is just a **micro-app** (see [`SANDBOX.md`](SANDBOX.md)) — a separate

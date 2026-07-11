@@ -75,16 +75,18 @@ A skill that **mutates or acts outside the process** is `consequential`. It
 routes through the **exact same** cross-turn confirmation gate a built-in
 consequential tool uses:
 
-1. On a first `skill_invoke`, when the master switch
-   (`[integrations].allow_consequential`, ships **OFF**) is on, the meta-tool
-   **parks** the exact `{agent, tool, input}` and hands back a spoken confirmation
-   prompt. The skill's `run` does **not** fire.
+1. On a first `skill_invoke`, with the master switch
+   (`[integrations].allow_consequential`, ships **ON** — armed by default) on, the
+   meta-tool **parks** the exact `{agent, tool, input}` and hands back a spoken
+   confirmation prompt. The skill's `run` does **not** fire.
 2. Only a real human "yes" on a **later** turn replays the parked action, with the
    gate now `Execute`. The replay runs the skill verbatim — nothing re-derived
    from the confirming utterance.
-3. With the master switch **off** (the shipped default) the dispatch's
-   `integrations::gate(confirm)` is always `DryRun`, so a consequential skill only
-   ever **previews** and fires nothing.
+3. With the shipped default (the switch **on**) a parked consequential skill
+   fires only after a fresh per-action spoken confirm replays it as `Execute`.
+   Setting the switch **false** is the operator action that forces
+   `integrations::gate(confirm)` to always be `DryRun`, so a consequential skill
+   then only ever **previews** and fires nothing.
 
 The park decision keys on the **named skill**, not the meta-tool: `skill_invoke`
 itself is a pure dispatcher and is *not* in `confirm::CONSEQUENTIAL_TOOLS`;
