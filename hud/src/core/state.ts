@@ -123,6 +123,7 @@ import {
   debateStatusIsEmpty,
   parseDocIndexStatus,
   parseDocSearchResult,
+  parsePdfJailAvailable,
   parseKnowledgeGraphResult,
   parseLifeLogDigest,
   parseLockdownStatus,
@@ -722,6 +723,13 @@ export interface HudState {
    *  and the method that ACTUALLY ran. Null until the user searches their files.
    *  Hits are only ever real returned citations — never fabricated. */
   docSearch: DocSearchResult | null;
+  /** Whether the daemon's PDF memory-jail helper (pdfjail) is present next to the
+   *  running jarvisd (docsearch.status, audit-snapshot cadence). `false` means PDF
+   *  text extraction is running on the WEAKER in-process guard (its documented
+   *  decompression-bomb residuals) — the DocSearchPanel shows an amber pill so the
+   *  fallback is never silent. Null until the first status frame arrives (an
+   *  older daemon never sends one), in which case the panel claims nothing. */
+  pdfJailAvailable: boolean | null;
   /** The last UNIFIED-SEARCH result (unified.searched): one query fanned out
    *  across every AVAILABLE source, merged into ONE ranked list where each hit is
    *  ATTRIBUTED to its source + carries a real CITATION, plus the HONEST coverage
@@ -1224,6 +1232,7 @@ export function initialState(): HudState {
     optimizerProposal: null,
     docIndex: null,
     docSearch: null,
+    pdfJailAvailable: null,
     unifiedSearch: null,
     knowledgeGraph: null,
     answerAnnotation: null,
@@ -2440,6 +2449,17 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // ran (so the panel never claims neural when it fell back to BM25). An empty
       // hits[] is the honest "nothing found" — still shown, never hidden.
       return { ...s, docSearch: parseDocSearchResult(env.data) };
+    }
+
+    case "docsearch.status": {
+      // The daemon's periodic document-extraction guard status (main.rs::
+      // audit_snapshot_task -> docsearch::emit_status): whether the pdfjail
+      // memory-jail helper sits next to the running jarvisd. parsePdfJailAvailable
+      // is STRICT — only a literal JSON `true` claims the jail is armed (never
+      // overclaim the stronger guard) — so `false` here honestly covers both "the
+      // daemon says the helper is missing" and "the payload was malformed". The
+      // DocSearchPanel shows the amber PDF JAIL MISSING pill on `false`.
+      return { ...s, pdfJailAvailable: parsePdfJailAvailable(env.data) };
     }
 
     case "unified.searched": {

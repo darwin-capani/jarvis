@@ -586,13 +586,31 @@ fn locate_pdfjail() -> Option<PathBuf> {
 
 /// Whether the memory-jail helper is present next to the RUNNING executable — the
 /// runtime counterpart to selfcheck's install-tree path probe (this one answers
-/// "will THIS process find the jail", which differs in a dev checkout). NOT yet
-/// surfaced on the status/telemetry wire — today the runtime signals are the
-/// one-shot WARN below and selfcheck's path probe; wiring this into the status
-/// payload is a tracked follow-on. Unit-tested here (it locks the dispatch).
-#[allow(dead_code)] // used by the dispatch unit test; telemetry wiring is a follow-on
+/// "will THIS process find the jail", which differs in a dev checkout). Surfaced
+/// on every `docsearch.status` tick via [`emit_status`] so a process silently on
+/// the weaker in-process guard is VISIBLE on the HUD's DocSearchPanel, not just a
+/// one-shot log WARN + the CLI selfcheck board. Also locks the extractor dispatch
+/// in the unit test below.
 pub fn pdfjail_available() -> bool {
     locate_pdfjail().is_some()
+}
+
+/// Build the `docsearch.status` telemetry payload. Pure + total so the exact wire
+/// shape the HUD's `parsePdfJailAvailable` reads is unit-tested without touching
+/// the telemetry bus (mirrors `policy::snapshot_payload`).
+fn status_payload(pdfjail_available: bool) -> serde_json::Value {
+    serde_json::json!({ "pdfjail_available": pdfjail_available })
+}
+
+/// Emit the ambient document-extraction guard status as `docsearch.status`
+/// telemetry for the HUD's DocSearchPanel (system channel, on the audit-snapshot
+/// cadence — see `audit_snapshot_task` in main.rs). READ-ONLY and SECRET-FREE
+/// (one boolean): whether THIS process finds the pdfjail helper next to its
+/// executable, i.e. whether PDF extraction runs memory-jailed or on the weaker
+/// in-process fallback guard ([`pdf_text_in_process`]'s documented residuals).
+/// One `stat()` per tick.
+pub fn emit_status() {
+    crate::telemetry::emit("system", "docsearch.status", status_payload(pdfjail_available()));
 }
 
 /// Warn ONCE per process that the memory-jail helper is absent and PDF extraction
@@ -2333,6 +2351,23 @@ mod tests {
         // ...and the fallback's flate2 decompression-budget probe is still the
         // first-line defense (the primitive is covered by
         // `flate_stream_budget_flags_a_decompression_bomb`).
+    }
+
+    /// The `docsearch.status` wire shape must match the HUD's
+    /// `parsePdfJailAvailable` (events.ts): one snake_case boolean, no wrapper.
+    /// The HUD treats anything but a literal `true` as the in-process fallback
+    /// (never overclaims the stronger guard), so the payload must be a REAL
+    /// JSON boolean, not a string.
+    #[test]
+    fn status_payload_wire_shape_matches_the_hud_parser() {
+        assert_eq!(
+            status_payload(true),
+            serde_json::json!({ "pdfjail_available": true })
+        );
+        assert_eq!(
+            status_payload(false),
+            serde_json::json!({ "pdfjail_available": false })
+        );
     }
 
     #[test]

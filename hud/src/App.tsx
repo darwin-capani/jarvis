@@ -579,7 +579,11 @@ export default function App() {
           <ExtensibilityPanel webhooks={state.webhooks} plugins={state.plugins} />
           <AuditPanel audit={state.audit} liveGate={state.liveGate} />
           <ActionPanel action={state.actionSurface} />
-          <DocSearchPanel index={state.docIndex} search={state.docSearch} />
+          <DocSearchPanel
+            index={state.docIndex}
+            search={state.docSearch}
+            pdfJail={state.pdfJailAvailable}
+          />
           <CodeIntelPanel code={state.codeIntel} />
           <ShellPanel shell={state.shell} />
           <UiActuatePanel uiActuate={state.uiActuate} />
