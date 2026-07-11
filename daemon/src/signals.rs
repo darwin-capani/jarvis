@@ -462,7 +462,7 @@ mod tests {
     const NOW_UNIX: u64 = 1_781_427_600;
 
     fn noop_store() -> RefreshTokenStore {
-        Box::new(|_t: &str| Ok(()))
+        std::sync::Arc::new(|_t: &str| Ok(()))
     }
 
     fn refresh_ok_json() -> String {

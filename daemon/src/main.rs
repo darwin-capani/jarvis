@@ -431,7 +431,13 @@ async fn resolve_encryption_key(encrypt: bool, state_dir: &Path) -> Option<crypt
         return Some(key);
     }
     // First enable: generate + store the key, then migrate the existing stores.
-    let key = match crypto::generate_and_store_master_key() {
+    // The store step drives a synchronous security(1) child with a busy poll loop
+    // (see integrations::keychain_write) that can block up to the 5s Keychain
+    // timeout, so run it on the blocking pool rather than pinning this async worker.
+    let generated = tokio::task::spawn_blocking(crypto::generate_and_store_master_key)
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("master-key generation task failed: {e}")));
+    let key = match generated {
         Ok(k) => k,
         Err(e) => {
             warn!(error = %e, "security: could not generate/store the master key; running PLAINTEXT this session");

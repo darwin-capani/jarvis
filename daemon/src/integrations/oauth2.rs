@@ -38,7 +38,7 @@
 //!     test binds an ephemeral `127.0.0.1:0` socket, replays one redirect, and
 //!     closes it immediately.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -751,7 +751,14 @@ struct TokenError {
 /// A function that PERSISTS the refresh token to the Keychain. Injected so tests
 /// substitute an in-memory recorder and never touch the real Keychain. The
 /// production impl ([`keychain_store`]) shells out to `security add-generic-password`.
-pub type RefreshTokenStore = Box<dyn Fn(&str) -> IntegrationResult<()> + Send + Sync>;
+///
+/// `Arc` (not `Box`) so the async token paths can `clone()` the store into a
+/// [`tokio::task::spawn_blocking`] closure: the production impl drives a
+/// SYNCHRONOUS `security(1)` child with a busy poll loop (see
+/// [`super::keychain_write`]) that would otherwise pin the tokio worker polling
+/// `exchange_code`/`refresh_access_token` for the write's duration — up to the
+/// 5s Keychain timeout if the login Keychain is locked and prompts.
+pub type RefreshTokenStore = Arc<dyn Fn(&str) -> IntegrationResult<()> + Send + Sync>;
 
 /// The in-memory access token + its expiry. Held behind a Mutex inside
 /// [`ProviderAuth`]; never logged (only presence/expiry as bool/time).
@@ -872,7 +879,16 @@ impl<T: HttpTransport> ProviderAuth<T> {
                 self.cfg.name
             ));
         }
-        (self.store)(&refresh)?;
+        // Persist off the async worker: the store drives a synchronous security(1)
+        // child (see `super::keychain_write`), so run it on the blocking pool rather
+        // than pinning this runtime thread for the write's duration.
+        {
+            let store = self.store.clone();
+            let token = refresh.clone();
+            tokio::task::spawn_blocking(move || store(&token))
+                .await
+                .map_err(|e| anyhow::anyhow!("keychain write task failed: {e}"))??;
+        }
         if let Ok(mut rt) = self.refresh_token.lock() {
             *rt = refresh;
         }
@@ -913,7 +929,10 @@ impl<T: HttpTransport> ProviderAuth<T> {
         // refresh token on refresh; persist it so the next refresh keeps working.
         if let Some(new_refresh) = tokens.refresh_token {
             if !new_refresh.is_empty() {
-                let _ = (self.store)(&new_refresh);
+                // Best-effort persist, off the async worker (see exchange_code).
+                let store = self.store.clone();
+                let token = new_refresh.clone();
+                let _ = tokio::task::spawn_blocking(move || store(&token)).await;
                 if let Ok(mut rt) = self.refresh_token.lock() {
                     *rt = new_refresh;
                 }
@@ -1145,7 +1164,7 @@ pub async fn run_consent_flow<T: HttpTransport>(
 /// (device-gated); tests inject a recorder. `account` is one of the provider's
 /// allowlisted refresh-token account names (a fixed identifier, safe to log).
 pub(crate) fn keychain_store(account: &'static str) -> RefreshTokenStore {
-    Box::new(move |token: &str| -> IntegrationResult<()> {
+    Arc::new(move |token: &str| -> IntegrationResult<()> {
         // ARGV-FREE write: the secret rides security(1)'s stdin, never argv. See
         // `super::keychain_write`.
         super::keychain_write(account, token)?;
@@ -1248,7 +1267,7 @@ mod tests {
     fn recording_store() -> (RefreshTokenStore, Arc<Mutex<Vec<String>>>) {
         let log = Arc::new(Mutex::new(Vec::<String>::new()));
         let log2 = log.clone();
-        let store: RefreshTokenStore = Box::new(move |t: &str| {
+        let store: RefreshTokenStore = Arc::new(move |t: &str| {
             log2.lock().unwrap().push(t.to_string());
             Ok(())
         });
