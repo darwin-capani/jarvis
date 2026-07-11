@@ -131,3 +131,33 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# --- input-frame bounding (defense in depth) ---------------------------------
+# main()'s socket read loop routes every recv() chunk through main.drain_lines,
+# which DROPS a partial frame once it passes MAX_FRAME_BYTES with no newline, so a
+# peer streaming bytes without a newline cannot grow the read buffer without bound
+# (OOM). These assert that real helper — the daemon side is already bounded
+# (apps.rs read_line_bounded / genproxy MAX_PROXY_LINE_BYTES).
+import main as _frame_mod  # noqa: E402 — appended after the file's own imports/runner
+
+
+def test_max_frame_bytes_is_8_mib():
+    assert _frame_mod.MAX_FRAME_BYTES == 8 * 1024 * 1024
+
+
+def test_oversized_frame_is_dropped_not_accumulated():
+    # A newline-less frame past the cap is DISCARDED, not retained -> memory bounded.
+    cap = _frame_mod.MAX_FRAME_BYTES
+    lines, buf, overflowed = _frame_mod.drain_lines(b"x" * (cap + 1))
+    assert overflowed is True
+    assert buf == b""
+    assert lines == []
+
+
+def test_complete_lines_drain_and_partial_is_preserved():
+    # Newline framing is intact: whole lines come out in order; a small partial stays.
+    lines, buf, overflowed = _frame_mod.drain_lines(b'{"a":1}\n{"b":2}\n{"c":3')
+    assert lines == [b'{"a":1}', b'{"b":2}']
+    assert buf == b'{"c":3'
+    assert overflowed is False
