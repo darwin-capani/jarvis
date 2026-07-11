@@ -7,6 +7,18 @@ edition = "2021"
 name = "jarvisd"
 path = "src/main.rs"
 
+# The MEMORY-JAILED PDF text-extraction helper. A short-lived child jarvisd spawns
+# per PDF: it arms RLIMIT_AS (address-space cap) BEFORE handing bytes to
+# pdf-extract, reads the PDF on stdin, writes extracted text on stdout, and exits
+# non-zero on any error/panic. A decompression bomb of ANY shape (single-Flate,
+# filter-chain-armored, or a parse-time XRef/ObjStm structural bomb) makes an
+# allocation in THIS child fail -> the child aborts -> the parent honest-skips,
+# never OOMing jarvisd. Filter- and structure-agnostic: it closes the residuals
+# the in-process guard in docsearch.rs cannot. See src/bin/pdfjail.rs.
+[[bin]]
+name = "pdfjail"
+path = "src/bin/pdfjail.rs"
+
 [features]
 # OFF by default — the normal build links no EndpointSecurity and adds no attack
 # surface. Turning it on compiles the ES C shim (build.rs) + the daemon/src/es.rs
@@ -38,6 +50,12 @@ futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"
 hound = "3.5"
+# ONLY for the pdfjail memory-jail helper (src/bin/pdfjail.rs): setrlimit(RLIMIT_AS)
+# to cap the extraction child's address space, plus mach task_info to read the
+# process's baseline virtual size (on macOS/Apple Silicon a process reserves a huge
+# virtual address space at startup, so RLIMIT_AS must be set to <baseline>+budget,
+# not an unsettable small absolute — verified on-device). Tiny, ubiquitous.
+libc = "0.2"
 # DOCSEARCH extractors (born-digital PDF + Office). All pure-Rust, on-device, no
 # network. Each is invoked behind a `catch_unwind` skip boundary in docsearch.rs so
 # a malformed/encrypted/scanned file (or one a parser panics on) is SKIPPED with a

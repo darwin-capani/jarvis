@@ -1085,6 +1085,15 @@ else
     else
         ui_err "jarvisd not produced by the daemon build"; exit 1
     fi
+    # Verify the PDF memory-jail helper landed next to jarvisd. Built by the same
+    # `cargo build --release` (it is a [[bin]] in the daemon crate). Its absence is
+    # NON-fatal — jarvisd falls back to the weaker in-process PDF guard and logs a
+    # warning — but a real install should ship it, so warn (don't exit) if missing.
+    if [ -x "$JARVIS_HOME/daemon/target/release/pdfjail" ]; then
+        ui_ok "PDF memory-jail: daemon/target/release/pdfjail (fresh)"
+    else
+        ui_warn "pdfjail helper not produced — PDF extraction will use the weaker in-process guard"
+    fi
     # Swift vision app.
     if [ -f "$JARVIS_HOME/apps/vision/Package.swift" ]; then
         ui_spin "swift build -c release (apps/vision)" -- \

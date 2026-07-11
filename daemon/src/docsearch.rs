@@ -437,6 +437,21 @@ fn office_text(bytes: &[u8], kind: OfficeKind, cap: usize) -> Result<String> {
 /// (text/fonts) inflate far below this; a decompression bomb does not.
 const PDF_DECOMPRESS_CEILING: u64 = 256 << 20;
 
+/// The MEMORY-JAIL helper binary name — a sibling of `jarvisd` in the shipped
+/// layout (`daemon/target/release/`). See [`locate_pdfjail`] and `src/bin/pdfjail.rs`.
+const PDFJAIL_BIN: &str = "pdfjail";
+
+/// Hard wall-clock ceiling on ONE jailed extraction. A memory bomb aborts the
+/// child almost immediately (its RLIMIT_AS trips), so this really bounds a
+/// CPU-bound hostile PDF that neither finishes nor allocates — killed + skipped
+/// here. Generous for any real born-digital document.
+const PDFJAIL_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Ceiling on the extracted TEXT accepted back from the helper. The text is capped
+/// again to the index bounds before chunking; this bounds what the parent buffers
+/// from a runaway child and flags an implausibly large result as a skip.
+const PDFJAIL_MAX_OUTPUT: usize = 64 << 20;
+
 /// Inflate one FlateDecode (zlib) stream's RAW `content` through the REMAINING
 /// budget, adding decompressed bytes to `spent`. Returns `false` the moment `spent`
 /// exceeds `budget` (a suspected bomb). Bounded to O(8 KiB) memory via a fixed
@@ -481,7 +496,9 @@ fn flate_stream_within_budget(content: &[u8], budget: u64, spent: &mut u64) -> b
 /// pdf-extract (which also wraps lopdf) cannot inflate what it cannot parse, so it
 /// will error safely on the same input.
 ///
-/// RESIDUALS (documented; a complete fix needs process-level isolation, see below):
+/// RESIDUALS this in-process guard cannot reach (both CLOSED in production by the
+/// memory-jail subprocess — see [`pdf_text`] / `src/bin/pdfjail.rs`; they persist
+/// ONLY on the in-process FALLBACK path, a dev/test build without the built helper):
 ///   1. FILTER-CHAIN ARMOR — a bomb behind a non-Flate chain (`ASCII85Decode` /
 ///      `LZWDecode` -> `FlateDecode`) has non-zlib `content` here, so its inner
 ///      inflation is not measured and a *crafted* filter-chained bomb can still
@@ -494,11 +511,13 @@ fn flate_stream_within_budget(content: &[u8], budget: u64, spent: &mut u64) -> b
 ///      because pdf-extract re-parses the same bytes unbounded regardless of what we
 ///      check first (a Rust alloc-abort does not unwind, so `catch_unwind` can't
 ///      contain it either).
-/// The ONLY complete, filter- and structure-agnostic fix is a memory-jailed
-/// extraction subprocess (RLIMIT_AS on a child) — deferred as an architectural
-/// follow-up (a per-file re-exec fights the in-process test model). This guard
-/// closes the common single-FlateDecode CONTENT-stream bomb (the reported vector)
-/// with reliable boundaries; the two residuals above are honestly out of its reach.
+///
+/// The complete, filter- and structure-agnostic fix — a memory-jailed extraction
+/// subprocess (`RLIMIT_AS` on a short-lived child, [`pdf_text_jailed`]) — is now
+/// the PRODUCTION path: a bomb of any shape aborts the CHILD, never jarvisd. This
+/// in-process guard remains the cheap FIRST-LINE defense on the fallback path
+/// (closing the common single-FlateDecode CONTENT-stream bomb with reliable
+/// boundaries); the two residuals above only matter when the helper is absent.
 fn pdf_decompression_within_budget(bytes: &[u8], budget: u64) -> bool {
     let Ok(doc) = lopdf::Document::load_mem(bytes) else {
         return true; // unparseable -> pdf-extract will error safely, not OOM
@@ -514,13 +533,35 @@ fn pdf_decompression_within_budget(bytes: &[u8], budget: u64) -> bool {
     true
 }
 
-/// Extract UTF-8 text from a born-digital PDF already loaded into `bytes`, via the
-/// pure-Rust `pdf-extract` crate (it decodes the content streams on-device). A
-/// scanned/image-only PDF has no text layer -> returns an (effectively) empty
-/// string the guard treats as an HONEST SKIP. An encrypted/malformed PDF errors
-/// here -> skip. Pure: no disk/network. A suspected DECOMPRESSION BOMB is refused
-/// here (before pdf-extract's uncapped inflate) -> honest skip, never an OOM.
+/// Extract UTF-8 text from a born-digital PDF already loaded into `bytes`.
+///
+/// PRODUCTION uses a MEMORY-JAILED HELPER SUBPROCESS ([`pdf_text_jailed`]): the
+/// child arms `RLIMIT_AS` before decoding, so a decompression bomb of ANY shape
+/// (single-Flate content, filter-chain-armored, or a parse-time XRef/ObjStm
+/// structural bomb) aborts the CHILD, never jarvisd — closing the residuals the
+/// in-process guard cannot ([`pdf_decompression_within_budget`]). When the helper
+/// is absent (a dev/test build whose `current_exe` is the test harness, or a
+/// broken install) we FALL BACK to the in-process guard + `pdf-extract`
+/// ([`pdf_text_in_process`]) and warn once.
+///
+/// A scanned/image-only PDF yields (effectively) empty text -> HONEST SKIP; an
+/// encrypted/malformed PDF errors -> skip; a suspected bomb is refused -> skip.
+/// Pure w.r.t. disk/network here (`bytes` were already read by the caller).
 fn pdf_text(bytes: &[u8]) -> Result<String> {
+    match locate_pdfjail() {
+        Some(helper) => pdf_text_jailed(&helper, bytes),
+        None => {
+            warn_missing_jail_once();
+            pdf_text_in_process(bytes)
+        }
+    }
+}
+
+/// The IN-PROCESS fallback (a dev/test build without the built helper, or a broken
+/// install). Runs the cheap flate2 decompression-budget probe as a first-line
+/// defense, then `pdf-extract`. This path carries the KNOWN RESIDUALS documented on
+/// [`pdf_decompression_within_budget`]; the shipped daemon always spawns the jail.
+fn pdf_text_in_process(bytes: &[u8]) -> Result<String> {
     if !pdf_decompression_within_budget(bytes, PDF_DECOMPRESS_CEILING) {
         anyhow::bail!(
             "pdf skipped: FlateDecode streams exceed the {PDF_DECOMPRESS_CEILING}-byte \
@@ -528,6 +569,129 @@ fn pdf_text(bytes: &[u8]) -> Result<String> {
         );
     }
     pdf_extract::extract_text_from_mem(bytes).context("pdf text extraction failed")
+}
+
+/// Locate the memory-jail helper next to the RUNNING executable. In the shipped
+/// layout `jarvisd` and `pdfjail` are siblings in `daemon/target/release/`, so the
+/// helper is `current_exe().parent()/pdfjail`. Returns `None` when it is not there
+/// (a `cargo test` build, whose `current_exe` is the test harness under
+/// `target/.../deps/` with no `pdfjail` sibling, or a broken install) -> the caller
+/// uses the in-process fallback. We check ONLY the direct sibling and NEVER re-exec
+/// `current_exe` (which under `cargo test` is the test harness and would recurse).
+fn locate_pdfjail() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let helper = exe.parent()?.join(PDFJAIL_BIN);
+    helper.is_file().then_some(helper)
+}
+
+/// Whether the memory-jail helper is present next to the RUNNING executable — the
+/// runtime counterpart to selfcheck's install-tree path probe (this one answers
+/// "will THIS process find the jail", which differs in a dev checkout). NOT yet
+/// surfaced on the status/telemetry wire — today the runtime signals are the
+/// one-shot WARN below and selfcheck's path probe; wiring this into the status
+/// payload is a tracked follow-on. Unit-tested here (it locks the dispatch).
+#[allow(dead_code)] // used by the dispatch unit test; telemetry wiring is a follow-on
+pub fn pdfjail_available() -> bool {
+    locate_pdfjail().is_some()
+}
+
+/// Warn ONCE per process that the memory-jail helper is absent and PDF extraction
+/// is on the weaker in-process guard. Expected + benign in a dev/test build;
+/// alarming in a production install (also surfaced on the selftest board).
+fn warn_missing_jail_once() {
+    use std::sync::Once;
+    static WARNED: Once = Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            target: "docsearch",
+            helper = PDFJAIL_BIN,
+            "PDF memory-jail helper not found next to the executable; falling back to \
+             the in-process guard (known residuals: filter-chain + parse-time \
+             structural-stream bombs). A production install should ship the helper."
+        );
+    });
+}
+
+/// Extract PDF text in the MEMORY-JAILED helper subprocess. Spawns `pdfjail`,
+/// streams the PDF bytes to its stdin, and reads the extracted text from its
+/// stdout under a wall-clock timeout ([`PDFJAIL_TIMEOUT`]) and an output-size cap
+/// ([`PDFJAIL_MAX_OUTPUT`]). The child arms `RLIMIT_AS` before decoding, so ANY
+/// decompression bomb makes an allocation in the CHILD fail and ABORT it; the
+/// abort NEVER reaches jarvisd. A non-zero/killed exit, a timeout, or oversize
+/// output all become an error the guard treats as an HONEST SKIP. The writer and
+/// reader run on their own threads so a full stdin pipe can never deadlock against
+/// a full stdout pipe.
+fn pdf_text_jailed(helper: &Path, bytes: &[u8]) -> Result<String> {
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(helper)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("spawning the pdf memory-jail helper at {}", helper.display()))?;
+    let mut stdin = child.stdin.take().context("pdfjail stdin was not captured")?;
+    let stdout = child.stdout.take().context("pdfjail stdout was not captured")?;
+
+    // Feed the PDF bytes on a writer thread. A broken pipe (the child aborted
+    // early on a bomb) is expected and ignored — the exit status decides the
+    // outcome. stdin is dropped at the end of the closure -> EOF for the child.
+    let payload = bytes.to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&payload);
+    });
+    // Drain stdout on a reader thread, bounded to the cap + 1 byte so an oversize
+    // result is DETECTED without buffering unbounded text, and so the child never
+    // blocks on a full stdout pipe while we wait.
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout
+            .take(PDFJAIL_MAX_OUTPUT as u64 + 1)
+            .read_to_end(&mut buf);
+        buf
+    });
+
+    // Watchdog: poll for exit up to the timeout, then kill a hung child. Killing
+    // closes the pipes, which unblocks the reader/writer threads below.
+    let deadline = std::time::Instant::now() + PDFJAIL_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None; // timed out
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let _ = writer.join();
+    let out = reader.join().unwrap_or_default();
+
+    match status {
+        Some(s) if s.success() => {
+            if out.len() > PDFJAIL_MAX_OUTPUT {
+                anyhow::bail!(
+                    "pdf skipped: jailed extraction produced more than the \
+                     {PDFJAIL_MAX_OUTPUT}-byte text cap (suspected bomb)"
+                );
+            }
+            Ok(String::from_utf8_lossy(&out).into_owned())
+        }
+        Some(_) => anyhow::bail!(
+            "pdf skipped: memory-jailed extraction exited non-zero (a bomb aborted \
+             the child, or the PDF is corrupt/encrypted/panicked the parser)"
+        ),
+        None => anyhow::bail!("pdf skipped: memory-jailed extraction timed out"),
+    }
 }
 
 /// THE PANIC-SAFE HONEST-SKIP BOUNDARY for every non-text-like extractor.
@@ -1129,7 +1293,6 @@ impl DocIndex {
         embedder: &dyn Embedder,
     ) -> Result<IndexStatus> {
         self.forget().await?;
-        let discovered = walk(roots, bounds);
 
         // Gather (root, path, chunk) triples up to the chunk cap, reading content
         // ONLY here (after the confined+extension+size gates already passed).
@@ -1139,43 +1302,58 @@ impl DocIndex {
             byte_offset: usize,
             text: String,
         }
-        let mut pending: Vec<Pending> = Vec::new();
-        'files: for d in &discovered {
-            if pending.len() >= bounds.max_chunks {
-                break;
-            }
-            // Route by kind. A path the walk accepted always classifies, but a
-            // disappeared/renamed file mid-walk is skipped honestly.
-            let Some(kind) = classify(&d.path) else {
-                continue;
-            };
-            let Ok(bytes) = std::fs::read(&d.path) else {
-                continue;
-            };
-            // Per-file extraction (text-like = read+decode unchanged; PDF/Office =
-            // on-device extractor behind the panic-safe HONEST-SKIP guard). The
-            // extracted text is capped to `max_file_bytes` BEFORE chunking — the
-            // same ceiling the raw bytes already respect — so a document cannot
-            // exceed the established per-file bound. `None` => HONEST SKIP (logged):
-            // a corrupt/encrypted/scanned/image-only/empty file is never indexed.
-            let Some(content) = extract_text(&d.path, kind, &bytes, bounds.max_file_bytes) else {
-                continue;
-            };
-            let chunks = chunk_text(&content, bounds.chunk_chars, bounds.chunk_overlap);
-            let root = d.root.display().to_string();
-            let file_path = d.path.display().to_string();
-            for c in chunks {
+        // The whole gather phase is BLOCKING work — the walk's stats, the
+        // std::fs reads, and above all the extractors (pdf_text spawns the
+        // pdfjail subprocess and can sit in its watchdog for up to
+        // PDFJAIL_TIMEOUT per hostile PDF) — so it runs on the blocking pool,
+        // never pinning a tokio worker (the same contract as the Keychain
+        // writes). `bounds` is Copy; `roots` is cloned into the task.
+        let roots = roots.to_vec();
+        let bounds = *bounds;
+        let pending: Vec<Pending> = tokio::task::spawn_blocking(move || {
+            let discovered = walk(&roots, &bounds);
+            let mut pending: Vec<Pending> = Vec::new();
+            'files: for d in &discovered {
                 if pending.len() >= bounds.max_chunks {
-                    break 'files;
+                    break;
                 }
-                pending.push(Pending {
-                    root: root.clone(),
-                    file_path: file_path.clone(),
-                    byte_offset: c.byte_offset,
-                    text: c.text,
-                });
+                // Route by kind. A path the walk accepted always classifies, but a
+                // disappeared/renamed file mid-walk is skipped honestly.
+                let Some(kind) = classify(&d.path) else {
+                    continue;
+                };
+                let Ok(bytes) = std::fs::read(&d.path) else {
+                    continue;
+                };
+                // Per-file extraction (text-like = read+decode unchanged; PDF/Office =
+                // on-device extractor behind the panic-safe HONEST-SKIP guard). The
+                // extracted text is capped to `max_file_bytes` BEFORE chunking — the
+                // same ceiling the raw bytes already respect — so a document cannot
+                // exceed the established per-file bound. `None` => HONEST SKIP (logged):
+                // a corrupt/encrypted/scanned/image-only/empty file is never indexed.
+                let Some(content) = extract_text(&d.path, kind, &bytes, bounds.max_file_bytes)
+                else {
+                    continue;
+                };
+                let chunks = chunk_text(&content, bounds.chunk_chars, bounds.chunk_overlap);
+                let root = d.root.display().to_string();
+                let file_path = d.path.display().to_string();
+                for c in chunks {
+                    if pending.len() >= bounds.max_chunks {
+                        break 'files;
+                    }
+                    pending.push(Pending {
+                        root: root.clone(),
+                        file_path: file_path.clone(),
+                        byte_offset: c.byte_offset,
+                        text: c.text,
+                    });
+                }
             }
-        }
+            pending
+        })
+        .await
+        .context("document gather/extraction task failed")?;
 
         // Embed all chunk texts ON-DEVICE in one batched call. On ANY error (server
         // down / no embed op / wrong count), store WITHOUT vectors -> BM25 search.
@@ -2135,6 +2313,26 @@ mod tests {
         let got = pdf_text(&pdf).expect("a born-digital PDF must extract");
         assert!(got.contains("Quarterly"), "extracted PDF text: {got:?}");
         assert!(got.contains("Subaru"), "extracted PDF text: {got:?}");
+    }
+
+    /// Under `cargo test`, `current_exe` is the test harness in `target/.../deps/`,
+    /// which has NO `pdfjail` sibling — so the memory-jail is reported absent and
+    /// `pdf_text` transparently uses the in-process fallback. This locks the
+    /// dispatch: unit tests exercise the fallback; the jail itself is covered by the
+    /// `tests/pdf_memory_jail.rs` integration tests (one `#[ignore]` on-device bomb).
+    #[test]
+    fn pdf_dispatch_uses_in_process_fallback_when_the_jail_helper_is_absent() {
+        assert!(
+            !pdfjail_available(),
+            "the test harness dir must have no pdfjail sibling"
+        );
+        // A valid born-digital PDF still extracts via the fallback...
+        let pdf = make_pdf("Quarterly budget Subaru Outback");
+        let got = pdf_text(&pdf).expect("fallback extraction must still work");
+        assert!(got.contains("Quarterly") && got.contains("Subaru"), "got: {got:?}");
+        // ...and the fallback's flate2 decompression-budget probe is still the
+        // first-line defense (the primitive is covered by
+        // `flate_stream_budget_flags_a_decompression_bomb`).
     }
 
     #[test]
