@@ -88,6 +88,21 @@ describe("connection state", () => {
     expect(reduce(init, { type: "ws.disconnected", at: 0 })).toBe(init);
   });
 
+  it("ws.disconnected clears the active agent (no phantom ACTIVE chip after reconnect)", () => {
+    let s = connected();
+    // An agent lights up mid-turn.
+    s = tel(s, env("agent.active", { name: "vision" }));
+    expect(s.activeAgent).not.toBeNull();
+    // The link drops BEFORE the turn's terminal pipeline.completed/route.failed.
+    s = reduce(s, { type: "ws.disconnected", at: 2000 });
+    expect(s.activeAgent).toBeNull();
+    // Reconnect lands in idle; idle is not TRANSIENT, so the stale-decay never
+    // runs — activeAgent must stay cleared (else the "ACTIVE: <agent>" chip + agent
+    // core hue would persist forever).
+    s = reduce(s, { type: "ws.connected", at: 3000 });
+    expect(s.activeAgent).toBeNull();
+  });
+
   it("reconnect: offline -> idle again", () => {
     let s = connected();
     s = reduce(s, { type: "ws.disconnected", at: 1 });
