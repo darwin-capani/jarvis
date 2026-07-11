@@ -18,6 +18,10 @@
 //!   - BS.1770-4 K-weighting (stage-1 high-shelf + stage-2 RLB high-pass),
 //!     400 ms momentary / 3 s short-term windows, and ABSOLUTE (-70 LUFS) +
 //!     RELATIVE (-10 LU) gating for integrated loudness -> [`LoudnessMeter`].
+//!     Integrated loudness accumulates the gating blocks into a FIXED-SIZE
+//!     loudness histogram (BS.1770's own definition), so the audio-thread push
+//!     is O(1) with no allocation and the memory + poll cost stay constant for
+//!     the daemon's whole lifetime.
 //!   - a 2048-point real FFT (hand-written radix-2, std-only), Hann-windowed,
 //!     magnitude -> dBFS, folded into 96 log-spaced bands -> [`SpectrumFrame`]
 //!     (SPEC §6 `audio.spectrum`, 30 Hz).
@@ -379,6 +383,19 @@ const GATE_HOP_MS: f64 = 100.0;
 const MOMENTARY_MS: f64 = 400.0;
 const SHORT_TERM_MS: f64 = 3000.0;
 
+/// Bin width of the integrated-loudness histogram, in LU. BS.1770-4 / EBU R128
+/// define integrated loudness as the gated mean over a HISTOGRAM of 400 ms
+/// gating blocks, and recommend ~0.1 LU bins from the absolute gate upward.
+const HIST_BIN_LU: f64 = 0.1;
+/// Number of 0.1 LU histogram bins, spanning [-70 LU, +30 LU]. The lower edge is
+/// the absolute gate ([`LUFS_ABSOLUTE_GATE`]); blocks below it are discarded (as
+/// the gate would anyway) so they never enter the histogram, and blocks above the
+/// upper edge clamp into the top bin (their exact mean-square is still summed, so
+/// no energy is lost). +30 LU is far above any real K-weighted program level
+/// (a full-scale tone lands near -3 LUFS, +K-weighting a few LU higher), so the
+/// clamp is only a numerical backstop.
+const HIST_BINS: usize = 1000;
+
 /// A stateful loudness meter (BS.1770-4). Owns the K-weighting biquad memory (one
 /// state per channel), the running mean-square accumulators for the momentary /
 /// short-term sliding windows, and the gated-block history for integrated
@@ -409,8 +426,16 @@ pub struct LoudnessMeterState {
     hop_len: usize,
     block_count: usize,
     samples_since_hop: usize,
-    /// Mean-square of every completed 400 ms gating block (for the two-pass gate).
-    gating_blocks: Vec<f64>,
+    /// Fixed-size BS.1770 loudness histogram of the completed 400 ms gating
+    /// blocks, used for the two-pass (absolute + relative) gate. `hist_count[i]`
+    /// is the number of blocks whose loudness falls in the i-th 0.1 LU bin and
+    /// `hist_ms_sum[i]` the running sum of their (linear) mean-squares. Replaces
+    /// the old unbounded `Vec<f64>` of per-block mean-squares: the audio-thread
+    /// push is now an O(1) bin increment with NO allocation, and the memory is
+    /// constant (O([`HIST_BINS`])) for the daemon's whole lifetime. Both vectors
+    /// are allocated once in [`Self::new`] and never resized.
+    hist_count: Vec<u64>,
+    hist_ms_sum: Vec<f64>,
     /// Channel weights (BS.1770: L/R/C = 1.0, surround = 1.41). For <=2 channels
     /// all weights are 1.0; this meter is fed the mono monitor mix in practice.
     weights: Vec<f64>,
@@ -451,7 +476,8 @@ impl LoudnessMeterState {
             hop_len,
             block_count: 0,
             samples_since_hop: 0,
-            gating_blocks: Vec::new(),
+            hist_count: vec![0; HIST_BINS],
+            hist_ms_sum: vec![0.0; HIST_BINS],
             weights: vec![1.0],
             channels: 1,
         }
@@ -481,7 +507,9 @@ impl LoudnessMeterState {
         self.st_sum = 0.0;
         self.block_count = 0;
         self.samples_since_hop = 0;
-        self.gating_blocks.clear();
+        // Zero the histogram in place — keeps the buffers (never reallocates).
+        self.hist_count.iter_mut().for_each(|v| *v = 0);
+        self.hist_ms_sum.iter_mut().for_each(|v| *v = 0.0);
     }
 
     /// Ensure per-channel filter state + weights exist for `channels`.
@@ -554,8 +582,12 @@ impl LoudnessMeterState {
                 // block accumulator mean. For the canonical 400 ms block at any
                 // supported rate the short-term ring (3 s) always contains it.
                 let ms = self.trailing_mean_square(self.block_len);
-                if ms > 0.0 {
-                    self.gating_blocks.push(ms);
+                // Record the block in the fixed-size loudness histogram. This is
+                // an O(1), allocation-free bin increment on the audio thread —
+                // NOT a growing `Vec::push` (SPEC §2: no alloc on the hot path).
+                if let Some(bin) = Self::hist_bin(ms) {
+                    self.hist_count[bin] += 1;
+                    self.hist_ms_sum[bin] += ms;
                 }
             }
         }
@@ -589,6 +621,31 @@ impl LoudnessMeterState {
         }
     }
 
+    /// The histogram bin for a gating block of mean-square `ms`, or `None` when
+    /// the block falls below the absolute gate (-70 LUFS) — those are dropped
+    /// exactly as the absolute gate would drop them, so the histogram IS the
+    /// absolute-gated set. Blocks above the top bin's loudness clamp into it (the
+    /// exact `ms` is still summed by the caller, so no energy is lost). Runs at
+    /// the 10 Hz hop rate, so the single `log10` here is negligible.
+    #[inline]
+    fn hist_bin(ms: f64) -> Option<usize> {
+        // `ms_to_lufs` returns a finite value or -inf (never NaN), so a plain
+        // `<` correctly rejects both sub-gate and silent (ms <= 0) blocks.
+        let lufs = Self::ms_to_lufs(ms);
+        if lufs < LUFS_ABSOLUTE_GATE {
+            return None;
+        }
+        let idx = ((lufs - LUFS_ABSOLUTE_GATE) / HIST_BIN_LU).floor() as usize;
+        Some(idx.min(HIST_BINS - 1))
+    }
+
+    /// The center loudness (LUFS) of histogram bin `i` — the representative
+    /// loudness of the 0.1 LU interval `[-70 + i·0.1, -70 + (i+1)·0.1)`.
+    #[inline]
+    fn hist_bin_center_lufs(i: usize) -> f64 {
+        LUFS_ABSOLUTE_GATE + (i as f64 + 0.5) * HIST_BIN_LU
+    }
+
     /// Read the current momentary / short-term / integrated loudness (LUFS).
     pub fn read(&self) -> LoudnessMeter {
         let lufs_m = if self.mom_filled > 0 {
@@ -609,37 +666,55 @@ impl LoudnessMeterState {
         }
     }
 
-    /// BS.1770-4 gated integrated loudness over the collected 400 ms blocks:
+    /// BS.1770-4 gated integrated loudness over the loudness HISTOGRAM of 400 ms
+    /// blocks:
     ///   1. absolute gate at -70 LUFS,
     ///   2. compute the mean loudness of the surviving blocks,
     ///   3. relative gate at (that mean - 10 LU),
     ///   4. integrated loudness = LUFS of the mean-square of the twice-gated set.
+    ///
+    /// This is BS.1770's own definition (a histogram of gated blocks). It runs in
+    /// O([`HIST_BINS`]) with NO allocation — a constant cost independent of how
+    /// long the daemon has been running — replacing the old two full O(N) passes
+    /// over an ever-growing `Vec<f64>`. Blocks below the absolute gate were never
+    /// inserted (see [`Self::hist_bin`]), so the whole histogram IS the
+    /// absolute-gated set. The gate decisions quantize to the 0.1 LU bin width,
+    /// but each included bin contributes its EXACT summed mean-square, so the
+    /// gated mean is essentially unquantized — well inside the ±0.5 LU the
+    /// BS.1770 reference test asserts.
     fn integrated_lufs(&self) -> f64 {
-        if self.gating_blocks.is_empty() {
+        // Stage 1: absolute gate == the entire histogram.
+        let mut abs_count: u64 = 0;
+        let mut abs_ms_sum = 0.0f64;
+        for (&count, &ms_sum) in self.hist_count.iter().zip(self.hist_ms_sum.iter()) {
+            abs_count += count;
+            abs_ms_sum += ms_sum;
+        }
+        if abs_count == 0 {
             return f64::NEG_INFINITY;
         }
-        // Stage 1: absolute gate.
-        let abs_kept: Vec<f64> = self
-            .gating_blocks
-            .iter()
-            .copied()
-            .filter(|&ms| Self::ms_to_lufs(ms) >= LUFS_ABSOLUTE_GATE)
-            .collect();
-        if abs_kept.is_empty() {
-            return f64::NEG_INFINITY;
-        }
-        // Mean-square -> mean loudness of the absolute-gated set.
-        let abs_mean_ms = abs_kept.iter().sum::<f64>() / abs_kept.len() as f64;
+        // Mean-square -> mean loudness of the absolute-gated set -> relative gate.
+        let abs_mean_ms = abs_ms_sum / abs_count as f64;
         let relative_threshold = Self::ms_to_lufs(abs_mean_ms) + LUFS_RELATIVE_GATE;
-        // Stage 2: relative gate.
-        let rel_kept: Vec<f64> = abs_kept
-            .iter()
-            .copied()
-            .filter(|&ms| Self::ms_to_lufs(ms) >= relative_threshold)
-            .collect();
-        let kept = if rel_kept.is_empty() { abs_kept } else { rel_kept };
-        let mean_ms = kept.iter().sum::<f64>() / kept.len() as f64;
-        Self::ms_to_lufs(mean_ms)
+        // Stage 2: relative gate — keep bins whose center loudness clears the
+        // threshold, summing their exact mean-square energy.
+        let mut rel_count: u64 = 0;
+        let mut rel_ms_sum = 0.0f64;
+        for (i, (&count, &ms_sum)) in self.hist_count.iter().zip(self.hist_ms_sum.iter()).enumerate()
+        {
+            if count > 0 && Self::hist_bin_center_lufs(i) >= relative_threshold {
+                rel_count += count;
+                rel_ms_sum += ms_sum;
+            }
+        }
+        // If the relative gate empties the set (degenerate), fall back to the
+        // absolute-gated set — matches the pre-histogram behavior.
+        let (count, ms_sum) = if rel_count == 0 {
+            (abs_count, abs_ms_sum)
+        } else {
+            (rel_count, rel_ms_sum)
+        };
+        Self::ms_to_lufs(ms_sum / count as f64)
     }
 }
 
@@ -1249,5 +1324,57 @@ mod tests {
         m.reset();
         let l = m.read();
         assert!(l.lufs_i.is_infinite() && l.lufs_m.is_infinite() && l.lufs_s.is_infinite());
+    }
+
+    #[test]
+    fn integrated_loudness_histogram_is_bounded_and_alloc_free() {
+        // The daemon runs for days; the integrated-loudness storage must be a
+        // FIXED-SIZE histogram, not a Vec that grows one entry per 100 ms hop.
+        // Feed a long program and prove the audio-thread push path never grows
+        // or reallocates the per-block storage (the old `Vec<f64>` would have
+        // doubled/memcpy'd itself ~a dozen times mid-callback over this run).
+        let fs = 48_000u32;
+        let mut m = LoudnessMeterState::new(fs);
+
+        // Histogram is a constant two-vector footprint, allocated once in new().
+        assert_eq!(m.hist_count.len(), HIST_BINS);
+        assert_eq!(m.hist_ms_sum.len(), HIST_BINS);
+        let count_cap = m.hist_count.capacity();
+        let sum_cap = m.hist_ms_sum.capacity();
+        let count_ptr = m.hist_count.as_ptr();
+        let sum_ptr = m.hist_ms_sum.as_ptr();
+
+        // ~60 s of a steady -23 LUFS tone => ~600 gating blocks (600 hops). Feed
+        // one continuous buffer in 100 ms chunks (as the engine does), so there
+        // are no chunk-boundary discontinuities.
+        let amp = 2.0f32.sqrt() * 10f32.powf(-23.0 / 20.0);
+        let chunk = (fs / 10) as usize; // 100 ms
+        let buf = sine(1000.0, amp, chunk * 600, fs);
+        for c in buf.chunks(chunk) {
+            m.push(c, 1);
+        }
+
+        // Storage is byte-for-byte the same buffer: no growth, no reallocation,
+        // no move. A single realloc on the audio thread would fail one of these.
+        assert_eq!(m.hist_count.len(), HIST_BINS, "histogram grew in length");
+        assert_eq!(m.hist_ms_sum.len(), HIST_BINS, "histogram grew in length");
+        assert_eq!(m.hist_count.capacity(), count_cap, "hist_count reallocated");
+        assert_eq!(m.hist_ms_sum.capacity(), sum_cap, "hist_ms_sum reallocated");
+        assert_eq!(m.hist_count.as_ptr(), count_ptr, "hist_count buffer moved");
+        assert_eq!(m.hist_ms_sum.as_ptr(), sum_ptr, "hist_ms_sum buffer moved");
+
+        // Many gating blocks were actually recorded (proving the push path ran),
+        // yet the memory is still O(HIST_BINS), independent of the run length.
+        let total_blocks: u64 = m.hist_count.iter().sum();
+        assert!(total_blocks > 500, "expected ~600 gating blocks, got {total_blocks}");
+
+        // And the histogram-gated integrated loudness still matches the BS.1770
+        // reference within tolerance after the long run.
+        let l = m.read();
+        assert!(
+            (l.lufs_i - (-23.0)).abs() < 0.5,
+            "LUFS-I {} should be ~ -23 after a long run",
+            l.lufs_i
+        );
     }
 }
