@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import html
+import http.client
 import json
 import os
 import re
@@ -85,6 +86,7 @@ except Exception:  # pragma: no cover - best-effort, never blocks the app
 REFRESH_INTERVAL_S = 10 * 60       # ~10 min between cycles
 TOP_N = 20                         # items kept and emitted per cycle
 FETCH_TIMEOUT_S = 12               # per-feed HTTP timeout
+MAX_FEED_BYTES = 4 * 1024 * 1024   # cap on one feed body (guards OOM / drip-feed)
 USER_AGENT = "JARVIS-GlobalScan/0.1 (+micro-app; RSS reader)"
 # Daemon-mediated generate PROXY (NOT the raw inference.sock): op-restricted,
 # token-gated, 256-token-capped, rate-limited. This is the ONLY socket the app
@@ -150,6 +152,27 @@ _WS_RE = re.compile(r"\s+")
 # --------------------------------------------------------------------------- #
 # Host IPC: a thin authenticated writer + a command reader.
 # --------------------------------------------------------------------------- #
+MAX_FRAME_BYTES = 8 * 1024 * 1024  # cap on one un-newlined frame from the daemon
+
+
+def _drain_lines(buf: bytes, max_frame: int = MAX_FRAME_BYTES):
+    """PURE framing: split every complete newline-terminated line out of buf.
+
+    Returns (lines, remaining, overflowed): complete lines (trailing newline
+    stripped) in arrival order, the leftover partial buffer, and whether that
+    leftover grew past max_frame WITHOUT a newline. When it has, the leftover is
+    DROPPED (returned as b"") so a peer streaming an unframed, unbounded blob
+    can't grow the read buffer without bound (OOM). Never raises."""
+    lines = []
+    while b"\n" in buf:
+        line, buf = buf.split(b"\n", 1)
+        lines.append(line)
+    overflowed = len(buf) > max_frame
+    if overflowed:
+        buf = b""
+    return lines, buf, overflowed
+
+
 class HostLink:
     """Newline-delimited JSON link to the daemon's app host over a Unix socket.
 
@@ -163,7 +186,7 @@ class HostLink:
         self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._sock.connect(sock_path)
         self._wlock = threading.Lock()
-        self._rfile = self._sock.makefile("r", encoding="utf-8", newline="\n")
+        self._rbuf = b""
 
     def send(self, msg_type: str, data: dict) -> None:
         line = json.dumps(
@@ -184,21 +207,34 @@ class HostLink:
         self.send("log", {"line": line})
 
     def commands(self):
-        """Yield host->app command dicts until the connection closes."""
-        for raw in self._rfile:
-            raw = raw.strip()
-            if not raw:
-                continue
+        """Yield host->app command dicts until the connection closes.
+
+        Reads raw bytes and frames newline-delimited lines with a BOUNDED
+        buffer (drain_lines / MAX_FRAME_BYTES): a peer streaming an un-newlined
+        blob can't grow memory without bound — an over-cap partial frame is
+        dropped and we resync, matching the daemon-bounded reader and
+        example-plugin's framing."""
+        while True:
             try:
-                yield json.loads(raw)
-            except json.JSONDecodeError:
-                continue
+                chunk = self._sock.recv(4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            self._rbuf += chunk
+            lines, self._rbuf, overflowed = _drain_lines(self._rbuf)
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+            if overflowed:
+                self.log(f"input frame exceeded {MAX_FRAME_BYTES} bytes; dropped")
 
     def close(self) -> None:
-        try:
-            self._rfile.close()
-        except OSError:
-            pass
         try:
             self._sock.close()
         except OSError:
@@ -385,7 +421,9 @@ def _mk_item(title, link, published_raw, source, category, descr) -> dict:
 def fetch_feed(feed_url: str, category: str, link: "HostLink | None") -> list[dict]:
     req = urllib.request.Request(feed_url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_S) as resp:
-        body = resp.read()
+        body = resp.read(MAX_FEED_BYTES + 1)
+    if len(body) > MAX_FEED_BYTES:
+        raise ValueError(f"feed body exceeded {MAX_FEED_BYTES} bytes")
     return parse_feed(feed_url, body, category)
 
 
@@ -540,7 +578,7 @@ def run_cycle(feeds: dict[str, list[str]], link: "HostLink | None") -> dict:
                 items = fetch_feed(url, category, link)
                 collected.extend(items)
                 feeds_ok += 1
-            except (urllib.error.URLError, ET.ParseError, OSError, ValueError) as exc:
+            except (urllib.error.URLError, http.client.HTTPException, ET.ParseError, OSError, ValueError) as exc:
                 feeds_failed += 1
                 errors.append(f"{_host_of(url)}: {exc}")
                 if link is not None:

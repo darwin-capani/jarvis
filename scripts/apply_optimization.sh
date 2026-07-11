@@ -21,8 +21,13 @@
 # config-backed override loads), exactly mirroring the propose-only posture of
 # scripts/apply_heal.sh.
 #
-# The master switch ships OFF ([optimize].enabled = false): with it off no corpus
-# accrues and no proposal is ever written, so there is nothing here to apply.
+# The master switch ships ON ([optimize].enabled = true, armed full-power default):
+# live trace recording is runtime-gated (traces accrue only while the daemon runs
+# with it on), PII-REDACTED, and bounded (oldest rows evicted past the cap). Even
+# armed, adoption stays propose-only — the optimizer never mutates a live config;
+# it only writes proposals a human applies here. Set [optimize].enabled = false to
+# disable: with it off no corpus accrues and no proposal is ever written, so there
+# is nothing here to apply.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

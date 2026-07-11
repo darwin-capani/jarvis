@@ -1006,7 +1006,8 @@ pub async fn config_set(changes: Vec<Change>) -> Result<usize, String> {
     let updated = apply_changes(&text, &changes)?;
     let n_lines = count_changed_lines(&text, &updated);
 
-    // Atomic replace: write a sibling temp file, fsync, then rename over.
+    // Atomic replace: write a sibling temp file, then rename over. No explicit
+    // fsync is performed; durability relies on the OS's rename semantics.
     let tmp = path.with_extension("toml.tmp");
     tokio::fs::write(&tmp, updated.as_bytes())
         .await

@@ -14,6 +14,7 @@ set -euo pipefail
 JARVIS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 CARGO="$HOME/.cargo/bin/cargo"
+[ -x "$CARGO" ] || CARGO="$(command -v cargo || true)"
 AGENT_DIR="$HOME/Library/LaunchAgents"
 LABELS=("com.jarvis.inference" "com.jarvis.daemon")
 GUI_DOMAIN="gui/$(id -u)"
@@ -116,6 +117,11 @@ VENV_PYTHON="$JARVIS_ROOT/.venv/bin/python"
 if [ ! -x "$VENV_PYTHON" ]; then
     echo "error: $VENV_PYTHON missing — set up the venv per the README Quick start" >&2
     echo "       before installing boot agents." >&2
+    exit 1
+fi
+if [ ! -x "$CARGO" ]; then
+    echo "error: cargo not found (looked in \$HOME/.cargo/bin and PATH) — install the Rust" >&2
+    echo "       toolchain (https://rustup.rs) before installing boot agents." >&2
     exit 1
 fi
 

@@ -1,6 +1,6 @@
 # Micro-App Sandboxing Blueprint
 
-Status: **IMPLEMENTED.** The runtime substrate (`daemon/src/apps.rs` — manifest parsing, SBPL profile generation, capability tokens, per-app socket, supervised lifecycle, telemetry relay) is live, and the first app, **Global-Scan** (`apps/global-scan/`), runs on it. The four other launch apps (Nexus, Algo-Core, Fab-Link, Silicon Canvas) ship spec-only manifests against this schema under `apps/`; they have not been built yet.
+Status: **IMPLEMENTED.** The runtime substrate (`daemon/src/apps.rs` — manifest parsing, SBPL profile generation, capability tokens, per-app socket, supervised lifecycle, telemetry relay) is live, and the first app, **Global-Scan** (`apps/global-scan/`), runs on it. **Nexus** (`apps/nexus/` — full Python app + `core/` + tests) and **Silicon Canvas** (`apps/silicon-canvas/` — a full Rust crate) also run on this substrate, alongside vision, mark-forge, example-plugin and the utility micro-apps under `apps/`. The remaining two launch apps, **Algo-Core** and **Fab-Link**, still ship spec-only manifests against this schema; they have not been built yet.
 
 Implementation notes (read these — they record the real boundary, not the ideal one):
 
@@ -29,7 +29,7 @@ Location: `apps/<name>/manifest.toml`. All paths are relative to the project roo
 name        = ""        # string, required — must match the directory name; used for socket and token
 version     = ""        # string, required — semver
 description = ""        # string, required
-entry       = ""        # string, required — command jarvisd executes (relative to the app dir)
+entry       = ""        # string, required — path to the entry script (python/node) or the binary, relative to the project root
 runtime     = ""        # "python" | "binary" | "node", required
 
 [permissions]
@@ -41,6 +41,7 @@ fs_write  = []          # list of paths the app may write; everything else is re
 gpu       = false       # bool — Metal/GPU access for the app process
 camera    = false       # bool — DECLARES AVFoundation capture of the user's OWN camera (TCC: Camera)
 screen    = false       # bool — DECLARES ScreenCaptureKit capture of the user's OWN screen (TCC: Screen Recording)
+jit       = false       # bool — DECLARES dynamic code generation (JIT / dynamic-code-generation); consequential to enable — see docs/INTROSPECT.md
 
 [ui]
 surface          = ""   # "panel" | "overlay" | "fullscreen" — how the HUD composites the app
@@ -56,11 +57,12 @@ Derivation rules from manifest to seatbelt profile:
 | `net_hosts = [...]` | `(deny network*)` plus allow rules for the listed remote hosts only |
 | `fs_read` / `fs_write` | deny-by-default filesystem; allow subpath reads/writes for the listed paths, plus implicit read of the app's own directory and read/write of `state/ipc/apps/<name>.sock` |
 | `gpu = false` | deny IOKit GPU clients (no Metal device access) |
+| `jit = false` / `jit = true` | `(deny dynamic-code-generation)` / `(allow dynamic-code-generation)` — explicit + reorder-safe, like `gpu`; the bit is token-bound and consequential to enable (see docs/INTROSPECT.md). Only `dynamic-code-generation` is emitted; legacy `dynamic-signature` is never written. |
 | `camera = true` / `screen = true` | **DECLARATION ONLY — TCC IS THE REAL GATE.** macOS Camera / Screen Recording consent is enforced by TCC, which requires a runtime USER-CONSENT prompt and is **not grantable by an SBPL/seatbelt profile** (there is no `(allow camera)` / `(allow screen)` operation). The profile at most grants the best-effort mach-lookup/device plumbing the capture frameworks need to *reach* the consent prompt; it never enables capture. `= false` keeps the deny explicit. So a `true` here lets the daemon surface the need in the launch UI/status and binds it into the per-app token — it grants nothing. No consent → no frames, profile notwithstanding. |
 
 ### Vision OCR screen read (`read.screen` — READ ON REQUEST, on-device)
 
-The Vision micro-app (`apps/vision`; needs the screen capability — declared via the proposed `screen = true` manifest key, currently commented out and carried by the `JARVIS_VISION_SCREEN` env until the daemon `AppManifest` accepts the key) exposes a one-shot OCR **screen read** behind the FROZEN op `read.screen`. The daemon routes `"what's on my screen"` / `"read my screen"` / `"read this"` / `"where's the <X> button"` to it (`router::vision_command` → `read.screen`, with an optional `query` for a where-is locate), forwards the structured op verbatim, and the app runs Apple's built-in `VNRecognizeTextRequest` on **one** captured frame, structures the result, and relays a `vision.screen` telemetry event (recognized text in reading order, per-block boxes/centers, control-candidate labels, and — for a where-is — the best-matching located block). Honest properties:
+The Vision micro-app (`apps/vision`; needs the screen capability — the `screen = true` manifest key is accepted by the daemon `AppManifest` today, but vision currently still declares it via the `JARVIS_VISION_SCREEN` env (the manifest key stays commented out in `apps/vision/manifest.toml` pending that migration)) exposes a one-shot OCR **screen read** behind the FROZEN op `read.screen`. The daemon routes `"what's on my screen"` / `"read my screen"` / `"read this"` / `"where's the <X> button"` to it (`router::vision_command` → `read.screen`, with an optional `query` for a where-is locate), forwards the structured op verbatim, and the app runs Apple's built-in `VNRecognizeTextRequest` on **one** captured frame, structures the result, and relays a `vision.screen` telemetry event (recognized text in reading order, per-block boxes/centers, control-candidate labels, and — for a where-is — the best-matching located block). Honest properties:
 
 - **On-device OCR, fully offline.** Built-in Apple Vision request; `net_hosts = []`. The recognized glyph text never leaves the device on the on-device brain path.
 - **TCC is the real gate.** Live ScreenCaptureKit capture needs the Screen Recording consent prompt — not SBPL-grantable, requested on-device at first use. Headless test environments prove the OCR engine over a synthesized in-memory image; live capture is **device-gated** and never exercised in CI.
@@ -79,7 +81,7 @@ The Vision micro-app (`apps/vision`; needs the screen capability — declared vi
 name        = "fab-link"
 version     = "0.1.0"
 description = "3D-printing telemetry overlay: polls Moonraker/OctoPrint and renders job progress, temperatures, and ETA in the HUD."
-entry       = "python3 main.py"
+entry       = "apps/fab-link/main.py"
 runtime     = "python"
 
 [permissions]
@@ -99,7 +101,7 @@ At launch, `jarvisd`:
 1. Parses the manifest and validates it (name matches directory, runtime known, paths inside allowed roots).
 2. Mints the capability token: `HMAC-SHA256(secret, "fab-link" || canonical(permissions) || nonce)`.
 3. Writes a seatbelt profile allowing: read of `apps/fab-link/`, read of `apps/fab-link/gcode-previews`, write of `state/tmp/fab-link`, socket access to `state/ipc/apps/fab-link.sock`, outbound network to `voron.local` and `octoprint.local` only. Everything else denied — no mic, no GPU, no other filesystem, no other network.
-4. Executes `sandbox-exec -f <profile> python3 main.py` with the token passed via the launch environment.
+4. Executes `sandbox-exec -f <profile> <venv python3> apps/fab-link/main.py` (the daemon resolves the `.venv/bin/python3` interpreter and appends the project-root-relative entry path) with the token passed via the launch environment.
 5. The app connects to its socket and includes the token in every JSON request; the daemon verifies before acting. Telemetry the app publishes is accepted only on its declared `telemetry_topics` and re-broadcast on 127.0.0.1:7177 to the HUD.
 
 ## Threat model
