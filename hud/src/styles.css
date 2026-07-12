@@ -3500,6 +3500,12 @@ svg.tri circle {
   font-variant-numeric: tabular-nums;
 }
 
+/* A muted channel (audio.gain {muted:true}) reads warn-amber — a silenced
+   input is an attention state, though never the reserved alert red. */
+.nx-gain-db.nx-muted {
+  color: var(--warn-amber);
+}
+
 /* --------------------------------------------------------- mark-forge
  * Deterministic rigid-body physics sandbox telemetry. The ENGINE is CPU/f64
  * and verified headlessly (cargo test); the live 60fps R3F render is
@@ -9266,6 +9272,27 @@ body,
 .deck-state.idle {
   color: var(--cyan-dim);
   border: 1px solid rgba(26, 214, 255, 0.18);
+}
+/* Manifest install errors (app.manifest_invalid): apps the daemon SKIPPED at
+   discovery — warn-amber, mirroring the introspect findings list. */
+.deck-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+}
+.deck-issues-title {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--cyan-dim);
+}
+.deck-issue {
+  font-size: 10px;
+  color: var(--warn-amber);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 @keyframes deck-rise {
   from {

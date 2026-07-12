@@ -7,6 +7,7 @@ import {
   introspectDriftLine,
   introspectAnomalyLine,
   introspectModuleViolationLine,
+  introspectModattestLine,
   introspectSecurityLine,
   parseIntrospectCapabilities,
   mergeIntrospectAlert,
@@ -77,10 +78,31 @@ describe("introspect finding formatters (defensive)", () => {
     );
     expect(introspectSecurityLine({ kind: "wx_violation" })).toBeNull(); // no app
   });
+  it("formats a modattest summary: seed is a notice, counts are a MODULE warn line", () => {
+    // The daemon envelope is introspect.rs's ev_modattest:
+    // {app, modules, unexpected, missing, seeded}.
+    expect(introspectModattestLine({ app: "gs", modules: 42, unexpected: 0, missing: 0, seeded: true })).toBe(
+      "notice [modattest]: gs — dyld baseline seeded (42 modules)",
+    );
+    expect(introspectModattestLine({ app: "gs", modules: 42, unexpected: 2, missing: 1, seeded: false })).toBe(
+      "MODULE ATTEST: gs — 2 unexpected · 1 missing (baseline 42)",
+    );
+    // `missing` alone is signal too — this line is its ONLY surface (the
+    // per-module violation events cover only `unexpected`).
+    expect(introspectModattestLine({ app: "gs", modules: 42, unexpected: 0, missing: 3, seeded: false })).toBe(
+      "MODULE ATTEST: gs — 0 unexpected · 3 missing (baseline 42)",
+    );
+  });
+  it("suppresses a CLEAN re-attest (no ring noise, real findings never evicted)", () => {
+    expect(
+      introspectModattestLine({ app: "gs", modules: 42, unexpected: 0, missing: 0, seeded: false }),
+    ).toBeNull();
+  });
   it("returns null when the structural anchor is missing", () => {
     expect(introspectDriftLine({})).toBeNull();
     expect(introspectAnomalyLine({ app: "x" })).toBeNull(); // no kind
     expect(introspectModuleViolationLine({ app: "x" })).toBeNull(); // no path
+    expect(introspectModattestLine({ modules: 3, seeded: true })).toBeNull(); // no app
   });
   it("mergeIntrospectAlert dedupes newest-first and caps", () => {
     let alerts: string[] = [];
@@ -145,6 +167,22 @@ describe("introspect reducer", () => {
     expect(after.introspectAlerts).toEqual(before.introspectAlerts);
   });
 
+  it("introspect.modattest lands SIGNAL in the findings ring; clean re-attests don't", () => {
+    // Baseline seed (first report) — a benign notice line.
+    let s = tel(
+      connected(),
+      env("introspect.modattest", { app: "gs", modules: 42, unexpected: 0, missing: 0, seeded: true }),
+    );
+    expect(s.introspectAlerts).toEqual(["notice [modattest]: gs — dyld baseline seeded (42 modules)"]);
+    // A clean re-attest is silent — same state reference, no churn.
+    const before = s;
+    s = tel(s, env("introspect.modattest", { app: "gs", modules: 42, unexpected: 0, missing: 0, seeded: false }));
+    expect(s).toBe(before);
+    // Unexpected/missing counts surface as the warn summary line.
+    s = tel(s, env("introspect.modattest", { app: "gs", modules: 42, unexpected: 1, missing: 2, seeded: false }));
+    expect(s.introspectAlerts[0]).toBe("MODULE ATTEST: gs — 1 unexpected · 2 missing (baseline 42)");
+  });
+
   it("replaces the capability inventory wholesale each tick", () => {
     let s = tel(connected(), env("introspect.capabilities", { apps: [{ name: "a", caps: "net(1)" }] }));
     expect(s.introspectCapabilities).toEqual([{ name: "a", caps: "net(1)" }]);
@@ -186,6 +224,17 @@ describe("IntrospectPanel (review-only)", () => {
     expect(html).toContain("global-scan");
     expect(html).toContain("net(2), fs_read(1)");
     expect(html).toContain("camera, screen");
+  });
+
+  it("styles a modattest count line as warn (MODULE prefix); the seed is a plain notice", () => {
+    const html = render({ apps: 1, drift: 0, anomalies: 0 }, [
+      "MODULE ATTEST: gs — 1 unexpected · 2 missing (baseline 42)",
+      "notice [modattest]: gs — dyld baseline seeded (42 modules)",
+    ]);
+    expect(html).toContain("MODULE ATTEST: gs — 1 unexpected · 2 missing (baseline 42)");
+    expect(html).toContain("notice [modattest]: gs — dyld baseline seeded (42 modules)");
+    // The count line picks up the warn accent via its MODULE prefix.
+    expect(html).toContain("introspect-alert warn");
   });
 
   it("is review-only — renders no action button", () => {

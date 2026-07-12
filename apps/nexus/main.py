@@ -495,10 +495,14 @@ class OpDispatcher:
         if "mute" in msg:
             muted = bool(msg["mute"])
             (self._core.set_input_mute if stage != "output" else self._core.set_output_mute)(channel, muted)
+            # A mute/unmute rides a DISTINCT payload: {muted} instead of
+            # {gain_db}. The HUD's parseNexusGain accepts either; the old
+            # gain_db=null frame was rejected wholesale, so mutes never showed.
+            self._link.telemetry("audio.gain", {"channel": channel, "muted": muted, "stage": stage})
         else:
             gain = float(msg["gain_db"])
             (self._core.set_input_trim if stage != "output" else self._core.set_output_trim)(channel, gain)
-        self._link.telemetry("audio.gain", {"channel": channel, "gain_db": msg.get("gain_db"), "stage": stage})
+            self._link.telemetry("audio.gain", {"channel": channel, "gain_db": gain, "stage": stage})
 
     def _monitor_set(self, msg: dict) -> None:
         # {"op":"monitor.set","in":0,"out":0,"on":true} — a direct monitor route.
@@ -569,6 +573,11 @@ class OpDispatcher:
         """SPEC §6 audio.routes: the matrix snapshot (+ measured_rtt_ms=None
         headlessly). Sent on every routing change and on the 1 Hz heartbeat."""
         snap = self._serialize_state()
+        # The WIRE key is "matrix" (the HUD's parseNexusRoutes reads
+        # data["matrix"]; under "route" the crosspoints were dropped and the
+        # panel grid rendered empty). The preset TOML keeps its [[route]]
+        # tables (_serialize_state / _apply_preset) — the rename is wire-only.
+        snap["matrix"] = snap.pop("route")
         snap["inputs"] = self._core.inputs()
         snap["outputs"] = self._core.outputs()
         snap["revision"] = self._core.matrix_revision()

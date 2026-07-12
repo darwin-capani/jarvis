@@ -567,7 +567,11 @@ export default function App() {
           />
           <McpPanel mcp={state.mcp} />
           <CapabilityAtlasPanel atlas={state.capabilityAtlas} />
-          <AppDeckPanel runningApps={state.runningApps} appFeeds={state.appFeeds} />
+          <AppDeckPanel
+            runningApps={state.runningApps}
+            appFeeds={state.appFeeds}
+            manifestIssues={state.appManifestIssues}
+          />
           <AttributionHealthPanel health={state.attributionHealth} />
           <TccSentinelPanel sentinel={state.tccSentinel} anomalies={state.tccAnomalies} />
           <IntrospectPanel

@@ -4,12 +4,13 @@ import Frame from "./Frame";
 /**
  * INTROSPECT // MICRO-APP SENTINEL — the ambient READ-ONLY view of jarvisd's own
  * sandboxed micro-apps, fed by the introspect.snapshot / introspect.profile_drift
- * / introspect.anomaly / introspect.module_violation telemetry from
- * daemon/src/introspect.rs. It surfaces the SANDBOX-INTEGRITY vector (orthogonal
- * to the TCC permission sentinel and the network egress panel): how many apps are
- * observed, whether any seatbelt profile was tampered on disk since launch, RSS/
- * CPU runaways, and any dyld module an app loaded that its baseline never had
- * (injection / unexpected dlopen).
+ * / introspect.anomaly / introspect.module_violation / introspect.modattest
+ * telemetry from daemon/src/introspect.rs. It surfaces the SANDBOX-INTEGRITY
+ * vector (orthogonal to the TCC permission sentinel and the network egress
+ * panel): how many apps are observed, whether any seatbelt profile was tampered
+ * on disk since launch, RSS/CPU runaways, any dyld module an app loaded that its
+ * baseline never had (injection / unexpected dlopen), and the per-app
+ * dyld-attestation summary (baseline seeded / unexpected+missing counts).
  *
  * SAFETY CONTRACT (do not regress):
  *   - REVIEW-ONLY. Nothing here kills an app, unloads a module, or rewrites a

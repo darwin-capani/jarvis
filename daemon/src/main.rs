@@ -1566,15 +1566,20 @@ async fn main() -> Result<()> {
         agents::AgentRegistry::load(&root.join("config").join("agents.toml"));
     let agents = Arc::new(agents);
 
+    // Telemetry hub FIRST (init is dependency-free): AppRegistry::discover just
+    // below emits `app.manifest_invalid` for every skipped manifest, and emit()
+    // is a silent no-op until init() installs the hub — so init must precede the
+    // first startup emitter or the HUD can never see the install error.
+    telemetry::init();
+    tokio::spawn(telemetry::serve(cfg.telemetry.port));
+    tokio::spawn(telemetry::system_load_task());
+
     // Micro-app runtime substrate (docs/SANDBOX.md): scan apps/ for manifests
     // so voice ("open global scan") and [apps].autostart can resolve them. The
     // session HMAC key is initialized lazily on first token mint and never
     // logged.
     let app_registry = apps::AppRegistry::discover(&root);
 
-    telemetry::init();
-    tokio::spawn(telemetry::serve(cfg.telemetry.port));
-    tokio::spawn(telemetry::system_load_task());
     // Deferred from Config::load (audit fix): telemetry did not exist yet
     // when the config was parsed, so misconfiguration was a buried log WARN.
     // Emitted once the hub is up so the HUD can surface it.
@@ -1591,7 +1596,7 @@ async fn main() -> Result<()> {
     telemetry::emit(
         "system",
         "lockdown.status",
-        json!({"locked": lockdown::is_locked_down(), "restored_from_marker": came_up_locked}),
+        lockdown::status_payload(lockdown::is_locked_down(), came_up_locked),
     );
     // RESIDENT LOCAL MODELS plan for the HUD indicator (#17, item 3; secret-free,
     // CONFIG-DERIVED — no model, no load). The Local tier's budget-bounded warm-set
@@ -3883,6 +3888,29 @@ mod tests {
     use super::{fmt_ms, is_self_echo, is_stale_wait, RotatingLogWriter, STALE_UTTERANCE_WAIT};
     use std::io::Write;
     use std::time::Duration;
+
+    /// STARTUP-ORDER pin (source-level, like forge.rs's no_auto_deploy proof):
+    /// `telemetry::init()` must run BEFORE `apps::AppRegistry::discover(` in
+    /// main, because discover emits `app.manifest_invalid` for every skipped
+    /// manifest and emit() is a silent no-op until init installs the hub. The
+    /// regression this pins: discover-before-init made a broken app's install
+    /// error unreachable by the HUD forever (the event fired exactly once, at
+    /// startup, into a hub that did not exist yet).
+    #[test]
+    fn telemetry_init_precedes_app_discovery_in_main() {
+        let src = include_str!("main.rs");
+        let init_at = src
+            .find("telemetry::init();")
+            .expect("main.rs calls telemetry::init()");
+        let discover_at = src
+            .find("apps::AppRegistry::discover(")
+            .expect("main.rs calls AppRegistry::discover");
+        assert!(
+            init_at < discover_at,
+            "telemetry::init() must precede AppRegistry::discover so \
+             app.manifest_invalid reaches the hub"
+        );
+    }
 
     /// RC-5 self-echo / plausibility reject. A one-word fragment is dropped; a
     /// transcript wholly contained in JARVIS's last reply is dropped; a genuine
