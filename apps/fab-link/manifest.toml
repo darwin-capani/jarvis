@@ -5,7 +5,7 @@
 name        = "fab-link"
 version     = "0.1.0"
 description = "3D-printing telemetry overlay: polls Moonraker/OctoPrint and renders job progress, temperatures, and ETA in the HUD."
-entry       = "python3 main.py"
+entry       = "apps/fab-link/main.py"    # project-root-relative path to the entry script (see docs/SANDBOX.md)
 runtime     = "python"
 
 [permissions]

@@ -5,7 +5,7 @@
 name        = "nexus"
 version     = "0.1.0"
 description = "Low-latency audio routing matrix and studio control surface for the Shure SM7dB chain: input gain, routes, monitor mixes, level metering."
-entry       = "python3 main.py"
+entry       = "apps/nexus/main.py"    # project-root-relative path to the entry script (see docs/SANDBOX.md)
 runtime     = "python"
 
 [permissions]

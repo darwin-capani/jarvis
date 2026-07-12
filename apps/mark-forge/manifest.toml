@@ -5,7 +5,7 @@
 name        = "mark-forge"
 version     = "0.1.0"
 description = "Deterministic 3D rigid-body physics sandbox: a fixed-timestep impulse-based engine (CPU/f64) that emits body-transform telemetry the HUD renders in a React-Three-Fiber sandbox panel."
-entry       = "mark-forge"            # prebuilt native binary in the app dir
+entry       = "apps/mark-forge/target/release/mark-forge"    # project-root-relative path to the prebuilt binary (cargo build --release)
 runtime     = "binary"
 
 [permissions]
