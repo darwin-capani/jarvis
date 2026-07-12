@@ -5,7 +5,7 @@
 name        = "algo-core"
 version     = "0.1.0"
 description = "Predictive algo-trading daemon: streams market data, runs signal models, manages orders, and publishes live charting telemetry to the HUD."
-entry       = "python3 main.py"
+entry       = "apps/algo-core/main.py"    # project-root-relative path to the entry script (see docs/SANDBOX.md)
 runtime     = "python"
 
 [permissions]

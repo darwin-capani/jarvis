@@ -5,7 +5,7 @@
 name        = "silicon-canvas"
 version     = "0.1.0"
 description = "GPU-accelerated schematic renderer: loads symbol/footprint libraries and renders interactive schematics as a fullscreen HUD surface."
-entry       = "silicon-canvas"        # prebuilt Metal binary in the app dir
+entry       = "apps/silicon-canvas/target/release/silicon-canvas"    # project-root-relative path to the prebuilt binary (cargo build --release)
 runtime     = "binary"
 
 [permissions]

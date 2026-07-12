@@ -20,7 +20,7 @@
 name        = "vision"
 version     = "0.1.0"
 description = "On-device computer-vision micro-app: detects generic presence, motion, humans-as-rectangles, animals, objects and salient regions from the user's OWN camera, screen, or video files using Apple's built-in Vision/Core ML requests (ANE/GPU). Fully offline, defensive-only — no identity recognition, no upload."
-entry       = "vision"        # prebuilt Swift binary in the app dir
+entry       = "apps/vision/.build/release/vision"    # project-root-relative path to the prebuilt Swift binary (swift build -c release)
 runtime     = "binary"
 
 [permissions]
