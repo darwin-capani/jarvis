@@ -1077,6 +1077,37 @@ impl AppRegistry {
                 match AppManifest::load(&dir) {
                     Ok(manifest) => {
                         let name = manifest.name().to_string();
+                        // Entry-resolution guard: child_argv resolves [app].entry as a
+                        // SINGLE project-root-relative path (never a shell command), so an
+                        // entry that resolves OUTSIDE the app's own directory — the legacy
+                        // "python3 main.py" command form (-> <root>/python3 main.py) or a
+                        // bare binary name like "vision" (-> <root>/vision) — would fail
+                        // SILENTLY at spawn. Report it as an invalid manifest and skip
+                        // registration instead. STRUCTURAL (build-state independent): a
+                        // not-yet-built binary artifact still resolves inside its app dir,
+                        // so it registers and launches once built.
+                        let entry_abs = abs(project_root, Path::new(&manifest.app.entry));
+                        if !entry_abs.starts_with(&dir) {
+                            warn!(
+                                dir = %dir.display(),
+                                entry = %manifest.app.entry,
+                                "skipping micro-app: [app].entry resolves outside the app directory"
+                            );
+                            telemetry::emit(
+                                "system",
+                                "app.manifest_invalid",
+                                json!({
+                                    "name": name,
+                                    "error": format!(
+                                        "[app].entry {:?} must be a project-root-relative path \
+                                         inside the app directory (resolved to {})",
+                                        manifest.app.entry,
+                                        entry_abs.display()
+                                    ),
+                                }),
+                            );
+                            continue;
+                        }
                         let socket_path = project_root
                             .join("state/ipc/apps")
                             .join(format!("{name}.sock"));
@@ -3385,6 +3416,98 @@ mod tests {
             !registry.verify_token("echo-app", &good_token).await,
             "token is dead after stop (nonce cleared)"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// discover() SKIPS a manifest whose [app].entry resolves outside the app's
+    /// own directory (the legacy "python3 main.py" command form / a bare binary
+    /// name), reporting it as app.manifest_invalid instead of registering an app
+    /// that would fail silently at spawn. A within-dir entry registers normally,
+    /// even when the target file is not present (build-state independent — a
+    /// binary artifact registers before it is built).
+    #[tokio::test]
+    async fn discover_rejects_entry_outside_app_dir_and_keeps_valid_ones() {
+        let root = PathBuf::from(format!(
+            "/private/tmp/jrv-entryguard-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                % 1_000_000
+        ));
+        // good-app: entry resolves inside its dir (no main.py on disk — the guard
+        // is structural, not an existence check).
+        let good = root.join("apps/good-app");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(
+            good.join("manifest.toml"),
+            r#"
+            [app]
+            name = "good-app"
+            version = "0.1.0"
+            description = "valid entry"
+            entry = "apps/good-app/main.py"
+            runtime = "python"
+            [permissions]
+            audio = false
+            gpu = false
+            net_hosts = []
+            fs_read = []
+            fs_write = []
+            [ui]
+            surface = "panel"
+            telemetry_topics = ["feed"]
+        "#,
+        )
+        .unwrap();
+        // bad-app: the legacy command form resolves to <root>/python3 main.py,
+        // OUTSIDE apps/bad-app -> must be skipped.
+        let bad = root.join("apps/bad-app");
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::write(
+            bad.join("manifest.toml"),
+            r#"
+            [app]
+            name = "bad-app"
+            version = "0.1.0"
+            description = "entry resolves outside the app dir"
+            entry = "python3 main.py"
+            runtime = "python"
+            [permissions]
+            audio = false
+            gpu = false
+            net_hosts = []
+            fs_read = []
+            fs_write = []
+            [ui]
+            surface = "panel"
+            telemetry_topics = ["feed"]
+        "#,
+        )
+        .unwrap();
+
+        let mut events = crate::telemetry::subscribe_for_test();
+        let registry = AppRegistry::discover(&root);
+
+        assert!(
+            registry.resolve_name("good app").await.is_some(),
+            "a within-dir entry registers"
+        );
+        assert!(
+            registry.resolve_name("bad app").await.is_none(),
+            "an entry resolving outside the app dir is skipped"
+        );
+
+        // The skip is REPORTED (not silent): app.manifest_invalid for bad-app.
+        let mut saw_invalid = false;
+        while let Ok(line) = events.try_recv() {
+            if line.contains("app.manifest_invalid") && line.contains("bad-app") {
+                saw_invalid = true;
+            }
+        }
+        assert!(saw_invalid, "the skipped manifest is reported as app.manifest_invalid");
 
         let _ = std::fs::remove_dir_all(&root);
     }
