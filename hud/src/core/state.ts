@@ -57,6 +57,7 @@ import {
   PolicySnapshot,
   CapabilityMap,
   DistillStatus,
+  SyncStatus,
   Presence,
   JournalSnapshot,
   SecurityStatus,
@@ -137,6 +138,7 @@ import {
   parsePdfJailAvailable,
   parseCapabilityMap,
   parseDistillStatus,
+  parseSyncStatus,
   parsePresence,
   parseJournalSnapshot,
   parseKnowledgeGraphResult,
@@ -759,6 +761,10 @@ export interface HudState {
    *  inert, examples ready, last run — and that adapters are NEVER auto-
    *  promoted. Null until the first frame. REVIEW-ONLY. */
   distill: DistillStatus | null;
+  /** The federated-sync pipeline's honest state (sync.status): armed/inert,
+   *  syncable-fact count, key present, pending conflicts. Null until the first
+   *  frame. E2E-encrypted; deletions don't propagate. */
+  federatedSync: SyncStatus | null;
   /** The live honest capability map (capability.map, audit-snapshot cadence): one
    *  row per notable subsystem — ready / armed-but-needs-a-dependency / off — with
    *  `verified` distinguishing a probed dependency from a merely-stated one. Null
@@ -1322,6 +1328,7 @@ export function initialState(): HudState {
     docSearch: null,
     pdfJailAvailable: null,
     distill: null,
+    federatedSync: null,
     capabilityMap: null,
     presence: null,
     journal: null,
@@ -2582,6 +2589,13 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // distill::emit_status). parseDistillStatus NEVER returns null and never
       // fabricates device readiness (dep_verified only from a literal true).
       return { ...s, distill: parseDistillStatus(env.data) };
+    }
+
+    case "sync.status": {
+      // The federated-sync pipeline status (main.rs audit_snapshot_task ->
+      // sync::emit_status). parseSyncStatus NEVER returns null and pins the
+      // honest transport-inert / deletes-don't-propagate facts.
+      return { ...s, federatedSync: parseSyncStatus(env.data) };
     }
 
     case "docsearch.status": {

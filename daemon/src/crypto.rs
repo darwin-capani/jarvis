@@ -109,6 +109,15 @@ impl SecretKey {
         hex::encode(self.bytes)
     }
 
+    /// The raw 32 key bytes — for the F18 federated-sync AEAD (`ring::aead`
+    /// AES-256-GCM), which needs the key material directly (SQLCipher takes the
+    /// hex/pragma forms, but a byte-level sealed bundle needs the bytes). SECRET:
+    /// handed only to the AEAD sealer, never logged (the struct's Debug is
+    /// redacted). `pub(crate)` so only in-tree daemon code can reach it.
+    pub(crate) fn raw_bytes(&self) -> &[u8; KEY_BYTES] {
+        &self.bytes
+    }
+
     /// The SQLCipher `PRAGMA key` argument as a raw-key blob literal `x'<hex>'`.
     /// SQLCipher reads a value of this exact `x'..'` shape as the RAW 256-bit key
     /// (no passphrase KDF), which is what we want — we already hold real key bytes

@@ -117,6 +117,11 @@ pub struct Config {
     /// into the live model, and the training step is INERT without Apple
     /// Silicon + mlx-lm (reported honestly, never faked).
     pub distill: DistillConfig,
+    /// [sync] — E2E-ENCRYPTED FEDERATED SYNC (F18, sync.rs): sync the user's OWN
+    /// facts across their OWN devices. SHIPS OFF (like [security]/[distill]);
+    /// INERT without a paired peer + a shared key (Keychain only, never config).
+    /// The transport is built-but-inert; a bundle never leaves the box unsealed.
+    pub sync: SyncConfig,
     /// [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs): an INBOUND network
     /// surface. `enabled` SHIPS ON (full-power default) — INERT WITHOUT MAPPINGS +
     /// SECRET: `mappings` ship EMPTY (an unmapped event is rejected, never guessed)
@@ -577,6 +582,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // the key never reads as a typo.
     ("security", &["encrypt_memory"]),
     ("distill", &["enabled", "python", "base_model", "iters"]),
+    ("sync", &["enabled", "peer_endpoint"]),
     // [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs). An INBOUND network surface.
     // `enabled` SHIPS ON (full-power default) — INERT WITHOUT MAPPINGS + SECRET: even
     // on, an unmapped event is rejected and the HMAC secret must be present in the
@@ -2441,6 +2447,28 @@ impl Default for DistillConfig {
     }
 }
 
+/// [sync] — federated memory sync (F18). SHIPS OFF: sync moves the user's data
+/// off one device (a consequential act), a deliberate opt-in. The shared E2E key
+/// lives ONLY in the Keychain (account `sync_shared_key`), never here; the peer
+/// endpoint is a non-secret address of the user's OWN device.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SyncConfig {
+    /// Master switch. SHIPS OFF (false): with it off the pipeline is a no-op and
+    /// the status honestly reports "off".
+    pub enabled: bool,
+    /// The user's OWN paired-device endpoint (a non-secret URL). Empty until
+    /// paired, which keeps the transport inert.
+    pub peer_endpoint: String,
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        // OFF by default — federated sync moves user data off-device; opt-in only.
+        Self { enabled: false, peer_endpoint: String::new() }
+    }
+}
+
 /// [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs): an INBOUND network surface
 /// that lets an external system trigger a JARVIS intent. The MOST security-
 /// sensitive thing added here, so it ships with the strongest fences:
@@ -2969,6 +2997,7 @@ impl Config {
             policy: section(&table, "policy", &mut issues),
             security: section(&table, "security", &mut issues),
             distill: section(&table, "distill", &mut issues),
+            sync: section(&table, "sync", &mut issues),
             webhooks: section(&table, "webhooks", &mut issues),
             plugin_sdk: section(&table, "plugin_sdk", &mut issues),
             power: section(&table, "power", &mut issues),
