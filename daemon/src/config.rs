@@ -129,6 +129,12 @@ pub struct Config {
     /// a bundled classifier model (reported honestly, never faked). NEVER retains
     /// raw audio — only event labels + confidences leave the classifier.
     pub scene: SceneConfig,
+    /// [overnight] — OVERNIGHT ASYNC AGENTS (F10, overnight.rs): run queued
+    /// low-priority tasks while you're AWAY and fold the results into a morning
+    /// brief. SHIPS OFF (autonomous unattended work is opt-in). Overnight tasks
+    /// are TOOL-LESS — they draft, never act; anything consequential is deferred
+    /// to your spoken confirmation on wake. Cloud-gated (needs an API key).
+    pub overnight: OvernightConfig,
     /// [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs): an INBOUND network
     /// surface. `enabled` SHIPS ON (full-power default) — INERT WITHOUT MAPPINGS +
     /// SECRET: `mappings` ship EMPTY (an unmapped event is rejected, never guessed)
@@ -591,6 +597,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("distill", &["enabled", "python", "base_model", "iters"]),
     ("sync", &["enabled", "peer_endpoint"]),
     ("scene", &["enabled", "confidence_floor"]),
+    ("overnight", &["enabled", "min_gap_secs"]),
     // [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs). An INBOUND network surface.
     // `enabled` SHIPS ON (full-power default) — INERT WITHOUT MAPPINGS + SECRET: even
     // on, an unmapped event is rejected and the HMAC secret must be present in the
@@ -2500,6 +2507,29 @@ impl Default for SceneConfig {
     }
 }
 
+/// [overnight] — OVERNIGHT ASYNC AGENTS (F10, overnight.rs). Run queued tasks
+/// while the user is away. `enabled` ships OFF (autonomous unattended work is
+/// opt-in). `min_gap_secs` throttles the away-gate to once per window.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct OvernightConfig {
+    /// Master switch. SHIPS OFF (false): with it off no overnight run happens and
+    /// the status honestly reports "off". Even ON, runs are cloud-gated (an
+    /// Anthropic key must be present) and fire only while the user is away.
+    pub enabled: bool,
+    /// Minimum seconds between overnight runs — the away-gate won't refire until
+    /// this elapses, so one away-window yields one run.
+    pub min_gap_secs: i64,
+}
+
+impl Default for OvernightConfig {
+    fn default() -> Self {
+        // OFF by default — running agents unattended is a deliberate opt-in.
+        // 6h gap => at most one run per night.
+        Self { enabled: false, min_gap_secs: 6 * 3600 }
+    }
+}
+
 /// [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs): an INBOUND network surface
 /// that lets an external system trigger a JARVIS intent. The MOST security-
 /// sensitive thing added here, so it ships with the strongest fences:
@@ -3030,6 +3060,7 @@ impl Config {
             distill: section(&table, "distill", &mut issues),
             sync: section(&table, "sync", &mut issues),
             scene: section(&table, "scene", &mut issues),
+            overnight: section(&table, "overnight", &mut issues),
             webhooks: section(&table, "webhooks", &mut issues),
             plugin_sdk: section(&table, "plugin_sdk", &mut issues),
             power: section(&table, "power", &mut issues),
@@ -3953,6 +3984,32 @@ mod tests {
         assert!(
             issues.iter().any(|i| i.contains("scene.confidence_flooor")),
             "typo'd scene key must be reported: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn overnight_ships_off_parses_fully_and_catches_a_typo() {
+        // Ships OFF (autonomous unattended work is opt-in), with a once-per-night gap.
+        let (cfg, issues) = Config::parse("");
+        assert!(issues.is_empty());
+        assert!(!cfg.overnight.enabled, "overnight agents must ship OFF");
+        assert_eq!(cfg.overnight.min_gap_secs, 6 * 3600);
+
+        let raw = r#"
+            [overnight]
+            enabled = true
+            min_gap_secs = 3600
+        "#;
+        let (cfg, issues) = Config::parse(raw);
+        assert!(issues.is_empty(), "overnight keys must be known: {issues:?}");
+        assert!(cfg.overnight.enabled);
+        assert_eq!(cfg.overnight.min_gap_secs, 3600);
+
+        // A typo'd overnight key is reported, not silently swallowed.
+        let (_cfg, issues) = Config::parse("[overnight]\nenabledd = true\n");
+        assert!(
+            issues.iter().any(|i| i.contains("overnight.enabledd")),
+            "typo'd overnight key must be reported: {issues:?}"
         );
     }
 

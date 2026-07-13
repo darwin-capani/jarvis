@@ -182,6 +182,14 @@ pub fn capability_map(cfg: &Config, deps: &CapDeps) -> serde_json::Value {
             cfg.scene.enabled,
             Dep::Unverified { need: "a bundled sound-event classifier model" },
         ),
+        // Overnight agents (F10, ships OFF): armed by [overnight].enabled, inert
+        // without a cloud key. Tool-less by design — they draft, never act.
+        cap(
+            "overnight_agents",
+            "Overnight async agents (tool-less; runs only while you're away)",
+            cfg.overnight.enabled,
+            Dep::Probed { present: deps.cloud_key, need: "Anthropic API key in Keychain" },
+        ),
         // Self-heal (propose-only): armed by switch, inert without a cloud key to
         // draft the patch.
         cap(
@@ -369,6 +377,22 @@ mod tests {
         assert_eq!(d["status"], "armed_needs_dependency");
         assert_eq!(d["verified"], false);
         assert!(d["dependency"].as_str().unwrap().contains("classifier model"));
+    }
+
+    #[test]
+    fn overnight_agents_ship_off_and_are_cloud_key_gated_when_armed() {
+        // Ships OFF (config default) -> off.
+        let cfg = Config::default();
+        assert_eq!(find(&capability_map(&cfg, &deps(true, true)), "overnight_agents")["status"], "off");
+
+        let mut cfg2 = Config::default();
+        cfg2.overnight.enabled = true;
+        // Armed + a probed cloud key present -> ready.
+        assert_eq!(find(&capability_map(&cfg2, &deps(true, true)), "overnight_agents")["status"], "ready");
+        // Armed + no cloud key -> ArmedNeedsDependency.
+        let d = find(&capability_map(&cfg2, &deps(false, true)), "overnight_agents").clone();
+        assert_eq!(d["status"], "armed_needs_dependency");
+        assert!(d["dependency"].as_str().unwrap().contains("API key"));
     }
 
     #[test]

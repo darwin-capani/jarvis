@@ -34,6 +34,7 @@ import CapabilityStatusPanel from "./components/CapabilityStatusPanel";
 import DistillPanel from "./components/DistillPanel";
 import SyncPanel from "./components/SyncPanel";
 import ScenePanel from "./components/ScenePanel";
+import OvernightPanel from "./components/OvernightPanel";
 import AmbientMode from "./components/AmbientMode";
 import { isAtRest } from "./core/ambient";
 import TccSentinelPanel from "./components/TccSentinelPanel";
@@ -616,6 +617,7 @@ export default function App() {
           <DistillPanel distill={state.distill} />
           <SyncPanel sync={state.federatedSync} />
           <ScenePanel scene={state.scene} />
+          <OvernightPanel overnight={state.overnight} />
           <CapabilityAtlasPanel atlas={state.capabilityAtlas} />
           <AppDeckPanel
             runningApps={state.runningApps}

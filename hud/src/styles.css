@@ -9581,3 +9581,23 @@ body,
 .scene-event-conf { font-size: 0.9em; }
 .scene-vocab { font-size: 0.68em; overflow-wrap: anywhere; }
 .scene-foot { margin-top: 4px; }
+
+/* Overnight async agents (overnight.status, F10): the queue + morning brief.
+   OFF (dim) / ARMED (amber — needs a cloud key) / READY (green). Tool-less —
+   overnight work drafts, never acts. */
+.overnight-body { display: flex; flex-direction: column; gap: 5px; }
+.overnight-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.overnight-pill {
+  font-size: 0.62em; letter-spacing: 0.06em; padding: 1px 6px;
+  border-radius: 3px; border: 1px solid currentColor; white-space: nowrap;
+}
+.overnight-pill.off { color: var(--fg-dim, rgba(255, 255, 255, 0.4)); }
+.overnight-pill.armed { color: var(--warn-amber); }
+.overnight-pill.ready { color: var(--learn-green); }
+.overnight-count { font-size: 0.66em; }
+.overnight-items { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.overnight-item { display: flex; flex-direction: column; gap: 1px; font-size: 0.72em; border-left: 2px solid var(--learn-green); padding-left: 6px; }
+.overnight-item.failed { border-left-color: var(--warn-amber); }
+.overnight-item-prompt { color: var(--fg, rgba(255, 255, 255, 0.85)); }
+.overnight-item-result { font-size: 0.9em; overflow-wrap: anywhere; }
+.overnight-foot { margin-top: 4px; }

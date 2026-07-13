@@ -201,6 +201,7 @@ mod rewind;
 // their OWN devices. Real AES-256-GCM sealed bundles + a conflict-aware merge
 // that NEVER silently clobbers; the network transport is armed-but-inert. Ships
 // OFF. Hermetically tested in sync.rs.
+mod overnight;
 mod scene;
 mod sync;
 mod router;
@@ -916,6 +917,12 @@ async fn audit_snapshot_task(cfg: Arc<Config>, memory: Arc<Memory>, root: PathBu
         // vocabulary, and that audio is NEVER retained. READ-ONLY — probes for a
         // bundled model, runs no classification (the live tap is device-gated).
         scene::emit_status(&cfg, &root).await;
+        // The HUD's OvernightPanel shows the overnight-agents queue + morning
+        // brief (overnight.rs, F10): off/armed-needs-key/ready, queued/done/failed
+        // counts, and that overnight work is TOOL-LESS (can never act). READ-ONLY
+        // — loads the queue + folds a brief, runs nothing (the run is presence-
+        // gated in overnight_task).
+        overnight::emit_status(&cfg, &root).await;
         // The HUD's JournalPanel shows the session's executed consequential
         // actions with their honest undo verdicts (journal.rs). READ-ONLY over
         // the in-process ledger — recording happens at the execution
@@ -1189,6 +1196,56 @@ async fn secs_since_last_interaction(memory: &Memory) -> Option<u64> {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     Some(now.saturating_sub(secs))
+}
+
+/// Overnight-agents cadence (F10). Runtime-only — NOT exercised by any test (the
+/// PURE away-gate `overnight::should_run_now` + the queue/run machinery are, with
+/// an injected runner). It fires at most once per away-window: only when the user
+/// is AWAY, `[overnight].enabled` is on (and not locked down), and a cloud key is
+/// present does it run each queued task as a TOOL-LESS completion (it can never
+/// act) and stamp the run so it won't refire until `min_gap_secs` elapses.
+/// Warn-and-continue: a tick never wedges or panics the daemon.
+const OVERNIGHT_STARTUP_DELAY: Duration = Duration::from_secs(90);
+const OVERNIGHT_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+async fn overnight_task(root: PathBuf, memory: Arc<Memory>) {
+    tokio::time::sleep(OVERNIGHT_STARTUP_DELAY).await;
+    loop {
+        tokio::time::sleep(OVERNIGHT_INTERVAL).await;
+
+        // Re-read the master switch each tick so flipping [overnight] takes
+        // without a restart; lockdown FORCES it off (no unattended autonomy fires
+        // while the emergency stop is engaged).
+        let (live, _issues) = Config::load(&root.join("config").join("jarvis.toml"));
+        if !live.overnight.enabled || lockdown::is_locked_down() {
+            continue;
+        }
+        // Only while the user is AWAY (presence.rs fusion over the same
+        // last-interaction signal the anticipation loop uses).
+        let secs_since_input = secs_since_last_interaction(&memory).await;
+        let presence = presence::fuse(
+            &presence::PresenceInputs { secs_since_input, ..Default::default() },
+            &presence::PresenceThresholds::default(),
+        );
+        let now = chrono::Utc::now();
+        if !overnight::should_run_now(presence, overnight::last_run(&root), now, live.overnight.min_gap_secs) {
+            continue;
+        }
+        // Cloud-gated: without a key, DON'T run (else every queued task would be
+        // marked failed) — just wait. run_real_task is tool-less, never acts.
+        if anthropic::resolve_api_key().await.is_none() {
+            continue;
+        }
+        let cfg = Arc::new(live);
+        let ran = overnight::run_pending(cfg.as_ref(), &root, &now.to_rfc3339(), |prompt| {
+            let cfg = cfg.clone();
+            async move { overnight::run_real_task(cfg.as_ref(), &prompt).await }
+        })
+        .await;
+        if ran > 0 {
+            info!(ran, "overnight: folded {ran} task(s) into the morning brief");
+        }
+    }
 }
 
 /// Standing-missions cadence. Runtime-only — NOT exercised by any test (the PURE
@@ -2020,6 +2077,12 @@ async fn main() -> Result<()> {
     // chokepoints do that); when [audit].enabled is false it emits the honest
     // OFF payload so the panel shows the disabled state, never a stale one.
     tokio::spawn(audit_snapshot_task(cfg.clone(), memory.clone(), root.clone()));
+    // Overnight async agents (F10): a slow (10 min) presence-gated pass that,
+    // ONLY while the user is away + [overnight].enabled + a cloud key present +
+    // not locked down, runs each queued task as a TOOL-LESS completion and folds
+    // the results into the morning brief. SHIPS OFF; runs at most once per away-
+    // window; overnight work can never take a consequential action.
+    tokio::spawn(overnight_task(root.clone(), memory.clone()));
     // Machine-posture dashboard feed: a slow (30 min), READ-ONLY pass over the
     // four standard macOS posture reads (FileVault/firewall/SIP/updates) that
     // emits secret-free `posture.snapshot` verdict tokens for the HUD. It only

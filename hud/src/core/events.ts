@@ -6152,6 +6152,76 @@ export function parseSceneStatus(data: Record<string, unknown>): SceneStatus {
 }
 
 /* ------------------------------------------------------------------------ *
+ * OVERNIGHT AGENTS (overnight.status) — the honest state of the overnight      *
+ * task queue + morning brief (daemon overnight.rs, F10). SHIPS OFF; cloud-key  *
+ * gated. Overnight work is TOOL-LESS (`runsTools` pinned false — a payload     *
+ * can't claim it can act). Results are the user's own drafted content,         *
+ * redacted daemon-side; the HUD still caps + bounds (the wire is never         *
+ * trusted).                                                                    *
+ * ------------------------------------------------------------------------ */
+
+/** One finished overnight task in the morning brief. */
+export interface OvernightItem {
+  prompt: string;
+  result: string;
+  status: "done" | "failed";
+}
+
+/** The overnight-agents status + folded morning brief. */
+export interface OvernightStatus {
+  enabled: boolean;
+  cloudKeyPresent: boolean;
+  depVerified: boolean;
+  dependency: string;
+  runsTools: boolean;
+  queued: number;
+  done: number;
+  failed: number;
+  items: OvernightItem[];
+}
+
+const OVERNIGHT_ITEMS_CAP = 8;
+const OVERNIGHT_PROMPT_CAP = 160;
+const OVERNIGHT_RESULT_CAP = 400;
+
+/** Coerce one brief item; a row without a prompt is dropped, strings bounded,
+ *  status coerced to "failed" for anything but "done" (conservative). */
+function coerceOvernightItem(o: unknown): OvernightItem | null {
+  if (!isPlainObject(o)) return null;
+  const prompt = str(o, "prompt");
+  if (prompt === null || prompt === "") return null;
+  return {
+    prompt: prompt.slice(0, OVERNIGHT_PROMPT_CAP),
+    result: (str(o, "result") ?? "").slice(0, OVERNIGHT_RESULT_CAP),
+    status: str(o, "status") === "done" ? "done" : "failed",
+  };
+}
+
+/** Parse an `overnight.status` payload. NEVER returns null / never throws; a
+ *  malformed frame degrades to the honest off state. `runsTools` is pinned false
+ *  — a payload can never claim overnight work can act. */
+export function parseOvernightStatus(data: Record<string, unknown>): OvernightStatus {
+  const rawItems = data["items"];
+  const items = Array.isArray(rawItems)
+    ? rawItems
+        .slice(0, OVERNIGHT_ITEMS_CAP)
+        .map(coerceOvernightItem)
+        .filter((i): i is OvernightItem => i !== null)
+    : [];
+  return {
+    enabled: bool(data, "enabled") === true,
+    cloudKeyPresent: bool(data, "cloud_key_present") === true,
+    depVerified: bool(data, "dep_verified") === true,
+    dependency: (str(data, "dependency") ?? "an Anthropic API key").slice(0, 80),
+    runsTools: false,
+    queued: nonNegInt(data, "queued"),
+    done: nonNegInt(data, "done"),
+    failed: nonNegInt(data, "failed"),
+    items,
+  };
+}
+
+/* ------------------------------------------------------------------------ *
  * ACTION JOURNAL — the reversible-action ledger (daemon journal.rs ->         *
  * `system / journal.snapshot`, audit-snapshot cadence). One row per            *
  * consequential action that ACTUALLY EXECUTED this daemon session, each with   *

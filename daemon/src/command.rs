@@ -158,6 +158,10 @@ pub enum Command {
     /// paired-device bundle from the inbox (conflict-aware, never clobbers).
     /// Operator-triggered; off unless [sync].enabled + a Keychain shared key.
     Sync,
+    /// OVERNIGHT AGENTS (F10): ENQUEUE a task to run while the user is away. Does
+    /// NOT run it here — enqueuing is a local write; the presence-gated
+    /// overnight_task runs it (tool-less) later. Off unless [overnight].enabled.
+    Overnight { task: String, agent: Option<String> },
     /// List pending confirmations + forge proposals (ids + faithful previews).
     Pending,
     /// Approve a SPECIFIC genuinely-parked confirmation by id (the authenticated
@@ -294,6 +298,14 @@ fn decide(raw: &str) -> Decision {
         "state" => Command::State,
         "distill" => Command::Distill,
         "sync" => Command::Sync,
+        "overnight" => {
+            let task = clamp_text(req.prompt);
+            if task.trim().is_empty() {
+                return Decision::BadRequest { reason: "overnight requires a non-empty task" };
+            }
+            let agent = req.agent.filter(|a| !a.trim().is_empty());
+            Command::Overnight { task, agent }
+        }
         "pending" => Command::Pending,
         "confirm" => {
             if req.id.trim().is_empty() {
@@ -492,6 +504,9 @@ pub trait CommandPipeline: Send + Sync {
     /// merge a paired-device bundle, NEVER exporting anything in the clear and
     /// NEVER silently clobbering. Off unless [sync].enabled + a shared key.
     fn sync(&self) -> impl std::future::Future<Output = String> + Send;
+    /// OVERNIGHT AGENTS (F10): ENQUEUE a task for the next away-window. A local
+    /// write only — never runs the task here. Off unless [overnight].enabled.
+    fn overnight(&self, task: &str, agent: Option<&str>) -> impl std::future::Future<Output = String> + Send;
     /// Play a NAMED built-in SFX cue (already validated as a known cue by
     /// [`decide`]). Delegates to the daemon's `trigger_cue`, whose gate handles
     /// switch-off / no-key / offline as an HONEST silent no-op — the returned text
@@ -802,6 +817,10 @@ where
         Command::Sync => {
             telemetry::emit("system", "command.routed", json!({"cmd": "sync"}));
             json!({"ok": true, "reply": pipeline.sync().await})
+        }
+        Command::Overnight { task, agent } => {
+            telemetry::emit("system", "command.routed", json!({"cmd": "overnight"}));
+            json!({"ok": true, "reply": pipeline.overnight(&task, agent.as_deref()).await})
         }
         Command::Pending => {
             json!({"ok": true, "pending": dispatcher.list_pending().await})
@@ -1145,6 +1164,13 @@ impl CommandPipeline for LivePipeline {
         .await
     }
 
+    async fn overnight(&self, task: &str, agent: Option<&str>) -> String {
+        // Local write only: enqueue the task. The presence-gated overnight_task
+        // runs it (tool-less) later — nothing consequential happens here.
+        let agent_name = self.resolve_agent(agent).name.clone();
+        crate::overnight::enqueue(&self.root, task, &agent_name, &chrono::Utc::now().to_rfc3339())
+    }
+
     async fn play_cue(&self, cue: &str) -> String {
         // Delegate to the daemon's `play_cue_for_command`, the Send-safe wrapper
         // around `trigger_cue`. That path performs the SAME cheap offline/switch
@@ -1347,6 +1373,7 @@ mod tests {
             (json!({"token": "t", "cmd": "state"}), true),
             (json!({"token": "t", "cmd": "distill"}), true),
             (json!({"token": "t", "cmd": "sync"}), true),
+            (json!({"token": "t", "cmd": "overnight", "prompt": "look into X"}), true),
             (json!({"token": "t", "cmd": "pending"}), true),
             (json!({"token": "t", "cmd": "confirm", "id": "abc"}), true),
             (json!({"token": "t", "cmd": "deny", "id": "abc"}), true),
@@ -1603,6 +1630,7 @@ mod tests {
         async fn state(&self) -> String { "state".into() }
         async fn distill(&self) -> String { "distill".into() }
         async fn sync(&self) -> String { "sync".into() }
+        async fn overnight(&self, task: &str, _agent: Option<&str>) -> String { format!("overnight:{task}") }
         async fn play_cue(&self, cue: &str) -> String {
             self.play_cue_calls.fetch_add(1, Ordering::SeqCst);
             *self.last_cue.lock().unwrap() = Some(cue.to_string());
@@ -1754,6 +1782,7 @@ mod tests {
             (json!({"token": valid_token(), "cmd": "state"}), "state"),
             (json!({"token": valid_token(), "cmd": "distill"}), "distill"),
             (json!({"token": valid_token(), "cmd": "sync"}), "sync"),
+            (json!({"token": valid_token(), "cmd": "overnight", "prompt": "dig into Y"}), "overnight:dig into Y"),
         ];
         for (line, want) in cases {
             let r = handle_line(&line.to_string(), &pipeline, &dispatcher, &lim, false).await;
@@ -2310,6 +2339,7 @@ mod tests {
             async fn state(&self) -> String { unreachable!() }
             async fn distill(&self) -> String { unreachable!() }
             async fn sync(&self) -> String { unreachable!() }
+            async fn overnight(&self, _t: &str, _a: Option<&str>) -> String { unreachable!() }
             async fn play_cue(&self, _cue: &str) -> String { unreachable!() }
             async fn design_voice(&self, _a: &str, _d: &str, _n: &str) -> String { unreachable!() }
             async fn create_pronunciation(&self, _w: &str, _s: &str, _n: &str) -> String {

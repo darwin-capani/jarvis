@@ -59,6 +59,7 @@ import {
   DistillStatus,
   SyncStatus,
   SceneStatus,
+  OvernightStatus,
   Presence,
   JournalSnapshot,
   SecurityStatus,
@@ -141,6 +142,7 @@ import {
   parseDistillStatus,
   parseSyncStatus,
   parseSceneStatus,
+  parseOvernightStatus,
   parsePresence,
   parseJournalSnapshot,
   parseKnowledgeGraphResult,
@@ -771,6 +773,10 @@ export interface HudState {
    *  needs-model/listening, the sound-event vocabulary, transient events. Null
    *  until the first frame. NEVER retains audio. */
   scene: SceneStatus | null;
+  /** The overnight-agents queue + morning brief (overnight.status, F10):
+   *  off/armed-needs-key/ready, queued/done/failed counts, finished-work
+   *  preview. Null until the first frame. TOOL-LESS — overnight work can't act. */
+  overnight: OvernightStatus | null;
   /** The live honest capability map (capability.map, audit-snapshot cadence): one
    *  row per notable subsystem — ready / armed-but-needs-a-dependency / off — with
    *  `verified` distinguishing a probed dependency from a merely-stated one. Null
@@ -1336,6 +1342,7 @@ export function initialState(): HudState {
     distill: null,
     federatedSync: null,
     scene: null,
+    overnight: null,
     capabilityMap: null,
     presence: null,
     journal: null,
@@ -2610,6 +2617,13 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // scene::emit_status, F6). parseSceneStatus NEVER returns null and pins
       // retains-audio false (a payload can't claim audio is kept).
       return { ...s, scene: parseSceneStatus(env.data) };
+    }
+
+    case "overnight.status": {
+      // The overnight-agents queue + morning brief (main.rs audit_snapshot_task
+      // -> overnight::emit_status, F10). parseOvernightStatus NEVER returns null
+      // and pins runs-tools false (overnight work can never act).
+      return { ...s, overnight: parseOvernightStatus(env.data) };
     }
 
     case "docsearch.status": {
