@@ -477,6 +477,39 @@ impl Memory {
         Ok(rows)
     }
 
+    /// Does `needle` appear anywhere in the RECENT raw conversational record
+    /// (transcripts: utterance + response)? Used by the consensus second look
+    /// for its first-time-recipient advisory — transcripts are the ONE store
+    /// that retains raw recipients (episodes/audit redact them away), so this
+    /// is the honest "as far as I can recall" check. ASCII case-insensitive.
+    /// BOUNDED by construction: transcripts are retention-capped at the newest
+    /// ~2000 rows, so the full scan is trivially cheap. `instr()` rather than
+    /// LIKE — the needle is model-supplied and must not carry pattern
+    /// metacharacters. A needle too short to be meaningful reports `true`
+    /// (seen), the fail-open direction: no advisory is ever fabricated from a
+    /// degenerate lookup.
+    pub async fn transcript_mentions(&self, needle: &str) -> Result<bool> {
+        // ASCII-only lowercase to MATCH SQLite's built-in `lower()` (this build
+        // has no ICU), so both sides fold identically. A Unicode `to_lowercase`
+        // here would fold non-ASCII letters the SQL side leaves alone, missing a
+        // byte-identical recipient and fabricating a false "first-time" note.
+        let n = needle.trim().to_ascii_lowercase();
+        if n.len() < 3 {
+            return Ok(true);
+        }
+        let conn = self.conn.lock().await;
+        let found: i64 = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM transcripts
+                WHERE instr(lower(text), ?1) > 0
+                   OR instr(lower(coalesce(response, '')), ?1) > 0
+             )",
+            params![n],
+            |row| row.get(0),
+        )?;
+        Ok(found != 0)
+    }
+
     pub async fn record_transcript(
         &self,
         wav_path: Option<&str>,
@@ -994,6 +1027,34 @@ mod tests {
             details.iter().any(|d| d.contains("idx_facts_key")),
             "exact-key lookup must SEARCH via idx_facts_key, got plan: {details:?}"
         );
+    }
+
+    /// transcript_mentions (the F9 first-time-recipient check): ASCII
+    /// case-insensitive substring over the raw transcript record, the
+    /// short-needle fail-open guard, and honest emptiness on a fresh store.
+    #[tokio::test]
+    async fn transcript_mentions_is_ascii_case_insensitive_bounded_and_fail_open() {
+        let db = TempDb::new("transcript-mentions");
+        let mem = Memory::open(&db.0).unwrap();
+        // Empty store: nothing has been seen -> false (every recipient is new).
+        assert!(!mem.transcript_mentions("bob@x.io").await.unwrap());
+        // A short needle reports "seen" (fail-open — never fabricate an advisory
+        // from a degenerate lookup).
+        assert!(mem.transcript_mentions("hi").await.unwrap());
+
+        mem.record_transcript(None, "email Bob@X.io about the launch", "intent", "local", Some("Done."))
+            .await
+            .unwrap();
+        // Case-insensitive match against the stored utterance, either column.
+        assert!(mem.transcript_mentions("bob@x.io").await.unwrap());
+        assert!(mem.transcript_mentions("BOB@X.IO").await.unwrap());
+        // The RESPONSE column is scanned too (the park preview names recipients).
+        mem.record_transcript(None, "do the thing", "intent", "local", Some("Sent to carol@y.z."))
+            .await
+            .unwrap();
+        assert!(mem.transcript_mentions("carol@y.z").await.unwrap());
+        // A genuinely-unseen recipient is not found.
+        assert!(!mem.transcript_mentions("stranger@new.tld").await.unwrap());
     }
 
     #[tokio::test]

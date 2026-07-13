@@ -36,6 +36,7 @@ import {
   KnowledgeGraphResult,
   LifeLogDigest,
   LiveGateEvent,
+  ConsensusAdvisory,
   LocalToolsStatus,
   LocalWarmStatus,
   InferencePerfStatus,
@@ -120,6 +121,7 @@ import {
   parseMacroReplayStep,
   parsePolicySnapshot,
   liveGateEventFrom,
+  parseConsensusAdvisory,
   parseVerifyStatus,
   verifyStatusIsEmpty,
   parseCrossCheckStatus,
@@ -882,6 +884,19 @@ export interface HudState {
    *  audit.snapshot frames so the panel does not wait for the next poll. SECRET-
    *  FREE: the chokepoint events carry only tool/agent + an mcp/via marker. */
   liveGate: LiveGateEvent[];
+  /** The ADVISORY-ONLY second look for the currently PARKED action
+   *  (consensus.advisory): reversibility / first-time-recipient / risk notes,
+   *  also spoken with the confirmation prompt. Cleared when the pending
+   *  resolves or a new park supersedes it. The gate itself is UNCHANGED by
+   *  anything here — advisory only, never approve/deny. */
+  consensusAdvisory: ConsensusAdvisory | null;
+  /** Wall-clock ms the current advisory arrived. A parked action has a hard
+   *  ~120s TTL and several resolution paths clear it silently (barge-in,
+   *  lockdown, TTL expiry, command-channel deny), so the advisory is treated
+   *  as STALE past CONSENSUS_ADVISORY_TTL_MS by `activeConsensusAdvisory` —
+   *  the panel never claims an action awaits confirm once its pending is gone.
+   *  0 when there is no advisory. */
+  consensusAdvisoryAt: number;
   /** The user-set POLICY surface (policy.snapshot): the per-action rules
    *  (tool [+agent] [+recipient] -> always|never|ask) in the daemon's
    *  deterministic order, plus the [policy] on/off posture. Null until the daemon
@@ -1160,6 +1175,21 @@ export const APP_FEED_ITEM_CAP = 30;
  *  hash-chained record lives daemon-side (state/audit.db) and is the source of
  *  truth; this is just the immediate-reaction surface. */
 export const LIVE_GATE_CAP = 24;
+/** A parked confirmation has a hard 120s TTL daemon-side; past this the pending
+ *  is gone by every path (including the silent ones), so its second-look
+ *  advisory is retired even without a clearing event. Slightly beyond 120s so
+ *  a live pending is never hidden early. */
+export const CONSENSUS_ADVISORY_TTL_MS = 125_000;
+
+/** The second-look advisory to SHOW, or null when there is none or it has gone
+ *  stale. PURE (takes `now`), so a silently-resolved pending (barge-in,
+ *  lockdown, TTL expiry, command-channel deny — none of which emit a clearing
+ *  event) never leaves the panel claiming an action still awaits confirm. */
+export function activeConsensusAdvisory(state: HudState, nowMs: number): ConsensusAdvisory | null {
+  if (state.consensusAdvisory === null) return null;
+  if (nowMs - state.consensusAdvisoryAt > CONSENSUS_ADVISORY_TTL_MS) return null;
+  return state.consensusAdvisory;
+}
 /** Cap on the live proactive-SUGGESTIONS feed the HUD keeps in view. A VIEW
  *  bound — the daemon's detector is itself bounded; this just keeps the panel
  *  from growing without limit if many distinct patterns clear the threshold. */
@@ -1292,6 +1322,8 @@ export function initialState(): HudState {
     lifelog: null,
     audit: null,
     liveGate: [],
+    consensusAdvisory: null,
+    consensusAdvisoryAt: 0,
     policy: null,
     voiceId: voiceIdInitial(),
     modelTier: modelTierInitial(),
@@ -1436,7 +1468,15 @@ export function reduce(state: HudState, action: HudAction): HudState {
       // disconnect (before pipeline.completed/route.failed) would otherwise leave
       // `activeAgent` set forever — a phantom "ACTIVE: <agent>" chip + agent core
       // hue after reconnect, violating the "activeAgent is null when idle" invariant.
-      return setCore({ ...state, connected: false, activeAgent: null }, "offline", action.at);
+      // Also drop any pending second-look advisory: the daemon's confirm slot
+      // is process memory, so a link drop / daemon restart orphans it — the
+      // panel must not keep claiming an action awaits a confirm that can no
+      // longer be given (same phantom-state class as activeAgent above).
+      return setCore(
+        { ...state, connected: false, activeAgent: null, consensusAdvisory: null, consensusAdvisoryAt: 0 },
+        "offline",
+        action.at,
+      );
     }
     case "tick": {
       let next = state;
@@ -2837,10 +2877,43 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // (never a target/input). Folded newest-first into a bounded ring; the
       // durable, hash-chained record stays daemon-side. A malformed event that
       // does not map to a gate verdict is ignored (same reference).
+      // A new PARK also supersedes any prior pending (single slot), so the
+      // second-look advisory — which describes the pending action — goes stale
+      // with it; the fresh consensus.advisory event (if any) follows the park
+      // immediately on the same stream.
+      const supersede = env.event === "confirm.parked" && s.consensusAdvisory !== null;
       const seq = s.seq + 1;
       const ev = liveGateEventFrom(env.event, env.data, env.ts, seq);
-      if (ev === null) return s;
-      return { ...s, seq, liveGate: [ev, ...s.liveGate].slice(0, LIVE_GATE_CAP) };
+      if (ev === null) {
+        return supersede ? { ...s, consensusAdvisory: null, consensusAdvisoryAt: 0 } : s;
+      }
+      const base = { ...s, seq, liveGate: [ev, ...s.liveGate].slice(0, LIVE_GATE_CAP) };
+      return supersede ? { ...base, consensusAdvisory: null, consensusAdvisoryAt: 0 } : base;
+    }
+
+    case "consensus.advisory": {
+      // The ADVISORY-ONLY second look for the just-parked action (daemon
+      // consensus.rs -> the built-in park site). parseConsensusAdvisory returns
+      // null for an empty/malformed advisory — dropped, never fabricated. The
+      // gate itself is UNCHANGED by anything here. Stamp the arrival so the
+      // client TTL can retire a stale advisory whose pending died silently.
+      const advisory = parseConsensusAdvisory(env.data);
+      if (advisory === null) return s;
+      return { ...s, consensusAdvisory: advisory, consensusAdvisoryAt: at };
+    }
+
+    case "confirm.affirmed":
+    case "confirm.denied":
+    case "confirm.dropped_unrelated":
+    case "confirm.replayed": {
+      // The pending resolved — the advisory describes a pending that no longer
+      // exists. `confirm.replayed` covers the HUD/command-channel confirm path
+      // (which actually EXECUTES the action) as well as the voice replay; the
+      // voice-only affirmed/denied/dropped_unrelated cover cancel + pass-through.
+      // Silent resolutions (barge-in, lockdown, TTL expiry, command-channel
+      // deny) are caught by the client TTL in `activeConsensusAdvisory`.
+      if (s.consensusAdvisory === null) return s;
+      return { ...s, consensusAdvisory: null, consensusAdvisoryAt: 0 };
     }
 
     case "audit.truncated": {

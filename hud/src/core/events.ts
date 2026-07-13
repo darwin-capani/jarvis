@@ -7066,6 +7066,48 @@ export function parseResearchProvenance(
   };
 }
 
+/* ------------------------------------------------------------------------ *
+ * ADVERSARIAL SECOND LOOK (consensus.advisory) — the ADVISORY-ONLY critique  *
+ * computed when a consequential action parks (daemon consensus.rs):          *
+ * reversibility ("once done, I can't undo this — …"), first-time recipient,  *
+ * targeted risk notes. The notes are ALSO spoken with the confirmation       *
+ * prompt; this event lets the HUD show them verbatim (the spoken path is     *
+ * model-mediated and may paraphrase). SECRET-FREE: notes arrive redacted +   *
+ * bounded daemon-side, and are capped/bounded again here (the wire is never  *
+ * trusted). HONESTY: advisory only — the gate is UNCHANGED; nothing here     *
+ * approves, denies, or executes anything.                                    *
+ * ------------------------------------------------------------------------ */
+
+/** The second-look notes for the currently parked action. */
+export interface ConsensusAdvisory {
+  tool: string;
+  agent: string;
+  notes: string[];
+}
+
+/** Defensive caps mirroring the daemon's bounds — the wire is never trusted. */
+const ADVISORY_NOTES_CAP = 4;
+const ADVISORY_NOTE_CHARS = 240;
+
+/** Parse a `consensus.advisory` payload, or null when it names no tool or
+ *  carries no notes (an empty advisory is meaningless — the reducer drops it
+ *  rather than clearing or fabricating state). */
+export function parseConsensusAdvisory(
+  data: Record<string, unknown>,
+): ConsensusAdvisory | null {
+  const tool = str(data, "tool");
+  if (tool === null || tool === "") return null;
+  const raw = data["notes"];
+  const notes = Array.isArray(raw)
+    ? raw
+        .slice(0, ADVISORY_NOTES_CAP)
+        .filter((n): n is string => typeof n === "string" && n.length > 0)
+        .map((n) => n.slice(0, ADVISORY_NOTE_CHARS))
+    : [];
+  if (notes.length === 0) return null;
+  return { tool, agent: str(data, "agent") ?? "", notes };
+}
+
 /* ======================================================================== *
  * CONSEQUENTIAL GATE — AUDIT LOG + POLICY                                    *
  *                                                                            *

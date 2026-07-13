@@ -6620,6 +6620,15 @@ pub async fn execute_tool(
 
         // ASK path with master ON: PARK for a spoken human "yes" (unchanged).
         if master_on {
+            // ADVERSARIAL SECOND LOOK (F9): ADVISORY-ONLY notes computed before
+            // the park — reversibility, first-time recipient, targeted risks.
+            // They ride ONLY the returned spoken prompt (prepended, so the
+            // say-'confirm' clause stays last) and a redacted telemetry event;
+            // pending.preview is untouched, keeping the policy recipient match
+            // (already evaluated above), the audit target, the pending listing,
+            // and the journal byte-identical. Fail-open by construction: an
+            // empty note list leaves the prompt byte-identical too.
+            let advisories = crate::consensus::second_look(name, input, memory).await;
             // Park THE EXACT original input (not the confirm-stripped copy) so the
             // replay fires precisely what the user was shown. New consequential
             // invocation replaces any prior pending (single slot).
@@ -6633,6 +6642,7 @@ pub async fn execute_tool(
                 // park() (re)derives the stable content id; leave it empty here.
                 id: String::new(),
             });
+            let prompt = crate::consensus::compose_prompt(&prompt, &advisories);
             crate::audit::record_global(
                 namespace, name, &preview,
                 crate::policy::Decision::Ask, crate::audit::Outcome::Parked,
@@ -6642,6 +6652,17 @@ pub async fn execute_tool(
                 "confirm.parked",
                 json!({"tool": name, "agent": namespace}),
             );
+            if !advisories.is_empty() {
+                telemetry::emit(
+                    "system",
+                    "consensus.advisory",
+                    json!({
+                        "tool": name,
+                        "agent": namespace,
+                        "notes": crate::consensus::wire_notes(&advisories),
+                    }),
+                );
+            }
             return (prompt, false);
         }
         // ASK path with master OFF (the shipped default): return the faithful

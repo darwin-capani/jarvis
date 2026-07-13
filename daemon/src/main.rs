@@ -30,6 +30,13 @@ mod command;
 mod config;
 mod confirm;
 mod connector;
+// ADVERSARIAL SECOND LOOK (F9): an ADVISORY-ONLY critique spoken WITH the
+// confirmation prompt when a consequential action parks — reversibility (via
+// the undo journal's inverse derivation), first-time-recipient (bounded raw
+// transcript recall), and targeted risk notes. NEVER changes gate behavior:
+// no auto-approve, no auto-deny; every failure fails open to "no note".
+// Hermetically tested in consensus.rs.
+mod consensus;
 mod crypto;
 // MULTI-SPEAKER DIARIZATION (#31): the PURE mapper that CONSUMES the speaker labels the
 // ElevenLabs Scribe STT backend reports into a per-speaker diarized transcript, and the

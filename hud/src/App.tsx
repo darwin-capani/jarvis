@@ -7,6 +7,7 @@ import AlertPanel from "./components/AlertPanel";
 import AudioIoPanel from "./components/AudioIoPanel";
 import AnswerSourcesPanel from "./components/AnswerSourcesPanel";
 import AuditPanel from "./components/AuditPanel";
+import SecondLookPanel from "./components/SecondLookPanel";
 import ChartPanel from "./components/ChartPanel";
 import CodeIntelPanel from "./components/CodeIntelPanel";
 import CommandDeck from "./components/CommandDeck";
@@ -68,7 +69,7 @@ import { audioStore } from "./core/audioStore";
 import { bool, num, parseEnvelope } from "./core/events";
 import { hasSeenOnboarding, markOnboardingSeen } from "./core/onboarding";
 import type { OnboardingRouteTarget } from "./core/onboarding";
-import { initialState, reduce } from "./core/state";
+import { activeConsensusAdvisory, initialState, reduce } from "./core/state";
 import {
   initialTakeoverState,
   isExitKey,
@@ -624,6 +625,7 @@ export default function App() {
           <PostureDashboardPanel posture={state.posture} />
           <ConnectorMarketplacePanel mcp={state.mcp} />
           <ExtensibilityPanel webhooks={state.webhooks} plugins={state.plugins} />
+          <SecondLookPanel advisory={activeConsensusAdvisory(state, nowTick.getTime())} />
           <AuditPanel audit={state.audit} liveGate={state.liveGate} />
           <JournalPanel journal={state.journal} />
           <ActionPanel action={state.actionSurface} />
