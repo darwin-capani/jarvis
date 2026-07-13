@@ -122,6 +122,13 @@ pub struct Config {
     /// INERT without a paired peer + a shared key (Keychain only, never config).
     /// The transport is built-but-inert; a bundle never leaves the box unsealed.
     pub sync: SyncConfig,
+    /// [scene] — ACOUSTIC SCENE AWARENESS (F6, scene.rs): classify the ambient
+    /// soundscape into named sound EVENTS (doorbell, knock, alarm, glass-break…),
+    /// distinct from speech capture. SHIPS OFF (continuous ambient listening is a
+    /// privacy-consequential act, like [security]/[distill]/[sync]); INERT without
+    /// a bundled classifier model (reported honestly, never faked). NEVER retains
+    /// raw audio — only event labels + confidences leave the classifier.
+    pub scene: SceneConfig,
     /// [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs): an INBOUND network
     /// surface. `enabled` SHIPS ON (full-power default) — INERT WITHOUT MAPPINGS +
     /// SECRET: `mappings` ship EMPTY (an unmapped event is rejected, never guessed)
@@ -583,6 +590,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("security", &["encrypt_memory"]),
     ("distill", &["enabled", "python", "base_model", "iters"]),
     ("sync", &["enabled", "peer_endpoint"]),
+    ("scene", &["enabled", "confidence_floor"]),
     // [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs). An INBOUND network surface.
     // `enabled` SHIPS ON (full-power default) — INERT WITHOUT MAPPINGS + SECRET: even
     // on, an unmapped event is rejected and the HMAC secret must be present in the
@@ -2469,6 +2477,29 @@ impl Default for SyncConfig {
     }
 }
 
+/// [scene] — ACOUSTIC SCENE AWARENESS (F6, scene.rs). Classify the ambient
+/// soundscape into named sound events. `enabled` is a privacy master switch:
+/// continuous ambient classification is opt-in, so it SHIPS OFF.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SceneConfig {
+    /// Master switch. SHIPS OFF (false): with it off no classification runs and
+    /// the status honestly reports "off". Even ON, the pipeline stays inert
+    /// without a bundled classifier model (reported as needs-dependency).
+    pub enabled: bool,
+    /// Minimum classifier confidence for a detection to surface as an event
+    /// (0.0–1.0). Detections below the floor are dropped, never shown.
+    pub confidence_floor: f64,
+}
+
+impl Default for SceneConfig {
+    fn default() -> Self {
+        // OFF by default — continuous ambient listening is a privacy-consequential
+        // act; opt-in only. A conservative floor keeps low-confidence noise out.
+        Self { enabled: false, confidence_floor: 0.6 }
+    }
+}
+
 /// [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs): an INBOUND network surface
 /// that lets an external system trigger a JARVIS intent. The MOST security-
 /// sensitive thing added here, so it ships with the strongest fences:
@@ -2998,6 +3029,7 @@ impl Config {
             security: section(&table, "security", &mut issues),
             distill: section(&table, "distill", &mut issues),
             sync: section(&table, "sync", &mut issues),
+            scene: section(&table, "scene", &mut issues),
             webhooks: section(&table, "webhooks", &mut issues),
             plugin_sdk: section(&table, "plugin_sdk", &mut issues),
             power: section(&table, "power", &mut issues),
@@ -3894,6 +3926,33 @@ mod tests {
         assert!(
             issues.iter().any(|i| i.contains("distill.enabledd")),
             "typo'd distill key must be reported: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn scene_ships_off_parses_fully_and_catches_a_typo() {
+        // Ships OFF (continuous ambient classification is a privacy opt-in), with a
+        // conservative confidence floor.
+        let (cfg, issues) = Config::parse("");
+        assert!(issues.is_empty());
+        assert!(!cfg.scene.enabled, "acoustic scene awareness must ship OFF");
+        assert_eq!(cfg.scene.confidence_floor, 0.6);
+
+        let raw = r#"
+            [scene]
+            enabled = true
+            confidence_floor = 0.8
+        "#;
+        let (cfg, issues) = Config::parse(raw);
+        assert!(issues.is_empty(), "scene keys must be known: {issues:?}");
+        assert!(cfg.scene.enabled);
+        assert_eq!(cfg.scene.confidence_floor, 0.8);
+
+        // A typo'd scene key is reported, not silently swallowed.
+        let (_cfg, issues) = Config::parse("[scene]\nconfidence_flooor = 0.9\n");
+        assert!(
+            issues.iter().any(|i| i.contains("scene.confidence_flooor")),
+            "typo'd scene key must be reported: {issues:?}"
         );
     }
 

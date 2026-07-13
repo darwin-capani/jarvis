@@ -33,6 +33,7 @@ import PresencePanel from "./components/PresencePanel";
 import CapabilityStatusPanel from "./components/CapabilityStatusPanel";
 import DistillPanel from "./components/DistillPanel";
 import SyncPanel from "./components/SyncPanel";
+import ScenePanel from "./components/ScenePanel";
 import AmbientMode from "./components/AmbientMode";
 import { isAtRest } from "./core/ambient";
 import TccSentinelPanel from "./components/TccSentinelPanel";
@@ -614,6 +615,7 @@ export default function App() {
           <CapabilityStatusPanel map={state.capabilityMap} />
           <DistillPanel distill={state.distill} />
           <SyncPanel sync={state.federatedSync} />
+          <ScenePanel scene={state.scene} />
           <CapabilityAtlasPanel atlas={state.capabilityAtlas} />
           <AppDeckPanel
             runningApps={state.runningApps}

@@ -9561,3 +9561,23 @@ body,
 .sync-facts { font-size: 0.66em; }
 .sync-conflicts { font-size: 0.7em; color: var(--warn-amber); overflow-wrap: anywhere; }
 .sync-foot { margin-top: 4px; }
+
+/* Acoustic scene awareness (scene.status, F6): ambient sound-event sensor.
+   OFF (dim) / ARMED (amber — needs a bundled model) / LISTENING (green).
+   Never retains audio — only event labels are shown. */
+.scene-body { display: flex; flex-direction: column; gap: 5px; }
+.scene-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.scene-pill {
+  font-size: 0.62em; letter-spacing: 0.06em; padding: 1px 6px;
+  border-radius: 3px; border: 1px solid currentColor; white-space: nowrap;
+}
+.scene-pill.off { color: var(--fg-dim, rgba(255, 255, 255, 0.4)); }
+.scene-pill.armed { color: var(--warn-amber); }
+.scene-pill.ready { color: var(--learn-green); }
+.scene-count { font-size: 0.66em; }
+.scene-events { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.scene-event { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 0.72em; }
+.scene-event-label { color: var(--learn-green); text-transform: capitalize; }
+.scene-event-conf { font-size: 0.9em; }
+.scene-vocab { font-size: 0.68em; overflow-wrap: anywhere; }
+.scene-foot { margin-top: 4px; }

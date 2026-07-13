@@ -201,6 +201,7 @@ mod rewind;
 // their OWN devices. Real AES-256-GCM sealed bundles + a conflict-aware merge
 // that NEVER silently clobbers; the network transport is armed-but-inert. Ships
 // OFF. Hermetically tested in sync.rs.
+mod scene;
 mod sync;
 mod router;
 mod screen_context;
@@ -910,6 +911,11 @@ async fn audit_snapshot_task(cfg: Arc<Config>, memory: Arc<Memory>, root: PathBu
         // present, pending conflicts, and that deletions don't propagate.
         // READ-ONLY — counts + probes, runs no sync.
         sync::emit_status(&cfg, &memory, &root).await;
+        // The HUD's ScenePanel shows the acoustic-scene sensor's honest state
+        // (scene.rs, F6): off/armed-needs-model/listening, the sound-event
+        // vocabulary, and that audio is NEVER retained. READ-ONLY — probes for a
+        // bundled model, runs no classification (the live tap is device-gated).
+        scene::emit_status(&cfg, &root).await;
         // The HUD's JournalPanel shows the session's executed consequential
         // actions with their honest undo verdicts (journal.rs). READ-ONLY over
         // the in-process ledger — recording happens at the execution
