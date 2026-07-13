@@ -268,6 +268,96 @@ pub fn validate_claims<'a>(claims: &'a [Claim], sources: &[Source]) -> (Vec<&'a 
     (grounded, ungrounded)
 }
 
+// ---------------------------------------------------------------------------
+// Provenance ledger payload (F4) — the wire view of the grounding split
+// ---------------------------------------------------------------------------
+
+/// Bounds for the `research.provenance` payload — the same bounded-snippet
+/// discipline every HUD payload follows (answer.annotated snippets are 200
+/// chars; notebook cards 280).
+const PROVENANCE_QUESTION_CHARS: usize = 160;
+const PROVENANCE_CLAIM_CHARS: usize = 200;
+const PROVENANCE_TITLE_CHARS: usize = 80;
+/// URLs are bounded like every other field — a scraped href can be
+/// arbitrarily long (multi-KB tracking parameters), and redaction alone never
+/// truncates.
+const PROVENANCE_URL_CHARS: usize = 200;
+/// Claim rows per payload. Ungrounded rows are placed FIRST so the signal —
+/// what was set aside — is never truncated away by grounded volume.
+const PROVENANCE_CLAIMS_CAP: usize = 12;
+
+/// Redact-then-bound one text for the wire: redaction first (so a truncation
+/// can never split a token the redactor would have caught), then a char bound
+/// with an ellipsis.
+fn wire_text(s: &str, cap: usize) -> String {
+    let redacted = crate::optimize::redact(s);
+    if redacted.chars().count() <= cap {
+        redacted
+    } else {
+        let mut out: String = redacted.chars().take(cap).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// Build the SECRET-FREE `research.provenance` payload for one completed
+/// research run: the full grounded/ungrounded COUNTS (never truncated) plus
+/// bounded per-claim rows mapping each claim to the source that backs it —
+/// or flagging it as set aside. WIRE CONTRACT (mirrored by
+/// hud/src/core/events.ts::parseResearchProvenance; exact field names pinned
+/// by tests on both sides):
+///
+///   { "question", "sources_fetched", "claims_total", "claims_grounded",
+///     "claims_ungrounded", "claims_omitted", "truncated",
+///     "claims": [ { "text", "grounded", "source_id", "source_title",
+///                   "source_url" } ] }
+///
+/// HONESTY NOTES: grounded claim text is already user-visible verbatim in the
+/// rendered answer; ungrounded text is today reduced to a bare count in prose
+/// ("I set aside N points") — this payload is deliberately the one place the
+/// SET-ASIDE claims are visible, because "what was withheld and why" is
+/// exactly what a provenance ledger owes the user. All text is redacted
+/// (optimize::redact) then bounded; URLs pass through the same redactor (a
+/// credentialed URL is masked). PURE — testable with no I/O.
+pub fn provenance_payload(report: &ResearchReport) -> serde_json::Value {
+    let (grounded, ungrounded) = validate_claims(&report.claims, &report.sources);
+
+    let row = |c: &Claim, is_grounded: bool| -> serde_json::Value {
+        let source = report.sources.iter().find(|s| s.id == c.source_id);
+        serde_json::json!({
+            "text": wire_text(&c.text, PROVENANCE_CLAIM_CHARS),
+            "grounded": is_grounded,
+            "source_id": c.source_id,
+            "source_title": source.map(|s| wire_text(&s.title, PROVENANCE_TITLE_CHARS)).unwrap_or_default(),
+            "source_url": source.map(|s| wire_text(&s.url, PROVENANCE_URL_CHARS)).unwrap_or_default(),
+        })
+    };
+
+    // Ungrounded first — the set-aside claims are the signal and survive the
+    // cap ahead of any grounded volume; grounded rows fill the remainder. A
+    // run with MORE set-aside claims than the cap itself (a fully-uncited
+    // model reply) still drops rows — `claims_omitted` DISCLOSES exactly how
+    // many, so the ledger never presents a capped row list as complete.
+    let claims: Vec<serde_json::Value> = ungrounded
+        .iter()
+        .map(|c| row(c, false))
+        .chain(grounded.iter().map(|c| row(c, true)))
+        .take(PROVENANCE_CLAIMS_CAP)
+        .collect();
+    let claims_omitted = report.claims.len().saturating_sub(claims.len());
+
+    serde_json::json!({
+        "question": wire_text(&report.question, PROVENANCE_QUESTION_CHARS),
+        "sources_fetched": report.sources.len(),
+        "claims_total": report.claims.len(),
+        "claims_grounded": grounded.len(),
+        "claims_ungrounded": ungrounded.len(),
+        "claims_omitted": claims_omitted,
+        "truncated": report.truncated,
+        "claims": claims,
+    })
+}
+
 /// Render a research report into one spoken-/read-friendly CITED answer. Each
 /// grounded claim is rendered with a bracketed citation marker `[n]` and the
 /// bibliography lists each source `[n] title — url`. Ungrounded claims are NOT
@@ -1075,5 +1165,151 @@ mod tests {
             ],
             "list markers stripped and blank lines dropped"
         );
+    }
+
+    // ---- provenance_payload (F4 wire contract) ------------------------------
+
+    fn prov_report() -> ResearchReport {
+        ResearchReport {
+            question: "What causes inflation?".to_string(),
+            sources: vec![
+                Source {
+                    id: 1,
+                    url: "https://example.com/a".to_string(),
+                    title: "Money and prices".to_string(),
+                    excerpt: "…".to_string(),
+                },
+                Source {
+                    id: 2,
+                    url: "https://example.com/b".to_string(),
+                    title: "Supply shocks".to_string(),
+                    excerpt: "…".to_string(),
+                },
+            ],
+            claims: vec![
+                Claim::new("Monetary expansion raises prices", 1),
+                Claim::new("An unsourced assertion", 0),
+                Claim::new("Supply shocks push costs up", 2),
+                Claim::new("Cites a source that was never fetched", 9),
+            ],
+            planned_subqueries: 3,
+            pursued_subqueries: 3,
+            truncated: false,
+        }
+    }
+
+    /// The exact wire shape the HUD parser mirrors: field names, the honest
+    /// counts, and ungrounded rows FIRST (the set-aside signal survives any cap).
+    #[test]
+    fn provenance_payload_pins_the_wire_shape_with_ungrounded_first() {
+        let payload = provenance_payload(&prov_report());
+        assert_eq!(payload["question"], "What causes inflation?");
+        assert_eq!(payload["sources_fetched"], 2);
+        assert_eq!(payload["claims_total"], 4);
+        assert_eq!(payload["claims_grounded"], 2);
+        assert_eq!(payload["claims_ungrounded"], 2);
+        assert_eq!(payload["claims_omitted"], 0);
+        assert_eq!(payload["truncated"], false);
+        let keys: Vec<&String> = payload.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            [
+                "claims",
+                "claims_grounded",
+                "claims_omitted",
+                "claims_total",
+                "claims_ungrounded",
+                "question",
+                "sources_fetched",
+                "truncated"
+            ]
+        );
+
+        let claims = payload["claims"].as_array().unwrap();
+        assert_eq!(claims.len(), 4);
+        // Ungrounded first: the uncited claim and the phantom-source claim.
+        assert_eq!(claims[0]["grounded"], false);
+        assert_eq!(claims[0]["text"], "An unsourced assertion");
+        assert_eq!(claims[0]["source_id"], 0);
+        assert_eq!(claims[0]["source_title"], "");
+        assert_eq!(claims[1]["grounded"], false);
+        assert_eq!(claims[1]["source_id"], 9);
+        assert_eq!(claims[1]["source_title"], "", "a phantom source id resolves to nothing");
+        // Grounded rows carry the real backing source.
+        assert_eq!(claims[2]["grounded"], true);
+        assert_eq!(claims[2]["source_title"], "Money and prices");
+        assert_eq!(claims[2]["source_url"], "https://example.com/a");
+        let row_keys: Vec<&String> = claims[0].as_object().unwrap().keys().collect();
+        assert_eq!(row_keys, ["grounded", "source_id", "source_title", "source_url", "text"]);
+    }
+
+    /// The payload is bounded and redacted: long texts truncate with an
+    /// ellipsis, the row cap holds with ungrounded rows surviving, and a
+    /// credentialed URL or an email inside a claim is masked.
+    #[test]
+    fn provenance_payload_is_bounded_and_redacted() {
+        let mut report = prov_report();
+        report.claims = Vec::new();
+        // A credentialed source URL: any grounded row citing it must mask it.
+        report.sources[1].url = "https://user:hunter2@example.com/b".to_string();
+        report.claims.push(Claim::new("cites the credentialed source", 2));
+        // 19 more grounded: far past the row cap.
+        for i in 0..19 {
+            report.claims.push(Claim::new(format!("grounded fact {i}"), 1));
+        }
+        // 5 ungrounded — including a 500-char text and an email-bearing one —
+        // ALL must survive the cap (ungrounded-first) and be bounded/redacted.
+        for i in 0..3 {
+            report.claims.push(Claim::new(format!("set aside {i}"), 0));
+        }
+        report.claims.push(Claim::new("x".repeat(500), 0));
+        report.claims.push(Claim::new("Mail alice@example.com about this", 0));
+
+        let payload = provenance_payload(&report);
+        let rows = payload["claims"].as_array().unwrap();
+        assert_eq!(rows.len(), 12, "row cap");
+        // Every ungrounded row survives, ahead of the grounded volume.
+        assert_eq!(
+            rows.iter().filter(|r| r["grounded"] == false).count(),
+            5,
+            "set-aside rows are never truncated away"
+        );
+        assert!(rows[..5].iter().all(|r| r["grounded"] == false), "ungrounded first");
+        // The honest counts are NOT capped, and the row drop is DISCLOSED.
+        assert_eq!(payload["claims_total"], 25);
+        assert_eq!(payload["claims_grounded"], 20);
+        assert_eq!(payload["claims_omitted"], 13, "25 claims, 12 rows shipped");
+        let text = payload.to_string();
+        assert!(!text.contains("alice@example.com"), "emails masked: {text}");
+        assert!(!text.contains("hunter2"), "credentialed URL masked");
+        // Long text bounded with an ellipsis.
+        let long_row = rows.iter().find(|r| r["text"].as_str().unwrap().starts_with('x')).unwrap();
+        assert!(long_row["text"].as_str().unwrap().chars().count() <= 201);
+        assert!(long_row["text"].as_str().unwrap().ends_with('…'));
+        // URLs are bounded like every other field (a scraped href can carry
+        // multi-KB tracking params; redaction alone never truncates).
+        let grounded_row = rows.iter().find(|r| r["grounded"] == true).unwrap();
+        assert!(grounded_row["source_url"].as_str().unwrap().chars().count() <= 201);
+    }
+
+    /// A fully-uncited model reply: MORE set-aside claims than the row cap.
+    /// The rows that ship are all set-aside, and the drop is DISCLOSED via
+    /// claims_omitted — a capped list is never presented as complete.
+    #[test]
+    fn provenance_payload_discloses_when_even_set_aside_rows_exceed_the_cap() {
+        let mut report = prov_report();
+        report.claims = (0..20).map(|i| Claim::new(format!("uncited line {i}"), 0)).collect();
+        let payload = provenance_payload(&report);
+        let rows = payload["claims"].as_array().unwrap();
+        assert_eq!(rows.len(), 12);
+        assert!(rows.iter().all(|r| r["grounded"] == false));
+        assert_eq!(payload["claims_ungrounded"], 20);
+        assert_eq!(payload["claims_omitted"], 8, "the 8 dropped set-aside rows are disclosed");
+        // A long URL on a source is also bounded (belt for the url cap).
+        let mut r2 = prov_report();
+        r2.sources[0].url = format!("https://example.com/?q={}", "y".repeat(1000));
+        let p2 = provenance_payload(&r2);
+        let g = p2["claims"].as_array().unwrap().iter().find(|r| r["source_id"] == 1).unwrap();
+        assert!(g["source_url"].as_str().unwrap().chars().count() <= 201);
     }
 }

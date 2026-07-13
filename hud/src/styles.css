@@ -9468,3 +9468,25 @@ body,
 .posture-pill.exposed { color: var(--warn-amber); }
 .posture-pill.unknown { color: var(--fg-dim, rgba(255, 255, 255, 0.4)); }
 .posture-foot { margin-top: 8px; }
+
+/* Research provenance ledger (research.provenance): per-run grounding split.
+   ALL GROUNDED (green) only when nothing was set aside; any unsourced claim
+   turns the run amber and is listed under an explicit SET ASIDE flag. */
+.provenance-body { display: flex; flex-direction: column; gap: 10px; }
+.provenance-run { display: flex; flex-direction: column; gap: 3px; }
+.provenance-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.provenance-pill {
+  font-size: 0.62em; letter-spacing: 0.06em; padding: 1px 6px;
+  border-radius: 3px; border: 1px solid currentColor; white-space: nowrap;
+}
+.provenance-pill.clean { color: var(--learn-green); }
+.provenance-pill.flagged { color: var(--warn-amber); }
+.provenance-question { font-size: 0.78em; overflow-wrap: anywhere; }
+.provenance-meta { font-size: 0.64em; }
+.provenance-claims { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.provenance-claim { font-size: 0.7em; display: flex; flex-direction: column; gap: 1px; }
+.provenance-claim.set-aside .provenance-text { opacity: 0.75; font-style: italic; }
+.provenance-flag { font-size: 0.85em; letter-spacing: 0.06em; color: var(--warn-amber); }
+.provenance-source { font-size: 0.85em; }
+.provenance-text { overflow-wrap: anywhere; }
+.provenance-foot { margin-top: 4px; }

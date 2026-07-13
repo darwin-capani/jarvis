@@ -10469,6 +10469,20 @@ async fn run_sage_research(question: &str, depth: Option<usize>) -> String {
     // run). The notebook SAVE intent derives its citations structurally from this
     // report's grounded sources, so persistence stays never-fabricate.
     if let Some(report) = report {
+        // PROVENANCE LEDGER (F4): emit the per-run grounded/ungrounded split
+        // for the HUD ledger. This is the ONE site with the full structured
+        // report in hand — render_report flattens the split to prose (only a
+        // set-aside COUNT survives) and the notebook persists only grounded
+        // citations, so the ledger must be fed here or never. SECRET-FREE:
+        // the payload is redacted + bounded by research::provenance_payload.
+        // A degraded run (report=None: nothing fetched / synthesis failed)
+        // emits nothing — there are no claims to ledger, and the rendered
+        // prose already says so honestly.
+        telemetry::emit(
+            "system",
+            "research.provenance",
+            crate::research::provenance_payload(&report),
+        );
         crate::notebook::record_last_run(crate::notebook::LastResearchRun {
             topic: question.to_string(),
             report,
