@@ -44,6 +44,7 @@ import {
   TccSentinel,
   IntrospectStatus,
   IntrospectCapability,
+  PostureSnapshot,
   AttributionHealth,
   McpStatus,
   WebhookSurface,
@@ -149,6 +150,7 @@ import {
   introspectModattestLine,
   introspectSecurityLine,
   parseIntrospectCapabilities,
+  parsePostureSnapshot,
   mergeIntrospectAlert,
   appManifestIssueLine,
   APP_MANIFEST_ISSUE_CAP,
@@ -659,6 +661,11 @@ export interface HudState {
   /** Per-app DECLARED capability inventory (introspect.capabilities): the static
    *  "what can each app do" audit from manifests. Secret-free. REVIEW-ONLY. */
   introspectCapabilities: IntrospectCapability[];
+  /** The machine security posture (posture.snapshot, 30-min cadence): FileVault /
+   *  firewall / SIP / pending-updates verdicts from the read-only status
+   *  commands. Null until the first frame. REVIEW-ONLY — the daemon reports;
+   *  turning a protection on is the user's own action in System Settings. */
+  posture: PostureSnapshot | null;
   /** The ambient capability-health snapshot (attribution.health): how many of
    *  JARVIS's own agents/skills are reliable vs failing, with the failing ones
    *  flagged. Null until the sentinel emits. PROPOSE-ONLY (flags, never acts). */
@@ -1250,6 +1257,7 @@ export function initialState(): HudState {
     introspect: null,
     introspectAlerts: [],
     introspectCapabilities: [],
+    posture: null,
     attributionHealth: null,
     security: null,
     webhooks: webhookSurfaceInitial(),
@@ -2293,6 +2301,14 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // the list wholesale each tick (it is a full inventory, not incremental).
       // REVIEW-ONLY and SECRET-FREE.
       return { ...s, introspectCapabilities: parseIntrospectCapabilities(env.data) };
+    }
+
+    case "posture.snapshot": {
+      // Machine security posture (main.rs::posture_snapshot_task ->
+      // posture::emit_snapshot, 30-min cadence). parsePostureSnapshot NEVER
+      // returns null and coerces any unknown verdict to "unclear" (the honest
+      // can't-confirm — never a fabricated "on"). REVIEW-ONLY.
+      return { ...s, posture: parsePostureSnapshot(env.data) };
     }
 
     case "attribution.health": {

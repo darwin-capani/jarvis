@@ -3069,6 +3069,63 @@ export function parseIntrospectCapabilities(
 }
 
 // ---------------------------------------------------------------------------
+// MACHINE SECURITY POSTURE (posture.snapshot) — the READ-ONLY dashboard feed
+// over the four standard macOS posture reads (daemon posture.rs ->
+// build_snapshot, 30-minute cadence). FileVault / firewall / SIP each carry a
+// verdict token, updates carries its own plus a pending count. The daemon only
+// ever REPORTS — remediation is the user's own action in System Settings.
+// SECRET-FREE: fixed verdict tokens + one count; never raw command output.
+// TCC grants and micro-app introspection ride their own events (tcc.snapshot /
+// introspect.snapshot) — this surface is ONLY the machine checks.
+// ---------------------------------------------------------------------------
+
+/** One protection check's verdict. Any unknown wire value coerces to "unclear"
+ *  (the honest can't-confirm reading — NEVER "on", which would fabricate
+ *  protection that may not exist). "unreadable" = the status command itself
+ *  couldn't run. */
+export type PostureVerdict = "on" | "off" | "unclear" | "unreadable";
+
+/** The pending-updates check's verdict (same coercion rule). */
+export type UpdatesVerdict = "up_to_date" | "pending" | "unclear" | "unreadable";
+
+/** The machine security posture: the four read-only checks. */
+export interface PostureSnapshot {
+  filevault: PostureVerdict;
+  firewall: PostureVerdict;
+  sip: PostureVerdict;
+  updates: UpdatesVerdict;
+  /** Pending-update count; meaningful only when updates === "pending". */
+  updatesPending: number;
+  /** RFC3339 stamp of WHEN the status commands actually ran. The daemon
+   *  re-broadcasts the cached snapshot on the fast pass (so a fresh HUD isn't
+   *  blank for the 30-min scan interval) — the envelope ts is therefore NOT
+   *  the data's age; this is. Empty when absent. */
+  checkedTs: string;
+}
+
+/** Coerce one protection token; anything unrecognized is "unclear". */
+function coercePostureVerdict(v: string | null): PostureVerdict {
+  return v === "on" || v === "off" || v === "unreadable" ? v : "unclear";
+}
+
+/** Parse a `posture.snapshot` payload. NEVER returns null / never throws; a
+ *  malformed frame degrades every check to "unclear" — the panel then honestly
+ *  shows can't-confirm rather than a fabricated green board. */
+export function parsePostureSnapshot(data: Record<string, unknown>): PostureSnapshot {
+  const upd = str(data, "updates");
+  const pending = num(data, "updates_pending");
+  return {
+    filevault: coercePostureVerdict(str(data, "filevault")),
+    firewall: coercePostureVerdict(str(data, "firewall")),
+    sip: coercePostureVerdict(str(data, "sip")),
+    updates:
+      upd === "up_to_date" || upd === "pending" || upd === "unreadable" ? upd : "unclear",
+    updatesPending: pending !== null && pending >= 0 ? Math.floor(pending) : 0,
+    checkedTs: str(data, "checked_ts") ?? "",
+  };
+}
+
+// ---------------------------------------------------------------------------
 // CAPABILITY ATTRIBUTION HEALTH (attribution.health) — the PROPOSE-ONLY ambient
 // signal of which of JARVIS's own agents/skills are reliable vs failing, from
 // the trace corpus (daemon/src/attribution.rs). Counts + failing-capability
