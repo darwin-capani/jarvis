@@ -58,6 +58,7 @@ import {
   CapabilityMap,
   DistillStatus,
   SyncStatus,
+  SceneStatus,
   Presence,
   JournalSnapshot,
   SecurityStatus,
@@ -139,6 +140,7 @@ import {
   parseCapabilityMap,
   parseDistillStatus,
   parseSyncStatus,
+  parseSceneStatus,
   parsePresence,
   parseJournalSnapshot,
   parseKnowledgeGraphResult,
@@ -765,6 +767,10 @@ export interface HudState {
    *  syncable-fact count, key present, pending conflicts. Null until the first
    *  frame. E2E-encrypted; deletions don't propagate. */
   federatedSync: SyncStatus | null;
+  /** The acoustic-scene sensor's honest state (scene.status, F6): off/armed-
+   *  needs-model/listening, the sound-event vocabulary, transient events. Null
+   *  until the first frame. NEVER retains audio. */
+  scene: SceneStatus | null;
   /** The live honest capability map (capability.map, audit-snapshot cadence): one
    *  row per notable subsystem — ready / armed-but-needs-a-dependency / off — with
    *  `verified` distinguishing a probed dependency from a merely-stated one. Null
@@ -1329,6 +1335,7 @@ export function initialState(): HudState {
     pdfJailAvailable: null,
     distill: null,
     federatedSync: null,
+    scene: null,
     capabilityMap: null,
     presence: null,
     journal: null,
@@ -2596,6 +2603,13 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // sync::emit_status). parseSyncStatus NEVER returns null and pins the
       // honest transport-inert / deletes-don't-propagate facts.
       return { ...s, federatedSync: parseSyncStatus(env.data) };
+    }
+
+    case "scene.status": {
+      // The acoustic-scene sensor status (main.rs audit_snapshot_task ->
+      // scene::emit_status, F6). parseSceneStatus NEVER returns null and pins
+      // retains-audio false (a payload can't claim audio is kept).
+      return { ...s, scene: parseSceneStatus(env.data) };
     }
 
     case "docsearch.status": {

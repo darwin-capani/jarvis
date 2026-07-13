@@ -172,6 +172,16 @@ pub fn capability_map(cfg: &Config, deps: &CapDeps) -> serde_json::Value {
             cfg.sync.enabled,
             Dep::Unverified { need: "a paired device + shared key" },
         ),
+        // Acoustic scene awareness (F6, ships OFF, privacy opt-in): armed by
+        // [scene].enabled, inert without a bundled sound-event classifier model.
+        // No model is shipped, and the daemon can't confirm one at build time ->
+        // UNVERIFIED (verified=false), never a faked "listening".
+        cap(
+            "acoustic_scene",
+            "Acoustic scene awareness (ambient sound events; never retains audio)",
+            cfg.scene.enabled,
+            Dep::Unverified { need: "a bundled sound-event classifier model" },
+        ),
         // Self-heal (propose-only): armed by switch, inert without a cloud key to
         // draft the patch.
         cap(
@@ -343,6 +353,22 @@ mod tests {
         assert_eq!(d["status"], "armed_needs_dependency");
         assert_eq!(d["verified"], false);
         assert!(d["dependency"].as_str().unwrap().contains("mlx-lm"));
+    }
+
+    #[test]
+    fn acoustic_scene_ships_off_and_its_model_dep_is_unverified_when_armed() {
+        // Ships OFF (config default) -> off.
+        let cfg = Config::default();
+        assert_eq!(find(&capability_map(&cfg, &deps(true, true)), "acoustic_scene")["status"], "off");
+
+        // Armed -> ArmedNeedsDependency with verified=false: no classifier model
+        // is bundled and the daemon can't confirm one at build time.
+        let mut cfg2 = Config::default();
+        cfg2.scene.enabled = true;
+        let d = find(&capability_map(&cfg2, &deps(true, true)), "acoustic_scene").clone();
+        assert_eq!(d["status"], "armed_needs_dependency");
+        assert_eq!(d["verified"], false);
+        assert!(d["dependency"].as_str().unwrap().contains("classifier model"));
     }
 
     #[test]

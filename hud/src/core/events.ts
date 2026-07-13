@@ -6062,6 +6062,96 @@ export function parseSyncStatus(data: Record<string, unknown>): SyncStatus {
 }
 
 /* ------------------------------------------------------------------------ *
+ * ACOUSTIC SCENE (scene.status) — the honest state of the ambient sound-      *
+ * event sensor (daemon scene.rs, audit-snapshot cadence, F6). SHIPS OFF;      *
+ * inert without a bundled classifier model (`listening` reads a literal true  *
+ * only). NEVER retains audio — only event labels leave the classifier         *
+ * (`retainsAudio` pinned false; a payload can't claim otherwise). Events are  *
+ * transient (never persisted daemon-side), but the HUD still caps + bounds    *
+ * them defensively — the wire is never trusted.                               *
+ * ------------------------------------------------------------------------ */
+
+/** One ambient sound event. Carries NO audio, only a label + confidence + time. */
+export interface SceneEvent {
+  label: string;
+  confidence: number;
+  ts: string;
+}
+
+/** The acoustic-scene sensor status. */
+export interface SceneStatus {
+  enabled: boolean;
+  classifierPresent: boolean;
+  captureWired: boolean;
+  depVerified: boolean;
+  dependency: string;
+  listening: boolean;
+  retainsAudio: boolean;
+  vocabulary: string[];
+  recentEvents: SceneEvent[];
+  recentCount: number;
+}
+
+/** Defensive caps — labels are short, and this data is transient but the wire
+ *  is still never trusted (every sibling parser caps + bounds). */
+const SCENE_EVENTS_CAP = 12;
+const SCENE_VOCAB_CAP = 32;
+const SCENE_STR_CAP = 48;
+
+/** Coerce one scene event; a row without a label is dropped, confidence clamps
+ *  to [0,1], strings are bounded. */
+function coerceSceneEvent(o: unknown): SceneEvent | null {
+  if (!isPlainObject(o)) return null;
+  const label = str(o, "label");
+  if (label === null || label === "") return null;
+  const c = num(o, "confidence");
+  return {
+    label: label.slice(0, SCENE_STR_CAP),
+    confidence: c !== null && isFinite(c) ? Math.min(1, Math.max(0, c)) : 0,
+    ts: (str(o, "ts") ?? "").slice(0, SCENE_STR_CAP),
+  };
+}
+
+/** Parse a `scene.status` payload. NEVER returns null / never throws; a
+ *  malformed frame degrades to the honest off/inert state. `listening` is
+ *  RE-DERIVED here as enabled && classifierPresent && captureWired — never
+ *  trusted from the wire — so a frame can't claim active listening without a
+ *  model AND a wired capture tap. `retainsAudio` is pinned false — a payload can
+ *  never claim audio is kept. */
+export function parseSceneStatus(data: Record<string, unknown>): SceneStatus {
+  const rawVocab = data["vocabulary"];
+  const vocabulary = Array.isArray(rawVocab)
+    ? rawVocab
+        .filter((x): x is string => typeof x === "string")
+        .slice(0, SCENE_VOCAB_CAP)
+        .map((s) => s.slice(0, SCENE_STR_CAP))
+    : [];
+  const rawEvents = data["recent_events"];
+  const recentEvents = Array.isArray(rawEvents)
+    ? rawEvents
+        .slice(0, SCENE_EVENTS_CAP)
+        .map(coerceSceneEvent)
+        .filter((e): e is SceneEvent => e !== null)
+    : [];
+  const enabled = bool(data, "enabled") === true;
+  const classifierPresent = bool(data, "classifier_present") === true;
+  const captureWired = bool(data, "capture_wired") === true;
+  return {
+    enabled,
+    classifierPresent,
+    captureWired,
+    depVerified: bool(data, "dep_verified") === true,
+    dependency: (str(data, "dependency") ?? "a bundled classifier model").slice(0, SCENE_STR_CAP),
+    // Re-derived, not read from the wire — no fabricated "listening".
+    listening: enabled && classifierPresent && captureWired,
+    retainsAudio: false,
+    vocabulary,
+    recentEvents,
+    recentCount: nonNegInt(data, "recent_count"),
+  };
+}
+
+/* ------------------------------------------------------------------------ *
  * ACTION JOURNAL — the reversible-action ledger (daemon journal.rs ->         *
  * `system / journal.snapshot`, audit-snapshot cadence). One row per            *
  * consequential action that ACTUALLY EXECUTED this daemon session, each with   *
