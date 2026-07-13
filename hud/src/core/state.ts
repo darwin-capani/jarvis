@@ -68,6 +68,7 @@ import {
   VerifyStatus,
   CrossCheckStatus,
   DebateStatus,
+  ResearchProvenance,
   VisionDescribe,
   AudioSoundMonitor,
   ImageGenerated,
@@ -125,6 +126,8 @@ import {
   crossCheckStatusIsEmpty,
   parseDebateStatus,
   debateStatusIsEmpty,
+  parseResearchProvenance,
+  PROVENANCE_LEDGER_CAP,
   parseDocIndexStatus,
   parseDocSearchResult,
   parsePdfJailAvailable,
@@ -835,6 +838,12 @@ export interface HudState {
    *  fabricated agreement). SECRET-FREE — never the raw answers, never an
    *  embedding/audio/secret. */
   debateStatus: DebateStatus | null;
+  /** The RESEARCH PROVENANCE LEDGER (research.provenance): one entry per
+   *  completed research run — the honest grounded/ungrounded claim split with
+   *  per-claim source mapping and the SET-ASIDE claims the spoken answer only
+   *  counts. A bounded newest-first ring (cap PROVENANCE_LEDGER_CAP): a ledger
+   *  is history by definition, unlike the per-turn answer.* surfaces. */
+  researchProvenance: ResearchProvenance[];
   /** The most-recent RESEARCH NOTEBOOK activity (notebook.card): a notebook voice
    *  command ("save this research" / "show my research notebook on X" / "what
    *  have I researched" / "forget my research on X") just ran. Carries the verb
@@ -1278,6 +1287,7 @@ export function initialState(): HudState {
     verifyStatus: null,
     crossCheckStatus: null,
     debateStatus: null,
+    researchProvenance: [],
     notebook: null,
     lifelog: null,
     audit: null,
@@ -2685,6 +2695,21 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
         return s.debateStatus === null ? s : { ...s, debateStatus: null };
       }
       return { ...s, debateStatus: debate };
+    }
+
+    case "research.provenance": {
+      // One completed research run's grounding split (anthropic.rs
+      // run_sage_research -> research::provenance_payload). ACCUMULATE into the
+      // bounded newest-first ledger ring — history is the point, and the cap
+      // keeps it bounded. parseResearchProvenance returns null for a frame
+      // without the claim counts: a malformed frame is dropped, never padded
+      // into a fabricated ledger row.
+      const run = parseResearchProvenance(env.data);
+      if (run === null) return s;
+      return {
+        ...s,
+        researchProvenance: [run, ...s.researchProvenance].slice(0, PROVENANCE_LEDGER_CAP),
+      };
     }
 
     case "notebook.card": {

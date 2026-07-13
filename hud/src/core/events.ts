@@ -6961,6 +6961,111 @@ export function debateStatusIsEmpty(v: DebateStatus): boolean {
   return v.badge === null;
 }
 
+/* ------------------------------------------------------------------------ *
+ * RESEARCH PROVENANCE LEDGER (research.provenance) — the per-run grounding   *
+ * split (daemon research.rs::provenance_payload, emitted from the            *
+ * sage_research arm). One event per COMPLETED research run: the honest       *
+ * grounded/ungrounded claim COUNTS (never truncated) plus bounded per-claim  *
+ * rows mapping each claim to the fetched source that backs it — or flagging  *
+ * it as SET ASIDE (rows arrive ungrounded-first so the signal survives the   *
+ * daemon's row cap). This is the ONE surface where set-aside claims are      *
+ * visible: the spoken answer reduces them to a bare count. SECRET-FREE:      *
+ * redacted + bounded daemon-side. The reducer ACCUMULATES a bounded          *
+ * newest-first ring (unlike the per-turn answer.* surfaces) — a ledger is    *
+ * history by definition, and the cap keeps it from being unbounded state.    *
+ * ------------------------------------------------------------------------ */
+
+/** One claim row: its (bounded) text and the source that backs it — or the
+ *  honest set-aside flag. */
+export interface ProvenanceClaim {
+  text: string;
+  /** True ONLY for a literal wire `true` — never over-claims grounding. */
+  grounded: boolean;
+  sourceId: number;
+  sourceTitle: string;
+  sourceUrl: string;
+}
+
+/** One research run's grounding split. */
+export interface ResearchProvenance {
+  question: string;
+  sourcesFetched: number;
+  claimsTotal: number;
+  claimsGrounded: number;
+  claimsUngrounded: number;
+  /** Rows the daemon's row cap dropped from `claims` — DISCLOSED, so a capped
+   *  list is never presented as complete. */
+  claimsOmitted: number;
+  truncated: boolean;
+  claims: ProvenanceClaim[];
+}
+
+/** How many runs the HUD ledger retains (newest-first ring — bounded, like
+ *  the liveGate/tccAnomalies rings, never unbounded state). */
+export const PROVENANCE_LEDGER_CAP = 8;
+/** Per-run claim rows the PARSER accepts — mirrors the daemon's row cap. The
+ *  wire is never trusted to be bounded (every sibling parser caps too): a
+ *  malformed/oversized frame must not bloat the persistent ledger ring. */
+export const PROVENANCE_ROWS_CAP = 12;
+/** Defensive per-string bound (chars) — the daemon bounds harder (80-200). */
+const PROVENANCE_STR_CAP = 240;
+
+/** Defensive string bound for ledger fields (the ring PERSISTS, so an
+ *  oversized wire string would otherwise live in state until evicted). */
+function boundStr(v: string | null): string {
+  return v === null ? "" : v.slice(0, PROVENANCE_STR_CAP);
+}
+
+/** Coerce one claim row; malformed rows are dropped (a row without text is
+ *  meaningless). `grounded` only reads a literal true; strings are bounded. */
+function coerceProvenanceClaim(o: Record<string, unknown>): ProvenanceClaim | null {
+  const text = str(o, "text");
+  if (text === null || text === "") return null;
+  const id = num(o, "source_id");
+  return {
+    text: boundStr(text),
+    grounded: bool(o, "grounded") === true,
+    sourceId: id !== null && id >= 0 ? Math.floor(id) : 0,
+    sourceTitle: boundStr(str(o, "source_title")),
+    sourceUrl: boundStr(str(o, "source_url")),
+  };
+}
+
+/** Parse a `research.provenance` payload, or null when it lacks the claim
+ *  counts (a ledger must never accumulate fabricated rows — a malformed frame
+ *  is dropped, not padded). Counts clamp to >= 0; rows degrade individually
+ *  and are CAPPED here as well as daemon-side (this ring persists — it must
+ *  stay bounded even against a hostile frame). */
+export function parseResearchProvenance(
+  data: Record<string, unknown>,
+): ResearchProvenance | null {
+  const total = num(data, "claims_total");
+  const grounded = num(data, "claims_grounded");
+  const ungrounded = num(data, "claims_ungrounded");
+  if (total === null || grounded === null || ungrounded === null) return null;
+  const clamp = (v: number) => (v >= 0 ? Math.floor(v) : 0);
+  const raw = data["claims"];
+  const claims = Array.isArray(raw)
+    ? raw
+        .slice(0, PROVENANCE_ROWS_CAP)
+        .filter(isPlainObject)
+        .map(coerceProvenanceClaim)
+        .filter((c): c is ProvenanceClaim => c !== null)
+    : [];
+  const fetched = num(data, "sources_fetched");
+  const omitted = num(data, "claims_omitted");
+  return {
+    question: boundStr(str(data, "question")),
+    sourcesFetched: fetched !== null ? clamp(fetched) : 0,
+    claimsTotal: clamp(total),
+    claimsGrounded: clamp(grounded),
+    claimsUngrounded: clamp(ungrounded),
+    claimsOmitted: omitted !== null ? clamp(omitted) : 0,
+    truncated: bool(data, "truncated") === true,
+    claims,
+  };
+}
+
 /* ======================================================================== *
  * CONSEQUENTIAL GATE — AUDIT LOG + POLICY                                    *
  *                                                                            *

@@ -41,6 +41,7 @@ import ExtensibilityPanel from "./components/ExtensibilityPanel";
 import MemoryPanel from "./components/MemoryPanel";
 import NexusPanel, { NEXUS_APP_NAME } from "./components/NexusPanel";
 import OnboardingWizard from "./components/OnboardingWizard";
+import ProvenanceLedgerPanel from "./components/ProvenanceLedgerPanel";
 import ResearchNotebooksPanel from "./components/ResearchNotebooksPanel";
 import ReportPanel from "./components/ReportPanel";
 import ReticleDial from "./components/ReticleDial";
@@ -642,6 +643,7 @@ export default function App() {
             crossCheck={state.crossCheckStatus}
             debate={state.debateStatus}
           />
+          <ProvenanceLedgerPanel runs={state.researchProvenance} />
           <ResearchNotebooksPanel activity={state.notebook} />
           <ReportPanel report={state.report} />
           <ChartPanel spec={state.chart} />
