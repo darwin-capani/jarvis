@@ -376,6 +376,33 @@ pub async fn route(
         }
     }
 
+    // ONE-WORD UNDO (F2): "undo that" / "revert that" / "what can you undo".
+    // CONSERVATIVELY anchored (journal::classify_undo_command fires only on
+    // explicit undo phrasings — a sentence merely mentioning "undo" never
+    // triggers, and a QUESTION about undo answers instead of arming). Handled
+    // AFTER the confirmation pre-check above, so while an action is PARKED an
+    // "undo" reply is consumed there as a Deny (retract the un-executed action)
+    // and never reaches here; this arm therefore only ever undoes EXECUTED
+    // actions from the journal. SAFETY: arming an undo hands the derived
+    // inverse to anthropic::execute_tool — the SAME entry point a live tool
+    // call uses — so the inverse gets the identical voice-id check, faithful
+    // dry-run preview, policy layer, master-switch ceiling, and single-slot
+    // spoken-confirm park. Undo executes NOTHING itself and grants nothing a
+    // spoken command would not. Runs after the owner voice-id all-scope gate,
+    // like the macro arm above.
+    if let Some(cmd) = crate::journal::classify_undo_command(text) {
+        let prime = agents.orchestrator();
+        emit_agent_active(prime);
+        let response = handle_undo_command(cmd, memory).await;
+        return Ok(RouteOutcome {
+            routed_to: "local",
+            response,
+            agent: prime.name.clone(),
+            namespace: prime.namespace.clone(),
+            spoken: None,
+        });
+    }
+
     // CONTINUOUS SCREEN CONTEXT VOICE COMMANDS (#42): "what was I working on" /
     // "recall my screen context" (RECALL) and "forget my screen context" (FORGET).
     // CONSERVATIVELY anchored (screen_context::classify_screen_context_intent
@@ -2078,6 +2105,72 @@ async fn handle_macro_command(
         MacroCommand::Replay { .. } => {
             "Replay is handled live, sir — say it again and I'll run it.".to_string()
         }
+    }
+}
+
+/// ONE-WORD UNDO (F2). Status answers from the journal and runs nothing. UndoLast
+/// prepares the LAST executed action's inverse (never silently an older one) and
+/// hands it to `anthropic::execute_tool` — the same entry point a live tool call
+/// uses — under the SAME agent + allowlist snapshot that executed the forward
+/// action. A gated inverse therefore parks for its own fresh spoken "confirm"; a
+/// reversible-by-design inverse (standing_cancel) runs directly, exactly as if
+/// spoken. Whether the park actually happened is read back from the pending slot
+/// (never assumed), and a direct execution is only claimed as "Undone" when the
+/// inverse is ungated or the master switch was on — a master-off dry-run preview
+/// is relayed as the preview it is.
+async fn handle_undo_command(cmd: crate::journal::UndoCommand, memory: &Memory) -> String {
+    use crate::journal::{UndoCommand, UndoPrep};
+    match cmd {
+        UndoCommand::Status => crate::journal::status_line(),
+        UndoCommand::UndoLast => match crate::journal::prepare_undo() {
+            UndoPrep::Nothing => {
+                "Nothing consequential has executed this session, so there's nothing to undo."
+                    .to_string()
+            }
+            UndoPrep::AlreadyUndone => {
+                "The last consequential action was already undone.".to_string()
+            }
+            UndoPrep::Irreversible { why } => {
+                format!("I can't undo the last action — {why}.")
+            }
+            UndoPrep::Ready { seq, agent, tool, input, allowed, note, pending_id } => {
+                telemetry::emit(
+                    "system",
+                    "undo.armed",
+                    json!({"tool": tool, "agent": agent, "seq": seq}),
+                );
+                let gate_before = crate::integrations::consequential_allowed();
+                let (outcome, is_error) =
+                    anthropic::execute_tool(&tool, &input, memory, &allowed, &agent, true).await;
+                // Read back whether the inverse is now the parked confirmation —
+                // never assumed from the outcome text.
+                let parked = crate::confirm::peek_pending(Instant::now())
+                    .is_some_and(|p| p.id == pending_id);
+                // "It ran" requires: no transport error, nothing parked, the
+                // master gate on across the call for gated tools (both-sides
+                // read — a racing flip degrades to relaying the outcome without
+                // an undo claim), AND the outcome text confirming the inverse
+                // took effect (standing_cancel reports a miss/failure as
+                // friendly Ok prose — never claim "Undone." over a miss).
+                let executed_directly = !is_error
+                    && !parked
+                    && (!crate::journal::master_gated(&tool)
+                        || (gate_before && crate::integrations::consequential_allowed()))
+                    && crate::journal::inverse_confirmed(&tool, &outcome);
+                if executed_directly && !crate::journal::master_gated(&tool) {
+                    // An ungated reversible inverse ran immediately (a gated one
+                    // is journaled + marked by the replay chokepoint instead).
+                    crate::journal::mark_undone(seq);
+                }
+                crate::journal::compose_undo_response(
+                    &outcome,
+                    is_error,
+                    parked,
+                    executed_directly,
+                    &note,
+                )
+            }
+        },
     }
 }
 

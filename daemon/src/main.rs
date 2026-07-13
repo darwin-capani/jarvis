@@ -91,6 +91,13 @@ mod knowledge_graph;
 // life-log utterance ("what did I do this week") and calls lifelog::dispatch,
 // which builds the agent-scoped digest over the real episodes and renders it —
 // so the intent reaches the digest end-to-end. Hermetically tested in lifelog.rs.
+// REVERSIBLE-ACTION JOURNAL + ONE-WORD UNDO (F2): a bounded, session-scoped
+// ledger of every consequential action that ACTUALLY executed, each with an
+// HONEST inverse verdict. "Undo that" arms the inverse through the SAME live
+// pipeline (voice-id, faithful preview, policy, master ceiling, spoken-confirm
+// park) — undo never executes anything itself and grants nothing a spoken
+// command would not. Hermetically tested in journal.rs.
+mod journal;
 mod lifelog;
 mod lockdown;
 // MACRO RECORD/REPLAY (#27): record a NAMED sequence of commands (utterances +
@@ -870,6 +877,12 @@ async fn audit_snapshot_task(cfg: Arc<Config>) {
         // must be VISIBLE, not just a one-shot log WARN + the CLI selfcheck board.
         // One stat() per tick; READ-ONLY, like its two siblings above.
         docsearch::emit_status();
+        // The HUD's JournalPanel shows the session's executed consequential
+        // actions with their honest undo verdicts (journal.rs). READ-ONLY over
+        // the in-process ledger — recording happens at the execution
+        // chokepoints, never here. SECRET-FREE: the snapshot carries only the
+        // audit-grade preview text, never raw tool inputs.
+        journal::emit_snapshot();
         tokio::time::sleep(AUDIT_SNAPSHOT_INTERVAL).await;
     }
 }
@@ -2749,6 +2762,10 @@ async fn run_pipeline(
             // already ran (and re-gated) normally above.
             if crate::macros::is_recording()
                 && crate::macros::classify_macro_command(&text).is_none()
+                // Undo control phrases are likewise verbs ABOUT the session, not
+                // work to re-run — replaying a captured "undo that" later would
+                // arm the inverse of whatever happened to be newest THEN.
+                && crate::journal::classify_undo_command(&text).is_none()
             {
                 crate::macros::capture(&text, &class.intent);
             }

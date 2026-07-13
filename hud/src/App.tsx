@@ -20,6 +20,7 @@ import ForgePanel from "./components/ForgePanel";
 import GlobalScanPanel, { GLOBAL_SCAN_APP } from "./components/GlobalScanPanel";
 import ImagePanel from "./components/ImagePanel";
 import InferencePerfPanel from "./components/InferencePerfPanel";
+import JournalPanel from "./components/JournalPanel";
 import KnowledgeGraphPanel from "./components/KnowledgeGraphPanel";
 import LatencyStrip from "./components/LatencyStrip";
 import LifeLogPanel from "./components/LifeLogPanel";
@@ -621,6 +622,7 @@ export default function App() {
           <ConnectorMarketplacePanel mcp={state.mcp} />
           <ExtensibilityPanel webhooks={state.webhooks} plugins={state.plugins} />
           <AuditPanel audit={state.audit} liveGate={state.liveGate} />
+          <JournalPanel journal={state.journal} />
           <ActionPanel action={state.actionSurface} />
           <DocSearchPanel
             index={state.docIndex}

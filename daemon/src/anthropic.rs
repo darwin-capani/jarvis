@@ -6293,6 +6293,15 @@ async fn execute_mcp_tool(
                     crate::policy::Decision::Always,
                     if result.1 { crate::audit::Outcome::DryRun } else { crate::audit::Outcome::Executed },
                 ).await;
+                // REVERSIBLE-ACTION JOURNAL (F2): an MCP tool's effects live on
+                // its server, so the honest inverse verdict is always "none" —
+                // but the execution itself belongs in the ledger. (Post-dispatch
+                // gate re-read: a lockdown flip racing the call skips the
+                // record rather than journaling its dry-run as executed.)
+                let journal_executed = !result.1 && crate::integrations::consequential_allowed();
+                crate::journal::record_executed(
+                    namespace, flat, input, &preview_text, &result.0, &[], journal_executed, "policy",
+                );
                 return result;
             }
             crate::policy::Decision::Always => {
@@ -6423,7 +6432,12 @@ fn outward_get_egress_refusal(name: &str, input: &Value) -> Option<String> {
     }
 }
 
-async fn execute_tool(
+// `pub` (crate-wide) because the router's UNDO arm (journal.rs / router.rs)
+// hands a derived inverse to THIS same entry point, so the inverse receives the
+// identical treatment a live utterance's tool call gets: voice-id refusal,
+// faithful dry-run preview, the policy layer, the master ceiling, and the
+// spoken-confirm park. Undo deliberately has no other execution path.
+pub async fn execute_tool(
     name: &str,
     input: &Value,
     memory: &Memory,
@@ -6578,6 +6592,17 @@ async fn execute_tool(
                     crate::policy::Decision::Always,
                     if err { crate::audit::Outcome::DryRun } else { crate::audit::Outcome::Executed },
                 ).await;
+                // REVERSIBLE-ACTION JOURNAL (F2): an auto-approved execution is
+                // journaled exactly like a confirmed one (master ON was already
+                // required to enter this branch; the post-dispatch re-read makes
+                // a lockdown flip racing the dispatch SKIP the record rather
+                // than journal its dry-run as executed). Pass the ORIGINAL
+                // input — the inverse derives from the action's own args, not
+                // the forced confirm flag.
+                let journal_executed = !err && crate::integrations::consequential_allowed();
+                crate::journal::record_executed(
+                    namespace, name, input, &preview, &out, allowed, journal_executed, "policy",
+                );
                 return (out, err);
             }
             // ALWAYS but master OFF: the policy CANNOT override the master switch —
@@ -6703,7 +6728,32 @@ pub async fn replay_confirmed_action(
     // A replay executes an action the owner CONFIRMED via voice-id — user-approved,
     // hence user_originated=true. (fury_mission is not consequential, so it never
     // parks/replays; this value is a semantic default, not a reachable mission path.)
-    dispatch_tool(&pending.tool, &input, memory, &pending.agent, true).await
+    let gate_before = crate::integrations::consequential_allowed();
+    let (outcome, is_error) =
+        dispatch_tool(&pending.tool, &input, memory, &pending.agent, true).await;
+    // REVERSIBLE-ACTION JOURNAL (F2): record the execution with its honest
+    // inverse verdict. `is_error == false` alone does NOT mean executed — a
+    // master-off replay returns a dry-run preview with is_error=false — so for
+    // master-gated tools the switch must ALSO have been on. The dispatch reads
+    // the gate mid-flight, so we require it on BOTH sides of the await: a
+    // lockdown flip racing the dispatch can then only ever SKIP a record
+    // (conservative), never journal a dry-run as executed. An ungated
+    // reversible tool riding this path (a parked undo's standing_cancel)
+    // executes regardless of the switch, hence the `master_gated` split.
+    let executed = !is_error
+        && ((gate_before && crate::integrations::consequential_allowed())
+            || !crate::journal::master_gated(&pending.tool));
+    crate::journal::record_executed(
+        &pending.agent,
+        &pending.tool,
+        &pending.input,
+        &pending.preview,
+        &outcome,
+        &pending.allowed,
+        executed,
+        "confirm",
+    );
+    (outcome, is_error)
 }
 
 /// Set the `confirm` field on a tool input object to `value`, so a consequential
@@ -10015,6 +10065,16 @@ pub async fn propose_standing_mission(
                 crate::policy::Decision::Always,
                 if err { crate::audit::Outcome::DryRun } else { crate::audit::Outcome::Executed },
             ).await;
+            // REVERSIBLE-ACTION JOURNAL (F2): journal the auto-approved
+            // establish; its honest inverse is the (deliberately ungated,
+            // reversible) standing_cancel addressed by the id in the SUCCESS
+            // outcome — a refused create (no saved-id marker) is never
+            // journaled. (Post-dispatch gate re-read, as at the other sites.)
+            let journal_executed = !err && crate::integrations::consequential_allowed();
+            crate::journal::record_executed(
+                agent_namespace, "standing_create", &input, &preview, &out, allowed,
+                journal_executed, "policy",
+            );
             // The returned bool is "was a confirmation ARMED" — an auto-approved
             // action parks NOTHING (it executed directly), so it is `false`
             // regardless of the execution result.

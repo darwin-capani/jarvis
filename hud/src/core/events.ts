@@ -5904,6 +5904,75 @@ export function parseCapabilityMap(data: Record<string, unknown>): CapabilityMap
 }
 
 /* ------------------------------------------------------------------------ *
+ * ACTION JOURNAL — the reversible-action ledger (daemon journal.rs ->         *
+ * `system / journal.snapshot`, audit-snapshot cadence). One row per            *
+ * consequential action that ACTUALLY EXECUTED this daemon session, each with   *
+ * its HONEST undo verdict: `undoable` = an already-wired tool can mechanically *
+ * reverse it (spoken "undo that" arms that inverse through the same confirm    *
+ * gate); otherwise `note` carries the specific reason it cannot be undone.     *
+ * SECRET-FREE: entries carry the audit-grade preview text, never raw tool      *
+ * inputs. `undone` marks entries whose inverse has since executed.             *
+ * ------------------------------------------------------------------------ */
+
+/** One executed consequential action with its honest undo verdict. */
+export interface JournalEntry {
+  ts: string;
+  agent: string;
+  tool: string;
+  /** The secret-free dry-run preview the user confirmed. */
+  preview: string;
+  /** True ONLY when a wired mechanical inverse exists — never over-claimed. */
+  undoable: boolean;
+  /** The caveat spoken with an undo (undoable) or the reason it can't be
+   *  undone (not undoable). May be empty. */
+  note: string;
+  /** The inverse has since executed. */
+  undone: boolean;
+  /** How the execution was approved: "confirm" (spoken/HUD yes) or "policy". */
+  via: string;
+}
+
+/** The session's executed-action ledger. `count` is the total recorded this
+ *  session (entries are the newest slice). */
+export interface JournalSnapshot {
+  count: number;
+  entries: JournalEntry[];
+}
+
+/** Coerce one journal row; malformed rows are dropped (never fatal). A row
+ *  without a tool name is meaningless. `undoable` only reads a literal `true`
+ *  — anything else is false (never over-claims reversibility). */
+function coerceJournalEntry(o: Record<string, unknown>): JournalEntry | null {
+  const tool = str(o, "tool");
+  if (tool === null || tool === "") return null;
+  return {
+    ts: str(o, "ts") ?? "",
+    agent: str(o, "agent") ?? "",
+    tool,
+    preview: str(o, "preview") ?? "",
+    undoable: bool(o, "undoable") === true,
+    note: str(o, "note") ?? "",
+    undone: bool(o, "undone") === true,
+    via: str(o, "via") ?? "",
+  };
+}
+
+/** Parse a `journal.snapshot` payload. NEVER returns null / never throws; a
+ *  malformed frame degrades to an empty ledger (an honest "nothing recorded"),
+ *  and an absent count falls back to the entry count actually parsed. */
+export function parseJournalSnapshot(data: Record<string, unknown>): JournalSnapshot {
+  const raw = data["entries"];
+  const entries = Array.isArray(raw)
+    ? raw
+        .filter(isPlainObject)
+        .map(coerceJournalEntry)
+        .filter((e): e is JournalEntry => e !== null)
+    : [];
+  const count = num(data, "count");
+  return { count: count !== null && count >= 0 ? Math.floor(count) : entries.length, entries };
+}
+
+/* ------------------------------------------------------------------------ *
  * UNIFIED SEARCH — one query fanned out across every AVAILABLE source             *
  * (daemon/src/unified_search.rs + anthropic.rs::unified_search_tool).             *
  *                                                                                *

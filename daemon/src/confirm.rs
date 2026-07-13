@@ -491,6 +491,11 @@ pub fn classify_confirmation(utterance: &str) -> ConfirmReply {
         "forget it",
         "drop it",
         "negative",
+        // "undo" while an action is still PARKED means "don't do it" — the
+        // fail-safe reading. (Undoing an already-EXECUTED action is the
+        // journal's job, in the router arm — journal.rs — which only runs when
+        // no confirmation is pending.)
+        "undo",
     ];
     if DENY_PHRASES.iter().any(|p| has(p)) {
         return ConfirmReply::Deny;
@@ -659,6 +664,11 @@ mod tests {
             "forget it",
             "negative",
             "nah",
+            // "undo" against a PARKED (not-yet-executed) action is a retraction
+            // — never a confirmation, never a journal undo (nothing executed).
+            "undo",
+            "undo that",
+            "yes but undo that first",
         ] {
             assert_eq!(
                 classify_confirmation(u),

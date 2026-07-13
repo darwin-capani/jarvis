@@ -54,6 +54,7 @@ import {
   PolicySnapshot,
   CapabilityMap,
   Presence,
+  JournalSnapshot,
   SecurityStatus,
   SkillsCatalog,
   SttTierStatus,
@@ -128,6 +129,7 @@ import {
   parsePdfJailAvailable,
   parseCapabilityMap,
   parsePresence,
+  parseJournalSnapshot,
   parseKnowledgeGraphResult,
   parseLifeLogDigest,
   parseLockdownStatus,
@@ -746,6 +748,10 @@ export interface HudState {
   /** The fused attention state (presence.state): Away/Present/Focused. Null until
    *  the first frame. Focused/Away means EDITH is holding spoken proactivity. */
   presence: Presence | null;
+  /** The reversible-action ledger (journal.snapshot, audit-snapshot cadence):
+   *  the session's EXECUTED consequential actions, each with its honest undo
+   *  verdict. Null until the first frame (an older daemon never sends one). */
+  journal: JournalSnapshot | null;
   /** The last UNIFIED-SEARCH result (unified.searched): one query fanned out
    *  across every AVAILABLE source, merged into ONE ranked list where each hit is
    *  ATTRIBUTED to its source + carries a real CITATION, plus the HONEST coverage
@@ -1257,6 +1263,7 @@ export function initialState(): HudState {
     pdfJailAvailable: null,
     capabilityMap: null,
     presence: null,
+    journal: null,
     unifiedSearch: null,
     knowledgeGraph: null,
     answerAnnotation: null,
@@ -2514,6 +2521,15 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // parsePresence never returns null and coerces an unknown state to the
       // neutral "present" (never fabricates away/focused).
       return { ...s, presence: parsePresence(env.data) };
+    }
+
+    case "journal.snapshot": {
+      // The reversible-action ledger (main.rs::audit_snapshot_task ->
+      // journal::emit_snapshot): the session's executed consequential actions
+      // with honest undo verdicts. parseJournalSnapshot NEVER returns null and
+      // only reads a literal `undoable: true` (never over-claims
+      // reversibility); a malformed frame degrades to an empty ledger.
+      return { ...s, journal: parseJournalSnapshot(env.data) };
     }
 
     case "unified.searched": {
