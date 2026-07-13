@@ -972,6 +972,22 @@ pub enum ForgeOutcome {
     Aborted { stage: &'static str },
 }
 
+/// Telemetry-contract builders — the ONE place the HUD-facing forge.* envelopes
+/// are built (mirrors introspect.rs's ev_* builders). The HUD parses
+/// `forge.proposed` {name, ts} (parseForgeProposed requires BOTH — a payload it
+/// can't derive the manual apply command from is never surfaced) and
+/// `forge.rejected` {reason} (the failing stage) — hud/src/core/events.ts +
+/// forge.test.ts. A field/event rename here now breaks a daemon test instead of
+/// silently blanking the HUD review card (the "forge.proposal"/{app}/{stage}
+/// drift this replaces).
+fn ev_proposed(name: &str, ts: u64) -> (&'static str, serde_json::Value) {
+    ("forge.proposed", json!({"name": name, "ts": ts, "validated": true}))
+}
+
+fn ev_rejected(ts: u64, stage: &str) -> (&'static str, serde_json::Value) {
+    ("forge.rejected", json!({"ts": ts, "reason": stage}))
+}
+
 /// Forge a new micro-app from `goal`, fully gated. PROPOSE-ONLY: on success the
 /// validated app lands under state/forge/proposals/<ts>/ and meta.forge_pending
 /// is stamped; the app is NOT in apps/, NOT registered, NOT running. A human
@@ -1022,11 +1038,8 @@ pub async fn forge_draft(
             match write_proposal(&forge_root, ts, &manifest, &manifest_toml, &files, &report) {
                 Ok(dir) => {
                     set_pending(ts);
-                    telemetry::emit(
-                        "system",
-                        "forge.proposal",
-                        json!({"ts": ts, "app": manifest.app.name, "validated": true}),
-                    );
+                    let (event, payload) = ev_proposed(&manifest.app.name, ts);
+                    telemetry::emit("system", event, payload);
                     tracing::info!(
                         ts,
                         app = %manifest.app.name,
@@ -1044,7 +1057,8 @@ pub async fn forge_draft(
             let dir_root = forge_root.join("rejected");
             let dir = record_artifact(&dir_root, ts, "report.md", &report)
                 .unwrap_or_else(|| dir_root.join(ts.to_string()));
-            telemetry::emit("system", "forge.rejected", json!({"ts": ts, "stage": stage}));
+            let (event, payload) = ev_rejected(ts, stage);
+            telemetry::emit("system", event, payload);
             tracing::warn!(stage, ts, "forge: draft rejected and quarantined");
             ForgeOutcome::Rejected { stage, dir }
         }
@@ -1183,11 +1197,9 @@ pub async fn run_forge_drill(model: &str) -> Result<PathBuf> {
             ..
         } => {
             let dir = write_proposal(&forge_root, ts, &manifest, &manifest_toml, &files, &report)?;
-            telemetry::emit(
-                "system",
-                "forge.proposal",
-                json!({"ts": ts, "app": manifest.app.name, "validated": true, "drill": true}),
-            );
+            let (event, mut payload) = ev_proposed(&manifest.app.name, ts);
+            payload["drill"] = json!(true);
+            telemetry::emit("system", event, payload);
             tracing::info!(
                 proposal = %dir.display(),
                 app = %manifest.app.name,
@@ -1224,6 +1236,25 @@ mod tests {
         assert_eq!(forge_action(true, ""), ForgeAction::Propose);
         assert_eq!(forge_action(true, "AUTO"), ForgeAction::Propose, "no case games");
         assert_eq!(forge_action(true, "yolo"), ForgeAction::Propose);
+    }
+
+    /// The exact HUD-facing forge.* wire shapes. hud/src/core/events.ts's
+    /// parseForgeProposed requires BOTH `name` and `ts` (event "forge.proposed"),
+    /// and the forge.rejected reducer reads `reason` — the drifted
+    /// "forge.proposal"/{app}/{stage} keys left the ForgePanel permanently blank.
+    #[test]
+    fn forge_telemetry_envelopes_match_the_hud_contract() {
+        let (event, payload) = ev_proposed("reverser", 1_770_000_000);
+        assert_eq!(event, "forge.proposed", "the HUD case is forge.proposed, not forge.proposal");
+        assert_eq!(payload["name"], json!("reverser"), "the HUD reads `name`, not `app`");
+        assert_eq!(payload["ts"], json!(1_770_000_000u64));
+        assert!(payload.get("app").is_none(), "`app` was the drifted key — must not resurface");
+
+        let (event, payload) = ev_rejected(9, "build");
+        assert_eq!(event, "forge.rejected");
+        assert_eq!(payload["reason"], json!("build"), "the HUD reads `reason`, not `stage`");
+        assert_eq!(payload["ts"], json!(9));
+        assert!(payload.get("stage").is_none(), "`stage` was the drifted key — must not resurface");
     }
 
     /// SOURCE-LEVEL no-auto-deploy proof. The daemon must NEVER build a path

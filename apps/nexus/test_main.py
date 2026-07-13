@@ -243,7 +243,10 @@ class TestOpDispatch(unittest.TestCase):
         self.assertAlmostEqual(self.core.crosspoint(0, 1), -6.0, places=4)
         routes = self.link.telemetry_for("audio.routes")
         self.assertTrue(routes, "route.set must emit an audio.routes telemetry")
-        self.assertIn({"in": 0, "out": 1, "gain_db": -6.0}, routes[-1]["route"])
+        # Crosspoints ride the WIRE under "matrix" (what the HUD's
+        # parseNexusRoutes reads); "route" is only the preset-TOML table name.
+        self.assertIn({"in": 0, "out": 1, "gain_db": -6.0}, routes[-1]["matrix"])
+        self.assertNotIn("route", routes[-1])
 
     def test_route_set_clears_with_minus_inf(self):
         self.disp.dispatch("route.set", {"in": 0, "out": 0, "gain_db": -3.0})
@@ -273,6 +276,19 @@ class TestOpDispatch(unittest.TestCase):
         r0 = self.core.matrix_revision()
         self.disp.dispatch("gain.set", {"channel": 0, "mute": True})
         self.assertGreater(self.core.matrix_revision(), r0)
+        # The mute rides a DISTINCT audio.gain payload the HUD accepts:
+        # {channel, muted, stage} — never a gain_db=null frame (parseNexusGain
+        # rejected those wholesale, so mutes were invisible on the panel).
+        gains = self.link.telemetry_for("audio.gain")
+        self.assertTrue(gains, "a mute must emit an audio.gain telemetry")
+        self.assertEqual(gains[-1], {"channel": 0, "muted": True, "stage": "input"})
+        self.assertNotIn("gain_db", gains[-1])
+
+    def test_gain_set_unmute_emits_muted_false(self):
+        self.disp.dispatch("gain.set", {"channel": 0, "mute": True})
+        self.disp.dispatch("gain.set", {"channel": 0, "mute": False})
+        gains = self.link.telemetry_for("audio.gain")
+        self.assertEqual(gains[-1], {"channel": 0, "muted": False, "stage": "input"})
 
     def test_monitor_set_assigns_and_routes(self):
         self.disp.dispatch("monitor.set", {"in": 2, "out": 0, "on": True})
@@ -468,9 +484,10 @@ class TestTelemetryFold(unittest.TestCase):
         payloads = self.link.telemetry_for("audio.routes")
         self.assertTrue(payloads)
         p = payloads[-1]
-        for k in ("route", "inputs", "outputs", "revision", "measured_rtt_ms"):
+        for k in ("matrix", "inputs", "outputs", "revision", "measured_rtt_ms"):
             self.assertIn(k, p)
-        self.assertIsInstance(p["route"], list)
+        self.assertIsInstance(p["matrix"], list)
+        self.assertNotIn("route", p, "crosspoints must ride the HUD's 'matrix' wire key")
         self.assertIsNone(p["measured_rtt_ms"])
 
 

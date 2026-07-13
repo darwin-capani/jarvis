@@ -144,9 +144,12 @@ import {
   introspectDriftLine,
   introspectAnomalyLine,
   introspectModuleViolationLine,
+  introspectModattestLine,
   introspectSecurityLine,
   parseIntrospectCapabilities,
   mergeIntrospectAlert,
+  appManifestIssueLine,
+  APP_MANIFEST_ISSUE_CAP,
   parseAttributionHealth,
   parseMcpStatus,
   parseWebhookEvent,
@@ -969,6 +972,12 @@ export interface HudState {
   runningApps: ReadonlySet<string>;
   /** Per-app feed surfaces, keyed by manifest name (app.data relays). */
   appFeeds: Record<string, AppFeed>;
+  /** Micro-app install errors (app.manifest_invalid): apps/<dir>/ entries whose
+   *  manifest.toml failed to parse/validate at discovery — the app was SKIPPED
+   *  (never registered, can't launch). Formatted "dir: error" lines, deduped,
+   *  newest-first, capped. Rendered on the App Deck so a broken manifest is a
+   *  visible install error instead of an app that silently never appears. */
+  appManifestIssues: string[];
 
   /** The last ON-DEVICE VLM describe outcome (vision.describe, channel "local").
    *  METADATA ONLY — source kind + whether the on-device VLM actually produced a
@@ -1271,6 +1280,7 @@ export function initialState(): HudState {
     lastError: null,
     runningApps: new Set<string>(),
     appFeeds: {},
+    appManifestIssues: [],
     visionDescribe: null,
     audioSoundMonitor: null,
     screenContext: screenContextInitial(),
@@ -2248,6 +2258,19 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       return { ...s, introspectAlerts: mergeIntrospectAlert(line, s.introspectAlerts) };
     }
 
+    case "introspect.modattest": {
+      // The cooperative dyld-attestation SUMMARY for one app (apps.rs Modules
+      // relay -> introspect.rs ev_modattest): the one-time trust-on-first-use
+      // baseline seed, then per-report counts vs. that baseline. Only SIGNAL
+      // lands in the bounded findings ring (a clean re-attest formats to null),
+      // and this is the ONLY surface for the `missing` count — the per-module
+      // violation lines cover just `unexpected`. REVIEW-ONLY: reported, never
+      // unloaded or blocked.
+      const line = introspectModattestLine(env.data);
+      if (line === null) return s;
+      return { ...s, introspectAlerts: mergeIntrospectAlert(line, s.introspectAlerts) };
+    }
+
     case "introspect.security_event": {
       // A kernel security event about a tracked app from the (deferred, device-
       // gated) ES front-end — a W^X violation (jit=false app made memory
@@ -2937,6 +2960,21 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
           ? { ...s.appFeeds, [name]: { ...existing, running: false } }
           : s.appFeeds,
       };
+    }
+
+    case "app.manifest_invalid": {
+      // AppRegistry::discover SKIPPED an apps/<dir>/ whose manifest.toml failed
+      // to parse/validate — the app never registered and can't launch, so
+      // without this case a broken manifest was just an app that silently never
+      // appeared. Each broken manifest emits ONCE at daemon startup; accumulate
+      // (deduped, capped) and render on the App Deck. SECRET-FREE: dir name +
+      // the toml/validation error string.
+      const line = appManifestIssueLine(env.data);
+      if (line === null) return s;
+      const merged = [line, ...s.appManifestIssues]
+        .filter((x, i, a) => a.indexOf(x) === i)
+        .slice(0, APP_MANIFEST_ISSUE_CAP);
+      return { ...s, appManifestIssues: merged };
     }
 
     case "app.data": {

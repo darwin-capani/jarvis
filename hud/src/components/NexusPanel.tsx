@@ -276,16 +276,24 @@ export default function NexusPanel({
             <div className="nx-spectrum-label">SPECTRUM · {NEXUS_SPECTRUM_BANDS} BANDS</div>
           ) : null}
 
-          {/* audio.gain — last input/output trim change (SPEC §6, on change). */}
+          {/* audio.gain — last input/output trim change OR mute/unmute (SPEC §6,
+              on change). A mute rides the distinct {muted} payload — shown as
+              MUTED/UNMUTED, never rendered as a fabricated 0.0 dB. */}
           {gain ? (
             <div className="nx-gain">
               <span className="nx-gain-label">GAIN</span>
               <span className="nx-gain-ch">CH {gain.channel}</span>
               {gain.stage ? <span className="nx-gain-stage">{gain.stage.toUpperCase()}</span> : null}
-              <span className="nx-gain-db">
-                {gain.gainDb >= 0 ? "+" : "−"}
-                {Math.abs(gain.gainDb).toFixed(1)} dB
-              </span>
+              {gain.muted !== null ? (
+                <span className={`nx-gain-db${gain.muted ? " nx-muted" : ""}`}>
+                  {gain.muted ? "MUTED" : "UNMUTED"}
+                </span>
+              ) : gain.gainDb !== null ? (
+                <span className="nx-gain-db">
+                  {gain.gainDb >= 0 ? "+" : "−"}
+                  {Math.abs(gain.gainDb).toFixed(1)} dB
+                </span>
+              ) : null}
             </div>
           ) : null}
         </div>

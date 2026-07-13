@@ -77,6 +77,16 @@ pub const PANIC_CONFIRMATION: &str = "Lockdown engaged. I've stopped all future 
 pub const UNLOCK_CONFIRMATION: &str =
     "Lockdown lifted. Your configured settings are restored — nothing was changed underneath them.";
 
+/// The AUTHORITATIVE HUD posture payload (`lockdown.status`) — built in ONE
+/// place so [`panic`], [`unlock`], and main's startup snapshot all put the exact
+/// field names the HUD reads (hud/src/core/events.ts `parseLockdownStatus`:
+/// `locked` + `restored_from_marker`) on the wire. The HUD's LOCKED-DOWN
+/// indicator listens ONLY to `lockdown.status` — the audit-shaped
+/// `lockdown.panic`/`lockdown.unlock` events never flip it.
+pub fn status_payload(locked: bool, restored_from_marker: bool) -> serde_json::Value {
+    serde_json::json!({"locked": locked, "restored_from_marker": restored_from_marker})
+}
+
 // ---------------------------------------------------------------------------
 // Test-only marker-path seam (mirrors model_tier's OVERRIDE_TL / voiceid's
 // GATE_OVERRIDE): a test points the marker at its OWN temp dir on its OWN
@@ -262,6 +272,12 @@ pub async fn panic() -> &'static str {
     crate::playback::stop_track();
     // 3. Persist so a restart re-enters lockdown.
     write_marker();
+    // 3b. Flip the HUD indicator: the LOCKED-DOWN light reads `lockdown.status`
+    //     (state.ts), so the authoritative posture event must ride from HERE —
+    //     every panic path (voice intent, HUD Command::Panic, a future signal
+    //     handler) goes through this function. A live panic is never a marker
+    //     restore. No-op before telemetry::init (a unit test) — fail-safe.
+    crate::telemetry::emit("system", "lockdown.status", status_payload(true, false));
     // 4. Audit (secret-free, fire-and-forget on the success path).
     crate::audit::record_global(
         "system",
@@ -288,6 +304,10 @@ pub async fn panic() -> &'static str {
 pub async fn unlock() -> &'static str {
     set_flag(false);
     remove_marker();
+    // The authoritative HUD posture event — the twin of panic()'s emit, so the
+    // LOCKED-DOWN indicator returns to NORMAL from BOTH unlock paths (voice
+    // intent + HUD Command::Unlock). An unlock is by definition not a restore.
+    crate::telemetry::emit("system", "lockdown.status", status_payload(false, false));
     crate::audit::record_global(
         "system",
         "lockdown.unlock",
@@ -506,6 +526,72 @@ mod tests {
         assert!(!is_locked_down(), "unlock clears the flag");
         assert!(!marker_path().unwrap().exists(), "unlock removes the marker");
         assert!(msg.contains("restored"));
+    }
+
+    // -- the HUD wire contract: lockdown.status ---------------------------------
+
+    /// The exact `lockdown.status` payload shape the HUD reads. state.ts's
+    /// `case "lockdown.status"` + parseLockdownStatus consume `locked` and
+    /// `restored_from_marker` — a rename here blanks the LOCKED-DOWN indicator.
+    #[test]
+    fn status_payload_matches_the_hud_contract() {
+        let p = status_payload(true, false);
+        assert_eq!(p["locked"], serde_json::json!(true));
+        assert_eq!(p["restored_from_marker"], serde_json::json!(false));
+        assert_eq!(
+            p.as_object().unwrap().len(),
+            2,
+            "exactly the two booleans the HUD parses — no extra/renamed field"
+        );
+        let p = status_payload(false, true);
+        assert_eq!(p["locked"], serde_json::json!(false));
+        assert_eq!(p["restored_from_marker"], serde_json::json!(true));
+    }
+
+    /// panic()/unlock() must EMIT the authoritative `lockdown.status` posture —
+    /// the router's voice path emits only the audit-shaped lockdown.panic/unlock,
+    /// which the HUD indicator never reads (the wire-contract gap this pins).
+    #[tokio::test]
+    async fn panic_and_unlock_emit_the_authoritative_lockdown_status() {
+        let _g = test_guard();
+        let _dir = with_temp_marker("status-emit");
+        let mut rx = crate::telemetry::subscribe_for_test();
+        let _ = panic().await;
+        let _ = unlock().await;
+        // Drain the hub, tolerating unrelated envelopes from parallel tests on
+        // the shared broadcast (and a Lagged skip on a busy run).
+        let mut saw_locked = false;
+        let mut saw_unlocked_after = false;
+        loop {
+            match rx.try_recv() {
+                Ok(line) => {
+                    let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    if v["event"] != "lockdown.status" {
+                        continue;
+                    }
+                    match v["data"]["locked"].as_bool() {
+                        Some(true) => {
+                            saw_locked = true;
+                            assert_eq!(
+                                v["data"]["restored_from_marker"],
+                                serde_json::json!(false),
+                                "a live panic is never a marker restore"
+                            );
+                        }
+                        Some(false) if saw_locked => saw_unlocked_after = true,
+                        Some(false) => {}
+                        None => panic!("lockdown.status must carry a boolean `locked`, got: {v}"),
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+        assert!(saw_locked, "panic() must emit lockdown.status {{locked:true}}");
+        assert!(
+            saw_unlocked_after,
+            "unlock() must emit lockdown.status {{locked:false}} after the panic"
+        );
     }
 
     /// A panic drops any parked confirmation — an armed outward action must never

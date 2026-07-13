@@ -62,9 +62,14 @@ const FLEET: DeckApp[] = [
 export default function AppDeckPanel({
   runningApps,
   appFeeds,
+  manifestIssues = [],
 }: {
   runningApps: ReadonlySet<string>;
   appFeeds: Record<string, AppFeed>;
+  /** app.manifest_invalid lines ("dir: error") — apps the daemon SKIPPED at
+   *  discovery because their manifest.toml failed to parse/validate. Rendered
+   *  as install errors so a broken manifest is visible, not a silent absence. */
+  manifestIssues?: string[];
 }) {
   const isLive = (id: string) => runningApps.has(id) || appFeeds[id]?.running === true;
   const liveCount = FLEET.filter((a) => isLive(a.id)).length;
@@ -122,6 +127,17 @@ export default function AppDeckPanel({
               </div>
             );
           })}
+
+          {manifestIssues.length > 0 && (
+            <div className="deck-issues">
+              <div className="deck-issues-title">MANIFEST ERRORS</div>
+              {manifestIssues.map((m) => (
+                <div className="deck-issue" key={m} title={m}>
+                  {m}
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="deck-note dim-note">
             Sandboxed, offline, read-only capability modules (apps/). Review-only —

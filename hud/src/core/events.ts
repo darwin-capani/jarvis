@@ -1102,6 +1102,24 @@ export interface AppDataData {
   payload: Record<string, unknown>;
 }
 
+/** Max app.manifest_invalid lines retained/rendered on the App Deck. The fleet
+ *  is small and each broken manifest emits ONCE at discovery, so a short,
+ *  deduped ring is plenty. */
+export const APP_MANIFEST_ISSUE_CAP = 8;
+
+/** Format a system / app.manifest_invalid payload — apps.rs
+ *  AppRegistry::discover skipped an apps/<name>/ directory whose manifest.toml
+ *  failed to parse/validate (`{name, error}`; name is the DIRECTORY, the app
+ *  never registered, so it can't launch) — into a deck line, or null when the
+ *  frame has no usable name (nothing to point the user at). SECRET-FREE: a dir
+ *  name + a toml/validation error string. */
+export function appManifestIssueLine(data: Record<string, unknown>): string | null {
+  const name = str(data, "name");
+  if (name === null || name.length === 0) return null;
+  const error = str(data, "error");
+  return `${name}: ${error !== null && error.length > 0 ? error : "invalid manifest"}`;
+}
+
 /** system / app.op_forwarded — router.rs (handle_silicon_canvas), emitted when a
  *  voice command is translated into a structured op and forwarded to a running
  *  micro-app over its per-app socket (e.g. "show me the 3V3 net" -> Silicon
@@ -2282,12 +2300,16 @@ export interface NexusRoutes {
   measuredRttMs: number | null;
 }
 
-/** audio.gain — an input/output trim change (SPEC §6, on change). `stage` is
- *  the gain-staging point (e.g. "interface" | "input_trim" | "output_trim");
- *  kept as a plain string so a novel stage still surfaces. */
+/** audio.gain — an input/output trim change OR a mute/unmute (SPEC §6, on
+ *  change). A trim change carries a finite `gainDb` (muted null); a mute op
+ *  carries the boolean `muted` (gainDb null) — exactly one of the two is
+ *  non-null by construction (parseNexusGain rejects a frame with neither).
+ *  `stage` is the gain-staging point (e.g. "interface" | "input_trim" |
+ *  "output_trim"); kept as a plain string so a novel stage still surfaces. */
 export interface NexusGain {
   channel: number;
-  gainDb: number;
+  gainDb: number | null;
+  muted: boolean | null;
   stage: string;
 }
 
@@ -2374,13 +2396,18 @@ export function parseNexusRoutes(data: Record<string, unknown>): NexusRoutes | n
   return { inputs, outputs, matrix, measuredRttMs: num(data, "measured_rtt_ms") };
 }
 
-/** Parse an audio.gain payload. Returns null unless `channel` and `gain_db` are
- *  finite; `stage` defaults to "" when absent. Never throws. */
+/** Parse an audio.gain payload. Returns null unless `channel` is finite AND the
+ *  frame carries a finite `gain_db` (a trim change) or a boolean `muted` (a
+ *  mute/unmute — the app emits the DISTINCT {muted} payload for those; a
+ *  gain_db-of-null frame with no muted flag is still rejected, never rendered
+ *  as a fake 0 dB). `stage` defaults to "" when absent. Never throws. */
 export function parseNexusGain(data: Record<string, unknown>): NexusGain | null {
   const channel = num(data, "channel");
+  if (channel === null) return null;
   const gainDb = num(data, "gain_db");
-  if (channel === null || gainDb === null) return null;
-  return { channel, gainDb, stage: str(data, "stage") ?? "" };
+  const muted = bool(data, "muted");
+  if (gainDb === null && muted === null) return null;
+  return { channel, gainDb, muted, stage: str(data, "stage") ?? "" };
 }
 
 /** Parse an audio.clipping payload. Returns null unless `channel` and
@@ -2914,11 +2941,12 @@ export function parseTccAnomalies(data: Record<string, unknown>): string[] {
 
 // ---------------------------------------------------------------------------
 // MICRO-APP INTROSPECTION (introspect.snapshot / introspect.profile_drift /
-// introspect.anomaly / introspect.module_violation / .security_event /
-// .capabilities). WIRE CONTRACT: the daemon builds these envelopes in ONE place
-// — daemon/src/introspect.rs's ev_* builders (asserted by its telemetry-contract
-// tests). Every SINGLE-APP event keys the app on "app" (NOT "name"); keep the
-// str(data, "app") reads below in lockstep with those builders.
+// introspect.anomaly / introspect.module_violation / .modattest /
+// .security_event / .capabilities). WIRE CONTRACT: the daemon builds these
+// envelopes in ONE place — daemon/src/introspect.rs's ev_* builders (asserted
+// by its telemetry-contract tests). Every SINGLE-APP event keys the app on
+// "app" (NOT "name"); keep the str(data, "app") reads below in lockstep with
+// those builders.
 // The ambient READ-ONLY sentinel over jarvisd's OWN sandboxed children:
 // SBPL profile-drift, RSS/CPU anomalies, and cooperative dyld module attestation.
 // SECRET-FREE: app names + counts + module paths only, never a token or file
@@ -2970,6 +2998,28 @@ export function introspectModuleViolationLine(data: Record<string, unknown>): st
   const path = str(data, "path");
   if (app === null || app.length === 0 || path === null || path.length === 0) return null;
   return `MODULE: ${app} loaded unexpected ${path}`;
+}
+
+/** Format an introspect.modattest payload — the cooperative dyld-attestation
+ *  SUMMARY for one app (`{app, modules, unexpected, missing, seeded}`, built by
+ *  introspect.rs's ev_modattest) — into a finding line, or null. Only SIGNAL
+ *  rides the bounded findings ring: the one-time trust-on-first-use baseline
+ *  seed (a benign "notice" line) and any report with unexpected/missing counts
+ *  (a warn "MODULE"-prefixed line — the aggregate view over the per-module
+ *  violation lines, and the ONLY surface for `missing`). A clean re-attest
+ *  (seeded=false, 0 unexpected, 0 missing) yields null so per-report chatter
+ *  never evicts real findings. */
+export function introspectModattestLine(data: Record<string, unknown>): string | null {
+  const app = str(data, "app");
+  if (app === null || app.length === 0) return null;
+  const modules = num(data, "modules") ?? 0;
+  const unexpected = num(data, "unexpected") ?? 0;
+  const missing = num(data, "missing") ?? 0;
+  if (bool(data, "seeded")) {
+    return `notice [modattest]: ${app} — dyld baseline seeded (${modules} modules)`;
+  }
+  if (unexpected === 0 && missing === 0) return null;
+  return `MODULE ATTEST: ${app} — ${unexpected} unexpected · ${missing} missing (baseline ${modules})`;
 }
 
 /** Format an introspect.security_event payload (kernel security event about a

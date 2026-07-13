@@ -1,4 +1,7 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import NexusPanel from "../components/NexusPanel";
 import {
   NEXUS_MATRIX_DIM_CAP,
   NEXUS_SPECTRUM_BANDS,
@@ -14,7 +17,7 @@ import {
   parseNexusSpectrum,
   type TelemetryEnvelope,
 } from "../core/events";
-import { initialState, reduce, type HudState } from "../core/state";
+import { initialState, reduce, type AppFeed, type HudState } from "../core/state";
 
 /* ------------------------------------------------------------------------ *
  * Nexus micro-app payload parsers (events.ts). DEVICE-GATED, ON-DEVICE ONLY:  *
@@ -176,21 +179,47 @@ describe("parseNexusGain (audio.gain)", () => {
     expect(parseNexusGain({ channel: 0, gain_db: -2.5, stage: "interface" })).toEqual({
       channel: 0,
       gainDb: -2.5,
+      muted: null,
       stage: "interface",
     });
   });
 
-  it("returns null unless channel AND gain_db are finite", () => {
+  it("parses the DISTINCT mute/unmute payload ({muted} instead of {gain_db})", () => {
+    // "mute the mic" — the frame the app emits for a gain.set {mute:true} op.
+    expect(parseNexusGain({ channel: 0, muted: true, stage: "input" })).toEqual({
+      channel: 0,
+      gainDb: null,
+      muted: true,
+      stage: "input",
+    });
+    expect(parseNexusGain({ channel: 2, muted: false, stage: "output" })).toEqual({
+      channel: 2,
+      gainDb: null,
+      muted: false,
+      stage: "output",
+    });
+  });
+
+  it("returns null unless channel is finite AND the frame carries gain_db or muted", () => {
     expect(parseNexusGain({ gain_db: -2 })).toBeNull();
     expect(parseNexusGain({ channel: 0 })).toBeNull();
     expect(parseNexusGain({ channel: 0, gain_db: Infinity })).toBeNull();
+    expect(parseNexusGain({ muted: true })).toBeNull(); // no channel
+    expect(parseNexusGain({ channel: 0, muted: "yes" })).toBeNull(); // non-bool mute
     expect(parseNexusGain({})).toBeNull();
+  });
+
+  it("still rejects the legacy gain_db=null mute frame (never a fake 0 dB)", () => {
+    // The pre-fix app emitted {gain_db: null} on mute; with no muted flag that
+    // frame stays rejected rather than being misread as a trim change.
+    expect(parseNexusGain({ channel: 0, gain_db: null, stage: "input" })).toBeNull();
   });
 
   it("defaults stage to '' when absent", () => {
     expect(parseNexusGain({ channel: 1, gain_db: 6 })).toEqual({
       channel: 1,
       gainDb: 6,
+      muted: null,
       stage: "",
     });
   });
@@ -432,5 +461,70 @@ describe("reducer: app.data nexus topic storage", () => {
     // Both surfaces coexist; nexus storage did not touch vision's slice.
     expect(s.appFeeds["vision"].topics["vision.status"]).toEqual({ state: "watching" });
     expect(parseNexusLevels(s.appFeeds[N].topics[NEXUS_TOPIC_LEVELS])!.ch).toHaveLength(1);
+  });
+});
+
+/* ------------------------------------------------------------------------ *
+ * The panel itself (rendered headlessly via renderToStaticMarkup — node env,  *
+ * no jsdom, same pattern as forge/mark-forge tests): the END-TO-END wire      *
+ * check for the two nexus contract fixes. The APP emits crosspoints under     *
+ * "matrix" (emit_routes) and mutes as {muted} (gain.set) — these feeds prove   *
+ * the panel actually LIGHTS from those exact payloads.                        *
+ * ------------------------------------------------------------------------ */
+
+function nexusFeed(topics: AppFeed["topics"]): AppFeed {
+  return {
+    running: true,
+    brief: "",
+    items: [],
+    fetchedAt: null,
+    feedsOk: null,
+    feedsFailed: null,
+    updatedAt: 1000,
+    topics,
+  };
+}
+
+describe("NexusPanel (headless render of the fixed wire shapes)", () => {
+  it("lights matrix crosspoints from the app's `matrix` wire key", () => {
+    const feed = nexusFeed({
+      [NEXUS_TOPIC_ROUTES]: {
+        inputs: 2,
+        outputs: 2,
+        matrix: [{ in: 0, out: 1, gain_db: -6 }],
+        measured_rtt_ms: null,
+      },
+    });
+    const html = renderToStaticMarkup(createElement(NexusPanel, { feed, running: true }));
+    expect(html).toContain("2×2");
+    // The live crosspoint cell renders lit, with its gain in the tooltip
+    // (toFixed produces an ASCII minus in the title attribute).
+    expect(html).toContain("nx-cell on");
+    expect(html).toContain("I0→O1 -6.0 dB");
+  });
+
+  it("renders MUTED (never a fabricated 0.0 dB) from the {muted} gain payload", () => {
+    const feed = nexusFeed({
+      [NEXUS_TOPIC_GAIN]: { channel: 0, muted: true, stage: "input" },
+    });
+    const html = renderToStaticMarkup(createElement(NexusPanel, { feed, running: true }));
+    expect(html).toContain("MUTED");
+    expect(html).toContain("CH 0");
+    expect(html).not.toContain("0.0 dB");
+  });
+
+  it("renders UNMUTED for a muted:false frame and the trim dB for a gain_db frame", () => {
+    const unmuted = nexusFeed({
+      [NEXUS_TOPIC_GAIN]: { channel: 1, muted: false, stage: "input" },
+    });
+    expect(
+      renderToStaticMarkup(createElement(NexusPanel, { feed: unmuted, running: true })),
+    ).toContain("UNMUTED");
+    const trim = nexusFeed({
+      [NEXUS_TOPIC_GAIN]: { channel: 1, gain_db: -2.5, stage: "output" },
+    });
+    const html = renderToStaticMarkup(createElement(NexusPanel, { feed: trim, running: true }));
+    expect(html).toContain("2.5 dB");
+    expect(html).toContain("OUTPUT");
   });
 });
