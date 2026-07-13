@@ -45,6 +45,11 @@ mod crypto;
 // but INERT ON-DEVICE; EL-Scribe-gated. Wired on the transcript path (main.rs run_pipeline); the pure
 // label-mapper + the on-device honest fallback are hermetically tested in diarize.rs.
 mod diarize;
+// SELF-DISTILLATION (F17): an ARMED-BUT-INERT on-device LoRA pipeline learning a
+// personal adapter from the user's OWN graded interactions. SHIPS OFF; NEVER
+// auto-promotes a trained adapter into the live model; training is inert without
+// Apple Silicon + mlx-lm. Hermetically tested in distill.rs.
+mod distill;
 mod docsearch;
 // AUTO-DRAFT (#25): compose a REVIEWABLE pending draft (email reply / message /
 // doc) the user reads and sends THEMSELVES via the existing gated send. The draft
@@ -868,7 +873,7 @@ const AUDIT_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(15);
 /// payload so the panel shows the OFF state. A read failure skips that tick rather
 /// than emitting a fabricated/partial snapshot. Warn-and-continue throughout: a
 /// snapshot tick must never wedge or panic the daemon.
-async fn audit_snapshot_task(cfg: Arc<Config>) {
+async fn audit_snapshot_task(cfg: Arc<Config>, memory: Arc<Memory>, root: PathBuf) {
     tokio::time::sleep(AUDIT_SNAPSHOT_STARTUP_DELAY).await;
     loop {
         audit::emit_snapshot().await;
@@ -890,6 +895,11 @@ async fn audit_snapshot_task(cfg: Arc<Config>) {
         // must be VISIBLE, not just a one-shot log WARN + the CLI selfcheck board.
         // One stat() per tick; READ-ONLY, like its two siblings above.
         docsearch::emit_status();
+        // The HUD's DistillPanel shows the self-distillation pipeline's honest
+        // state (distill.rs): armed/inert, how many redacted examples are ready,
+        // the last run, and that adapters are NEVER auto-promoted. READ-ONLY —
+        // counts + reads a manifest, runs no training.
+        distill::emit_status(&cfg, &memory, &root).await;
         // The HUD's JournalPanel shows the session's executed consequential
         // actions with their honest undo verdicts (journal.rs). READ-ONLY over
         // the in-process ledger — recording happens at the execution
@@ -1993,7 +2003,7 @@ async fn main() -> Result<()> {
     // READ-ONLY accountability — it never records/prunes/mutates the log (the gate
     // chokepoints do that); when [audit].enabled is false it emits the honest
     // OFF payload so the panel shows the disabled state, never a stale one.
-    tokio::spawn(audit_snapshot_task(cfg.clone()));
+    tokio::spawn(audit_snapshot_task(cfg.clone(), memory.clone(), root.clone()));
     // Machine-posture dashboard feed: a slow (30 min), READ-ONLY pass over the
     // four standard macOS posture reads (FileVault/firewall/SIP/updates) that
     // emits secret-free `posture.snapshot` verdict tokens for the HUD. It only

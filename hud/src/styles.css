@@ -9530,3 +9530,18 @@ body,
 .rewind-detail { flex-basis: 100%; padding-left: 46px; font-size: 0.9em; }
 .rewind-empty { font-size: 0.72em; }
 .rewind-foot { margin-top: 4px; }
+
+/* Self-distillation (distill.status): the armed-but-inert on-device LoRA
+   pipeline. OFF (dim) / ARMED (amber — dataset gathering, device gate still
+   separate). A trained adapter is STAGED, never auto-promoted. */
+.distill-body { display: flex; flex-direction: column; gap: 5px; }
+.distill-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.distill-pill {
+  font-size: 0.62em; letter-spacing: 0.06em; padding: 1px 6px;
+  border-radius: 3px; border: 1px solid currentColor; white-space: nowrap;
+}
+.distill-pill.off { color: var(--fg-dim, rgba(255, 255, 255, 0.4)); }
+.distill-pill.armed { color: var(--warn-amber); }
+.distill-examples { font-size: 0.66em; }
+.distill-run { font-size: 0.66em; }
+.distill-foot { margin-top: 4px; }

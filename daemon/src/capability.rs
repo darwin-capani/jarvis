@@ -151,6 +151,17 @@ pub fn capability_map(cfg: &Config, deps: &CapDeps) -> serde_json::Value {
                 Dep::None
             },
         ),
+        // Self-distillation (F17, propose-only, never auto-promotes): armed by
+        // its switch (ships OFF), inert until the on-device training runtime is
+        // present. The daemon can't import Python to confirm mlx-lm + Apple
+        // Silicon, so the dependency is UNVERIFIED (verified=false) — never a
+        // fabricated "ready"; only the on-device run can truthfully know.
+        cap(
+            "self_distill",
+            "Self-distillation LoRA (staged-only, never auto-promoted)",
+            cfg.distill.enabled,
+            Dep::Unverified { need: "Apple Silicon + mlx-lm (verified on-device)" },
+        ),
         // Self-heal (propose-only): armed by switch, inert without a cloud key to
         // draft the patch.
         cap(
@@ -305,6 +316,23 @@ mod tests {
 
         cfg.docsearch.roots = vec!["~/Documents".into()];
         assert_eq!(find(&capability_map(&cfg, &deps(true, true)), "file_search")["status"], "ready");
+    }
+
+    #[test]
+    fn self_distill_ships_off_and_its_device_dep_is_unverified_when_armed() {
+        // Ships OFF (config default) -> off.
+        let cfg = Config::default();
+        assert_eq!(find(&capability_map(&cfg, &deps(true, true)), "self_distill")["status"], "off");
+
+        // Armed -> ArmedNeedsDependency with verified=false: the daemon cannot
+        // confirm mlx-lm + Apple Silicon (only the on-device run can), so it
+        // never fabricates readiness.
+        let mut cfg2 = Config::default();
+        cfg2.distill.enabled = true;
+        let d = find(&capability_map(&cfg2, &deps(true, true)), "self_distill").clone();
+        assert_eq!(d["status"], "armed_needs_dependency");
+        assert_eq!(d["verified"], false);
+        assert!(d["dependency"].as_str().unwrap().contains("mlx-lm"));
     }
 
     #[test]

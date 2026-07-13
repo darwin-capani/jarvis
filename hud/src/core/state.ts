@@ -56,6 +56,7 @@ import {
   OptimizerProposal,
   PolicySnapshot,
   CapabilityMap,
+  DistillStatus,
   Presence,
   JournalSnapshot,
   SecurityStatus,
@@ -135,6 +136,7 @@ import {
   parseDocSearchResult,
   parsePdfJailAvailable,
   parseCapabilityMap,
+  parseDistillStatus,
   parsePresence,
   parseJournalSnapshot,
   parseKnowledgeGraphResult,
@@ -753,6 +755,10 @@ export interface HudState {
    *  fallback is never silent. Null until the first status frame arrives (an
    *  older daemon never sends one), in which case the panel claims nothing. */
   pdfJailAvailable: boolean | null;
+  /** The self-distillation pipeline's honest state (distill.status): armed/
+   *  inert, examples ready, last run — and that adapters are NEVER auto-
+   *  promoted. Null until the first frame. REVIEW-ONLY. */
+  distill: DistillStatus | null;
   /** The live honest capability map (capability.map, audit-snapshot cadence): one
    *  row per notable subsystem — ready / armed-but-needs-a-dependency / off — with
    *  `verified` distinguishing a probed dependency from a merely-stated one. Null
@@ -1315,6 +1321,7 @@ export function initialState(): HudState {
     docIndex: null,
     docSearch: null,
     pdfJailAvailable: null,
+    distill: null,
     capabilityMap: null,
     presence: null,
     journal: null,
@@ -2568,6 +2575,13 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // ran (so the panel never claims neural when it fell back to BM25). An empty
       // hits[] is the honest "nothing found" — still shown, never hidden.
       return { ...s, docSearch: parseDocSearchResult(env.data) };
+    }
+
+    case "distill.status": {
+      // The self-distillation pipeline status (main.rs audit_snapshot_task ->
+      // distill::emit_status). parseDistillStatus NEVER returns null and never
+      // fabricates device readiness (dep_verified only from a literal true).
+      return { ...s, distill: parseDistillStatus(env.data) };
     }
 
     case "docsearch.status": {

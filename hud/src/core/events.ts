@@ -5961,6 +5961,69 @@ export function parseCapabilityMap(data: Record<string, unknown>): CapabilityMap
 }
 
 /* ------------------------------------------------------------------------ *
+ * SELF-DISTILLATION (distill.status) — the honest state of the armed-but-    *
+ * inert on-device LoRA pipeline (daemon distill.rs, audit-snapshot cadence). *
+ * SHIPS OFF; the device dependency (Apple Silicon + mlx-lm) is UNVERIFIABLE  *
+ * from the daemon, so `depVerified` is always false — never a fabricated     *
+ * "ready". A trained adapter is STAGED, NEVER auto-promoted (`neverPromotes` *
+ * pins that, and any last run's `promoted` is shown). SECRET-FREE: counts +  *
+ * the base-model id + coarse status, never an example's text.                *
+ * ------------------------------------------------------------------------ */
+
+/** The most-recent run's secret-free summary. */
+export interface DistillRun {
+  created: string;
+  baseModel: string;
+  exampleCount: number;
+  status: "prepared" | "trained" | "failed";
+  promoted: boolean;
+}
+
+/** The self-distillation pipeline status. */
+export interface DistillStatus {
+  enabled: boolean;
+  depVerified: boolean;
+  dependency: string;
+  examplesReady: number;
+  minExamples: number;
+  readyToTrain: boolean;
+  neverPromotes: boolean;
+  lastRun: DistillRun | null;
+}
+
+/** Coerce the last-run object, or null. `promoted` reads only a literal true;
+ *  status coerces an unknown token to "failed" (the conservative reading —
+ *  never over-claims a trained/promoted adapter). */
+function coerceDistillRun(o: unknown): DistillRun | null {
+  if (!isPlainObject(o)) return null;
+  const st = str(o, "status");
+  return {
+    created: str(o, "created") ?? "",
+    baseModel: str(o, "base_model") ?? "",
+    exampleCount: nonNegInt(o, "example_count"),
+    status: st === "prepared" || st === "trained" ? st : "failed",
+    promoted: bool(o, "promoted") === true,
+  };
+}
+
+/** Parse a `distill.status` payload. NEVER returns null / never throws; a
+ *  malformed frame degrades to the honest off/inert state. `depVerified` and
+ *  `readyToTrain` only read a literal true (the daemon never fabricates device
+ *  readiness), and `neverPromotes` is pinned true — a payload can't un-say it. */
+export function parseDistillStatus(data: Record<string, unknown>): DistillStatus {
+  return {
+    enabled: bool(data, "enabled") === true,
+    depVerified: bool(data, "dep_verified") === true,
+    dependency: str(data, "dependency") ?? "Apple Silicon + mlx-lm",
+    examplesReady: nonNegInt(data, "examples_ready"),
+    minExamples: nonNegInt(data, "min_examples"),
+    readyToTrain: bool(data, "ready_to_train") === true,
+    neverPromotes: true,
+    lastRun: coerceDistillRun(data["last_run"]),
+  };
+}
+
+/* ------------------------------------------------------------------------ *
  * ACTION JOURNAL — the reversible-action ledger (daemon journal.rs ->         *
  * `system / journal.snapshot`, audit-snapshot cadence). One row per            *
  * consequential action that ACTUALLY EXECUTED this daemon session, each with   *

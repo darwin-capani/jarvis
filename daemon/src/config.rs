@@ -110,6 +110,13 @@ pub struct Config {
     pub audit: AuditConfig,
     pub policy: PolicyConfig,
     pub security: SecurityConfig,
+    /// [distill] — SELF-DISTILLATION (F17, distill.rs): an on-device LoRA
+    /// pipeline that learns a personal adapter from the user's OWN graded
+    /// interactions. SHIPS OFF (like [security]) because training MUTATES
+    /// weights and is device-heavy; it NEVER auto-promotes a trained adapter
+    /// into the live model, and the training step is INERT without Apple
+    /// Silicon + mlx-lm (reported honestly, never faked).
+    pub distill: DistillConfig,
     /// [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs): an INBOUND network
     /// surface. `enabled` SHIPS ON (full-power default) — INERT WITHOUT MAPPINGS +
     /// SECRET: `mappings` ship EMPTY (an unmapped event is rejected, never guessed)
@@ -569,6 +576,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // covered; lose the Keychain item => the DBs are unrecoverable. Listed here so
     // the key never reads as a typo.
     ("security", &["encrypt_memory"]),
+    ("distill", &["enabled", "python", "base_model", "iters"]),
     // [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs). An INBOUND network surface.
     // `enabled` SHIPS ON (full-power default) — INERT WITHOUT MAPPINGS + SECRET: even
     // on, an unmapped event is rejected and the HMAC secret must be present in the
@@ -2401,6 +2409,38 @@ impl Default for SecurityConfig {
     }
 }
 
+/// [distill] — self-distillation (F17). SHIPS OFF: training produces weights (an
+/// adapter), a consequential + device-heavy op, so it is a deliberate operator
+/// opt-in, NOT a full-power feature default. Even ON, it never auto-promotes an
+/// adapter into the live model, and the training run is inert without Apple
+/// Silicon + mlx-lm.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DistillConfig {
+    /// Master switch. SHIPS OFF (false): with it off the pipeline is a no-op and
+    /// the status honestly reports "off".
+    pub enabled: bool,
+    /// The Python interpreter that runs `mlx_lm.lora` on-device.
+    pub python: String,
+    /// The base checkpoint the personal adapter attaches to (defaults to the
+    /// configured local LLM).
+    pub base_model: String,
+    /// Bounded training-step count for a run.
+    pub iters: u32,
+}
+
+impl Default for DistillConfig {
+    fn default() -> Self {
+        // OFF by default — training mutates weights; a deliberate opt-in.
+        Self {
+            enabled: false,
+            python: "python3".to_string(),
+            base_model: "mlx-community/Qwen3-4B-Instruct-2507-4bit".to_string(),
+            iters: 200,
+        }
+    }
+}
+
 /// [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs): an INBOUND network surface
 /// that lets an external system trigger a JARVIS intent. The MOST security-
 /// sensitive thing added here, so it ships with the strongest fences:
@@ -2928,6 +2968,7 @@ impl Config {
             audit: section(&table, "audit", &mut issues),
             policy: section(&table, "policy", &mut issues),
             security: section(&table, "security", &mut issues),
+            distill: section(&table, "distill", &mut issues),
             webhooks: section(&table, "webhooks", &mut issues),
             plugin_sdk: section(&table, "plugin_sdk", &mut issues),
             power: section(&table, "power", &mut issues),
@@ -3792,6 +3833,38 @@ mod tests {
         assert!(
             issues.iter().any(|i| i.contains("security.encrypt_memoryy")),
             "typo'd security key must be reported: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn distill_ships_off_parses_fully_and_catches_a_typo() {
+        // Ships OFF (training mutates weights — a deliberate opt-in), with the
+        // full-power interpreter/model/iters defaults.
+        let (cfg, issues) = Config::parse("");
+        assert!(issues.is_empty());
+        assert!(!cfg.distill.enabled, "self-distillation must ship OFF");
+        assert_eq!(cfg.distill.python, "python3");
+        assert!(cfg.distill.base_model.contains("Qwen3-4B"));
+        assert_eq!(cfg.distill.iters, 200);
+
+        let raw = r#"
+            [distill]
+            enabled = true
+            python = "/opt/venv/bin/python"
+            base_model = "mlx-community/Custom-8B"
+            iters = 400
+        "#;
+        let (cfg, issues) = Config::parse(raw);
+        assert!(issues.is_empty(), "distill keys must be known: {issues:?}");
+        assert!(cfg.distill.enabled);
+        assert_eq!(cfg.distill.python, "/opt/venv/bin/python");
+        assert_eq!(cfg.distill.iters, 400);
+
+        // A typo'd distill key is reported, not silently swallowed.
+        let (_cfg, issues) = Config::parse("[distill]\nenabledd = true\n");
+        assert!(
+            issues.iter().any(|i| i.contains("distill.enabledd")),
+            "typo'd distill key must be reported: {issues:?}"
         );
     }
 
