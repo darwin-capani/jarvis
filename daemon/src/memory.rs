@@ -365,6 +365,29 @@ impl Memory {
         Ok(rows)
     }
 
+    /// The SYNCABLE facts as (key, value, ts) — every non-`meta.*` fact with its
+    /// last-touch RFC3339 timestamp, the newest-wins ordering key the F18
+    /// federated-sync merge needs (`all_user_facts` drops ts). Bounded, ordered
+    /// by key for a stable bundle. `meta.*` bookkeeping is excluded (it must
+    /// never sync to a peer). READ-ONLY.
+    pub async fn syncable_facts(&self, limit: usize) -> Result<Vec<(String, String, String)>> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT key, value, ts FROM facts WHERE key NOT LIKE 'meta.%'
+             ORDER BY key ASC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Facts visible to one agent: its OWN namespace ("agent.<name>." prefix)
     /// plus SHARED facts (no "agent." prefix at all), newest first, internal
     /// "meta." bookkeeping always excluded. This is what the active agent's

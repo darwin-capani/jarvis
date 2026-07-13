@@ -986,6 +986,7 @@ dependencies = [
  "pdf-extract",
  "quick-xml",
  "reqwest",
+ "ring",
  "rodio",
  "rusqlite",
  "serde",

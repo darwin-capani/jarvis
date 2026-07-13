@@ -162,6 +162,16 @@ pub fn capability_map(cfg: &Config, deps: &CapDeps) -> serde_json::Value {
             cfg.distill.enabled,
             Dep::Unverified { need: "Apple Silicon + mlx-lm (verified on-device)" },
         ),
+        // Federated memory sync (F18, ships OFF, E2E-encrypted): armed by
+        // [sync].enabled, inert until a device is paired + a shared key exists.
+        // The daemon can't confirm the pairing/key handshake here -> UNVERIFIED
+        // (verified=false), never a faked ready.
+        cap(
+            "federated_sync",
+            "Federated memory sync (E2E-encrypted; inert until a device is paired)",
+            cfg.sync.enabled,
+            Dep::Unverified { need: "a paired device + shared key" },
+        ),
         // Self-heal (propose-only): armed by switch, inert without a cloud key to
         // draft the patch.
         cap(

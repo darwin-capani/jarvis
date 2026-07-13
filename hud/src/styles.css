@@ -9545,3 +9545,19 @@ body,
 .distill-examples { font-size: 0.66em; }
 .distill-run { font-size: 0.66em; }
 .distill-foot { margin-top: 4px; }
+
+/* Federated memory sync (sync.status): E2E-encrypted cross-device fact sync.
+   OFF (dim) / ARMED (amber — needs pairing) / PAIRED (green). Conflicts are
+   surfaced (amber), never silent. The transport is armed-but-inert. */
+.sync-body { display: flex; flex-direction: column; gap: 5px; }
+.sync-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.sync-pill {
+  font-size: 0.62em; letter-spacing: 0.06em; padding: 1px 6px;
+  border-radius: 3px; border: 1px solid currentColor; white-space: nowrap;
+}
+.sync-pill.off { color: var(--fg-dim, rgba(255, 255, 255, 0.4)); }
+.sync-pill.armed { color: var(--warn-amber); }
+.sync-pill.ready { color: var(--learn-green); }
+.sync-facts { font-size: 0.66em; }
+.sync-conflicts { font-size: 0.7em; color: var(--warn-amber); overflow-wrap: anywhere; }
+.sync-foot { margin-top: 4px; }
