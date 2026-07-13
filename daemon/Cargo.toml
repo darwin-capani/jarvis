@@ -49,6 +49,9 @@ futures-util = "0.3"
 # per-app token, hex encodes it for the JSONL line and the launch env.
 hex = "0.4"
 hmac = "0.12"
+# ring (already locked transitively via rustls) — ring::aead AES-256-GCM for
+# F18 federated-sync sealed bundles. No new download; version pinned to the lock.
+ring = "0.17"
 hound = "3.5"
 # ONLY for the pdfjail memory-jail helper (src/bin/pdfjail.rs): setrlimit(RLIMIT_AS)
 # to cap the extraction child's address space, plus mach task_info to read the

@@ -6024,6 +6024,44 @@ export function parseDistillStatus(data: Record<string, unknown>): DistillStatus
 }
 
 /* ------------------------------------------------------------------------ *
+ * FEDERATED SYNC (sync.status) — the honest state of the E2E-encrypted        *
+ * cross-device fact sync (daemon sync.rs, audit-snapshot cadence). SHIPS OFF; *
+ * a bundle never leaves the box unsealed (facts are raw; encryption is the    *
+ * only off-device protection). The network transport is armed-but-inert       *
+ * (`transportInert` pinned true). Merge is conflict-aware and never silently  *
+ * clobbers (`pendingConflicts` surfaces unresolved divergences). Honest scope *
+ * limit: deletions don't propagate (`deletesPropagate` pinned false).         *
+ * SECRET-FREE: booleans + counts only — never a fact key/value.               *
+ * ------------------------------------------------------------------------ */
+
+/** The federated-sync pipeline status. */
+export interface SyncStatus {
+  enabled: boolean;
+  keyPresent: boolean;
+  peerConfigured: boolean;
+  transportInert: boolean;
+  syncableFacts: number;
+  pendingConflicts: number;
+  deletesPropagate: boolean;
+}
+
+/** Parse a `sync.status` payload. NEVER returns null / never throws; a
+ *  malformed frame degrades to the honest off state. `transportInert` and
+ *  `deletesPropagate` are pinned to their honest values — a payload can't
+ *  claim the transport is live or that deletions sync. */
+export function parseSyncStatus(data: Record<string, unknown>): SyncStatus {
+  return {
+    enabled: bool(data, "enabled") === true,
+    keyPresent: bool(data, "key_present") === true,
+    peerConfigured: bool(data, "peer_configured") === true,
+    transportInert: true,
+    syncableFacts: nonNegInt(data, "syncable_facts"),
+    pendingConflicts: nonNegInt(data, "pending_conflicts"),
+    deletesPropagate: false,
+  };
+}
+
+/* ------------------------------------------------------------------------ *
  * ACTION JOURNAL — the reversible-action ledger (daemon journal.rs ->         *
  * `system / journal.snapshot`, audit-snapshot cadence). One row per            *
  * consequential action that ACTUALLY EXECUTED this daemon session, each with   *

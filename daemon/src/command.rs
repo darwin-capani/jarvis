@@ -154,6 +154,10 @@ pub enum Command {
     /// (NEVER promoting it). Operator-triggered only; off unless
     /// [distill].enabled. Read-mostly + confined to state/lora/.
     Distill,
+    /// FEDERATED SYNC (F18): seal the user's facts to the outbox + merge any
+    /// paired-device bundle from the inbox (conflict-aware, never clobbers).
+    /// Operator-triggered; off unless [sync].enabled + a Keychain shared key.
+    Sync,
     /// List pending confirmations + forge proposals (ids + faithful previews).
     Pending,
     /// Approve a SPECIFIC genuinely-parked confirmation by id (the authenticated
@@ -289,6 +293,7 @@ fn decide(raw: &str) -> Decision {
         "roster" => Command::Roster,
         "state" => Command::State,
         "distill" => Command::Distill,
+        "sync" => Command::Sync,
         "pending" => Command::Pending,
         "confirm" => {
             if req.id.trim().is_empty() {
@@ -483,6 +488,10 @@ pub trait CommandPipeline: Send + Sync {
     /// a redacted dataset + run the device-gated training, NEVER promoting the
     /// staged adapter. Off unless [distill].enabled. Returns a spoken-style ack.
     fn distill(&self) -> impl std::future::Future<Output = String> + Send;
+    /// FEDERATED SYNC (F18): run one operator-triggered sync — seal the facts +
+    /// merge a paired-device bundle, NEVER exporting anything in the clear and
+    /// NEVER silently clobbering. Off unless [sync].enabled + a shared key.
+    fn sync(&self) -> impl std::future::Future<Output = String> + Send;
     /// Play a NAMED built-in SFX cue (already validated as a known cue by
     /// [`decide`]). Delegates to the daemon's `trigger_cue`, whose gate handles
     /// switch-off / no-key / offline as an HONEST silent no-op — the returned text
@@ -789,6 +798,10 @@ where
         Command::Distill => {
             telemetry::emit("system", "command.routed", json!({"cmd": "distill"}));
             json!({"ok": true, "reply": pipeline.distill().await})
+        }
+        Command::Sync => {
+            telemetry::emit("system", "command.routed", json!({"cmd": "sync"}));
+            json!({"ok": true, "reply": pipeline.sync().await})
         }
         Command::Pending => {
             json!({"ok": true, "pending": dispatcher.list_pending().await})
@@ -1118,6 +1131,20 @@ impl CommandPipeline for LivePipeline {
         .await
     }
 
+    async fn sync(&self) -> String {
+        let key = crate::integrations::resolve_secret("sync_shared_key")
+            .await
+            .and_then(|hex| crate::crypto::SecretKey::from_hex(&hex).ok());
+        crate::sync::sync_now(
+            &self.cfg,
+            self.memory.as_ref(),
+            &self.root,
+            chrono::Utc::now().to_rfc3339(),
+            key,
+        )
+        .await
+    }
+
     async fn play_cue(&self, cue: &str) -> String {
         // Delegate to the daemon's `play_cue_for_command`, the Send-safe wrapper
         // around `trigger_cue`. That path performs the SAME cheap offline/switch
@@ -1319,6 +1346,7 @@ mod tests {
             (json!({"token": "t", "cmd": "roster"}), true),
             (json!({"token": "t", "cmd": "state"}), true),
             (json!({"token": "t", "cmd": "distill"}), true),
+            (json!({"token": "t", "cmd": "sync"}), true),
             (json!({"token": "t", "cmd": "pending"}), true),
             (json!({"token": "t", "cmd": "confirm", "id": "abc"}), true),
             (json!({"token": "t", "cmd": "deny", "id": "abc"}), true),
@@ -1574,6 +1602,7 @@ mod tests {
         async fn roster(&self) -> String { "roster".into() }
         async fn state(&self) -> String { "state".into() }
         async fn distill(&self) -> String { "distill".into() }
+        async fn sync(&self) -> String { "sync".into() }
         async fn play_cue(&self, cue: &str) -> String {
             self.play_cue_calls.fetch_add(1, Ordering::SeqCst);
             *self.last_cue.lock().unwrap() = Some(cue.to_string());
@@ -1724,6 +1753,7 @@ mod tests {
             (json!({"token": valid_token(), "cmd": "roster"}), "roster"),
             (json!({"token": valid_token(), "cmd": "state"}), "state"),
             (json!({"token": valid_token(), "cmd": "distill"}), "distill"),
+            (json!({"token": valid_token(), "cmd": "sync"}), "sync"),
         ];
         for (line, want) in cases {
             let r = handle_line(&line.to_string(), &pipeline, &dispatcher, &lim, false).await;
@@ -2279,6 +2309,7 @@ mod tests {
             async fn roster(&self) -> String { unreachable!() }
             async fn state(&self) -> String { unreachable!() }
             async fn distill(&self) -> String { unreachable!() }
+            async fn sync(&self) -> String { unreachable!() }
             async fn play_cue(&self, _cue: &str) -> String { unreachable!() }
             async fn design_voice(&self, _a: &str, _d: &str, _n: &str) -> String { unreachable!() }
             async fn create_pronunciation(&self, _w: &str, _s: &str, _n: &str) -> String {

@@ -197,6 +197,11 @@ mod research;
 // the episodic privacy gate deliberately excludes) and narrates it. It never
 // re-executes anything. Hermetically tested in rewind.rs.
 mod rewind;
+// FEDERATED MEMORY SYNC (F18): E2E-encrypted sync of the user's OWN facts across
+// their OWN devices. Real AES-256-GCM sealed bundles + a conflict-aware merge
+// that NEVER silently clobbers; the network transport is armed-but-inert. Ships
+// OFF. Hermetically tested in sync.rs.
+mod sync;
 mod router;
 mod screen_context;
 mod secret_scan;
@@ -900,6 +905,11 @@ async fn audit_snapshot_task(cfg: Arc<Config>, memory: Arc<Memory>, root: PathBu
         // the last run, and that adapters are NEVER auto-promoted. READ-ONLY —
         // counts + reads a manifest, runs no training.
         distill::emit_status(&cfg, &memory, &root).await;
+        // The HUD's SyncPanel shows the federated-sync pipeline's honest state
+        // (sync.rs): armed/inert, syncable-fact count, whether a shared key is
+        // present, pending conflicts, and that deletions don't propagate.
+        // READ-ONLY — counts + probes, runs no sync.
+        sync::emit_status(&cfg, &memory, &root).await;
         // The HUD's JournalPanel shows the session's executed consequential
         // actions with their honest undo verdicts (journal.rs). READ-ONLY over
         // the in-process ledger — recording happens at the execution

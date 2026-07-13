@@ -152,6 +152,9 @@ const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// is a strict superset of the existing lookup.
 const ALLOWED_ACCOUNTS: &[&str] = &[
     "anthropic_api_key",
+    // F18 federated sync: the shared E2E key paired between the user's OWN
+    // devices. Keychain-only (never config), like the memory master key.
+    "sync_shared_key",
     "github_pat",
     "slack_bot_token",
     "google_drive_oauth",
@@ -1189,7 +1192,7 @@ mod tests {
         ] {
             assert!(account_allowed(account), "{account} must be allowed");
         }
-        assert_eq!(ALLOWED_ACCOUNTS.len(), 37, "the allowlist must not grow silently");
+        assert_eq!(ALLOWED_ACCOUNTS.len(), 38, "the allowlist must not grow silently");
     }
 
     /// Lockstep: the at-rest encryption master-key account literal on the allowlist
@@ -1491,8 +1494,8 @@ mod tests {
                 "mcp_{bad_name}_token must be refused"
             );
         }
-        // The fixed allowlist did not grow.
-        assert_eq!(ALLOWED_ACCOUNTS.len(), 37, "the fixed allowlist must not change");
+        // The fixed allowlist did not grow (38 incl. F18's sync_shared_key).
+        assert_eq!(ALLOWED_ACCOUNTS.len(), 38, "the fixed allowlist must not change");
     }
 
     /// `resolve_secret` returns `None` for a non-allowlisted account WITHOUT
