@@ -883,7 +883,42 @@ async fn audit_snapshot_task(cfg: Arc<Config>) {
         // chokepoints, never here. SECRET-FREE: the snapshot carries only the
         // audit-grade preview text, never raw tool inputs.
         journal::emit_snapshot();
+        // Re-broadcast the CACHED machine-posture snapshot (posture.rs). The
+        // heavy subprocess scan lives on its own 30-minute task below — this is
+        // a pure in-process read, so a freshly connected HUD gets the board in
+        // seconds instead of waiting out the scan interval (the telemetry hub
+        // has no replay-on-connect). The payload's own checked_ts keeps the
+        // data's true age honest; a no-op before the first scan.
+        posture::re_emit_cached();
         tokio::time::sleep(AUDIT_SNAPSHOT_INTERVAL).await;
+    }
+}
+
+/// Machine-posture snapshot cadence (F16). A generous startup delay because
+/// `softwareupdate` at boot competes with system housekeeping; a 30-minute tick
+/// because (a) FileVault/firewall/SIP/pending-updates change rarely and (b)
+/// unlike every other snapshot emitter (pure reads of in-process state), each
+/// posture tick spawns REAL subprocesses — up to ~45s worst case across the
+/// four checks (`softwareupdate -l --no-scan` alone has a 30s budget) — far too
+/// heavy for the 15s audit-snapshot pass.
+const POSTURE_SNAPSHOT_STARTUP_DELAY: Duration = Duration::from_secs(60);
+const POSTURE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(1800);
+
+/// The periodic MACHINE-POSTURE snapshot pass (runtime-only; never run in
+/// tests). Each tick runs the four READ-ONLY status commands posture.rs pins
+/// (FileVault / firewall / SIP / pending updates — fixed argv, never a shell
+/// string, no enable/disable/install path exists) and emits the SECRET-FREE
+/// `posture.snapshot` verdict tokens for the HUD PostureDashboardPanel. It
+/// REPORTS; remediation is the user's own action in System Settings. A check
+/// that can't run degrades to "unreadable" inside the payload (posture.rs), so
+/// a failed read never wedges or skips the tick. TCC grants and micro-app
+/// introspection are NOT re-read here — they already ship on their own events
+/// (`tcc.snapshot`, `introspect.snapshot`).
+async fn posture_snapshot_task() {
+    tokio::time::sleep(POSTURE_SNAPSHOT_STARTUP_DELAY).await;
+    loop {
+        posture::emit_snapshot().await;
+        tokio::time::sleep(POSTURE_SNAPSHOT_INTERVAL).await;
     }
 }
 
@@ -1946,6 +1981,11 @@ async fn main() -> Result<()> {
     // chokepoints do that); when [audit].enabled is false it emits the honest
     // OFF payload so the panel shows the disabled state, never a stale one.
     tokio::spawn(audit_snapshot_task(cfg.clone()));
+    // Machine-posture dashboard feed: a slow (30 min), READ-ONLY pass over the
+    // four standard macOS posture reads (FileVault/firewall/SIP/updates) that
+    // emits secret-free `posture.snapshot` verdict tokens for the HUD. It only
+    // ever reports — there is no remediation path, not even a gated one.
+    tokio::spawn(posture_snapshot_task());
     // Ambient TCC sentinel: a slow, READ-ONLY periodic scan of macOS app privacy
     // grants that seeds a baseline on first run, then emits tcc.snapshot (status)
     // and tcc.anomaly (new grant / denied->allowed escalation) for the HUD. It

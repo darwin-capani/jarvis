@@ -9452,3 +9452,19 @@ body,
 .journal-note { font-size: 0.66em; }
 .journal-empty { font-size: 0.72em; }
 .journal-count { font-size: 0.66em; }
+
+/* Machine security posture (posture.snapshot): the four read-only checks —
+   FileVault / firewall / SIP / pending updates. ON = protected (green);
+   OFF = exposure (amber, the remediation is the user's own action);
+   UNCLEAR / UNREADABLE = honest can't-confirm (dim), never a fabricated green. */
+.posture-body { display: flex; flex-direction: column; gap: 4px; }
+.posture-row { display: flex; align-items: baseline; gap: 8px; }
+.posture-label { flex: 1 1 auto; min-width: 0; }
+.posture-pill {
+  font-size: 0.66em; letter-spacing: 0.06em; padding: 1px 6px;
+  border-radius: 3px; border: 1px solid currentColor; white-space: nowrap;
+}
+.posture-pill.protected { color: var(--learn-green); }
+.posture-pill.exposed { color: var(--warn-amber); }
+.posture-pill.unknown { color: var(--fg-dim, rgba(255, 255, 255, 0.4)); }
+.posture-foot { margin-top: 8px; }

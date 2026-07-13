@@ -166,6 +166,116 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Structured snapshot (F16): the HUD PostureDashboardPanel's wire payload
+// ---------------------------------------------------------------------------
+
+/// Build the STRUCTURED `posture.snapshot` payload by running the SAME four
+/// read-only commands and folding each through its verdict classifier. WIRE
+/// CONTRACT (mirrored by hud/src/core/events.ts::parsePostureSnapshot — exact
+/// field names pinned by tests on both sides):
+///
+///   { "filevault": "on"|"off"|"unclear"|"unreadable",
+///     "firewall":  same,
+///     "sip":       same,
+///     "updates":   "up_to_date"|"pending"|"unclear"|"unreadable",
+///     "updates_pending": <count, 0 unless "pending"> }
+///
+/// SECRET-FREE BY CONSTRUCTION: only these fixed verdict tokens and a count
+/// ever reach the wire — never a byte of raw command output. Scope is
+/// deliberately ONLY the four machine checks: TCC grant counts and micro-app
+/// introspection already ship on their own events (`tcc.snapshot`,
+/// `introspect.snapshot`) — re-emitting them here would double-scan those
+/// stores and split the source of truth.
+async fn build_snapshot<F, Fut>(run: F) -> serde_json::Value
+where
+    F: Fn(&'static str, &'static [&'static str], Duration) -> Fut,
+    Fut: std::future::Future<Output = ReadOutput>,
+{
+    let cmds = posture_commands();
+    let filevault = match run(cmds[0].program, cmds[0].args, cmds[0].timeout).await {
+        ReadOutput::Text(t) => classify_filevault(&t).wire(),
+        ReadOutput::Unavailable(_) => "unreadable",
+    };
+    let firewall = match run(cmds[1].program, cmds[1].args, cmds[1].timeout).await {
+        ReadOutput::Text(t) => classify_firewall(&t).wire(),
+        ReadOutput::Unavailable(_) => "unreadable",
+    };
+    let sip = match run(cmds[2].program, cmds[2].args, cmds[2].timeout).await {
+        ReadOutput::Text(t) => classify_sip(&t).wire(),
+        ReadOutput::Unavailable(_) => "unreadable",
+    };
+    let (updates, updates_pending) = match run(cmds[3].program, cmds[3].args, cmds[3].timeout).await
+    {
+        ReadOutput::Text(t) => match classify_updates(&t) {
+            Updates::UpToDate => ("up_to_date", 0),
+            Updates::Pending(n) => ("pending", n),
+            Updates::Unclear => ("unclear", 0),
+        },
+        ReadOutput::Unavailable(_) => ("unreadable", 0),
+    };
+    serde_json::json!({
+        "filevault": filevault,
+        "firewall": firewall,
+        "sip": sip,
+        "updates": updates,
+        "updates_pending": updates_pending,
+    })
+}
+
+/// The last emitted snapshot payload (with its `checked_ts` stamp). The
+/// telemetry hub is fire-and-forget with no replay-on-connect, and this is the
+/// daemon's slowest feed (30 min) — without a cache, a freshly launched HUD
+/// would show no posture board until the next scan. The fast snapshot pass
+/// re-broadcasts THIS cached value (a pure in-process read; the heavy
+/// subprocess scan stays on its own slow task).
+static LAST_SNAPSHOT: std::sync::Mutex<Option<serde_json::Value>> = std::sync::Mutex::new(None);
+
+/// Lock the cache, recovering from poisoning rather than panicking.
+fn cache_lock() -> std::sync::MutexGuard<'static, Option<serde_json::Value>> {
+    LAST_SNAPSHOT.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Build the snapshot, stamp `checked_ts` (WHEN the commands actually ran —
+/// the re-broadcast below reuses this payload, so the envelope ts alone would
+/// misstate the data's age), and cache it. Factored from [`emit_snapshot`] so
+/// tests drive it with the canned runner — the real commands never spawn under
+/// test.
+async fn snapshot_and_cache<F, Fut>(run: F) -> serde_json::Value
+where
+    F: Fn(&'static str, &'static [&'static str], Duration) -> Fut,
+    Fut: std::future::Future<Output = ReadOutput>,
+{
+    let mut payload = build_snapshot(run).await;
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("checked_ts".to_string(), serde_json::json!(chrono::Utc::now().to_rfc3339()));
+    }
+    *cache_lock() = Some(payload.clone());
+    payload
+}
+
+/// Run the four checks and emit `posture.snapshot` for the HUD dashboard.
+/// READ-ONLY (the same status commands as [`local_posture`]) and SECRET-FREE
+/// (fixed verdict tokens, never raw output). Called on its own SLOW cadence
+/// (main.rs::posture_snapshot_task) — each tick spawns real subprocesses with
+/// a 30s budget for `softwareupdate`, far too heavy for the 15s snapshot pass.
+pub async fn emit_snapshot() {
+    let payload = snapshot_and_cache(run_real_command).await;
+    crate::telemetry::emit("system", "posture.snapshot", payload);
+}
+
+/// Re-broadcast the CACHED snapshot (if any scan has completed). A pure
+/// in-process read — no subprocess — so the fast audit-snapshot pass can call
+/// it every tick and a freshly connected HUD gets the board within seconds
+/// instead of waiting out the 30-minute scan interval. The payload's own
+/// `checked_ts` keeps the data's true age honest. No-op before the first scan
+/// (never fabricates a board).
+pub fn re_emit_cached() {
+    if let Some(payload) = cache_lock().clone() {
+        crate::telemetry::emit("system", "posture.snapshot", payload);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Real command runner (NEVER reached in tests — they inject canned output)
 // ---------------------------------------------------------------------------
 
@@ -207,69 +317,144 @@ async fn run_real_command(
 }
 
 // ---------------------------------------------------------------------------
-// Pure parsers — one per command, unit-tested on canned output
+// Pure classifiers + prose parsers — one per command, unit-tested on canned
+// output. The CLASSIFIER is the single source of truth for a check's verdict;
+// the prose parser (the spoken Aegis reply) and the structured snapshot payload
+// (the HUD dashboard) are both thin views over it, so they can never disagree.
 // ---------------------------------------------------------------------------
 
-/// Parse `fdesetup status` output. "FileVault is On." / "FileVault is Off."
-fn parse_filevault(out: &str) -> String {
+/// The three-way verdict for one protection check. `Unclear` is the honest
+/// can't-confirm reading for unrecognized output — never coerced to On.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Protection {
+    On,
+    Off,
+    Unclear,
+}
+
+impl Protection {
+    /// The wire token for `posture.snapshot` (mirrored by the HUD parser).
+    fn wire(self) -> &'static str {
+        match self {
+            Protection::On => "on",
+            Protection::Off => "off",
+            Protection::Unclear => "unclear",
+        }
+    }
+}
+
+/// The verdict for the pending-updates check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Updates {
+    UpToDate,
+    Pending(usize),
+    Unclear,
+}
+
+/// Classify `fdesetup status` output. "FileVault is On." / "FileVault is Off."
+fn classify_filevault(out: &str) -> Protection {
     let lower = out.to_lowercase();
     if lower.contains("filevault is on") {
-        "FileVault: ON (disk encrypted)".to_string()
+        Protection::On
     } else if lower.contains("filevault is off") {
-        "FileVault: OFF — your disk is not encrypted; turn FileVault on in System Settings".to_string()
+        Protection::Off
     } else {
-        "FileVault: status unclear".to_string()
+        Protection::Unclear
     }
 }
 
-/// Parse `socketfilterfw --getglobalstate` output. "Firewall is enabled. (State =
-/// 1)" / "Firewall is disabled. (State = 0)"
-fn parse_firewall(out: &str) -> String {
+/// Classify `socketfilterfw --getglobalstate` output. "Firewall is enabled.
+/// (State = 1)" / "Firewall is disabled. (State = 0)". (Branch-order subtlety:
+/// "disabled" does NOT contain "enabled", so the first branch is safe.)
+fn classify_firewall(out: &str) -> Protection {
     let lower = out.to_lowercase();
     if lower.contains("enabled") || lower.contains("state = 1") || lower.contains("state = 2") {
-        "Firewall: ON".to_string()
+        Protection::On
     } else if lower.contains("disabled") || lower.contains("state = 0") {
-        "Firewall: OFF — turn the application firewall on in System Settings".to_string()
+        Protection::Off
     } else {
-        "Firewall: status unclear".to_string()
+        Protection::Unclear
     }
 }
 
-/// Parse `csrutil status` output. "System Integrity Protection status: enabled." /
-/// "… disabled."
-fn parse_sip(out: &str) -> String {
+/// Classify `csrutil status` output. "System Integrity Protection status:
+/// enabled." / "… disabled."
+fn classify_sip(out: &str) -> Protection {
     let lower = out.to_lowercase();
     if lower.contains("status: enabled") || lower.contains("status : enabled") {
-        "System Integrity Protection: ON".to_string()
+        Protection::On
     } else if lower.contains("status: disabled") || lower.contains("status : disabled") {
-        "System Integrity Protection: OFF — re-enable SIP unless you have a specific reason not to".to_string()
+        Protection::Off
     } else {
-        "System Integrity Protection: status unclear".to_string()
+        Protection::Unclear
     }
 }
 
-/// Parse `softwareupdate -l --no-scan` output. When updates are pending the output
-/// lists labelled entries ("* Label:" / "Title:"); "No new software available."
-/// means up to date.
-fn parse_updates(out: &str) -> String {
+/// Classify `softwareupdate -l --no-scan` output. When updates are pending the
+/// output lists labelled entries ("* Label:" on modern macOS, "* " on older);
+/// "No new software available." means up to date.
+fn classify_updates(out: &str) -> Updates {
     let lower = out.to_lowercase();
     if lower.contains("no new software available") {
-        return "Software updates: up to date".to_string();
+        return Updates::UpToDate;
     }
-    // Count the labelled update entries softwareupdate prints (lines beginning
-    // with "* Label:" on modern macOS, or "* " on older). Each is one pending
-    // update.
+    // Count the labelled update entries softwareupdate prints. Each is one
+    // pending update.
     let count = out
         .lines()
         .map(str::trim_start)
         .filter(|l| l.starts_with("* Label:") || l.starts_with("* "))
         .count();
     if count > 0 {
-        format!(
-            "Software updates: {count} pending — install them; updates close known security holes"
-        )
+        Updates::Pending(count)
     } else {
-        "Software updates: status unclear".to_string()
+        Updates::Unclear
+    }
+}
+
+/// Prose view of the FileVault verdict (the spoken Aegis reply).
+fn parse_filevault(out: &str) -> String {
+    match classify_filevault(out) {
+        Protection::On => "FileVault: ON (disk encrypted)".to_string(),
+        Protection::Off => {
+            "FileVault: OFF — your disk is not encrypted; turn FileVault on in System Settings"
+                .to_string()
+        }
+        Protection::Unclear => "FileVault: status unclear".to_string(),
+    }
+}
+
+/// Prose view of the firewall verdict.
+fn parse_firewall(out: &str) -> String {
+    match classify_firewall(out) {
+        Protection::On => "Firewall: ON".to_string(),
+        Protection::Off => {
+            "Firewall: OFF — turn the application firewall on in System Settings".to_string()
+        }
+        Protection::Unclear => "Firewall: status unclear".to_string(),
+    }
+}
+
+/// Prose view of the SIP verdict.
+fn parse_sip(out: &str) -> String {
+    match classify_sip(out) {
+        Protection::On => "System Integrity Protection: ON".to_string(),
+        Protection::Off => {
+            "System Integrity Protection: OFF — re-enable SIP unless you have a specific reason not to"
+                .to_string()
+        }
+        Protection::Unclear => "System Integrity Protection: status unclear".to_string(),
+    }
+}
+
+/// Prose view of the updates verdict.
+fn parse_updates(out: &str) -> String {
+    match classify_updates(out) {
+        Updates::UpToDate => "Software updates: up to date".to_string(),
+        Updates::Pending(count) => format!(
+            "Software updates: {count} pending — install them; updates close known security holes"
+        ),
+        Updates::Unclear => "Software updates: status unclear".to_string(),
     }
 }
 
@@ -444,5 +629,111 @@ mod tests {
         // The other three still report normally.
         assert!(report.contains("Firewall: ON"), "{report}");
         assert!(report.contains("System Integrity Protection: ON"), "{report}");
+    }
+
+    // -- the structured posture.snapshot payload (F16, HUD wire contract) -----
+
+    /// Protected machine: every verdict token is the exact wire string the HUD
+    /// parser (events.ts::parsePostureSnapshot) matches on — pinned here.
+    #[tokio::test]
+    async fn snapshot_reports_wire_verdict_tokens_when_protected() {
+        let run = canned(
+            "FileVault is On.",
+            "Firewall is enabled. (State = 1)",
+            "System Integrity Protection status: enabled.",
+            "No new software available.",
+        );
+        let snap = build_snapshot(run).await;
+        assert_eq!(snap["filevault"], "on");
+        assert_eq!(snap["firewall"], "on");
+        assert_eq!(snap["sip"], "on");
+        assert_eq!(snap["updates"], "up_to_date");
+        assert_eq!(snap["updates_pending"], 0);
+        // Exact field set — the wire contract has precisely these five keys.
+        let keys: Vec<&String> = snap.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["filevault", "firewall", "sip", "updates", "updates_pending"]);
+    }
+
+    #[tokio::test]
+    async fn snapshot_flags_exposure_and_counts_pending_updates() {
+        let run = canned(
+            "FileVault is Off.",
+            "Firewall is disabled. (State = 0)",
+            "System Integrity Protection status: disabled.",
+            "Software Update Tool\n\n* Label: macOS Sequoia 15.5\n* Label: Safari17.5",
+        );
+        let snap = build_snapshot(run).await;
+        assert_eq!(snap["filevault"], "off");
+        assert_eq!(snap["firewall"], "off");
+        assert_eq!(snap["sip"], "off");
+        assert_eq!(snap["updates"], "pending");
+        assert_eq!(snap["updates_pending"], 2);
+    }
+
+    /// An unreadable check degrades to "unreadable" (never a fabricated verdict),
+    /// unrecognized output degrades to "unclear" (never coerced to "on"), and —
+    /// the secret-free pin — NOT ONE BYTE of raw command output reaches the
+    /// payload, only the fixed verdict tokens.
+    #[tokio::test]
+    async fn snapshot_degrades_honestly_and_never_carries_raw_output() {
+        let run = |program: &'static str, _args: &'static [&'static str], _to: Duration| {
+            let out = if program == "/usr/bin/fdesetup" {
+                ReadOutput::Unavailable("SENTINEL-REASON not available".to_string())
+            } else if program == "/usr/libexec/ApplicationFirewall/socketfilterfw" {
+                ReadOutput::Text("SENTINEL-GIBBERISH unrecognized output".to_string())
+            } else if program == "/usr/bin/csrutil" {
+                ReadOutput::Text("System Integrity Protection status: enabled.".to_string())
+            } else {
+                ReadOutput::Text("No new software available. SENTINEL-TAIL".to_string())
+            };
+            std::future::ready(out)
+        };
+        let snap = build_snapshot(run).await;
+        assert_eq!(snap["filevault"], "unreadable");
+        assert_eq!(snap["firewall"], "unclear", "gibberish is can't-confirm, never on/off");
+        assert_eq!(snap["sip"], "on");
+        assert_eq!(snap["updates"], "up_to_date");
+        let text = snap.to_string();
+        assert!(!text.contains("SENTINEL"), "raw command output must never reach the wire: {text}");
+    }
+
+    /// The connect-gap fix: a scan stamps `checked_ts` and caches the payload
+    /// (the fast pass re-broadcasts it so a fresh HUD isn't blank for up to
+    /// 30 minutes), and the cache is honestly empty before the first scan.
+    /// This is the ONLY test that touches the process-global cache.
+    #[tokio::test]
+    async fn snapshot_stamps_checked_ts_and_caches_for_the_connect_re_emit() {
+        // Before any scan the cache re-emit has nothing to send (no-op — a
+        // fabricated board must never appear).
+        *super::cache_lock() = None;
+        re_emit_cached(); // must not panic or emit junk
+        assert!(super::cache_lock().is_none());
+
+        let run = canned(
+            "FileVault is On.",
+            "Firewall is enabled. (State = 1)",
+            "System Integrity Protection status: enabled.",
+            "No new software available.",
+        );
+        let payload = snapshot_and_cache(run).await;
+        // checked_ts records WHEN the commands ran; the verdicts ride with it.
+        assert!(payload["checked_ts"].as_str().is_some_and(|t| t.contains('T')));
+        assert_eq!(payload["filevault"], "on");
+        // The cache holds the exact emitted payload for the fast-pass re-emit.
+        assert_eq!(super::cache_lock().clone().unwrap(), payload);
+    }
+
+    /// The classifiers are the single source of truth: prose parser and wire
+    /// token can never disagree on the same canned output.
+    #[test]
+    fn prose_and_wire_views_agree_on_the_same_verdict() {
+        for (out, wire, prose_frag) in [
+            ("FileVault is On.", "on", "FileVault: ON"),
+            ("FileVault is Off.", "off", "FileVault: OFF"),
+            ("mystery", "unclear", "status unclear"),
+        ] {
+            assert_eq!(classify_filevault(out).wire(), wire);
+            assert!(parse_filevault(out).contains(prose_frag));
+        }
     }
 }
