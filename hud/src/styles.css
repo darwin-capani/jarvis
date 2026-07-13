@@ -9406,3 +9406,26 @@ body,
 .presence-pill.away { color: var(--fg-dim, rgba(255,255,255,0.4)); }
 .presence-signal.on { color: var(--learn-green); }
 .presence-signal.off { opacity: 0.4; text-decoration: line-through; }
+
+/* At-rest ambient mirror (F8): a calm fullscreen overlay shown when the daemon
+   reports presence "away" and there's no local activity. Fades over the HUD. */
+.ambient-mode {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px;
+  background: radial-gradient(ellipse at center, rgba(4, 10, 16, 0.82), rgba(2, 5, 9, 0.97));
+  backdrop-filter: blur(6px);
+  animation: ambient-fade-in 700ms ease both;
+  text-align: center;
+}
+@keyframes ambient-fade-in { from { opacity: 0; } to { opacity: 1; } }
+.ambient-clock {
+  font-size: clamp(4rem, 16vw, 11rem); font-weight: 200; letter-spacing: 0.04em;
+  color: var(--fg, #cfe8ff); line-height: 1; font-variant-numeric: tabular-nums;
+}
+.ambient-date { font-size: clamp(1rem, 3vw, 1.8rem); color: var(--fg-dim, rgba(255,255,255,0.55)); letter-spacing: 0.12em; text-transform: uppercase; }
+.ambient-line { display: flex; gap: 16px; align-items: baseline; margin-top: 12px; flex-wrap: wrap; justify-content: center; }
+.ambient-presence.away { color: var(--fg-dim, rgba(255,255,255,0.5)); }
+.ambient-presence.present, .ambient-presence.focused { color: var(--learn-green); }
+.ambient-stat { color: var(--fg-dim, rgba(255,255,255,0.6)); }
+.ambient-foot { margin-top: 24px; opacity: 0.5; }

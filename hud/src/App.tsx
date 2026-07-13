@@ -28,6 +28,8 @@ import McpPanel from "./components/McpPanel";
 import CapabilityAtlasPanel from "./components/CapabilityAtlasPanel";
 import PresencePanel from "./components/PresencePanel";
 import CapabilityStatusPanel from "./components/CapabilityStatusPanel";
+import AmbientMode from "./components/AmbientMode";
+import { isAtRest } from "./core/ambient";
 import TccSentinelPanel from "./components/TccSentinelPanel";
 import IntrospectPanel from "./components/IntrospectPanel";
 import AttributionHealthPanel from "./components/AttributionHealthPanel";
@@ -234,6 +236,31 @@ export default function App() {
     (window as unknown as Record<string, unknown>).__hudDispatch = dispatch;
     (window as unknown as Record<string, unknown>).__audioStore = audioStore;
   }
+
+  // AT-REST / AMBIENT MIRROR (F8): when the daemon-fused presence (F5) reports
+  // "away" AND there's been no local pointer/key activity for the idle window,
+  // the dense HUD calms into a glanceable mirror. Local activity instantly wakes
+  // it, so the mirror never appears while you're touching the machine.
+  const lastActivityRef = useRef(Date.now());
+  const [nowTick, setNowTick] = useState(() => new Date());
+  useEffect(() => {
+    const wake = () => {
+      lastActivityRef.current = Date.now();
+    };
+    window.addEventListener("pointermove", wake, { passive: true });
+    window.addEventListener("keydown", wake);
+    const id = window.setInterval(() => setNowTick(new Date()), 1000);
+    return () => {
+      window.removeEventListener("pointermove", wake);
+      window.removeEventListener("keydown", wake);
+      window.clearInterval(id);
+    };
+  }, []);
+  const atRest = isAtRest(
+    state.presence?.state ?? null,
+    lastActivityRef.current,
+    nowTick.getTime(),
+  );
 
   // Telemetry link: connect, parse, reduce. Auto-reconnect 1s -> 5s.
   // audio.level rms goes to the mutable audioStore (read by the Waveform
@@ -447,6 +474,14 @@ export default function App() {
 
   return (
     <div className="hud">
+      {atRest && (
+        <AmbientMode
+          now={nowTick}
+          presence={state.presence}
+          briefCount={state.proactiveDigest?.items.length ?? 0}
+          feedCount={Object.keys(state.appFeeds).length}
+        />
+      )}
       <div className="hud-backdrop" aria-hidden="true">
         <div className="watermark" />
       </div>
