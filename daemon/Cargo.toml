@@ -43,7 +43,10 @@ cpal = "0.15"
 # stream through a byte budget BEFORE pdf-extract (which decompresses with no ratio
 # cap) ever runs.
 flate2 = "1"
-lopdf = "0.38"
+# 0.42 (not the newest 0.44) so the DIRECT lopdf and the one INSIDE pdf-extract
+# 0.12 resolve to ONE crate version — the bomb guard must inspect the exact same
+# parse the extractor will run.
+lopdf = "0.42"
 futures-util = "0.3"
 # Capability-token HMAC-SHA256 (RustCrypto): hmac + sha2 mint/verify the
 # per-app token, hex encodes it for the JSONL line and the launch env.
@@ -69,7 +72,7 @@ libc = "0.2"
 #     parts in-memory and pull the text runs out of the XML. `zip` is taken WITHOUT
 #     default features + only `deflate-flate2` (Office parts are DEFLATE-compressed),
 #     reusing the flate2 backend and dropping the crypto/zstd/bzip2/time surface.
-pdf-extract = "0.10"
+pdf-extract = "0.12"
 quick-xml = "0.37"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 # 0.20 shares cpal 0.15 with the capture path (one CoreAudio backend, no

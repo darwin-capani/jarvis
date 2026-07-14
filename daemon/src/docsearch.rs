@@ -506,7 +506,7 @@ fn flate_stream_within_budget(content: &[u8], budget: u64, spent: &mut u64) -> b
 ///   2. STRUCTURAL-STREAM (parse-time) BOMBS — a bomb inside a cross-reference
 ///      stream (XRefStm) or object stream (ObjStm) is decompressed by the PARSER
 ///      itself (both this `load_mem` AND pdf-extract's own load must decode those to
-///      read the file). lopdf 0.38 exposes no decompression-size limit on load, so
+///      read the file). lopdf 0.42 exposes no decompression-size limit on load, so
 ///      such a bomb OOMs during parse — and NO in-process guard can prevent it,
 ///      because pdf-extract re-parses the same bytes unbounded regardless of what we
 ///      check first (a Rust alloc-abort does not unwind, so `catch_unwind` can't
