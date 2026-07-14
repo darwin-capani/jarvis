@@ -51,7 +51,7 @@ futures-util = "0.3"
 # Capability-token HMAC-SHA256 (RustCrypto): hmac + sha2 mint/verify the
 # per-app token, hex encodes it for the JSONL line and the launch env.
 hex = "0.4"
-hmac = "0.12"
+hmac = "0.13"
 # ring (already locked transitively via rustls) — ring::aead AES-256-GCM for
 # F18 federated-sync sealed bundles. No new download; version pinned to the lock.
 ring = "0.17"
@@ -89,7 +89,7 @@ rodio = { version = "0.20", default-features = false, features = ["wav"] }
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 sysinfo = "0.32"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.24"

@@ -13,8 +13,8 @@
   "dependencies": {
     "@react-three/fiber": "^9.6.1",
     "@react-three/postprocessing": "^3.0.4",
-    "postprocessing": "^6.39.1",
-    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/api": "^2.11.1",
+    "postprocessing": "^6.39.2",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "three": "^0.184.0"
@@ -25,7 +25,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.2.0",
     "typescript": "~5.9.3",
-    "vite": "^7.3.5",
+    "vite": "^8.1.4",
     "vitest": "^4.1.8"
   }
 }

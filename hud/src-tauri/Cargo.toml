@@ -39,12 +39,16 @@ tokio = { version = "1", features = ["process", "fs", "io-util"] }
 # IN-PROCESS microphone capture (mic_stream.rs). Capturing the mic in THIS app
 # bundle (which carries NSMicrophoneUsageDescription + the audio-input
 # entitlement) makes macOS show a clean "JARVIS" mic prompt; the raw f32 PCM is
-# then streamed over a Unix socket to the daemon's app-audio ingest. Same 0.15
-# line the daemon already depends on — no new crate version.
-cpal = "0.15"
-# Pin: time 0.3.48 adds impls that conflict (E0119) with blanket `From` impls
-# in cookie 0.18.1 and tauri-utils 2.9.2. Drop this once those crates ship fixes.
-time = "=0.3.47"
+# then streamed over a Unix socket to the daemon's app-audio ingest. NOTE: the
+# daemon stays on the 0.15 line (rodio 0.20 shares its cpal); the two stacks
+# have separate lockfiles, and the wire format between them is raw f32 PCM —
+# unaffected by the cpal version on either side.
+cpal = "0.18"
+# Pin: time 0.3.48–0.3.52 added impls that conflict (E0119) with blanket `From`
+# impls in cookie 0.18.1 / older tauri-utils; 0.3.53 + tauri-utils 2.9.3 compile
+# together. Kept as an exact pin so a stray `cargo update` can't reintroduce a
+# conflicting point release; bump deliberately.
+time = "=0.3.53"
 
 # macOS kiosk presentation-options for the DEVICE-GATED takeover (hide Dock /
 # menu bar). These are NOT new heavy deps: tao (Tauri's windowing layer) already

@@ -153,7 +153,8 @@ pub fn start_mic_stream(state: tauri::State<'_, MicState>) -> MicStatus {
         Ok(c) => c,
         Err(e) => return MicStatus::off(format!("querying default input config failed: {e}")),
     };
-    let sample_rate = supported.sample_rate().0;
+    // cpal 0.18: `sample_rate()` returns the raw `u32` (no `SampleRate` newtype).
+    let sample_rate = supported.sample_rate();
     let channels = supported.channels();
 
     // 3) CONNECT to the daemon's ingest socket. If this fails, the daemon is not
@@ -231,8 +232,9 @@ fn owner_thread(
     // audio thread never blocks on socket I/O.
     let (frame_tx, frame_rx) = std_mpsc::channel::<Vec<f32>>();
 
+    // cpal 0.18: `build_input_stream` takes the config by value.
     let stream = match device.build_input_stream(
-        &config,
+        config,
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
             // Best-effort: if the drain side is gone, drop the frame.
             let _ = frame_tx.send(data.to_vec());

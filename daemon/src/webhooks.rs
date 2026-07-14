@@ -39,7 +39,7 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde_json::json;
 use sha2::Sha256;
 use tracing::{info, warn};
