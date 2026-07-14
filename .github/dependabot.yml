@@ -1,0 +1,38 @@
+# Dependabot: weekly, conservative update PRs for every dependency ecosystem in
+# the tree. Kept deliberately low-volume (3 open PRs per ecosystem) — CI runs
+# only on v* tags, so every bump PR must be verified locally before merge (see
+# docs / MEMORY: local checks are the only merge gate).
+#
+# NOTE: version pins elsewhere in the repo are deliberate (e.g. the fast/heavy
+# Claude model pins in config are product choices, not dependencies) — only the
+# manifests listed here are Dependabot's business.
+version: 2
+updates:
+  # Rust daemon (jarvisd + pdfjail helper).
+  - package-ecosystem: cargo
+    directory: /daemon
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # Tauri shell of the HUD.
+  - package-ecosystem: cargo
+    directory: /hud/src-tauri
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # React/TS HUD frontend.
+  - package-ecosystem: npm
+    directory: /hud
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # GitHub Actions (SHA-pinned with `# vX.Y.Z` comments — Dependabot understands
+  # this format and bumps the SHA + comment together).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
