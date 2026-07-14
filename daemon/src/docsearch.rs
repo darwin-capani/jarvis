@@ -318,6 +318,7 @@ fn local_name(qname: &[u8]) -> &[u8] {
 fn extract_office_part(xml: &[u8], text_elements: &[&str], cap: usize) -> String {
     use quick_xml::events::Event;
     use quick_xml::reader::Reader;
+    use std::borrow::Cow;
     let mut reader = Reader::from_reader(xml);
     // Tolerate the slightly-off XML real documents carry; we only read text.
     reader.config_mut().trim_text(false);
@@ -338,6 +339,14 @@ fn extract_office_part(xml: &[u8], text_elements: &[&str], cap: usize) -> String
                 let ln = local_name(name.as_ref());
                 if text_elements.iter().any(|t| t.as_bytes() == ln) {
                     depth_in_text = depth_in_text.saturating_sub(1);
+                    // Run boundary: successive `<w:t>`/`<t>`/`<a:t>` runs must not
+                    // glue. This space sits HERE (once per run) rather than after
+                    // every Text event because quick-xml 0.38+ splits one run into
+                    // Text + GeneralRef + Text around each `&amp;`-style entity —
+                    // a per-event space would break "AT&T" into three tokens.
+                    if out.len() < cap {
+                        out.push(' ');
+                    }
                 } else if ln == b"p" || ln == b"br" || ln == b"tab" {
                     // Word paragraph / break / tab -> whitespace boundary.
                     out.push('\n');
@@ -347,21 +356,40 @@ fn extract_office_part(xml: &[u8], text_elements: &[&str], cap: usize) -> String
                 }
             }
             Ok(Event::Text(t)) if depth_in_text > 0 => {
-                if let Ok(s) = t.unescape() {
+                // quick-xml 0.38+ delivers Text already entity-free (references are
+                // separate GeneralRef events below), so decoding is all that's left.
+                if let Ok(s) = t.decode() {
                     // Append only up to the remaining budget so a single huge text
                     // run cannot blow past `cap` (truncated on a char boundary).
                     let remaining = cap.saturating_sub(out.len());
                     if s.len() <= remaining {
                         out.push_str(&s);
-                        if out.len() < cap {
-                            out.push(' ');
-                        }
                     } else {
                         let mut end = remaining;
                         while end > 0 && !s.is_char_boundary(end) {
                             end -= 1;
                         }
                         out.push_str(&s[..end]);
+                    }
+                }
+            }
+            // `&#x2019;` / `&amp;`-style references inside a text run. The old
+            // `BytesText::unescape` resolved these inline; quick-xml 0.38+ emits
+            // them as their own event, so resolve here: char refs to their char,
+            // the 5 predefined XML entities to their text. An unknown entity is
+            // dropped (pre-0.38 unescape errored and dropped the WHOLE run).
+            Ok(Event::GeneralRef(r)) if depth_in_text > 0 => {
+                let resolved = match r.resolve_char_ref() {
+                    Ok(Some(ch)) => Some(Cow::Owned(ch.to_string())),
+                    Ok(None) => r.decode().ok().and_then(|name| {
+                        quick_xml::escape::resolve_predefined_entity(&name)
+                            .map(Cow::Borrowed)
+                    }),
+                    Err(_) => None,
+                };
+                if let Some(s) = resolved {
+                    if out.len() + s.len() <= cap {
+                        out.push_str(&s);
                     }
                 }
             }
@@ -2286,7 +2314,7 @@ mod tests {
             ),
             (
                 "word/document.xml",
-                r#"<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>the quarterly budget</w:t></w:r><w:r><w:t xml:space="preserve"> review and forecast</w:t></w:r></w:p><w:p><w:r><w:t>covers the Subaru Outback fleet</w:t></w:r></w:p></w:body></w:document>"#,
+                r#"<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>the quarterly budget</w:t></w:r><w:r><w:t xml:space="preserve"> review and forecast</w:t></w:r></w:p><w:p><w:r><w:t>covers the Subaru Outback fleet</w:t></w:r></w:p><w:p><w:r><w:t>filed by AT&amp;T &#x2014; sect&#237;on 9</w:t></w:r></w:p></w:body></w:document>"#,
             ),
         ])
     }
@@ -2377,6 +2405,12 @@ mod tests {
         // Adjacent runs in one paragraph are concatenated, not glued.
         assert!(docx.contains("review and forecast"), "docx run join: {docx:?}");
         assert!(docx.contains("Subaru Outback"), "docx p2: {docx:?}");
+        // Entities INSIDE one run stay glued to their surrounding text: quick-xml
+        // 0.38+ splits `AT&amp;T` into Text+GeneralRef+Text events, and the
+        // extractor must reassemble them without inserting run boundaries.
+        assert!(docx.contains("AT&T"), "predefined entity resolved in-run: {docx:?}");
+        assert!(docx.contains("\u{2014}"), "numeric char ref resolved: {docx:?}");
+        assert!(docx.contains("sect\u{ed}on 9"), "decimal char ref resolved: {docx:?}");
 
         let xlsx = office_text(&make_xlsx(), OfficeKind::Xlsx, 1 << 20).unwrap();
         assert!(xlsx.contains("Revenue"), "xlsx shared string: {xlsx:?}");
