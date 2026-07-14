@@ -69,8 +69,15 @@ echo "Running the hermetic shell-sandbox safety selftest (no exec, no network, n
 for t in "${TESTS[@]}"; do
   # Capture the full cargo output FIRST: piping straight into `grep -q` makes
   # grep exit at the first match, cargo's later writes hit the closed pipe
-  # (SIGPIPE), and under `pipefail` a PASSING run reads as a failure.
-  out="$(cd "$DAEMON" && cargo test "$t" --quiet 2>/dev/null)" || fail "$t — cargo test failed to run"
+  # (SIGPIPE), and under `pipefail` a PASSING run reads as a failure. stderr is
+  # captured too, so a cargo that fails to RUN prints its actual diagnostics
+  # (compile errors trip this branch before any grep sees the output; on
+  # success stderr carries no "passed"/"FAILED" tokens, so the checks below
+  # are unaffected).
+  if ! out="$(cd "$DAEMON" && cargo test "$t" --quiet 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    fail "$t — cargo test failed to run"
+  fi
   if echo "$out" | grep -q "FAILED"; then
     fail "$t — the shell-sandbox safety contract regressed"
   fi
