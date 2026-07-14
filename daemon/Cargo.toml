@@ -86,7 +86,7 @@ rodio = { version = "0.20", default-features = false, features = ["wav"] }
 # PRAGMA key and behave byte-for-byte as a plain SQLite file (no behavior change).
 # `bundled-sqlcipher-vendored-openssl` so the crypto provider builds from a vendored
 # OpenSSL in this environment rather than needing a system OpenSSL.
-rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"] }
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
