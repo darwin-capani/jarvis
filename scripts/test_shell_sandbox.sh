@@ -16,10 +16,12 @@
 #      ONLY (exactly one (allow file-write* ...) — the scratch subpath), and
 #      EXPLICITLY denies read of the Keychain / ~/.claude / the daemon state, with
 #      those denies AFTER the broad read allow so last-match-wins makes them win.
-#   3. GATE ROUTING: shell_run is in confirm::CONSEQUENTIAL_TOOLS (now 17), so it
-#      PARKS for a spoken yes and never auto-runs; it is master-switch / lockdown
-#      / voice-id gated; OFF-by-default => the tool is inert.
-#   4. CONFIG: [shell].enabled ships false.
+#   3. GATE ROUTING: shell_run is in confirm::CONSEQUENTIAL_TOOLS, so it PARKS
+#      for a spoken yes and never auto-runs; it is master-switch / lockdown /
+#      voice-id gated.
+#   4. CONFIG: [shell].enabled ships true — ARMED BY DEFAULT, GATED PER ACTION
+#      (the project's safety model): the switch is on, but nothing runs without
+#      the spoken confirm + gates above.
 #
 # THE ONE HARD PROHIBITION: this selftest NEVER runs jarvisd, never opens a port,
 # never loads a model, never makes a network call, and — above all — never EXECs
@@ -48,28 +50,39 @@ fi
 #   shell::tests::*                              — classifier denylist + obfuscation
 #                                                  + benign; SBPL profile TEXT
 #                                                  (deny-default, no-net, secret +
-#                                                  scratch-only confinement);
-#                                                  shell_permitted off-default.
-#   confirm::...consequential_registry...        — shell_run in CONSEQUENTIAL_TOOLS
-#                                                  (count now 17), parks, no dupes.
-#   config::...shell_defaults...                 — [shell].enabled ships false.
-#   anthropic::...shell_tool_is_owned...         — gate routing: owned + ships off +
+#                                                  scratch-only confinement).
+#   confirm::...consequential_registry...        — shell_run in CONSEQUENTIAL_TOOLS,
+#                                                  parks, no dupes.
+#   config::...shell_defaults...                 — [shell].enabled ships true (armed
+#                                                  by default, gated per action).
+#   anthropic::...shell_tool_is_owned...         — gate routing: owned + ships on +
 #                                                  consequential/parks + voice-id
 #                                                  gated; NO real exec.
 TESTS=(
   "shell::tests"
   "consequential_registry_is_complete_and_exact"
-  "shell_defaults_off_and_is_a_known_key"
-  "shell_tool_is_owned_ships_off_consequential_and_voiceid_gated"
+  "shell_defaults_on_and_is_a_known_key"
+  "shell_tool_is_owned_ships_on_consequential_and_voiceid_gated"
 )
 
 echo "Running the hermetic shell-sandbox safety selftest (no exec, no network, no daemon)..."
 for t in "${TESTS[@]}"; do
-  if ( cd "$DAEMON" && cargo test "$t" --quiet 2>/dev/null | grep -q "test result: ok" ); then
-    pass "$t"
-  else
-    fail "$t — the shell-sandbox safety contract regressed (or the test did not run)"
+  # Capture the full cargo output FIRST: piping straight into `grep -q` makes
+  # grep exit at the first match, cargo's later writes hit the closed pipe
+  # (SIGPIPE), and under `pipefail` a PASSING run reads as a failure.
+  out="$(cd "$DAEMON" && cargo test "$t" --quiet 2>/dev/null)" || fail "$t — cargo test failed to run"
+  if echo "$out" | grep -q "FAILED"; then
+    fail "$t — the shell-sandbox safety contract regressed"
   fi
+  # A filter matching ZERO tests still prints "test result: ok. 0 passed" — that
+  # would be a vacuous pass (it silently hid two renamed tests once). Require the
+  # filter to have actually run at least one test.
+  ran="$(echo "$out" | grep -Eo '[0-9]+ passed' | awk '{s+=$1} END {print s+0}')"
+  if [ "$ran" -eq 0 ]; then
+    fail "$t — matched no tests (renamed or removed?); a 0-test pass proves nothing"
+  fi
+  echo "$out" | grep -q "test result: ok" || fail "$t — no passing test result"
+  pass "$t ($ran passed)"
 done
 
 # Defense-in-depth text assertion: the generated profile (as asserted by the unit
@@ -82,7 +95,7 @@ echo "  - classifier: destructive/exfil patterns + obfuscation REJECTED; benign 
 echo "  - SBPL: (deny default) + (deny network*) + secret denies (Keychain/~/.claude/"
 echo "          daemon state) AFTER the broad read allow + exactly one scratch-only write"
 echo "  - gate: shell_run in CONSEQUENTIAL_TOOLS (parks, never auto-runs); master/"
-echo "          lockdown/voice-id gated; OFF by default"
+echo "          lockdown/voice-id gated; armed by default, gated per action"
 echo "  - exec: DEVICE-gated (built, NEVER invoked here)"
 echo
 echo "RESULT: ok"

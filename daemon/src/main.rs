@@ -882,14 +882,29 @@ const AUDIT_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(15);
 /// snapshot tick must never wedge or panic the daemon.
 async fn audit_snapshot_task(cfg: Arc<Config>, memory: Arc<Memory>, root: PathBuf) {
     tokio::time::sleep(AUDIT_SNAPSHOT_STARTUP_DELAY).await;
+    // LIVE config for every status surface below: the overnight runner (and
+    // standing) re-read config each tick so a flip takes effect without a
+    // restart — the emitters must read the SAME live view, or the HUD would
+    // report a subsystem off while it is actively running (the F10 split-brain).
+    // LAST-GOOD discipline: the view starts at the startup snapshot and is
+    // replaced only when the file genuinely reads + parses (load_live) — a
+    // transient mid-save truncation or EACCES keeps the last good view rather
+    // than blipping every panel to fabricated contract defaults for a tick.
+    // One TOML parse per 15s — the standing_task precedent. (The startup
+    // snapshot's voice-clone merges are irrelevant here: every consumer below
+    // reads only per-section switches, never [voice].)
+    let mut live = (*cfg).clone();
     loop {
+        if let Some(fresh) = Config::load_live(&root.join("config").join("jarvis.toml")) {
+            live = fresh;
+        }
         audit::emit_snapshot().await;
         // The HUD's CapabilityPanel shows the honest "armed by default, gated per
         // action" posture as a live map: for every notable subsystem, whether it
         // is ready / armed-but-needs-a-dependency / off, and whether the daemon
         // actually probed that dependency. READ-ONLY + SECRET-FREE, on the same
         // cadence as its snapshot siblings below.
-        capability::emit_map(&cfg).await;
+        capability::emit_map(&live).await;
         // The HUD's AuditPanel shows the POLICY editor alongside the audit timeline
         // (App.tsx passes `policy={state.policy}`), and `state.policy` is fed ONLY by
         // `policy.snapshot`. Emit it on the same cadence so the editor reflects the
@@ -906,23 +921,24 @@ async fn audit_snapshot_task(cfg: Arc<Config>, memory: Arc<Memory>, root: PathBu
         // state (distill.rs): armed/inert, how many redacted examples are ready,
         // the last run, and that adapters are NEVER auto-promoted. READ-ONLY —
         // counts + reads a manifest, runs no training.
-        distill::emit_status(&cfg, &memory, &root).await;
+        distill::emit_status(&live, &memory, &root).await;
         // The HUD's SyncPanel shows the federated-sync pipeline's honest state
         // (sync.rs): armed/inert, syncable-fact count, whether a shared key is
         // present, pending conflicts, and that deletions don't propagate.
-        // READ-ONLY — counts + probes, runs no sync.
-        sync::emit_status(&cfg, &memory, &root).await;
+        // READ-ONLY — counts + probes, runs no sync; OFF (the shipped default)
+        // never touches the Keychain.
+        sync::emit_status(&live, &memory, &root).await;
         // The HUD's ScenePanel shows the acoustic-scene sensor's honest state
         // (scene.rs, F6): off/armed-needs-model/listening, the sound-event
         // vocabulary, and that audio is NEVER retained. READ-ONLY — probes for a
         // bundled model, runs no classification (the live tap is device-gated).
-        scene::emit_status(&cfg, &root).await;
+        scene::emit_status(&live, &root).await;
         // The HUD's OvernightPanel shows the overnight-agents queue + morning
         // brief (overnight.rs, F10): off/armed-needs-key/ready, queued/done/failed
         // counts, and that overnight work is TOOL-LESS (can never act). READ-ONLY
         // — loads the queue + folds a brief, runs nothing (the run is presence-
         // gated in overnight_task).
-        overnight::emit_status(&cfg, &root).await;
+        overnight::emit_status(&live, &root).await;
         // The HUD's JournalPanel shows the session's executed consequential
         // actions with their honest undo verdicts (journal.rs). READ-ONLY over
         // the in-process ledger — recording happens at the execution
@@ -943,10 +959,11 @@ async fn audit_snapshot_task(cfg: Arc<Config>, memory: Arc<Memory>, root: PathBu
 /// Machine-posture snapshot cadence (F16). A generous startup delay because
 /// `softwareupdate` at boot competes with system housekeeping; a 30-minute tick
 /// because (a) FileVault/firewall/SIP/pending-updates change rarely and (b)
-/// unlike every other snapshot emitter (pure reads of in-process state), each
-/// posture tick spawns REAL subprocesses — up to ~45s worst case across the
-/// four checks (`softwareupdate -l --no-scan` alone has a 30s budget) — far too
-/// heavy for the 15s audit-snapshot pass.
+/// unlike the other snapshot emitters (pure reads of in-process/on-disk state;
+/// sync's Keychain probe runs ONLY when [sync] is armed and is bounded at 5s),
+/// each posture tick spawns REAL subprocesses — up to ~45s worst case across
+/// the four checks (`softwareupdate -l --no-scan` alone has a 30s budget) — far
+/// too heavy for the 15s audit-snapshot pass.
 const POSTURE_SNAPSHOT_STARTUP_DELAY: Duration = Duration::from_secs(60);
 const POSTURE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(1800);
 

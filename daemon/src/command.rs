@@ -1166,9 +1166,20 @@ impl CommandPipeline for LivePipeline {
 
     async fn overnight(&self, task: &str, agent: Option<&str>) -> String {
         // Local write only: enqueue the task. The presence-gated overnight_task
-        // runs it (tool-less) later — nothing consequential happens here.
+        // runs it (tool-less) later — nothing consequential happens here. The
+        // gate reads LIVE config (the runner re-reads it each tick, so the verb
+        // must agree with what will actually run); off => an honest refusal,
+        // never a fabricated "queued for tonight".
+        let (live, _issues) =
+            crate::config::Config::load(&self.root.join("config").join("jarvis.toml"));
         let agent_name = self.resolve_agent(agent).name.clone();
-        crate::overnight::enqueue(&self.root, task, &agent_name, &chrono::Utc::now().to_rfc3339())
+        crate::overnight::enqueue(
+            &self.root,
+            live.overnight.enabled,
+            task,
+            &agent_name,
+            &chrono::Utc::now().to_rfc3339(),
+        )
     }
 
     async fn play_cue(&self, cue: &str) -> String {
