@@ -73,7 +73,7 @@ libc = "0.2"
 #     default features + only `deflate-flate2` (Office parts are DEFLATE-compressed),
 #     reusing the flate2 backend and dropping the crypto/zstd/bzip2/time surface.
 pdf-extract = "0.12"
-quick-xml = "0.37"
+quick-xml = "0.41"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 # 0.20 shares cpal 0.15 with the capture path (one CoreAudio backend, no
 # duplicate cpal in the tree); only the wav decoder (hound) is needed.
