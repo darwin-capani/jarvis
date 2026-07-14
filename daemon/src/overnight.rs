@@ -115,11 +115,13 @@ pub fn load_queue(root: &std::path::Path) -> Vec<OvernightTask> {
         .unwrap_or_default()
 }
 
-fn save_queue(root: &std::path::Path, tasks: &[OvernightTask]) {
-    if let Ok(bytes) = serde_json::to_vec_pretty(tasks) {
-        let _ = std::fs::create_dir_all(queue_root(root));
-        let _ = std::fs::write(queue_path(root), bytes);
-    }
+/// Persist the queue. Returns whether the write actually landed — the enqueue
+/// ack is a durable-sounding promise ("queued for tonight"), so a failed write
+/// must surface as an honest refusal, never a silent best-effort.
+fn save_queue(root: &std::path::Path, tasks: &[OvernightTask]) -> bool {
+    let Ok(bytes) = serde_json::to_vec_pretty(tasks) else { return false };
+    let _ = std::fs::create_dir_all(queue_root(root));
+    std::fs::write(queue_path(root), bytes).is_ok()
 }
 
 fn read_last_run(root: &std::path::Path) -> Option<DateTime<Utc>> {
@@ -185,7 +187,11 @@ pub fn enqueue(root: &std::path::Path, enabled: bool, prompt: &str, agent: &str,
     match plan_enqueue(tasks, prompt, agent, now_rfc3339) {
         Some(updated) => {
             let n = updated.iter().filter(|t| t.status == TaskStatus::Queued).count();
-            save_queue(root, &updated);
+            if !save_queue(root, &updated) {
+                // The ack is a durable promise; a failed persist must never
+                // fabricate one (the runner reloads from the unwritten file).
+                return "I couldn't save the overnight queue, sir — the task is NOT queued. Check the state directory and try again.".to_string();
+            }
             format!("Queued for tonight, sir — {n} task{} waiting for the next time you're away.", if n == 1 { "" } else { "s" })
         }
         None => "The overnight queue is full, sir — I'll run the pending ones first.".to_string(),
@@ -256,7 +262,10 @@ where
         ran += 1;
     }
     if ran > 0 {
-        save_queue(root, &tasks);
+        // Best-effort here is the SAFE direction (unlike enqueue's ack): a
+        // failed save loses done-markers, so tasks re-run next window — wasted
+        // tool-less work, never a false promise to the user.
+        let _ = save_queue(root, &tasks);
     }
     // Stamp the run even at zero tasks so the away-gate honours min_gap and
     // doesn't spin every tick on an empty queue.
@@ -387,6 +396,19 @@ mod tests {
         let reply = enqueue(&dir, true, "look into X", "jarvis", "2026-07-13T20:00:00Z");
         assert!(reply.contains("Queued"), "{reply}");
         assert_eq!(load_queue(&dir).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enqueue_refuses_honestly_when_the_queue_cannot_be_persisted() {
+        // Regression (CodeRabbit sweep): a failed save used to still reply
+        // "Queued for tonight" — a fabricated durable promise the runner would
+        // never see. A directory squatting on the queue path makes the write
+        // fail deterministically.
+        let dir = tempdir("nosave");
+        std::fs::create_dir_all(queue_path(&dir)).unwrap(); // queue.json as a DIR
+        let reply = enqueue(&dir, true, "look into X", "jarvis", "2026-07-13T20:00:00Z");
+        assert!(reply.contains("NOT queued"), "honest refusal on failed persist: {reply}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

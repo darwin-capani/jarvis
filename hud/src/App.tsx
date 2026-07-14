@@ -252,9 +252,16 @@ export default function App() {
   // it, so the mirror never appears while you're touching the machine.
   const lastActivityRef = useRef(Date.now());
   const [nowTick, setNowTick] = useState(() => new Date());
+  // Mirror of `atRest` for the event handlers: while the mirror is UP, local
+  // activity must dismiss it IMMEDIATELY (the promise above is "instantly
+  // wakes"), not on the next 1s clock tick — so wake() forces a re-render, but
+  // ONLY when the overlay is showing (ordinary pointer traffic while working
+  // keeps causing zero extra renders).
+  const atRestRef = useRef(false);
   useEffect(() => {
     const wake = () => {
       lastActivityRef.current = Date.now();
+      if (atRestRef.current) setNowTick(new Date());
     };
     window.addEventListener("pointermove", wake, { passive: true });
     window.addEventListener("keydown", wake);
@@ -270,6 +277,9 @@ export default function App() {
     lastActivityRef.current,
     nowTick.getTime(),
   );
+  useEffect(() => {
+    atRestRef.current = atRest;
+  }, [atRest]);
 
   // Telemetry link: connect, parse, reduce. Auto-reconnect 1s -> 5s.
   // audio.level rms goes to the mutable audioStore (read by the Waveform

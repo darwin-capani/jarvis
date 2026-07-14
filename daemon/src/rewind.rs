@@ -117,7 +117,11 @@ fn parse_last_window(t: &str, now: DateTime<FixedOffset>) -> Option<Window> {
         if unit.starts_with("minute") {
             n
         } else if unit.starts_with("hour") {
-            n * 60
+            // Clamp BEFORE the multiply: a huge spoken hour count (an i64 up to
+            // ~9.2e18 parses fine) would overflow `n * 60` — panic in debug,
+            // wrap NEGATIVE in release, where the negative survives the .min
+            // cap below and produces a future-dated window with a false label.
+            n.min(MAX_LOOKBACK_HOURS) * 60
         } else {
             return None;
         }
@@ -492,6 +496,14 @@ mod tests {
         assert_eq!(w.label, "the last 24 hours", "label states actual coverage");
         // Zero/garbage numbers never resolve.
         assert!(classify("rewind the last 0 hours").is_none());
+
+        // OVERFLOW regression (CodeRabbit sweep): an 18-digit hour count parses
+        // as i64 and used to overflow `n * 60` — debug panic, release wrap to a
+        // NEGATIVE that slipped past the cap and produced a future-dated
+        // window. The clamp now precedes the multiply: 24h window, honest label.
+        let w = classify("rewind the last 200000000000000000 hours").unwrap();
+        assert_eq!(w.from_utc, "2026-07-12T20:00:00+00:00");
+        assert_eq!(w.label, "the last 24 hours");
     }
 
     #[test]

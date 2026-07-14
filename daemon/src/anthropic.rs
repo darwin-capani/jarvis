@@ -6295,10 +6295,15 @@ async fn execute_mcp_tool(
                 ).await;
                 // REVERSIBLE-ACTION JOURNAL (F2): an MCP tool's effects live on
                 // its server, so the honest inverse verdict is always "none" —
-                // but the execution itself belongs in the ledger. (Post-dispatch
-                // gate re-read: a lockdown flip racing the call skips the
-                // record rather than journaling its dry-run as executed.)
-                let journal_executed = !result.1 && crate::integrations::consequential_allowed();
+                // but the execution itself belongs in the ledger. Journal from
+                // the DISPATCH-TIME outcome (`!result.1`, the same signal the
+                // audit record above uses): this arm calls call_tool with a
+                // hardcoded Execute mode and never dry-runs, so if the call
+                // succeeded the effect FIRED. Re-reading the live gate here (a
+                // lockdown flip racing the awaited call) could only drop a real
+                // executed effect from the ledger — fabricated absence — while
+                // guarding against a dry-run that cannot occur on this path.
+                let journal_executed = !result.1;
                 crate::journal::record_executed(
                     namespace, flat, input, &preview_text, &result.0, &[], journal_executed, "policy",
                 );
