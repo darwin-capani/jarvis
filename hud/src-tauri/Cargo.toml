@@ -28,7 +28,9 @@ tauri = { version = "2", features = [] }
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }
+# 0.13 to match the line tauri 2.11 / tauri-plugin-updater 2.10 already pull —
+# ONE reqwest (one hyper/TLS stack) in the lockfile instead of two.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json"] }
 # In-process Keychain (no key material on any subprocess argv).
 security-framework = "3"
 # Async fs + child-process for the gated self-heal apply command (heal.rs).
