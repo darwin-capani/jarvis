@@ -26,17 +26,24 @@
 #   2. PLACE      — copy the project tree into the install home (excluding
 #                   built/fetched dirs: target .venv node_modules .build state models)
 #   3. PYTHON ENV — python3.11 -m venv, upgrade pip, install the FULL dep set
-#   4. MODELS     — pre-download every model the OS uses into HF_HOME
+#   4. MODELS     — pre-download every model the OS uses into HF_HOME, and
+#                   persist that HF_HOME into state/env.sh so the RUNTIME (the
+#                   boot wrappers source it) reads the SAME cache
 #   5. BUILD      — cargo build --release (daemon + apps), swift build, HUD/Tauri .app
-#   6. AUTOSTART  — render + load the 2 LaunchAgents via scripts/install_boot.sh --install
+#   6. AUTOSTART  — consent-gated (see --yes): render + load the 2 LaunchAgents
+#                   via scripts/install_boot.sh --install (RunAtLoad STARTS JARVIS)
 #   7. FINISH     — "JARVIS IS ONLINE" + honest next-steps (TCC grants, keys, wake word)
 #
 # Flags:
 #   --check / --dry-run   print the full plan and run only READ-ONLY detection
 #                         (prereq provisioning is PLANNED, never executed)
-#   --yes / -y            assume "yes" to consent prompts (the JARVIS-actuation
-#                         confirm()s — build-prereq provisioning is NOT gated on
-#                         this; it runs by default, see --no-provision)
+#   --yes / -y            assume "yes" to the consent prompts (the JARVIS-
+#                         actuation confirm()s). Today that is ONE gate: stage 6
+#                         AUTOSTART, loading the LaunchAgents that START the
+#                         armed OS (declining leaves autostart MANUAL, enable
+#                         later via scripts/install_boot.sh --install). Build-
+#                         prereq provisioning is NOT gated on this; it runs by
+#                         default, see --no-provision.
 #   --no-provision        DO NOT auto-install build prereqs. Revert to detect +
 #                         instruct + fatal-if-missing (Rust/Python3.11/Node).
 #                         Provisioning is ON by default; use this to opt out.
@@ -182,7 +189,7 @@ while [ "$#" -gt 0 ]; do
         -h|--help)
             # Print the header comment block (the doc lines above `set -euo
             # pipefail`) as the help text, stripping the leading "# ".
-            sed -n '2,50p' "${BASH_SOURCE[0]:-$SRC_ROOT/install.sh}" | sed 's/^# \{0,1\}//'
+            sed -n '2,65p' "${BASH_SOURCE[0]:-$SRC_ROOT/install.sh}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -198,14 +205,19 @@ done
 # ----------------------------------------------------------------------------
 
 # Ask for consent unless --yes; in --check mode never prompt (assume no).
+# Piped stdin (curl | bash) prompts via the controlling terminal when one
+# exists (the same /dev/tty pattern ensure_homebrew uses); with no tty at all
+# (true non-interactive run / CI) it DECLINES — fail-safe; pass -y to accept.
 confirm() {
-    local prompt="$1"
+    local prompt="$1" in="/dev/stdin"
     [ "$ASSUME_YES" -eq 1 ] && return 0
     [ "$MODE" = "check" ] && return 1
-    [ ! -t 0 ] && return 1   # piped stdin (curl | bash) without -y => decline
+    if [ ! -t 0 ]; then
+        if { : < /dev/tty; } 2>/dev/null; then in="/dev/tty"; else return 1; fi
+    fi
     local reply=""
     printf '  %s%s %s [y/N] %s' "${UI_BOLD}${UI_CYAN}" "$UI_G_INFO" "$prompt" "$UI_RESET"
-    read -r reply || true
+    read -r reply < "$in" || true
     case "$reply" in [Yy]*) return 0 ;; *) return 1 ;; esac
 }
 
@@ -899,7 +911,48 @@ HOME_PY_REQ="$JARVIS_HOME/inference/requirements.txt"
 VENV="$JARVIS_HOME/.venv"
 VENV_PY="$VENV/bin/python"
 VENV_PIP="$VENV/bin/pip"
+
+# Model cache — ONE path shared by install time and runtime. The runtime (the
+# boot wrappers boot/run_daemon.sh + boot/run_inference.sh, and
+# scripts/bringup.sh) sources state/env.sh, so stage 4 persists HF_HOME there;
+# without that the inference server defaults to ~/.cache/huggingface and
+# re-downloads every pre-downloaded model (or fails offline) — the exact
+# "install/runtime HF_HOME split" scripts/doctor.sh flags. If state/env.sh
+# ALREADY sets HF_HOME (a prior run, or the user pointing at a bigger disk),
+# HONOR it for the install-time download too — the two must never disagree.
+ENV_SH="$JARVIS_HOME/state/env.sh"
 HF_HOME_DIR="$JARVIS_HOME/models"
+if [ -f "$ENV_SH" ] && grep -qE '^[[:space:]]*export[[:space:]]+HF_HOME=' "$ENV_SH" 2>/dev/null; then
+    # Evaluate env.sh EXACTLY as the boot wrappers do (JARVIS_ROOT set, file
+    # sourced by bash) — but in a THROWAWAY subshell so none of its other
+    # exports leak into this installer process.
+    _env_hf="$(JARVIS_ROOT="$JARVIS_HOME" bash -c '. "$1" >/dev/null 2>&1; printf "%s" "${HF_HOME:-}"' _ "$ENV_SH" 2>/dev/null || true)"
+    [ -n "$_env_hf" ] && HF_HOME_DIR="$_env_hf"
+fi
+
+# Persist HF_HOME into the runtime env (state/env.sh — the file every boot
+# wrapper sources) so the daemon + inference server find the models this
+# installer downloads. Idempotent: an existing HF_HOME line is left in place
+# (it was honored above); the file is created chmod 600 when absent (the
+# documented secrets convention). Written JARVIS_ROOT-relative so the tree
+# stays relocatable, with the install home as the literal fallback.
+persist_hf_home() {
+    if [ -f "$ENV_SH" ] && grep -qE '^[[:space:]]*export[[:space:]]+HF_HOME=' "$ENV_SH" 2>/dev/null; then
+        ui_ok "runtime model cache already pinned: HF_HOME -> $HF_HOME_DIR (state/env.sh — left in place)"
+        return 0
+    fi
+    mkdir -p "$JARVIS_HOME/state"
+    if [ ! -f "$ENV_SH" ]; then
+        {
+            printf '# state/env.sh — JARVIS runtime environment (gitignored; keep this chmod 600).\n'
+            printf '# Sourced by the boot wrappers + scripts/bringup.sh. Put API keys here, e.g.\n'
+            printf '#   export ANTHROPIC_API_KEY=...\n'
+        } > "$ENV_SH"
+        chmod 600 "$ENV_SH"
+    fi
+    printf 'export HF_HOME="${JARVIS_ROOT:-%s}/models"\n' "$JARVIS_HOME" >> "$ENV_SH"
+    ui_ok "runtime model cache pinned: HF_HOME -> $HF_HOME_DIR (persisted in state/env.sh, which the boot wrappers source)"
+}
 
 # ============================================================================
 # STAGE 3 — PYTHON ENV (venv + the FULL dependency set)
@@ -974,7 +1027,17 @@ IMG_ID="black-forest-labs/FLUX.1-schnell"
 
 MODELS=("$LLM_ID" "$STT_ID" "$TTS_ID" "$VLM_ID" "$DRAFT_ID" "$IMG_ID")
 
-ui_info "HF_HOME -> $HF_HOME_DIR (models cached in the install home, never the repo)"
+ui_info "HF_HOME -> $HF_HOME_DIR (ONE cache for installer + runtime, via state/env.sh; never the repo)"
+
+# Pin the runtime cache FIRST — even with --no-models: a model fetched on
+# first use must land in this same install-home cache (removed with the home
+# by uninstall.sh), never in a stray ~/.cache/huggingface the runtime would
+# otherwise default to.
+if [ "$MODE" = "check" ]; then
+    plan "append 'export HF_HOME=…/models' to \"$JARVIS_HOME/state/env.sh\"   # the boot wrappers source it, so the RUNTIME uses this same cache"
+else
+    persist_hf_home
+fi
 ui_info "LLM   : $LLM_ID"
 ui_info "STT   : $STT_ID"
 ui_info "TTS   : $TTS_ID"
@@ -1154,9 +1217,21 @@ if [ "$MODE" = "check" ]; then
         "$BOOT_SCRIPT" 2>&1 | sed 's/^/      /' || true
     fi
 else
-    ui_info "Loading the 2 LaunchAgents via scripts/install_boot.sh --install ..."
-    "$BOOT_SCRIPT" --install
-    ui_ok "LaunchAgents installed + loaded (RunAtLoad starts them)."
+    # THE JARVIS-ACTUATION CONSENT GATE (the confirm() that --yes assumes yes
+    # to): loading these LaunchAgents does not just place files — RunAtLoad
+    # STARTS the armed OS (daemon + inference) now and at every login. All the
+    # stages above were build/placement; this is the step that turns it on, so
+    # it asks first. Declining is NOT fatal: the install stays complete, the
+    # stage-7 board reports AUTOSTART: MANUAL, and install_boot.sh enables it
+    # any time later.
+    if confirm "Load the LaunchAgents and start JARVIS now (autostart at every login)?"; then
+        ui_info "Loading the 2 LaunchAgents via scripts/install_boot.sh --install ..."
+        "$BOOT_SCRIPT" --install
+        ui_ok "LaunchAgents installed + loaded (RunAtLoad starts them)."
+    else
+        ui_warn "Autostart declined — the LaunchAgents were NOT loaded (nothing was started)."
+        ui_note "Enable later with:  \"$BOOT_SCRIPT\" --install   (or re-run the installer with -y)."
+    fi
 fi
 
 # ============================================================================

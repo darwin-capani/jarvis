@@ -10,6 +10,8 @@
 # (never a broad or globbed rm):
 #   - the install home  ~/Library/Application Support/JARVIS  (code, .venv, models, all state)
 #   - the 2 LaunchAgents (com.jarvis.daemon / com.jarvis.inference) — unloaded + removed
+#   - the installed HUD app  /Applications/JARVIS.app  and  ~/Applications/JARVIS.app —
+#     each removed ONLY after its Info.plist verifies bundle id com.jarvis.hud
 #   - the JARVIS Keychain items (ONLY the service "com.jarvis.daemon") — your stored keys/tokens
 #   - the logs  ~/Library/Logs/JARVIS
 # It removes the INSTALLED OS. A source clone you may have elsewhere is left untouched.
@@ -51,11 +53,16 @@ AGENT_DIR="$HOME/Library/LaunchAgents"
 KEYCHAIN_SERVICE="com.jarvis.daemon"
 LABELS=("com.jarvis.daemon" "com.jarvis.inference")
 GUI_DOMAIN="gui/$(id -u)"
+# The HUD app install.sh places via place_hud_app (/Applications first, then
+# ~/Applications). Each is a SPECIFIC path, and is removed ONLY if its bundle
+# identifier verifies as the JARVIS HUD (hud/src-tauri/tauri.conf.json).
+HUD_BUNDLE_ID="com.jarvis.hud"
+APP_PATHS=("/Applications/JARVIS.app" "$HOME/Applications/JARVIS.app")
 
 DRY_RUN=0
 case "${1:-}" in
     --dry-run|--check) DRY_RUN=1 ;;
-    -h|--help) sed -n '2,28p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}"; exit 0 ;;
     "") : ;;
     *) printf 'uninstall.sh: unknown argument %q (use --dry-run or --help)\n' "$1" >&2; exit 2 ;;
 esac
@@ -112,6 +119,10 @@ present_targets() {
         ui_note "$JARVIS_HOME  (not installed — nothing to remove there)"
     fi
     ui_note "LaunchAgents: ${LABELS[*]}  (autostart unloaded + removed)"
+    local app
+    for app in "${APP_PATHS[@]}"; do
+        [ -d "$app" ] && ui_note "HUD app: $app  (removed only if it verifies as bundle $HUD_BUNDLE_ID)"
+    done
     ui_note "Keychain items under service \"$KEYCHAIN_SERVICE\"  (your stored API keys / tokens)"
     ui_note "Logs: $LOG_DIR"
     ui_hr
@@ -139,6 +150,46 @@ stop_and_remove_agents() {
     pkill -f "JARVIS/daemon/target/release/jarvisd" 2>/dev/null || true
     pkill -f "JARVIS/inference/server.py" 2>/dev/null || true
     ui_ok "Autostart unloaded and LaunchAgents removed."
+}
+
+# Is $1 the JARVIS HUD app bundle? TRUE only when it is a directory whose
+# Info.plist carries the JARVIS bundle identifier — we never rm -rf a path that
+# does not verify, even at the expected location (e.g. some unrelated folder a
+# user parked there under the name JARVIS.app).
+is_jarvis_hud_app() {
+    local app="$1"
+    [ -d "$app" ] && [ -f "$app/Contents/Info.plist" ] || return 1
+    local bid=""
+    bid="$(defaults read "$app/Contents/Info" CFBundleIdentifier 2>/dev/null || true)"
+    [ "$bid" = "$HUD_BUNDLE_ID" ]
+}
+
+remove_hud_app() {
+    local app found=0
+    for app in "${APP_PATHS[@]}"; do
+        [ -e "$app" ] || continue
+        found=1
+        if ! is_jarvis_hud_app "$app"; then
+            ui_warn "left in place: $app (did not verify as the JARVIS HUD bundle $HUD_BUNDLE_ID — refusing to delete an unverified path)"
+            continue
+        fi
+        if [ "$DRY_RUN" -eq 1 ]; then
+            ui_note "[dry run] would: rm -rf \"$app\"  (verified bundle $HUD_BUNDLE_ID)"
+            continue
+        fi
+        # Best-effort: quit a running HUD first (never fatal) — scoped to an
+        # executable INSIDE a JARVIS.app bundle, like the daemon reaps above.
+        pkill -f "/JARVIS.app/Contents/MacOS/" 2>/dev/null || true
+        rm -rf "$app"
+        ui_ok "Removed the HUD app: $app"
+    done
+    if [ "$found" -eq 0 ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+            ui_note "[dry run] no JARVIS.app present in /Applications or ~/Applications"
+        else
+            ui_info "No installed JARVIS.app was present."
+        fi
+    fi
 }
 
 remove_home() {
@@ -211,6 +262,7 @@ fi
 ui_hr
 ui_info "Removing J.A.R.V.I.S. ..."
 stop_and_remove_agents
+remove_hud_app
 remove_home
 remove_keychain_items
 remove_logs

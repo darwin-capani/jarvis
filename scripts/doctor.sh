@@ -51,6 +51,15 @@ say_fail() { if [ "$_UI" -eq 1 ]; then ui_err  "$1"; else printf '  [FAIL] %s\n'
 say_info() { if [ "$_UI" -eq 1 ]; then ui_info "$1"; else printf '  [ .. ] %s\n' "$1"; fi; }
 say_hr()   { if [ "$_UI" -eq 1 ]; then ui_hr; else printf -- '---\n'; fi; }
 
+# Source the gitignored runtime env EXACTLY like the boot wrappers + bringup.sh
+# do (read-only for us: it only sets env vars). This is where install.sh
+# persists HF_HOME, so the HF_HOME-split check below sees the SAME environment
+# the daemon + inference server actually run with — not a bare shell's.
+if [ -f "$ROOT/state/env.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$ROOT/state/env.sh"
+fi
+
 # --- derived paths -----------------------------------------------------------
 VENV_PY="$ROOT/.venv/bin/python"
 JARVISD="$ROOT/daemon/target/release/jarvisd"
