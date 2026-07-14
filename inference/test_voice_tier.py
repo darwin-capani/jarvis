@@ -242,6 +242,55 @@ class KeyHygieneAndDecoding(unittest.TestCase):
         self.assertNotIn("xi-api-key", scrubbed)
         self.assertIn("[redacted-header]", scrubbed)
 
+    def test_gpu_lock_not_held_across_cloud_round_trip(self):
+        # AUDIT FIX: the ElevenLabs leg of speak() is a cloud round-trip (up to
+        # ELEVENLABS_TIMEOUT_S) plus pure-numpy decode and a file write — it
+        # touches NO GPU/model state, so holding self._lock across it would
+        # stall every local inference op behind the network. The seam probe
+        # records the lock state at the exact moment the "network" is hit.
+        engine = _make_engine()
+        seen = {}
+        orig_seam = server._elevenlabs_synth_pcm
+
+        def probe_seam(voice_id, model, api_key, text, timeout_s=server.ELEVENLABS_TIMEOUT_S,
+                       audio_tag=None, stability=None, style=None, locators=None):
+            seen["lock_held_during_cloud_call"] = engine._lock.locked()
+            return _canned_pcm()
+
+        server._elevenlabs_synth_pcm = probe_seam
+        engine._write_wav = lambda audio, sr, out_path=None: "/tmp/elevenlabs-stub.wav"
+        try:
+            path = engine.speak(
+                "hello", backend="elevenlabs", voice_id="stub-voice", el_key="stub-key"
+            )
+            self.assertEqual(path, "/tmp/elevenlabs-stub.wav")
+            self.assertIn("lock_held_during_cloud_call", seen, "the seam must have run")
+            self.assertFalse(
+                seen["lock_held_during_cloud_call"],
+                "speak() must NOT hold the GPU lock across the ElevenLabs round-trip",
+            )
+        finally:
+            server._elevenlabs_synth_pcm = orig_seam
+
+    def test_gpu_lock_still_held_for_on_device_kokoro(self):
+        # The counterpart invariant: the on-device leg DOES drive the GPU, so
+        # the lock must still be held around _ensure_tts/_synthesize_to_wav.
+        engine = _make_engine()
+        seen = {}
+        engine._ensure_tts = lambda: object()  # lock-held caller contract; no model load
+
+        def probe_synth(tts, text, voice, out_path=None, rate=None, volume=None):
+            seen["lock_held_during_synth"] = engine._lock.locked()
+            return "/tmp/kokoro-stub.wav"
+
+        engine._synthesize_to_wav = probe_synth
+        path = engine.speak("hello")
+        self.assertEqual(path, "/tmp/kokoro-stub.wav")
+        self.assertTrue(
+            seen.get("lock_held_during_synth"),
+            "on-device synthesis must keep holding the GPU lock",
+        )
+
     def test_seam_is_the_only_network_touch_point(self):
         # The module exposes exactly one network seam name; the engine method that
         # would call it (_elevenlabs_to_wav) and the seam both exist, so a test can

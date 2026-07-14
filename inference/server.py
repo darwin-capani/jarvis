@@ -127,7 +127,11 @@ Ops:
                  (the opener line the daemon already played from the opener
                  bank) appends a bracketed continuation note to the final
                  user turn so the reply goes straight to the substance
-                 instead of acknowledging twice.
+                 instead of acknowledging twice. If the requesting peer
+                 disconnects mid-decode, the loop notices (EOF on the
+                 connection's read side, polled per chunk) and aborts —
+                 no further tokens or sentences are produced for a client
+                 that is gone (generate's cached path aborts the same way).
   extract_facts  user utterance (+ optional response) -> at most 3 durable
                  {key, value} facts with namespaced keys (user.name,
                  user.preference.<x>, user.project.<x>, context.<x>);
@@ -3109,11 +3113,18 @@ class InferenceEngine:
 
         return sample
 
-    def _generate_cached(self, prompt, max_tokens):
+    def _generate_cached(self, prompt, max_tokens, cancelled=None):
         """Generate a reply using the prefilled persona-prefix cache.
         Caller holds self._lock. `prompt` is the fully rendered chat prompt,
         which starts with (a tokenization-seam-tolerant match of) the cached
-        persona prefix."""
+        persona prefix.
+
+        `cancelled` (optional, audit fix): thread-safe callable polled once per
+        decoded chunk; when it reports the peer gone the decode loop ABORTS
+        (partial text returned, nobody is listening) instead of burning GPU for
+        the rest of max_tokens. The finally trim below already restores the
+        cache on ANY early exit, so an abort leaves the same invariant as an
+        exception. None (the default) never cancels."""
         from mlx_lm import stream_generate
         from mlx_lm.models.cache import trim_prompt_cache
 
@@ -3140,6 +3151,12 @@ class InferenceEngine:
                 prompt_cache=self._gen_cache,
                 sampler=self._persona_sampler(),
             ):
+                if cancelled is not None and cancelled():
+                    log.info(
+                        "generate: peer disconnected; aborting cached decode after %d chunks",
+                        generated,
+                    )
+                    break
                 pieces.append(resp.text)
                 generated += 1
         finally:
@@ -3423,6 +3440,7 @@ class InferenceEngine:
         facts=None,
         data=None,
         local_model=None,
+        cancelled=None,
     ):
         """Like `generate`, but ALSO returns an HONEST per-call meta dict reporting
         the path that ACTUALLY ran: `{"speculative": <bool actually used>,
@@ -3433,7 +3451,13 @@ class InferenceEngine:
         NOT use a draft (speculative + a prefilled prompt cache conflict), so a
         speculative turn answers UNCACHED — reported truthfully either way. The
         meta NEVER claims speculative when normal gen ran, and reports the quant
-        from the load seam (#39). The real speedup/RAM effect is device-gated."""
+        from the load seam (#39). The real speedup/RAM effect is device-gated.
+
+        `cancelled` (optional, audit fix): thread-safe peer-disconnect probe,
+        honoured ONLY on the cached persona path (the common route), whose
+        decode is already a chunked loop. The uncached and speculative paths
+        are single blocking mlx_lm.generate() calls with no seam to poll, so
+        they honestly keep run-to-completion behavior."""
         from mlx_lm import generate as mlx_generate
 
         with self._lock:
@@ -3456,7 +3480,7 @@ class InferenceEngine:
                 # Cached normal path (today's behavior). Speculative is incompatible
                 # with the prefilled persona cache, so a speculative turn skips it.
                 try:
-                    out = self._generate_cached(prompt, max_tokens)
+                    out = self._generate_cached(prompt, max_tokens, cancelled=cancelled)
                     return (out, {"speculative": False, "quant": quant_loaded})
                 except Exception:
                     log.exception("cached generate failed; rebuilding cache and falling back")
@@ -4545,7 +4569,12 @@ class InferenceEngine:
         Raises on any network/HTTP error: the caller (`speak`) catches EVERYTHING
         and falls back to on-device Kokoro, so a cloud failure NEVER fails a turn.
         The key is used only to call the seam (which puts it in the xi-api-key
-        header) — it is never logged here. Holds self._lock (caller contract)."""
+        header) — it is never logged here. Runs WITHOUT self._lock (audit fix):
+        nothing on this path touches GPU/model state — the seam is a network
+        call, decode/trim/gain are pure numpy, and _write_wav is a plain file
+        write already used lock-free by sound_effect/compose_music/isolate_audio
+        — so the cloud round-trip must not stall local inference behind the GPU
+        lock."""
         model = self._resolve_elevenlabs_model(model, lang)
         # STREAMING TTS (opt-in): when `stream` is on we hit the low-latency /stream
         # seam and fall back to the blocking seam on any streaming error; with stream
@@ -4617,15 +4646,23 @@ class InferenceEngine:
         use_elevenlabs = isinstance(backend, str) and backend.strip().lower() == "elevenlabs"
         if use_elevenlabs:
             try:
-                with self._lock:
-                    # EL-v3 rich surface (audio_tag/stability/style) + coarse whisper
-                    # gain (volume) thread in here; the EL leg keeps its own pacing so
-                    # `rate` is not forwarded to the cloud model.
-                    path = self._elevenlabs_to_wav(
-                        text, voice_id, model, el_key, lang,
-                        audio_tag=audio_tag, stability=stability, style=style,
-                        volume=volume, locators=locators, stream=use_stream,
-                    )
+                # AUDIT FIX: the ElevenLabs leg runs WITHOUT self._lock. It is a
+                # cloud round-trip (up to ELEVENLABS_TIMEOUT_S) followed by pure
+                # numpy decode/trim/gain and an atomic file write — no GPU/model
+                # state is touched anywhere on it, so holding the GPU lock here
+                # stalled every local inference op (classify/converse/transcribe)
+                # behind the network for up to 15s. The other cloud audio ops
+                # (sound_effect/compose_music/isolate_audio, and the Scribe leg of
+                # transcribe) already run lock-free for exactly this reason; only
+                # the Kokoro fallback below touches the GPU and keeps the lock.
+                # EL-v3 rich surface (audio_tag/stability/style) + coarse whisper
+                # gain (volume) thread in here; the EL leg keeps its own pacing so
+                # `rate` is not forwarded to the cloud model.
+                path = self._elevenlabs_to_wav(
+                    text, voice_id, model, el_key, lang,
+                    audio_tag=audio_tag, stability=stability, style=style,
+                    volume=volume, locators=locators, stream=use_stream,
+                )
                 if path is not None:
                     return path
                 # No audio from the cloud tier -> fall through to Kokoro.
@@ -4665,6 +4702,7 @@ class InferenceEngine:
         opener_spoken=None,
         persona=None,
         local_model=None,
+        cancelled=None,
     ):
         """Streamed generate+TTS in one GPU-locked pass: decode the persona
         reply (same prompt assembly, KV cache and sampler as generate, plus
@@ -4681,6 +4719,16 @@ class InferenceEngine:
         the caller runs it on one worker thread, and `emit` must therefore be
         thread-safe (the server hands events to the asyncio loop via
         loop.call_soon_threadsafe).
+
+        `cancelled` (optional, audit fix): a cheap thread-safe callable the
+        server threads in; it returns True once the requesting peer has
+        vanished (socket EOF / closing transport). It is polled once per
+        decoded chunk, and when it fires the decode loop ABORTS — no further
+        tokens are generated and no further sentences are synthesized or
+        emitted — so a disconnected client cannot keep burning GPU under the
+        lock. The abort path runs the same finally trim-back as an exception,
+        so the KV-cache invariant holds; already-emitted sentence events stay
+        valid. None (the default, and every non-server caller) never cancels.
 
         Returns {"text": full reply, "sentences": spoken count,
         "first_sentence_ms": int|None}. The persona KV cache is trimmed back
@@ -4788,6 +4836,7 @@ class InferenceEngine:
             spoken = 0
             first_sentence_ms = None
             generated = 0
+            aborted = False
 
             def speak_sentence(sentence):
                 """Synthesize one completed sentence and emit its event.
@@ -4812,6 +4861,20 @@ class InferenceEngine:
                     prompt_cache=cache,
                     sampler=self._persona_sampler(),
                 ):
+                    # Mid-request cancellation (audit fix): once the peer is
+                    # gone there is nobody to hear the reply — stop decoding
+                    # (and synthesizing) instead of burning GPU under the lock
+                    # for up to max_tokens more. Polled per chunk; the finally
+                    # below trims the KV cache exactly as on an exception.
+                    if cancelled is not None and cancelled():
+                        aborted = True
+                        log.info(
+                            "converse: peer disconnected; aborting decode after "
+                            "%d chunks / %d spoken sentences",
+                            generated,
+                            spoken,
+                        )
+                        break
                     pieces.append(resp.text)
                     generated += 1
                     if spoken < CONVERSE_MAX_SPOKEN_SENTENCES:
@@ -4821,7 +4884,9 @@ class InferenceEngine:
                             if spoken < CONVERSE_MAX_SPOKEN_SENTENCES:
                                 speak_sentence(sentence)
                 # Flush the final partial sentence (no trailing terminator).
-                if spoken < CONVERSE_MAX_SPOKEN_SENTENCES:
+                # Skipped on abort: the peer is gone, so synthesizing the tail
+                # would be pure wasted GPU.
+                if not aborted and spoken < CONVERSE_MAX_SPOKEN_SENTENCES:
                     sentences, pending = _split_complete_sentences(pending, final=True)
                     for sentence in sentences:
                         if spoken < CONVERSE_MAX_SPOKEN_SENTENCES:
@@ -5252,19 +5317,43 @@ class InferenceServer:
             raise ValueError("'data' must be a string")
         return history, facts, data
 
-    async def dispatch(self, req, writer):
+    async def dispatch(self, req, writer, reader=None):
         """Handle one request. Single-response ops return their response
         dict; op=converse additionally writes interim "sentence" event lines
         to `writer` before returning the terminal "done" event. Safe because
         handle_client processes exactly one request at a time per connection,
         so nothing else can interleave bytes into this writer mid-stream
-        (each client gets its own connection/writer pair)."""
+        (each client gets its own connection/writer pair).
+
+        `reader` (optional) is this connection's StreamReader; when supplied it
+        powers the mid-request peer-disconnect probe below. None (unit tests)
+        disables cancellation entirely."""
         rid = str(req.get("id", ""))
         op = req.get("op")
         t0 = time.perf_counter()
 
         def latency_ms():
             return int((time.perf_counter() - t0) * 1000)
+
+        # Mid-request cancellation probe (audit fix): while an op runs on its
+        # asyncio.to_thread worker, the event loop KEEPS servicing this
+        # connection's read side — so a peer that died mid-request surfaces as
+        # EOF on `reader` (its close lands as eof_received) or, after a reset,
+        # as a closing transport, long before our next write would notice. The
+        # probe is a couple of attribute reads (no await, no mutation), safe to
+        # poll from the worker thread under the GIL, and it can only fire for a
+        # genuinely gone peer: a live client waiting on its response holds the
+        # socket open, so at_eof()/is_closing() stay False. Threaded ONLY into
+        # the ops with a chunked decode loop (converse; generate's cached
+        # path) — the single-blocking-call ops cannot be interrupted mid-call
+        # and keep today's run-to-completion behavior.
+        if reader is not None:
+            transport = writer.transport
+
+            def peer_gone():
+                return reader.at_eof() or transport.is_closing()
+        else:
+            peer_gone = None
 
         try:
             if op == "transcribe":
@@ -5542,7 +5631,8 @@ class InferenceServer:
                 # loaded. Surfaced in the response so the daemon/HUD report the
                 # real path, not the requested one.
                 out, gen_meta = await asyncio.to_thread(
-                    self.engine.generate_with_meta, text, max_tokens, history, facts, data, local_model
+                    self.engine.generate_with_meta, text, max_tokens, history, facts, data,
+                    local_model, peer_gone,
                 )
                 return {
                     "id": rid,
@@ -5597,6 +5687,7 @@ class InferenceServer:
                     opener_spoken,
                     persona,
                     local_model,
+                    peer_gone,
                 )
                 lat = latency_ms()
                 return {
@@ -5881,7 +5972,7 @@ class InferenceServer:
                         "latency_ms": int((time.perf_counter() - t0) * 1000),
                     }
                 else:
-                    resp = await self.dispatch(req, writer)
+                    resp = await self.dispatch(req, writer, reader)
                 writer.write((json.dumps(resp) + "\n").encode("utf-8"))
                 await writer.drain()
         except (ConnectionResetError, BrokenPipeError):
