@@ -287,13 +287,18 @@ pub async fn syncable_facts(memory: &crate::memory::Memory) -> Vec<SyncFact> {
 
 /// Apply a planned merge: upsert each winning remote fact (defensively skipping
 /// any meta.* that slipped through). Returns how many were written.
+///
+/// The remote fact's ORIGINAL ts is preserved (upsert_fact_at) — ts is the
+/// newest-wins ordering key, so re-stamping "now" here would let a re-imported
+/// STALE bundle masquerade as fresh and beat a genuinely newer edit on the peer
+/// at the next exchange. Only a real local edit may touch a fact's ts forward.
 pub async fn apply_plan(memory: &crate::memory::Memory, plan: &MergePlan) -> usize {
     let mut applied = 0;
     for f in &plan.apply {
         if crate::memory::is_reserved_key(&f.key) {
             continue;
         }
-        if memory.upsert_fact(&f.key, &f.value).await.is_ok() {
+        if memory.upsert_fact_at(&f.key, &f.value, &f.ts).await.is_ok() {
             applied += 1;
         }
     }
@@ -539,11 +544,21 @@ pub fn status_payload(
 }
 
 /// Emit `sync.status` for the HUD on the audit-snapshot cadence. READ-ONLY:
-/// counts facts + probes the key/peer/conflicts; runs no sync. Off emits the
-/// honest off payload. Fail-open. Opening the sealed conflict log to count it
-/// needs the shared key, so the key is resolved once and reused.
+/// counts facts + probes the key/peer/conflicts; runs no sync. Fail-open.
+///
+/// OFF (the shipped default) emits the honest off payload WITHOUT touching the
+/// Keychain: resolve_secret spawns a real security(1) subprocess (up to a 5s
+/// timeout), and this fn rides the shared 15s snapshot cadence — an ungated
+/// probe would spawn ~5760 subprocesses/day on every install and a hung login
+/// keychain would stall every downstream emitter on the tick. Only an armed
+/// [sync] pays that (bounded) probe; opening the sealed conflict log needs the
+/// key anyway, so it is resolved once per emit and reused.
 pub async fn emit_status(cfg: &crate::config::Config, memory: &crate::memory::Memory, root: &std::path::Path) {
-    let syncable = if cfg.sync.enabled { syncable_facts(memory).await.len() } else { 0 };
+    if !cfg.sync.enabled {
+        crate::telemetry::emit("system", "sync.status", status_payload(false, false, false, 0, 0));
+        return;
+    }
+    let syncable = syncable_facts(memory).await.len();
     let key = crate::integrations::resolve_secret("sync_shared_key")
         .await
         .and_then(|hex| crate::crypto::SecretKey::from_hex(hex.trim()).ok());
@@ -551,7 +566,7 @@ pub async fn emit_status(cfg: &crate::config::Config, memory: &crate::memory::Me
         "system",
         "sync.status",
         status_payload(
-            cfg.sync.enabled,
+            true,
             key.is_some(),
             !cfg.sync.peer_endpoint.trim().is_empty(),
             syncable,
@@ -851,6 +866,36 @@ mod tests {
         assert_eq!(count_conflicts(&dir.0, Some(&test_key())), 2, "identical divergence deduped");
         // No key -> can't read the sealed log -> honest 0, never a plaintext peek.
         assert_eq!(count_conflicts(&dir.0, None), 0);
+    }
+
+    #[tokio::test]
+    async fn apply_preserves_remote_ts_so_a_stale_reimport_never_beats_a_newer_local_edit() {
+        // Regression for the post-merge audit finding: apply_plan used to write
+        // winners via upsert_fact, which re-stamped ts = now — so a re-imported
+        // OLD bundle masqueraded as fresh and could durably overwrite a newer
+        // edit on the peer. The applied fact must keep the REMOTE ts verbatim.
+        let dir = tempdir("stale");
+        let m = mem(&dir.0).await;
+
+        // Run 1: an old peer bundle introduces the fact.
+        let old = bundle("peer", vec![fact("user.city", "London", "2020-01-01T00:00:00Z")]);
+        let plan = plan_merge(&syncable_facts(&m).await, &old, "self");
+        apply_plan(&m, &plan).await;
+        let stored = syncable_facts(&m).await;
+        let city = stored.iter().find(|f| f.key == "user.city").expect("applied");
+        assert_eq!(city.ts, "2020-01-01T00:00:00Z", "the remote ts is preserved verbatim, never re-stamped now");
+
+        // The user then edits locally — a genuine touch-now, newer than the bundle.
+        m.upsert_fact("user.city", "Paris").await.unwrap();
+
+        // Run 2: the SAME old bundle is re-imported. The newer local edit must
+        // win, the stale value must not be re-applied, and the divergence is
+        // logged with the honest winner.
+        let plan2 = plan_merge(&syncable_facts(&m).await, &old, "self");
+        apply_plan(&m, &plan2).await;
+        assert_eq!(m.get_fact("user.city").await.unwrap().as_deref(), Some("Paris"), "stale re-import never clobbers the newer edit");
+        assert_eq!(plan2.conflicts.len(), 1);
+        assert_eq!(plan2.conflicts[0].winner, "local");
     }
 
     #[tokio::test]

@@ -2977,6 +2977,26 @@ impl Config {
         }
     }
 
+    /// Load for a PERIODIC LIVE-RELOAD reader (the audit-snapshot status
+    /// emitters): returns the parsed config ONLY when the file genuinely reads
+    /// and parses as top-level TOML. `None` on a missing/unreadable/EMPTY file
+    /// or a TOML syntax error — exactly what a transient mid-save truncation
+    /// looks like — so the caller keeps its LAST-GOOD view instead of emitting
+    /// fabricated contract defaults for one tick. Per-key warnings still load
+    /// (identical to boot, which proceeds on the same warnings). Deliberately
+    /// conservative: an operator who truly empties/deletes the config gets the
+    /// defaults at the next daemon restart, not from a live blip.
+    pub fn load_live(path: &Path) -> Option<Config> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        if raw.trim().is_empty() {
+            return None; // a 0-byte truncate-then-write window, not a config
+        }
+        if raw.parse::<toml::Table>().is_err() {
+            return None; // mid-save partial write / syntax error -> keep last good
+        }
+        Some(Self::parse(&raw).0)
+    }
+
     /// Parse with per-section fallback (audit fix): one wrong-typed key used
     /// to silently revert EVERY other customization to hardcoded defaults.
     /// Now a section that fails to deserialize falls back alone, every other
@@ -3985,6 +4005,36 @@ mod tests {
             issues.iter().any(|i| i.contains("scene.confidence_flooor")),
             "typo'd scene key must be reported: {issues:?}"
         );
+    }
+
+    #[test]
+    fn load_live_keeps_last_good_on_transient_failures_but_loads_valid_files() {
+        // The live-reload reader must NEVER hand back fabricated defaults for a
+        // transiently unreadable/truncated file (the audit-snapshot emitters
+        // would blip every panel for a tick) — None means "keep last good".
+        let dir = std::env::temp_dir().join(format!("jarvis-loadlive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("jarvis.toml");
+
+        // Missing file -> None (a restart applies defaults; a live blip never does).
+        assert!(Config::load_live(&path).is_none());
+        // Empty file (a truncate-then-write save window) -> None.
+        std::fs::write(&path, "").unwrap();
+        assert!(Config::load_live(&path).is_none());
+        // Mid-save partial write / TOML syntax error -> None.
+        std::fs::write(&path, "[overnight]\nenabled = tr").unwrap();
+        assert!(Config::load_live(&path).is_none());
+        // A valid file loads, and a flipped switch is visible.
+        std::fs::write(&path, "[overnight]\nenabled = true\n").unwrap();
+        assert!(Config::load_live(&path).unwrap().overnight.enabled);
+        // Per-key warnings still load (identical to boot): the typo'd key is
+        // ignored but the file's other values apply.
+        std::fs::write(&path, "[overnight]\nenabledd = true\n\n[scene]\nenabled = true\n").unwrap();
+        let cfg = Config::load_live(&path).expect("valid TOML with a warning still loads");
+        assert!(cfg.scene.enabled);
+        assert!(!cfg.overnight.enabled, "the typo'd key is a warning, not a flip");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

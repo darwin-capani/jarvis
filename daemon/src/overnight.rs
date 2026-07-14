@@ -169,8 +169,14 @@ pub fn plan_enqueue(
 }
 
 /// Enqueue a task to disk. Returns a friendly confirmation, or an honest refusal
-/// when the backlog is full. Trigger-side (the `overnight` command verb).
-pub fn enqueue(root: &std::path::Path, prompt: &str, agent: &str, now_rfc3339: &str) -> String {
+/// when the subsystem is off or the backlog is full. Trigger-side (the
+/// `overnight` command verb). `enabled` is the LIVE [overnight].enabled — off
+/// must REFUSE like distill/sync do, never fabricate "queued for tonight" for
+/// work run_pending (gated on the same switch) will never run.
+pub fn enqueue(root: &std::path::Path, enabled: bool, prompt: &str, agent: &str, now_rfc3339: &str) -> String {
+    if !enabled {
+        return "Overnight agents are off, sir — turn on [overnight].enabled and I'll run queued work while you're away.".to_string();
+    }
     let prompt = prompt.trim();
     if prompt.is_empty() {
         return "There's nothing to queue, sir — tell me what to look into overnight.".to_string();
@@ -365,6 +371,23 @@ mod tests {
         let after = plan_enqueue(mixed, "fresh", "jarvis", "2026-07-13T20:00:00Z").unwrap();
         assert_eq!(after.len(), MAX_QUEUE);
         assert!(!after.iter().any(|t| t.id == "old-done"), "the finished task was evicted");
+    }
+
+    #[test]
+    fn enqueue_refuses_honestly_when_off_and_writes_nothing() {
+        // Regression for the post-merge audit finding: the verb used to reply
+        // "Queued for tonight, sir" while [overnight].enabled=false, though the
+        // gated runner would never execute the task. Off must REFUSE (like
+        // distill/sync) and persist nothing.
+        let dir = tempdir("offq");
+        let reply = enqueue(&dir, false, "look into X", "jarvis", "2026-07-13T20:00:00Z");
+        assert!(reply.contains("off"), "honest refusal, not a fabricated ack: {reply}");
+        assert!(load_queue(&dir).is_empty(), "no task persisted while off");
+        // On, the same call queues.
+        let reply = enqueue(&dir, true, "look into X", "jarvis", "2026-07-13T20:00:00Z");
+        assert!(reply.contains("Queued"), "{reply}");
+        assert_eq!(load_queue(&dir).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

@@ -241,15 +241,24 @@ impl Memory {
     /// This is what the learning loop calls, so a fact like user.name
     /// converges to its latest value instead of accumulating duplicates.
     pub async fn upsert_fact(&self, key: &str, value: &str) -> Result<()> {
+        self.upsert_fact_at(key, value, &Utc::now().to_rfc3339()).await
+    }
+
+    /// upsert_fact with a CALLER-SUPPLIED timestamp. The federated-sync merge
+    /// (sync.rs apply_plan) must preserve the REMOTE fact's original ts — the
+    /// newest-wins ordering key — or a re-imported stale bundle would be
+    /// re-stamped "now" and beat a genuinely newer edit on the peer. Local
+    /// writes keep using upsert_fact (a local edit IS a touch-now).
+    pub async fn upsert_fact_at(&self, key: &str, value: &str, ts: &str) -> Result<()> {
         let conn = self.conn.lock().await;
         let updated = conn.execute(
             "UPDATE facts SET value = ?2, ts = ?3, confidence = 1.0 WHERE key = ?1",
-            params![key, value, Utc::now().to_rfc3339()],
+            params![key, value, ts],
         )?;
         if updated == 0 {
             conn.execute(
                 "INSERT INTO facts(ts, key, value, confidence) VALUES (?1, ?2, ?3, 1.0)",
-                params![Utc::now().to_rfc3339(), key, value],
+                params![ts, key, value],
             )?;
         }
         Ok(())
