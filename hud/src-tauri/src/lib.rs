@@ -691,12 +691,35 @@ async fn keychain_present(account: &'static str) -> Result<bool, String> {
 
 /* ------------------------------------------------- fullscreen kiosk takeover */
 
+/// Run the macOS presentation-options mutation ON THE MAIN THREAD and await its
+/// real result. AppKit requires `NSApplication.setPresentationOptions` to be
+/// called from the main thread, but `enter_takeover`/`exit_takeover` are async
+/// commands and run on Tauri's async runtime (a tokio worker), where
+/// `macos_set_kiosk_presentation`'s main-thread guard refuses — before this
+/// dispatch existed, the kiosk step failed every time and enter rolled the whole
+/// takeover back. `run_on_main_thread` posts the closure to the event loop (the
+/// main thread) and the oneshot carries the AppKit call's result back without
+/// blocking the worker. No deadlock: the main thread never waits on a command,
+/// so it is always free to service the posted closure.
+async fn set_kiosk_presentation_on_main(window: &WebviewWindow, on: bool) -> Result<(), String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    window
+        .run_on_main_thread(move || {
+            let _ = tx.send(takeover::macos_set_kiosk_presentation(on));
+        })
+        .map_err(|e| format!("main-thread dispatch failed: {e}"))?;
+    rx.await
+        .map_err(|_| "main-thread dispatch dropped without running".to_string())?
+}
+
 /// Drive ONE planned takeover step against the calling window. `on` means "apply
 /// the takeover form" of the mutation; the per-mutation boolean each Tauri setter
-/// wants is derived here. The macOS presentation-options step is DEVICE-GATED and
-/// only does real work on macOS (a no-op elsewhere). Returns the setter error
-/// string on failure so the caller can abort + roll back.
-fn drive_step(window: &WebviewWindow, mutation: Mutation, on: bool) -> Result<(), String> {
+/// wants is derived here. The window setters are thread-safe (they proxy through
+/// the event loop internally), but the macOS presentation-options step is raw
+/// AppKit and MUST run on the main thread — it is dispatched there and awaited.
+/// DEVICE-GATED: it only does real work on macOS (a no-op elsewhere). Returns the
+/// setter error string on failure so the caller can abort + roll back.
+async fn drive_step(window: &WebviewWindow, mutation: Mutation, on: bool) -> Result<(), String> {
     let label = |r: tauri::Result<()>| r.map_err(|e| e.to_string());
     match mutation {
         // Fullscreen on == true.
@@ -706,7 +729,8 @@ fn drive_step(window: &WebviewWindow, mutation: Mutation, on: bool) -> Result<()
         // Always-on-top on == true.
         Mutation::AlwaysOnTop => label(window.set_always_on_top(on)),
         // macOS hide Dock + menu bar on == true; default (visible) on exit.
-        Mutation::PresentationOptions => takeover::macos_set_kiosk_presentation(on),
+        // Main-thread dispatched — see set_kiosk_presentation_on_main.
+        Mutation::PresentationOptions => set_kiosk_presentation_on_main(window, on).await,
     }
 }
 
@@ -730,13 +754,15 @@ async fn enter_takeover(
 
     let mut applied: Vec<Mutation> = Vec::new();
     for step in &plan {
-        if let Err(e) = drive_step(&window, step.mutation, step.on) {
+        if let Err(e) = drive_step(&window, step.mutation, step.on).await {
             // Roll back what we applied, in reverse, then report the failure. The
             // reset-on-exit net + macOS auto-restore still backstop the worst case.
             for m in applied.iter().rev() {
-                let _ = drive_step(&window, *m, false);
+                let _ = drive_step(&window, *m, false).await;
             }
-            reset_presentation_to_default();
+            // Best-effort net: this command runs on the async runtime, so hop to
+            // the main thread for the AppKit reset (fire-and-forget by design).
+            let _ = window.run_on_main_thread(reset_presentation_to_default);
             return Err(format!("enter_takeover failed at {:?}: {e}", step.mutation));
         }
         applied.push(step.mutation);
@@ -769,13 +795,16 @@ async fn exit_takeover(
     // exit must try EVERY reversal so the user is never left locked in.
     let mut first_err: Option<String> = None;
     for step in &plan {
-        if let Err(e) = drive_step(&window, step.mutation, step.on) {
+        if let Err(e) = drive_step(&window, step.mutation, step.on).await {
             first_err.get_or_insert(format!("exit_takeover: {:?}: {e}", step.mutation));
         }
     }
     // Belt-and-suspenders: always restore the default presentation options even if
-    // the plan was empty or a step failed — the Dock/menu bar MUST come back.
-    reset_presentation_to_default();
+    // the plan was empty or a step failed — the Dock/menu bar MUST come back. This
+    // command runs on the async runtime, so hop to the main thread for the AppKit
+    // call (fire-and-forget: the net is best-effort by contract, and the plan's
+    // PresentationOptions step above already reported any real failure).
+    let _ = window.run_on_main_thread(reset_presentation_to_default);
 
     let mut guard = takeover.state.lock().map_err(|_| "takeover state poisoned".to_string())?;
     guard.commit_exit();

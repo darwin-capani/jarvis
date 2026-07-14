@@ -154,7 +154,8 @@ impl TakeoverState {
 }
 
 /// Tauri-managed wrapper: the takeover state behind a `Mutex` so the enter/exit
-/// commands (which run on the main thread but are registered as async) and the
+/// commands (async commands, which run on Tauri's async runtime — NOT the main
+/// thread; the AppKit step is dispatched to the main thread in `lib.rs`) and the
 /// reset-on-exit safety net can share one source of truth.
 #[derive(Default)]
 pub struct Takeover {
@@ -165,17 +166,23 @@ pub struct Takeover {
 
 /// Apply the macOS kiosk presentation options (hide Dock + hide menu bar) to the
 /// shared application. DEVICE-GATED: this drives the real AppKit call and is NEVER
-/// invoked from a test. Returns `Ok` on non-main-thread refusal too (it simply
-/// does nothing rather than risk an off-main-thread AppKit call) so a caller is
-/// never wedged. On non-macOS this is a compile-time no-op.
+/// invoked from a test.
+///
+/// MAIN-THREAD REQUIRED: AppKit only allows `setPresentationOptions` from the
+/// main thread, and this function REFUSES (returns `Err`) anywhere else rather
+/// than risk UB. Callers off the main thread — notably the async `enter_takeover`
+/// / `exit_takeover` commands, which run on Tauri's async runtime — must hop over
+/// via `run_on_main_thread` (see `set_kiosk_presentation_on_main` in `lib.rs`).
+/// On non-macOS this is a compile-time no-op.
 #[cfg(target_os = "macos")]
 pub fn macos_set_kiosk_presentation(on: bool) -> Result<(), String> {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSApplication, NSApplicationPresentationOptions};
 
     // AppKit insists this happen on the main thread. `MainThreadMarker::new()`
-    // returns None off-main; we refuse rather than provoke UB. Window commands in
-    // Tauri run on the main thread, so the real path gets the marker.
+    // returns None off-main; we refuse rather than provoke UB. NOTE: async Tauri
+    // commands do NOT run on the main thread — they must dispatch here via
+    // `run_on_main_thread` (lib.rs does), or this guard fails their kiosk step.
     let Some(mtm) = MainThreadMarker::new() else {
         return Err("presentation options must be set on the main thread".to_string());
     };
@@ -203,8 +210,11 @@ pub fn macos_set_kiosk_presentation(_on: bool) -> Result<(), String> {
 /// presentation options so quitting or closing the window always un-hides the
 /// Dock and menu bar — even if the webview hung or the user never pressed an
 /// in-HUD exit. Best-effort and infallible from the caller's view (it swallows a
-/// non-main-thread refusal; macOS also auto-restores on process death). On
-/// non-macOS this is a no-op.
+/// non-main-thread refusal; macOS also auto-restores on process death). MAIN
+/// THREAD: the `Destroyed`/`RunEvent::Exit` call sites already run on the main
+/// thread and call this directly; the async takeover commands instead dispatch it
+/// via `run_on_main_thread` so the AppKit call actually lands. On non-macOS this
+/// is a no-op.
 pub fn reset_presentation_to_default() {
     #[cfg(target_os = "macos")]
     {
