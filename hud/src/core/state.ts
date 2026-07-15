@@ -69,6 +69,7 @@ import {
   Suggestion,
   ProactiveDigest,
   FocusActive,
+  PrecogPlan,
   EgressManifest,
   TelemetryEnvelope,
   UnifiedSearchResult,
@@ -184,6 +185,7 @@ import {
   parseSuggestion,
   parseProactiveDigest,
   parseFocusActive,
+  parsePrecogPlan,
   parseEgressManifest,
   parseUserModelConsolidated,
   parseVisionDescribe,
@@ -1151,6 +1153,16 @@ export interface HudState {
    *  booleans. */
   focusProfile: FocusActive | null;
 
+  /** The latest PRECOG // WHAT-IF plan (precog.plan, simulate.rs) — what a real
+   *  run WOULD do for a hypothetical "what would you do if I said X" query, WITHOUT
+   *  ever executing. Carries the projected pipeline decisions (intent / agent /
+   *  mode / tier / tool), whether a real run would PARK at the gate, and whether the
+   *  planned action is reversible — plus the pinned contract that a simulation never
+   *  runs and never satisfies a gate. Null until the owner asks a PRECOG query;
+   *  replaced in place each query. SECRET-FREE: only the decisions + the (already
+   *  user-spoken) hypothetical, never a fact/memory/tool-output (nothing ran). */
+  precogPlan: PrecogPlan | null;
+
   /** The CUSTOMS // EGRESS manifest (boundary.manifest, boundary.rs) — the
    *  pre-flight inventory of exactly the personal context the LAST cloud turn was
    *  about to send (facts / history / world rows / persona / system prompt, each
@@ -1406,6 +1418,7 @@ export function initialState(): HudState {
     dismissedSuggestions: new Set<string>(),
     proactiveDigest: null,
     focusProfile: null,
+    precogPlan: null,
     egressManifest: null,
     actionSurface: { drafts: [], missions: [], macros: [] },
     chart: null,
@@ -1971,6 +1984,20 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // the shipped "default" profile is the identity (today's behavior).
       const focus = parseFocusActive(env.data);
       return { ...s, focusProfile: focus };
+    }
+
+    case "precog.plan": {
+      // PRECOG // WHAT-IF (simulate.rs): the counterfactual plan for a "what would
+      // you do if I said X" query — what a real run WOULD do, WITHOUT ever running.
+      // parsePrecogPlan PINS the contract HUD-side (`executed` / `satisfiedAGate`
+      // forced false), so a hostile/garbled payload can NEVER make the panel claim
+      // a simulation ran or cleared a gate (PRECOG only ever describes; the daemon's
+      // simulate path holds no actuator/write/inference handle by construction). A
+      // junk frame parses to null and is dropped rather than churning a hollow card;
+      // a usable plan replaces the surface in place (the latest query's plan).
+      const plan = parsePrecogPlan(env.data);
+      if (plan === null) return s;
+      return { ...s, precogPlan: plan };
     }
 
     case "boundary.manifest": {

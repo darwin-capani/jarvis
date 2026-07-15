@@ -521,6 +521,66 @@ pub async fn route(
         });
     }
 
+    // PRECOG // WHAT-IF (simulate.rs): "what would you do if I said X". CONSERVATIVELY
+    // anchored (simulate::extract_hypothetical fires ONLY on the high-precision
+    // "what would you do if I said/asked/told you to X" framing and requires a
+    // non-empty tail — a bare "simulate ..." is CASSANDRA's forecast vocabulary and
+    // is NOT claimed here). GATED by [precog].enabled (ships ON; read-only) — when
+    // off this falls through to ordinary routing (the query is just another
+    // question). READ-ONLY by CONSTRUCTION: the classify below is a read-only label
+    // of the HYPOTHETICAL (it fires nothing), and simulate() runs the SAME pipeline
+    // the live turn would — classify -> selector -> agent -> tier -> gate projection
+    // -> reversibility — UP TO but NEVER THROUGH the confirmation gate. The simulate
+    // path holds NO actuator / memory-write / inference handle (SimContext carries
+    // only read views), so it cannot fire an action even a benign one. It emits the
+    // PlannedOutcome as a `precog.plan` frame + speaks a summary that honestly
+    // reports a real run WOULD park (PRECOG never satisfies a gate itself). Runs
+    // after the owner voice-id all-scope gate, like the other command cues.
+    if cfg.precog.enabled {
+        if let Some(hypothetical) = crate::simulate::extract_hypothetical(text) {
+            let prime = agents.orchestrator();
+            emit_agent_active(prime);
+            // Classify the HYPOTHETICAL (read-only — it labels text, it fires
+            // nothing); on any classifier error fall back to the safe "unknown"
+            // view (a low-confidence plain conversation), exactly the live degrade.
+            let predicted = match infer.classify(&hypothetical).await {
+                Ok(c) => crate::simulate::PredictedIntent {
+                    intent: c.intent,
+                    confidence: c.confidence,
+                    complexity: c.complexity,
+                },
+                Err(e) => {
+                    warn!("precog: classify of the hypothetical failed ({e}); using safe default");
+                    crate::simulate::PredictedIntent::unknown()
+                }
+            };
+            // The read-only context: shared roster + read-only config + the SAME
+            // pure lexical scorer the live routing uses + the current tier override
+            // + this turn's cloud reachability. No actuator / memory / brain handle.
+            let ctx = crate::simulate::SimContext {
+                agents,
+                cfg,
+                scorer: &crate::agents::LexicalAgentScorer,
+                override_tier: crate::model_tier::current_override(),
+                cloud_reachable,
+            };
+            let plan = crate::simulate::simulate(&hypothetical, &predicted, &ctx);
+            // SECRET-FREE telemetry: only the pipeline decisions + the (already
+            // user-spoken) hypothetical ride the wire — nothing ran, so there is no
+            // fact/memory/tool-output to leak. The frame PINS executed=false /
+            // satisfied_a_gate=false so the HUD copy is grounded in the contract.
+            telemetry::emit("local", "precog.plan", plan.telemetry(&hypothetical));
+            let response = plan.spoken_summary(&hypothetical);
+            return Ok(RouteOutcome {
+                routed_to: "local",
+                response,
+                agent: prime.name.clone(),
+                namespace: prime.namespace.clone(),
+                spoken: None,
+            });
+        }
+    }
+
     // REPORT GENERATION VOICE COMMAND (#40): "generate a report on X" / "write me a
     // report about X". CONSERVATIVELY anchored (classify_report_intent requires
     // "report" + an explicit build verb + a topic, so a question about an existing

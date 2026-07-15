@@ -6474,6 +6474,93 @@ svg.tri circle {
 }
 .customs-foot { margin-top: 2px; line-height: 1.35; }
 
+/* ------------------------------------------------------- PRECOG // WHAT-IF panel */
+/* PRECOG // WHAT-IF — the counterfactual command plan (daemon/src/simulate.rs,
+   emitted as `precog.plan`). READ-ONLY: it DESCRIBES what a real run would do and
+   whether it would PARK for a spoken yes; it never runs, and there is no button. */
+.precog-body { display: flex; flex-direction: column; gap: 8px; padding: 4px 2px; }
+.precog-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.precog-label {
+  font-size: 0.66em;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  color: var(--cyan-dim);
+  flex: 0 0 auto;
+}
+.precog-utterance {
+  font-size: 0.86em;
+  font-weight: 600;
+  color: var(--cyan-bright);
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
+}
+.precog-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+.precog-cell {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid rgba(26, 214, 255, 0.16);
+  border-radius: 4px;
+  background: rgba(26, 214, 255, 0.03);
+  min-width: 0;
+}
+.precog-k { font-size: 0.62em; letter-spacing: 0.06em; color: var(--cyan-dim); flex: 0 0 auto; }
+.precog-v {
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--fg, rgba(255, 255, 255, 0.85));
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
+}
+.precog-gate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 5px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(26, 214, 255, 0.16);
+}
+.precog-gate.park { border-color: rgba(255, 176, 0, 0.35); background: rgba(255, 176, 0, 0.04); }
+.precog-gate.clarify { border-color: rgba(125, 243, 255, 0.3); background: rgba(125, 243, 255, 0.04); }
+.precog-gate.clear { border-color: rgba(92, 224, 168, 0.3); background: rgba(92, 224, 168, 0.04); }
+.precog-pill {
+  font-size: 0.66em;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  flex: 0 0 auto;
+}
+.precog-pill.park { color: var(--warn-amber); }
+.precog-pill.clarify { color: var(--cyan-bright); }
+.precog-pill.clear { color: var(--learn-green); }
+.precog-pill.reversible { color: var(--learn-green); }
+.precog-pill.irreversible { color: var(--warn-amber); }
+.precog-tool {
+  font-size: 0.76em;
+  font-weight: 600;
+  font-family: var(--mono, ui-monospace, monospace);
+  color: var(--cyan-bright);
+  flex: 0 0 auto;
+}
+.precog-gate-note {
+  font-size: 0.72em;
+  color: var(--cyan-dim);
+  line-height: 1.35;
+  flex: 1 1 100%;
+}
+.precog-why { font-size: 0.78em; line-height: 1.4; color: var(--fg, rgba(255, 255, 255, 0.82)); }
+.precog-foot { margin-top: 2px; line-height: 1.35; }
+
 /* ------------------------------------------------- RESEARCH NOTEBOOKS panel */
 /* RESEARCH // NOTEBOOKS — the user's saved research (daemon/src/notebook.rs,
    emitted as `notebook.card`). HONEST + READ-ONLY: it surfaces a notebook voice

@@ -215,6 +215,18 @@ pub struct Config {
     /// firewall. UID-scoped (unprivileged lsof sees only same-UID processes; stated
     /// in every frame). With `enabled` false the sampling loop is simply not spawned.
     pub egress: EgressConfig,
+    /// [precog] — PRECOG // WHAT-IF, the counterfactual command simulator
+    /// (simulate.rs). `enabled` SHIPS ON (full-power default) — it is READ-ONLY by
+    /// CONSTRUCTION: a "what would you do if I said X" query runs the SAME pipeline
+    /// the live turn would (classify -> selector -> agent -> tier -> gate projection
+    /// -> reversibility) UP TO but NEVER THROUGH the confirmation gate, and returns a
+    /// PlannedOutcome as a `precog.plan` frame + a spoken summary. The simulate path
+    /// holds NO actuator / memory-write / inference handle (SimContext carries only
+    /// read views), so it CANNOT fire an action even a benign one — enabling it only
+    /// lets DARWIN describe what a real run would do (and that it would PARK), never
+    /// act. With it false the "what would you do if ..." cue falls through to normal
+    /// routing (it is just another question).
+    pub precog: PrecogConfig,
 }
 
 /// Every section and key the config knows, for unknown-key diagnostics
@@ -740,6 +752,11 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "alert_min_gap_secs",
         ],
     ),
+    // [precog] — PRECOG // WHAT-IF, the counterfactual command simulator
+    // (simulate.rs). `enabled` SHIPS ON (full-power default) — READ-ONLY by
+    // construction: it describes what a real run WOULD do (and that it would PARK),
+    // never acts. Listed so the key never reads as a typo.
+    ("precog", &["enabled"]),
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2525,6 +2542,30 @@ impl Default for FocusConfig {
     }
 }
 
+/// [precog] — PRECOG // WHAT-IF, the counterfactual command simulator
+/// (simulate.rs). `enabled` SHIPS ON (full-power default) and is READ-ONLY by
+/// construction: the simulate path holds NO actuator / memory-write / inference
+/// handle (SimContext carries only read views), so enabling it can only ever let
+/// DARWIN DESCRIBE what a real run would do (and that it would PARK behind the
+/// gate) — it can never fire an action, even a benign one. With `enabled` false the
+/// "what would you do if I said X" cue falls through to ordinary routing.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PrecogConfig {
+    /// Whether the PRECOG "what would you do if I said X" cue is answered by the
+    /// simulator. SHIPS ON (read-only observability; it never acts).
+    pub enabled: bool,
+}
+
+impl Default for PrecogConfig {
+    /// Ships ON — armed by default, because PRECOG is READ-ONLY (it describes, it
+    /// never acts). Mirrors the always-on posture of the other observability
+    /// sections ([audit] / [introspect] / [focus]).
+    fn default() -> Self {
+        PrecogConfig { enabled: true }
+    }
+}
+
 /// [apps] — the micro-app runtime substrate (docs/SANDBOX.md). `autostart`
 /// lists micro-app names darwind launches at startup; it defaults to EMPTY —
 /// nothing is autostarted unless the operator opts in. Names that do not match
@@ -3350,6 +3391,7 @@ impl Config {
             chart: section(&table, "chart", &mut issues),
             boundary: section(&table, "boundary", &mut issues),
             egress: section(&table, "egress", &mut issues),
+            precog: section(&table, "precog", &mut issues),
         };
 
         // SELECTABLE QUANTIZATION (#39) value validation: an unknown [inference]
