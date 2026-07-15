@@ -179,7 +179,7 @@ pub async fn serve(port: u16) {
             // that connects AFTER startup still gets the once-only topics (app
             // registry, manifest/config diagnostics, the lockdown snapshot).
             for frame in sticky_frames() {
-                if sink.send(Message::Text(frame)).await.is_err() {
+                if sink.send(Message::Text(frame.into())).await.is_err() {
                     info!(%peer, "telemetry client disconnected during replay");
                     return;
                 }
@@ -188,7 +188,7 @@ pub async fn serve(port: u16) {
                 tokio::select! {
                     msg = rx.recv() => match msg {
                         Ok(text) => {
-                            if sink.send(Message::Text(text)).await.is_err() {
+                            if sink.send(Message::Text(text.into())).await.is_err() {
                                 break;
                             }
                         }
