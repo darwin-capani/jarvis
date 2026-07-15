@@ -211,6 +211,8 @@ import {
   ReportReadout,
   parseChartSpec,
   parseReportReadout,
+  ArtifactPeek,
+  parseArtifactPeek,
   str,
   strArr,
   sttTierInitial,
@@ -1233,6 +1235,17 @@ export interface HudState {
    *  fabricated body. REVIEW-ONLY + SECRET-FREE — counts/headings/locators only. */
   report: ReportReadout | null;
 
+  /** The last ARTIFACT PEEK (artifact.rs, artifact.peek) — the HUD's honest view of
+   *  the most recent (or an id'd) thing the assistant produced, read back out of the
+   *  daemon's bounded, on-device Artifact Registry: the kind, title, ts, a redacted
+   *  preview, the REAL producing agent, and the REAL citations (or UNCITED, re-derived
+   *  from the surviving citations so a source is never fabricated). Null until the
+   *  first artifact.peek (summoned by "what did you just do" / "peek", or the
+   *  `artifact_peek` tool); the subsystem ships ARMED but the registry is empty until
+   *  a producer registers something. REVIEW-ONLY + SECRET-FREE — kind/title/preview/
+   *  agent/locators only. This is the surface Share Guard will ride. */
+  artifactPeek: ArtifactPeek | null;
+
   seq: number; // monotonic id source for lines/facts/actions/toasts
 }
 
@@ -1454,6 +1467,7 @@ export function initialState(): HudState {
     actionSurface: { drafts: [], missions: [], macros: [] },
     chart: null,
     report: null,
+    artifactPeek: null,
     seq: 0,
   };
 }
@@ -3038,6 +3052,25 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       const readout = parseReportReadout(env.data);
       if (readout === null) return s;
       return { ...s, report: readout };
+    }
+
+    case "artifact.peek": {
+      // The read-only ARTIFACT PEEK surface (artifact.rs, emitted from the peek
+      // voice op / the artifact_peek tool): the most recent (or an id'd) thing the
+      // assistant produced, read back out of the daemon's bounded, on-device
+      // Artifact Registry. parseArtifactPeek returns null ONLY for a junk frame with
+      // no usable `kind` (dropped, same reference) — otherwise it yields the kind,
+      // title, ts, redacted preview, the REAL producing agent, and the REAL
+      // citations. `uncited` is RE-DERIVED from the surviving citations (never
+      // trusted from the wire), so an artifact with no real source shows honest
+      // UNCITED and can never be dressed up — the honesty pivot Share Guard rides on.
+      //
+      // A fresh peek REPLACES the prior one (the QuickLook overlay shows the last
+      // thing peeked). A malformed frame is dropped (same reference) so junk never
+      // churns the tree. SECRET-FREE — kind/title/preview/agent/locators only.
+      const peek = parseArtifactPeek(env.data);
+      if (peek === null) return s;
+      return { ...s, artifactPeek: peek };
     }
 
     case "audit.snapshot": {

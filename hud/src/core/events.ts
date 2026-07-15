@@ -8893,3 +8893,130 @@ export function parseReportReadout(data: Record<string, unknown>): ReportReadout
     citations,
   };
 }
+
+/* ------------------------------------------------------------------------ *
+ * ARTIFACT REGISTRY + PEEK (artifact.rs; ArtifactRef / artifact.peek).        *
+ *                                                                            *
+ * The daemon's artifact.rs keeps a BOUNDED, in-memory, on-device registry of  *
+ * the last N things the assistant produced (report / chart / code_diff / …).  *
+ * A read-only peek surface (a voice op "what did you just do" / "peek", and    *
+ * the `artifact_peek` tool) reads the most recent (or an id'd) artifact back   *
+ * out and emits `artifact.peek`:                                              *
+ *   {"id", "kind", "title", "ts", "preview", "agent",                          *
+ *    "uncited": bool, "citation_count", "citations": [{"title","url"}]}         *
+ *                                                                            *
+ * The HUD's QuickLook overlay renders ANY kind (a compact kind-aware preview)  *
+ * with a PROVENANCE FOOTER. Honesty is LOAD-BEARING (Share Guard rides on it): *
+ * an artifact with no citation is shown UNCITED, never dressed up. `uncited`   *
+ * is RE-DERIVED from the surviving citations here — never trusted from the     *
+ * wire alone — so the overlay can never claim a source it does not hold.       *
+ * SECRET-FREE: only the kind, title, ts, the producer's redacted preview, the  *
+ * agent, and the citation LOCATORS ride the wire — never a raw body.           *
+ * ------------------------------------------------------------------------ */
+
+/** The telemetry event the peek surface emits. */
+export const ARTIFACT_PEEK_EVENT = "artifact.peek";
+
+/** The closed vocabulary of kinds the overlay renders with a kind-aware preview.
+ *  An unrecognized wire kind is rendered as a GENERIC artifact (never guessed into
+ *  a richer kind) — so `kind` is carried as a free string, and this set only drives
+ *  which kinds get a specialized label/preview. */
+export const KNOWN_ARTIFACT_KINDS = [
+  "report",
+  "chart",
+  "image",
+  "draft",
+  "code_diff",
+  "notebook",
+  "forecast",
+  "docsearch",
+] as const;
+export type KnownArtifactKind = (typeof KNOWN_ARTIFACT_KINDS)[number];
+
+/** True when `kind` is one of the vocabulary kinds the overlay renders specially. */
+export function isKnownArtifactKind(kind: string): kind is KnownArtifactKind {
+  return (KNOWN_ARTIFACT_KINDS as readonly string[]).includes(kind);
+}
+
+/** One CITATION an artifact carries (artifact.rs Citation): a human title and a
+ *  real locator (a URL, a file path, an id). At least one field is non-empty — a
+ *  both-blank citation is dropped by the parser (never a fabricated source). */
+export interface ArtifactCitation {
+  title: string;
+  url: string;
+}
+
+/** A defensively-parsed `artifact.peek` frame — the HUD's honest view of one
+ *  produced artifact. `uncited` is RE-DERIVED from the surviving citations (never
+ *  trusted from the wire), so an artifact with no real source is shown UNCITED and
+ *  can never be dressed up. `citationCount` is the daemon's honest total (which the
+ *  bounded preview may be shorter than). SECRET-FREE by construction. */
+export interface ArtifactPeek {
+  id: number;
+  /** The wire kind (a KnownArtifactKind, or any other string rendered generically). */
+  kind: string;
+  title: string;
+  ts: string;
+  /** The producer's compact, redacted preview line — shown verbatim. */
+  preview: string;
+  /** The REAL producing agent (never fabricated by the daemon). */
+  agent: string;
+  /** True when the artifact carries NO citation — re-derived from the surviving
+   *  citations, so the overlay never claims a source it does not hold. */
+  uncited: boolean;
+  /** The daemon's honest citation total (>= the surviving/shown citations). */
+  citationCount: number;
+  /** The surviving real citations (each with a usable locator), bounded. */
+  citations: ArtifactCitation[];
+}
+
+/** Cap on the citations the overlay previews from one artifact.peek frame — a VIEW
+ *  bound (the daemon's registry is itself bounded; this is belt-and-suspenders). */
+export const ARTIFACT_CITATIONS_CAP = 32;
+
+/** Coerce one untrusted citation into an ArtifactCitation, or null when it lacks a
+ *  usable locator — BOTH `title` and `url` blank means there is nothing to point at,
+ *  so it is dropped (never fabricated). Never throws. */
+function coerceArtifactCitation(o: Record<string, unknown>): ArtifactCitation | null {
+  const title = (str(o, "title") ?? "").trim();
+  const url = (str(o, "url") ?? "").trim();
+  if (title.length === 0 && url.length === 0) return null;
+  return { title, url };
+}
+
+/** Parse an `artifact.peek` payload into an ArtifactPeek, or null when there is no
+ *  usable artifact (a blank `kind` — the daemon always sends one, so a blank frame
+ *  is junk and dropped). Citations are coerced item-by-item (a citation with no
+ *  usable locator is dropped, never fabricated) and bounded. `uncited` is RE-DERIVED
+ *  from the surviving citations — never trusted from the wire — so a spoofed
+ *  `uncited: false` over an empty citation list still shows honest UNCITED, and a
+ *  spoofed `uncited: true` over real citations still surfaces them. `citationCount`
+ *  is the daemon's honest total, floored at the surviving count. SECRET-FREE: only
+ *  the kind, title, ts, preview, agent, and citation locators are read. Never
+ *  throws. */
+export function parseArtifactPeek(data: Record<string, unknown>): ArtifactPeek | null {
+  const kind = (str(data, "kind") ?? "").trim();
+  if (kind.length === 0) return null;
+  const rawCitations = data["citations"];
+  const citations = Array.isArray(rawCitations)
+    ? rawCitations
+        .filter(isPlainObject)
+        .map(coerceArtifactCitation)
+        .filter((c): c is ArtifactCitation => c !== null)
+        .slice(0, ARTIFACT_CITATIONS_CAP)
+    : [];
+  // The daemon's honest total, but never LESS than the citations we actually hold.
+  const citationCount = Math.max(nonNegIntOr0(data, "citation_count"), citations.length);
+  return {
+    id: nonNegIntOr0(data, "id"),
+    kind,
+    title: (str(data, "title") ?? "").trim(),
+    ts: (str(data, "ts") ?? "").trim(),
+    preview: (str(data, "preview") ?? "").trim(),
+    agent: (str(data, "agent") ?? "").trim(),
+    // Honest UNCITED re-derived from the surviving citations — never the wire flag.
+    uncited: citations.length === 0,
+    citationCount,
+    citations,
+  };
+}

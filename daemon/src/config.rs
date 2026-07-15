@@ -265,6 +265,15 @@ pub struct Config {
     /// changes no gate, takes no action, reaches no network — safe to enable
     /// outright.
     pub chart: ChartConfig,
+    /// [artifact] — ARTIFACT REGISTRY + PEEK (artifact.rs). `enabled` SHIPS ON
+    /// (armed-by-default): producers register the last N things they made into a
+    /// BOUNDED, in-memory, on-device recency window with HONEST provenance (the
+    /// real producing agent + real citations, or UNCITED), and the read-only `peek`
+    /// surface (a voice op + the `artifact_peek` tool) reads them back out as an
+    /// `artifact.peek` frame the HUD's QuickLook overlay renders. It opens NO
+    /// outward surface, takes NO action, reaches NO network. `registry_size` is the
+    /// retention bound (kept last-N).
+    pub artifact: ArtifactConfig,
     /// [boundary] — CUSTOMS // EGRESS, a PRE-FLIGHT egress boundary gate
     /// (boundary.rs). `enabled` SHIPS ON (full-power default) as a NEUTRAL
     /// PREVIEW: before a CLOUD turn goes out, CUSTOMS builds a READ-ONLY manifest
@@ -866,6 +875,13 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // point, honest axes/empty); it changes no gate, takes no action, reaches no
     // network — safe to enable outright. Listed so the key never reads as a typo.
     ("chart", &["enabled"]),
+    // [artifact] — ARTIFACT REGISTRY + PEEK (artifact.rs). `enabled` SHIPS ON
+    // (armed-by-default): producers register the last N results into a BOUNDED,
+    // in-memory, on-device recency window with HONEST provenance (real agent + real
+    // citations, or UNCITED), and the read-only `peek` surface reads them back out.
+    // `registry_size` is the retention bound (kept last-N). Opens no outward surface,
+    // takes no action, reaches no network. Listed so neither key reads as a typo.
+    ("artifact", &["enabled", "registry_size"]),
     // [boundary] — CUSTOMS // EGRESS (boundary.rs). `enabled` SHIPS ON (a neutral
     // READ-ONLY preview of the cloud egress manifest); `default_trim` SHIPS "none"
     // (the identity — send everything, today's behavior). A trim is REDUCE-ONLY
@@ -1645,6 +1661,39 @@ impl Default for ChartConfig {
         // interpolation/invented point, honest-empty). Changes no gate, takes no
         // action, reaches no network — safe to enable outright.
         Self { enabled: true }
+    }
+}
+
+/// [artifact] — ARTIFACT REGISTRY + PEEK (artifact.rs). `enabled` SHIPS ON
+/// (armed-by-default): producers register the last N things they made (report /
+/// chart / code_diff / …) into a BOUNDED, in-memory, on-device recency window, each
+/// carrying an HONEST provenance (the real producing agent + the real citations, or
+/// UNCITED). The read-only `peek` surface (a voice op + the `artifact_peek` tool)
+/// reads the most recent (or an id) back out as an `artifact.peek` telemetry frame
+/// the HUD's QuickLook overlay renders. It opens NO outward surface, takes NO
+/// action, reaches NO network — it only remembers + shows what was already
+/// produced. `registry_size` is the retention bound (kept last-N; clamped to the
+/// module ceiling).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ArtifactConfig {
+    /// Master gate for the registry + peek surface. SHIPS ON (armed-by-default):
+    /// with it off, producers register nothing and peek finds nothing. Read-only
+    /// accountability — arming it loosens nothing.
+    pub enabled: bool,
+    /// Retention bound — the registry keeps this many most-recent artifacts, then
+    /// evicts the oldest. Clamped into `[1, artifact::MAX_REGISTRY_BOUND]`.
+    pub registry_size: usize,
+}
+
+impl Default for ArtifactConfig {
+    fn default() -> Self {
+        // Armed by default with the module's recency-window bound. Read-only,
+        // on-device, opens no outward surface — safe to arm outright.
+        Self {
+            enabled: true,
+            registry_size: crate::artifact::DEFAULT_REGISTRY_BOUND,
+        }
     }
 }
 
@@ -3898,6 +3947,7 @@ impl Config {
             power: section(&table, "power", &mut issues),
             report: section(&table, "report", &mut issues),
             chart: section(&table, "chart", &mut issues),
+            artifact: section(&table, "artifact", &mut issues),
             boundary: section(&table, "boundary", &mut issues),
             vault: section(&table, "vault", &mut issues),
             egress: section(&table, "egress", &mut issues),

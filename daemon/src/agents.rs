@@ -1888,6 +1888,13 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
             // the whole personal corpus. Scoping is preserved (own + shared only,
             // never another agent's private items); every hit cites a real item.
             "unified_search",
+            // ARTIFACT PEEK (artifact.rs): READ-ONLY recall over the in-memory,
+            // on-device Artifact Registry — "what did you just do" / "peek" reads the
+            // most recent (or an id'd) produced artifact back out with HONEST
+            // provenance (real agent + real citations, or UNCITED). Squarely
+            // Mnemosyne's recollective remit; the orchestrator also holds it via the
+            // tools wildcard. Read-only, opens no surface.
+            "artifact_peek",
             // The file-RAG WRITE/FORGET triggers (the local intents the classifier
             // emits for "index my documents"/"reindex" and "forget my file index").
             // Both are CONFINED to the user's OWN allowlisted folders + the local

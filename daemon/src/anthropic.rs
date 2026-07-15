@@ -1257,6 +1257,16 @@ fn tool_defs() -> &'static Value {
                 }
             },
             {
+                "name": "artifact_peek",
+                "description": "Peek at the LAST thing you produced — READ-ONLY recall over the in-memory, on-device Artifact Registry (the last N results the assistant made this session: reports, charts, code-diff proposals, drafts, notebooks, forecasts, docsearch answers). Call this when the user asks 'what did you just do', 'what did you just make/produce', 'peek', or 'show me that again'. It returns WHAT was produced (kind + title), WHO/WHAT backs it (the real producing agent + the real citations — or plainly UNCITED when the artifact carried no source), and a compact preview, and it surfaces the artifact on the HUD's QuickLook overlay. HONEST: an uncited artifact is reported as uncited, never dressed up with a fabricated source; when nothing has been produced yet it says so plainly and never invents an artifact. READ-ONLY + ON-DEVICE: it reads back what was already produced — it opens no network, takes no action, and changes nothing. Armed by default; with no id it returns the MOST RECENT artifact.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer", "description": "Optional registry id of a specific artifact to peek. Omit to peek the MOST RECENT artifact."}
+                    }
+                }
+            },
+            {
                 "name": "shell_run",
                 "description": "Run a SHELL COMMAND in an on-device SANDBOX — the HIGHEST-RISK capability (arbitrary command execution), maximally gated; it ships ON but NEVER auto-runs (every command parks per-action for a spoken yes). Call this ONLY when the user explicitly asks you to run a terminal/shell command on their machine ('run `ls`', 'execute this command', 'run a quick git status'). It NEVER auto-runs: every command is treated as CONSEQUENTIAL, so it PARKS for the user's spoken 'yes' on a later turn and only then executes — and only when the consequential-actions master switch is on, the speaker's voice is recognized, and the system isn't in lockdown. A destructive or exfiltration command (rm -rf, dd, mkfs, sudo, a fork bomb, curl|sh, writes to /etc or ~/.claude or the daemon's own state, killing the daemon, any networking tool like ssh/nc/curl) is REFUSED outright before it can even be confirmed. When it does run, it runs under a DENY-DEFAULT sandbox: NO network at all, file writes confined to a throwaway scratch directory, and the Keychain / ~/.claude / the daemon's secrets categorically unreachable. The command's real output is returned faithfully (bounded + with a timeout) — NEVER fabricated; if it produced no output or failed, say so honestly. The sandboxed shell ships ON but is INERT WITHOUT device support (needs /usr/bin/sandbox-exec + /bin/sh); when [shell] is disabled it does nothing and says so. Be explicit that you are proposing to run a command and that it needs the user's confirmation; never claim a command ran or report output unless it actually executed.",
                 "input_schema": {
@@ -3483,6 +3493,18 @@ struct CodeExplainArgs {
 struct CodeProposeDiffArgs {
     /// The change to make, in the user's own words.
     request: String,
+}
+
+// -- ARTIFACT PEEK tool args (crate::artifact) -----------------------------------
+// artifact_peek is READ-ONLY: it reads the most recent (or an id'd) artifact the
+// producers registered back out of the in-memory, on-device registry and emits an
+// `artifact.peek` frame for the HUD's QuickLook overlay. It changes nothing, sends
+// nothing, and reaches no network.
+#[derive(Deserialize)]
+struct ArtifactPeekArgs {
+    /// Optional registry id to peek. Absent => the MOST RECENT artifact.
+    #[serde(default)]
+    id: Option<u64>,
 }
 
 // shell_run (crate::shell) is the HIGHEST-RISK tool — arbitrary command
@@ -7632,6 +7654,19 @@ async fn dispatch_tool(
             Ok(args) => Ok(code_propose_diff_tool(&args.request).await),
             Err(e) => Err(anyhow!("invalid code_propose_diff arguments: {e}")),
         },
+        // -- ARTIFACT PEEK (crate::artifact) ----------------------------------
+        // READ-ONLY recall over the in-memory, on-device Artifact Registry: read
+        // the most recent (or an id'd) artifact the producers registered back out,
+        // emit its `artifact.peek` frame for the HUD's QuickLook overlay, and return
+        // an honest text summary. Provenance is REAL — the producing agent + real
+        // citations, or plainly UNCITED. Changes nothing, sends nothing, reaches no
+        // network, so it never touches integrations::gate(). Gated by
+        // [artifact].enabled (armed-by-default); off/empty => an honest "nothing to
+        // peek" reply, never a fabricated artifact.
+        "artifact_peek" => match serde_json::from_value::<ArtifactPeekArgs>(input.clone()) {
+            Ok(args) => Ok(artifact_peek_tool(args.id)),
+            Err(e) => Err(anyhow!("invalid artifact_peek arguments: {e}")),
+        },
         // -- SANDBOXED SHELL / TERMINAL (crate::shell, #43) -------------------
         // The HIGHEST-RISK tool: arbitrary command execution. It ships ON
         // ([shell].enabled=true) but NEVER auto-runs: it is CONSEQUENTIAL (it is in
@@ -9016,6 +9051,56 @@ fn load_code_config() -> crate::config::CodeConfig {
     cfg.code
 }
 
+/// Load the live [artifact] config from the on-disk darwin.toml (one source of
+/// truth, like load_code_config). When no root is resolved, returns the armed
+/// default.
+fn load_artifact_config() -> crate::config::ArtifactConfig {
+    let Some(root) = ROOT.get() else {
+        return crate::config::ArtifactConfig::default();
+    };
+    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("darwin.toml"));
+    cfg.artifact
+}
+
+/// ARTIFACT_PEEK tool: READ-ONLY recall over the in-memory, on-device Artifact
+/// Registry. Reads the most recent (or an id'd) artifact the producers registered
+/// back out, emits its `artifact.peek` frame for the HUD's QuickLook overlay, and
+/// returns an HONEST text summary (the real producing agent + real citations, or
+/// UNCITED). Gated by [artifact].enabled (armed-by-default): with it off it reads
+/// nothing and says so. An empty registry (nothing produced yet) is answered
+/// honestly, never a fabricated artifact. Changes nothing, sends nothing, reaches
+/// no network.
+fn artifact_peek_tool(id: Option<u64>) -> String {
+    let cfg = load_artifact_config();
+    if !cfg.enabled {
+        return "The artifact registry is off, sir — enable [artifact] to let me peek at what \
+                I produced. While it is off I remember nothing and peek at nothing."
+            .to_string();
+    }
+    match crate::artifact::peek_and_emit(id) {
+        Some(artifact) => {
+            let mut reply = artifact.summary();
+            // Honest, secret-free citation locators appended so the model can relay
+            // the real backing (or the plain UNCITED verdict) faithfully.
+            if artifact.provenance.is_uncited() {
+                reply.push_str(" It carries no citation — I'm showing it as uncited, not dressing it up.");
+            } else {
+                let locators = artifact
+                    .provenance
+                    .citations
+                    .iter()
+                    .map(|c| if c.url.is_empty() { c.title.clone() } else { format!("{} — {}", c.title, c.url) })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                reply.push_str(&format!(" Sources: {locators}."));
+            }
+            reply.push_str(" It's on the QuickLook overlay.");
+            reply
+        }
+        None => crate::artifact::empty_reply(),
+    }
+}
+
 /// Production CodeBrain: the heavy Anthropic model via [`complete_plain`]. The
 /// system prompt PINS the grounding contract — answer/diff ONLY from the provided
 /// cited code, never fabricate code not present, and (for propose) emit a unified
@@ -9185,6 +9270,32 @@ async fn code_propose_diff_tool(request: &str) -> String {
                 "system",
                 "code.proposed",
                 json!({"ts": ts, "grounded_hits": hits.len()}),
+            );
+            // ARTIFACT REGISTRY: register the code-diff proposal so the peek surface
+            // can surface it. Provenance is HONEST — the producing agent is `steve`
+            // (the CTO/Builds agent who owns code_propose_diff), and the citations
+            // are the REAL grounding hits (file + byte-offset locators). An UNGROUNDED
+            // diff (no hits) is registered UNCITED — never given a fabricated source.
+            // The preview is a SECRET-FREE structural summary (line + hunk counts),
+            // NEVER the raw code. In-memory + on-device; opens no surface.
+            let citations = hits
+                .iter()
+                .filter_map(|h| {
+                    crate::artifact::Citation::new(
+                        h.file_path.clone(),
+                        format!("{}:{}", h.file_path, h.byte_offset),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let added = diff.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count();
+            let removed = diff.lines().filter(|l| l.starts_with('-') && !l.starts_with("---")).count();
+            let hunks = diff.lines().filter(|l| l.starts_with("@@")).count();
+            crate::artifact::register(
+                crate::artifact::ArtifactKind::CodeDiff,
+                format!("proposal {ts}"),
+                "steve",
+                citations,
+                format!("diff: +{added}/-{removed} lines, {hunks} hunk{}", if hunks == 1 { "" } else { "s" }),
             );
             let mut reply = format!(
                 "I drafted a reviewable change and wrote it to the proposal store — I have NOT \
@@ -12852,6 +12963,7 @@ mod tests {
                 "doc_search",
                 "code_explain",
                 "code_propose_diff",
+                "artifact_peek",
                 "shell_run",
                 "ui_actuate",
                 "unified_search",

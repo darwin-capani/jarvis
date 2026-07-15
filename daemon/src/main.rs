@@ -11,6 +11,7 @@ mod agents;
 mod anthropic;
 mod anticipate;
 mod apps;
+mod artifact;
 mod atlas;
 mod attribution;
 mod audio;
@@ -2023,6 +2024,12 @@ async fn main() -> Result<()> {
     telemetry::init();
     tokio::spawn(telemetry::serve(cfg.telemetry.port));
     tokio::spawn(telemetry::system_load_task());
+
+    // ARTIFACT REGISTRY (artifact.rs): apply the [artifact] master gate + retention
+    // bound to the process-global registry the producers register into and the
+    // read-only `peek` surface reads back out. Armed by default; a bounded recency
+    // window — this only sets the gate + cap, it opens no surface.
+    artifact::configure(cfg.artifact.enabled, cfg.artifact.registry_size);
 
     // Micro-app runtime substrate (docs/SANDBOX.md): scan apps/ for manifests
     // so voice ("open global scan") and [apps].autostart can resolve them. The

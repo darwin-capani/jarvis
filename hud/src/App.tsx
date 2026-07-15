@@ -53,6 +53,7 @@ import OnboardingWizard from "./components/OnboardingWizard";
 import ProvenanceLedgerPanel from "./components/ProvenanceLedgerPanel";
 import ResearchNotebooksPanel from "./components/ResearchNotebooksPanel";
 import ReportPanel from "./components/ReportPanel";
+import QuickLookOverlay from "./components/QuickLookOverlay";
 import ReticleDial from "./components/ReticleDial";
 import SelfHealPanel from "./components/SelfHealPanel";
 import SettingsModal from "./components/SettingsModal";
@@ -690,6 +691,7 @@ export default function App() {
           <ResearchNotebooksPanel activity={state.notebook} />
           <ReportPanel report={state.report} />
           <ChartPanel spec={state.chart} />
+          <QuickLookOverlay artifact={state.artifactPeek} />
           <LifeLogPanel digest={state.lifelog} />
           <SessionRewindPanel rewind={state.sessionRewind} />
           <CausaTracePanel trace={state.causaTrace} />
