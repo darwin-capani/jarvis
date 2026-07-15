@@ -76,6 +76,7 @@ import AnswerCrossCheckPanel from "./components/AnswerCrossCheckPanel";
 import TakeoverStage from "./components/TakeoverStage";
 import Toasts from "./components/Toasts";
 import TranscriptPanel from "./components/TranscriptPanel";
+import CaptionBand from "./components/CaptionBand";
 import VisionPanel, { VISION_APP } from "./components/VisionPanel";
 import Waveform from "./components/Waveform";
 import { audioStore } from "./core/audioStore";
@@ -603,6 +604,7 @@ export default function App() {
         <ErrorBoundary label="left column" resetKeys={[state.connected]}><div className="left-col">
           <ReticleDial cpuPercent={state.gauges.cpuPercent} coreState={state.coreState} />
           <TranscriptPanel lines={state.transcript} intent={state.lastIntent} />
+          <CaptionBand captions={state.captions} />
           <AudioIoPanel audio={state.audioIo} />
         </div></ErrorBoundary>
         {/* Center column: the R3F core stays visible up top; the intel-feed

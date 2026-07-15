@@ -24,6 +24,14 @@ mod brief;
 // the reduce-only clarify-band hook it exposes ships OFF ([calibrate].influence_routing).
 mod calibrate;
 mod capability;
+// HERALD-EARS LIVE CAPTIONS (captions.rs): the PURE caption-assembly seam that turns the
+// existing on-device STT transcript feed into a `captions.line` telemetry stream — one
+// line per diarized turn {text, speaker_label (diarize.rs), optional translation (the
+// on-device Babel path), ts} for the HUD's LIVE CAPTIONS band. SHIPS OFF ([captions]);
+// READ-ONLY DISPLAY, reuses the existing mic/TCC grant (no new recording). Wired on the
+// transcript path (run_pipeline); the pure assembly/label/translate logic is proven in
+// captions.rs.
+mod captions;
 mod cartographer;
 // DATA -> CHART (#41): a daemon ChartSpec {kind, series:[{label, points:[(x,y)]}],
 // x_axis, y_axis, title} emitted as a `chart.data` telemetry envelope from a data
@@ -3032,6 +3040,26 @@ async fn run_pipeline(
                 "from_scribe_labels": !scribe_words.is_empty(),
             }),
         );
+    }
+
+    // HERALD-EARS LIVE CAPTIONS (captions.rs), on the transcript path. OFF by default
+    // ([captions].enabled=false) — with it off this block is skipped and the transcript
+    // path is byte-for-byte today's (no captions.line). When ON, the freshly-transcribed
+    // utterance is turned into `captions.line` telemetry for the HUD's LIVE CAPTIONS band:
+    // one line per diarized turn (HONEST speaker labels via the SAME diarize.rs mapper — a
+    // single "unknown" stream when the backend cannot separate speakers, NEVER a fabricated
+    // speaker), each carrying an OPTIONAL translation via the on-device Babel path when
+    // [captions].translate_to is set (offline degrades HONESTLY — the line still shows,
+    // translation omitted). This is READ-ONLY DISPLAY: it reuses the SAME transcript (no new
+    // recording, no extra audio leaves the device), emits telemetry, and does NOT
+    // classify/route/early-return — the utterance flows on to the normal pipeline below.
+    // NOTE: placed BEFORE the interpret gate on purpose — interpret.live ships ON and
+    // early-returns, so captions must tap the transcript first; and like interpret, captions
+    // renders EVERY utterance (it is not "addressed to DARWIN" speech), so it sits before
+    // the wake gate too. The mic loop that produced `text` is DEVICE-GATED; only the pure
+    // assembly/label/translate-decision logic is proven headlessly (captions.rs).
+    if cfg.captions.enabled {
+        let _lines = captions::emit_captions_live(&text, &scribe_words, cfg).await;
     }
 
     // #30 CONTINUOUS LIVE INTERPRETATION (interpret.rs), the DEVICE-GATED live feed of

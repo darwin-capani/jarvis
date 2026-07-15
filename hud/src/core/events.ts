@@ -9074,3 +9074,51 @@ export function parseArtifactPeek(data: Record<string, unknown>): ArtifactPeek |
     citations,
   };
 }
+
+/* ------------------------------------------------------------------------ *
+ * HERALD-EARS LIVE CAPTIONS (daemon/src/captions.rs -> `captions.line`).      *
+ *                                                                            *
+ * The daemon's run_pipeline emits one `captions.line` per diarized turn of a  *
+ * freshly-transcribed utterance, built by captions::assemble_captions. It is  *
+ * the HONEST caption stream for the HUD's LIVE CAPTIONS band:                 *
+ *   - `text`    — the transcript text of the turn (what was heard);          *
+ *   - `speaker` — the speaker label VERBATIM from diarize.rs ("speaker_0", …) *
+ *     or "unknown" on the on-device single stream (NEVER a fabricated         *
+ *     speaker); a missing/blank speaker reads honestly as "unknown";          *
+ *   - `translation` — the on-device Babel translation when [captions].        *
+ *     translate_to is set AND a real translation landed; `null` on            *
+ *     passthrough (no target) or an honest offline degrade (never fabricated);*
+ *   - `ts`      — an epoch-ms timestamp for ordering within the band.         *
+ * SHIPS OFF ([captions].enabled=false): no frame arrives until enabled.       *
+ * ------------------------------------------------------------------------ */
+
+/** The honest speaker label for a caption whose `speaker` is missing/blank —
+ *  mirrors diarize::UNKNOWN_SPEAKER. NEVER a fabricated distinct speaker. */
+export const CAPTION_UNKNOWN_SPEAKER = "unknown";
+
+/** One parsed `captions.line` (the wire shape, pre-`seq`). `translation` is null on
+ *  passthrough / an honest degrade — never a fabricated rendering. */
+export interface CaptionLine {
+  text: string;
+  speaker: string;
+  translation: string | null;
+  ts: number;
+}
+
+/** Parse a `captions.line` payload into a CaptionLine, or null when there is NO
+ *  usable `text` (a blank/absent transcript is dropped, never rendered as an empty
+ *  caption). The `speaker` is carried VERBATIM; a missing/blank speaker reads
+ *  honestly as "unknown" (never a fabricated distinct speaker). `translation` is a
+ *  non-blank string or null (a blank/absent translation is an honest passthrough,
+ *  never an empty translation). `ts` is the epoch-ms wire value or 0. SECRET-FREE
+ *  beyond the caption content the band exists to display; never throws. */
+export function parseCaptionLine(data: Record<string, unknown>): CaptionLine | null {
+  const text = (str(data, "text") ?? "").trim();
+  if (text.length === 0) return null;
+  const rawSpeaker = (str(data, "speaker") ?? "").trim();
+  const speaker = rawSpeaker.length > 0 ? rawSpeaker : CAPTION_UNKNOWN_SPEAKER;
+  const rawTranslation = (str(data, "translation") ?? "").trim();
+  const translation = rawTranslation.length > 0 ? rawTranslation : null;
+  const ts = num(data, "ts") ?? 0;
+  return { text, speaker, translation, ts };
+}

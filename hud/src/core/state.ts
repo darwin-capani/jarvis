@@ -215,6 +215,8 @@ import {
   parseReportReadout,
   ArtifactPeek,
   parseArtifactPeek,
+  CaptionLine,
+  parseCaptionLine,
   str,
   strArr,
   sttTierInitial,
@@ -241,6 +243,14 @@ export interface TranscriptLine {
   text: string;
   ts: string; // envelope ts (verbatim from the daemon)
   routedTo?: string; // darwin lines: "local" | "cloud" per route.completed
+  seq: number;
+}
+
+/** One row in the HERALD-EARS LIVE CAPTIONS band (captions.rs -> `captions.line`).
+ *  A parsed CaptionLine plus a monotonic `seq` for a stable render key. The
+ *  `speaker` is VERBATIM from diarize.rs ("unknown" on the single stream, never a
+ *  fabricated speaker); `translation` is null on passthrough / an honest degrade. */
+export interface CaptionEntry extends CaptionLine {
   seq: number;
 }
 
@@ -604,6 +614,10 @@ export interface HudState {
   stateSince: number;
 
   transcript: TranscriptLine[]; // ring buffer, newest last
+  /** HERALD-EARS LIVE CAPTIONS band (captions.rs -> `captions.line`), a ring buffer
+   *  newest last. Fed one row per diarized turn (honest speaker labels; optional
+   *  on-device translation). Empty until [captions].enabled is turned on. */
+  captions: CaptionEntry[];
   gauges: SystemGauges;
   lastTimings: PipelineTimings | null;
 
@@ -1258,6 +1272,10 @@ export interface HudState {
 /* ------------------------------------------------------------------------ */
 
 export const TRANSCRIPT_CAP = 100;
+/** Ring cap on the LIVE CAPTIONS band — a bounded window of recent caption rows so
+ *  a long session never grows the render without limit (belt-and-suspenders; the
+ *  daemon emits one row per diarized turn). */
+export const CAPTIONS_CAP = 100;
 export const TICKER_CAP = 24;
 /** Cap on the episodic TIMELINE ring the HUD keeps in view (newest-first). This
  *  is a VIEW bound, independent of the daemon's own bounded [episodic].retention
@@ -1364,6 +1382,7 @@ export function initialState(): HudState {
     coreState: "offline",
     stateSince: 0,
     transcript: [],
+    captions: [],
     gauges: {
       cpuPercent: null,
       memUsedBytes: null,
@@ -1530,6 +1549,15 @@ function pushTranscript(state: HudState, line: Omit<TranscriptLine, "seq">): Hud
   const seq = state.seq + 1;
   const transcript = [...state.transcript, { ...line, seq }];
   return { ...state, seq, transcript: transcript.slice(-TRANSCRIPT_CAP) };
+}
+
+/** Append one caption row to the LIVE CAPTIONS ring (newest last), stamping a
+ *  monotonic `seq` for a stable render key and bounding by CAPTIONS_CAP. Mirrors
+ *  pushTranscript — a pure ring push, no side effects. */
+function pushCaption(state: HudState, line: CaptionLine): HudState {
+  const seq = state.seq + 1;
+  const captions = [...state.captions, { ...line, seq }];
+  return { ...state, seq, captions: captions.slice(-CAPTIONS_CAP) };
 }
 
 /* micro-app feed helpers ---------------------------------------------------- */
@@ -3046,6 +3074,22 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       const spec = parseChartSpec(env.data);
       if (spec === null) return s;
       return { ...s, chart: spec };
+    }
+
+    case "captions.line": {
+      // HERALD-EARS LIVE CAPTIONS (captions.rs -> `captions.line`, emitted per
+      // diarized turn on the transcript path when [captions].enabled is ON). The
+      // parser drops a frame with NO usable text (a blank/absent transcript is never
+      // rendered as an empty caption), carries the `speaker` VERBATIM (missing/blank
+      // reads honestly as "unknown" — never a fabricated distinct speaker), and keeps
+      // `translation` only when non-blank (a passthrough / honest offline degrade rides
+      // translation:null, never a fabricated rendering). A valid row is appended to the
+      // bounded LIVE CAPTIONS ring; a malformed/empty frame is dropped (same reference)
+      // so junk never churns the tree. The op ships OFF ([captions].enabled), so nothing
+      // arrives until it is enabled.
+      const line = parseCaptionLine(env.data);
+      if (line === null) return s;
+      return pushCaption(s, line);
     }
 
     case "report.built": {

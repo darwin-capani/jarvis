@@ -107,6 +107,11 @@ speak = false           # render-only by default — voicing the translation sta
 source_lang = ""        # SOURCE language to interpret FROM. Empty => auto-detect (the translator is told the source is unknown — never claims a source it only guessed).
 target_lang = "English" # TARGET language to interpret INTO.
 
+[captions]               # HERALD-EARS LIVE CAPTIONS (captions.rs). The transcript path turns each utterance into a `captions.line` stream for the HUD's LIVE CAPTIONS band.
+enabled = false         # master gate. SHIPS OFF (opt-in) — with it off the transcript path emits no captions.line and the HUD band shows nothing. When ON it is READ-ONLY DISPLAY, reuses the EXISTING mic/TCC grant (no new recording), and is INERT WITHOUT MIC/TCC. Set true to show live captions.
+translate_to = ""       # TARGET language to translate each caption line INTO, via the on-device Babel path. Empty => passthrough (captions show the transcript text, no translation). A non-blank value adds an on-device translation per line; offline degrades honestly (line still shows, translation omitted — never fabricated).
+source_lang = ""        # SOURCE language of the captioned speech. Empty => auto-detect (never claims a source it only guessed). Only consulted when translate_to is set.
+
 [wake]                   # #32 CUSTOM WAKE-WORD. The configured phrase that gates "is this utterance for DARWIN".
 enabled = true          # master gate. SHIPS ON (full-power default) — since `phrase` defaults to "darwin", behavior is identical to today unless you change the phrase. The always-listening loop that consults the matcher is DEVICE-GATED (mic/TCC). Set false to disable wake-word gating.
 phrase = "darwin"       # the wake phrase (case/punct/whitespace-insensitive + small edit-distance tolerance; an empty/blank phrase NEVER matches — fail-safe).

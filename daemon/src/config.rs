@@ -152,6 +152,12 @@ pub struct Config {
     /// Microphone consent. interpret.speak stays its own opt-in (render-only). The
     /// pure core is in interpret.rs.
     pub interpret: InterpretConfig,
+    /// [captions] — HERALD-EARS LIVE CAPTIONS (#, captions.rs). `enabled` SHIPS OFF
+    /// (opt-in): when ON the transcript path turns each utterance into a `captions.line`
+    /// stream for the HUD band (honest speaker labels via diarize.rs, optional on-device
+    /// translation via `translate_to`). READ-ONLY DISPLAY; reuses the existing mic/TCC
+    /// grant (no new recording). The pure assembly seam is in captions.rs.
+    pub captions: CaptionsConfig,
     pub docsearch: DocSearchConfig,
     pub code: CodeConfig,
     /// [shell] — SANDBOXED SHELL / TERMINAL (#43, shell.rs): the HIGHEST-RISK
@@ -646,6 +652,15 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // translation is also voiced through the single echo-safe speech path. Listed so
     // none reads as a typo.
     ("interpret", &["live", "speak", "source_lang", "target_lang"]),
+    // [captions] — HERALD-EARS LIVE CAPTIONS (captions.rs). `enabled` SHIPS OFF (opt-in):
+    // when ON the transcript path (main.rs run_pipeline) turns each freshly-transcribed
+    // utterance into a `captions.line` stream for the HUD's LIVE CAPTIONS band — one line
+    // per diarized turn (honest speaker labels via diarize.rs; a single "unknown" stream
+    // when the backend cannot separate speakers, never a fabricated speaker), each with an
+    // OPTIONAL on-device translation when `translate_to` is set (`source_lang` empty =>
+    // auto-detect). READ-ONLY DISPLAY; reuses the existing mic/TCC grant (no new
+    // recording). Listed so none reads as a typo.
+    ("captions", &["enabled", "translate_to", "source_lang"]),
     // [docsearch] — on-device file RAG (docsearch.rs): index + search the user's
     // OWN text-like files, 100% on-device. `enabled` SHIPS ON (full-power default) —
     // INERT WITHOUT ROOTS: the folder allowlist (`roots`) ships EMPTY and the
@@ -1531,6 +1546,42 @@ impl Default for InterpretConfig {
             target_lang: "English".to_string(),
         }
     }
+}
+
+/// [captions] — HERALD-EARS LIVE CAPTIONS (captions.rs). When `enabled` is ON the
+/// transcript path (main.rs run_pipeline) turns each freshly-transcribed utterance into a
+/// `captions.line` telemetry stream for the HUD's LIVE CAPTIONS band: one line per
+/// diarized turn (HONEST speaker labels via diarize.rs — a SINGLE "unknown" stream when
+/// the backend cannot separate speakers, NEVER a fabricated speaker), each carrying an
+/// OPTIONAL translation via the on-device Babel path when `translate_to` is set. SHIPS OFF
+/// (`enabled=false`, `translate_to=""`): with it off the transcript path is byte-for-byte
+/// today's (no captions.line, the HUD band shows nothing). READ-ONLY DISPLAY — no action,
+/// no routing, no network beyond the on-device translate; it reuses the EXISTING mic/TCC
+/// grant (the transcript already exists — NO new recording to disk). Even ON it is INERT
+/// WITHOUT MIC/TCC (it consumes the device-gated transcript feed). Translation quality is
+/// bounded by the local ~4B model; offline degrades HONESTLY (the line still shows,
+/// translation omitted — never a fabricated rendering).
+///
+/// The derived `Default` is the shipped, all-off/empty opt-in posture: `enabled=false`
+/// (no captions.line, HUD band empty), `translate_to=""` (passthrough — the transcript
+/// text with no translation), `source_lang=""` (auto-detect when a target is later set).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CaptionsConfig {
+    /// Master switch for the live captions band. SHIPS OFF (false): with it off the
+    /// transcript path emits no captions.line and the HUD band shows nothing. INERT
+    /// WITHOUT MIC/TCC even when ON (it consumes the device-gated transcript feed).
+    pub enabled: bool,
+    /// The TARGET language to translate each caption line INTO, via the on-device Babel
+    /// path. SHIPS EMPTY ("") => passthrough: captions carry the transcript text with NO
+    /// translation. A non-blank value adds an on-device translation per line; offline / an
+    /// empty model reply degrades HONESTLY (the line still shows, translation omitted —
+    /// never a fabricated rendering).
+    pub translate_to: String,
+    /// The SOURCE language of the captioned speech. Empty (the default) => auto-detect (the
+    /// translator is told the source is unknown — Babel never claims to KNOW a source it
+    /// only guessed). Only consulted when `translate_to` is set.
+    pub source_lang: String,
 }
 
 /// [inference] — server-side knobs mirrored for the shared contract.
@@ -4059,6 +4110,7 @@ impl Config {
             voice: section(&table, "voice", &mut issues),
             wake: section(&table, "wake", &mut issues),
             interpret: section(&table, "interpret", &mut issues),
+            captions: section(&table, "captions", &mut issues),
             docsearch: section(&table, "docsearch", &mut issues),
             code: section(&table, "code", &mut issues),
             shell: section(&table, "shell", &mut issues),
