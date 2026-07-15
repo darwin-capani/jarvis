@@ -275,6 +275,29 @@ startup_delay_secs = 45     # wait after boot before the first scan
 assess_signing     = true   # run the per-binary signing/notarization reads
 max_assess         = 64     # cap on binaries assessed per scan (bounds the work)
 
+[exposure]
+# Inbound Exposure Auditor — a defensive "nmap-of-self" (exposure.rs). A slow,
+# READ-ONLY audit of THIS machine's OWN listening sockets, read via a FIXED-ARG
+# bounded `netstat -anv` (never a shell string), so the parser is CI-tested on
+# canned output. It SENDS NO PACKETS and never touches another host — it only
+# reads the local socket table. Each listener is classified loopback-only
+# (127.0.0.0/8 / ::1) vs LAN/all-interfaces EXPOSED, and each exposed well-known
+# port is mapped to its macOS sharing service (22 -> Remote Login, 5900 ->
+# Screen Sharing, 445/139 -> File Sharing, 7000 -> AirPlay, ...) via a static
+# table. Honest about the read's limit: a service is identified by well-known
+# port, not by correlating the owning process, and an exposed port with no table
+# entry is reported as unrecognized (never hidden, never guessed). It emits the
+# `security.exposure` telemetry frame + folds a summary into the posture readout.
+# STRICTLY READ-ONLY: it closes nothing. The only remediation is the gated
+# `open_settings_pane` actuator, which deep-links to the relevant Settings pane
+# so the USER flips the switch — it stays behind the standard per-action confirm
+# gate (it is in CONSEQUENTIAL_TOOLS; it always parks, never auto-opens).
+# SHIPS ON (full-power default); with it false the auditor loop is not spawned.
+enabled = true
+# Auditor cadence (defaults shown; absent = these values).
+interval_secs      = 300    # seconds between scans (the listening surface moves slowly)
+startup_delay_secs = 40     # wait after boot before the first scan
+
 [integrations]
 # Shared substrate for the Chart-2 integrations (GitHub, Slack, Google
 # Drive/Calendar). allow_consequential is THE master gate for outward/

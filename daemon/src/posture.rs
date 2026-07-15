@@ -168,6 +168,16 @@ where
         lines.push(line);
     }
 
+    // Inbound Exposure Auditor (exposure.rs): a secret-free, read-only summary of
+    // THIS machine's own listening sockets — how many are loopback-only vs exposed
+    // to the network, with the exposed well-known sharing services named. None
+    // until the auditor has scanned the local socket table — then this line joins
+    // the posture the same way the others do. It reports (and sends no packets); it
+    // never closes a port itself.
+    if let Some(line) = crate::exposure::posture_line() {
+        lines.push(line);
+    }
+
     format!(
         "Security posture (read-only — I report it; turning anything on is yours to do in System Settings): {}",
         lines.join("; ")

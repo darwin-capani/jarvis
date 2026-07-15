@@ -87,6 +87,7 @@ mod episodic;
 #[cfg(feature = "endpoint-security")]
 mod es;
 mod eval;
+mod exposure;
 mod focus;
 mod forecast;
 mod forge;
@@ -2174,6 +2175,20 @@ async fn main() -> Result<()> {
             cfg.persistence.interval_secs,
             cfg.persistence.assess_signing,
             cfg.persistence.max_assess,
+        ));
+    }
+    // Ambient INBOUND EXPOSURE AUDITOR ("nmap-of-self"): a slow, READ-ONLY scan of
+    // THIS machine's own listening socket table (via a fixed-arg `netstat -anv` —
+    // it sends no packets and never touches another host). It classifies each
+    // socket loopback-only vs network-EXPOSED, maps exposed well-known ports to
+    // their macOS sharing service, emits `security.exposure`, and folds a summary
+    // into the posture readout. It closes nothing — the gated `open_settings_pane`
+    // actuator is the only remediation. Ships ON ([exposure].enabled); with it
+    // false the loop is not spawned.
+    if cfg.exposure.enabled {
+        tokio::spawn(exposure::sentinel_task(
+            cfg.exposure.startup_delay_secs,
+            cfg.exposure.interval_secs,
         ));
     }
     // Ambient micro-app introspection: a slow, READ-ONLY sentinel over darwind's

@@ -47,6 +47,17 @@ pub struct Config {
     /// when a read needs a privilege the no-sudo daemon lacks (login items ->
     /// Automation TCC). With it false the sentinel loop is not spawned.
     pub persistence: PersistenceConfig,
+    /// [exposure] — INBOUND EXPOSURE AUDITOR (exposure.rs), a defensive
+    /// "nmap-of-self". `enabled` SHIPS ON (full-power default). READ-ONLY DEFENSE:
+    /// a slow auditor that reads THIS machine's OWN listening socket table via a
+    /// FIXED-ARG bounded `netstat -anv` (it sends no packets and never touches
+    /// another host), classifies each socket loopback-only vs network-EXPOSED, maps
+    /// exposed well-known ports to their macOS sharing service, emits
+    /// `security.exposure`, and folds a summary into the posture readout. It takes
+    /// NO action — the guided-remediation `open_settings_pane` actuator that opens
+    /// the relevant Settings pane stays behind the standard per-action confirm gate.
+    /// With it false the auditor loop is not spawned.
+    pub exposure: ExposureConfig,
     pub integrations: IntegrationsConfig,
     pub standing: StandingConfig,
     /// [drafts] — AUTO-DRAFT (#25, drafts.rs). `enabled` SHIPS ON (full-power
@@ -304,6 +315,11 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // (ASSESSMENT only, never executions); `max_assess` caps how many binaries are
     // assessed per scan.
     ("persistence", &["enabled", "interval_secs", "startup_delay_secs", "assess_signing", "max_assess"]),
+    // [exposure] — the INBOUND EXPOSURE AUDITOR (exposure.rs), a READ-ONLY
+    // "nmap-of-self" over the local listening socket table (netstat -anv; no
+    // packets sent). SHIPS ON. It reports (security.exposure + a posture summary);
+    // the only remediation is the gated open_settings_pane actuator.
+    ("exposure", &["enabled", "interval_secs", "startup_delay_secs"]),
     // [integrations] — `allow_consequential` is THE master gate for outward/
     // side-effecting actions. SHIPS ON (full-power default) — INERT-SAFE: a
     // CONFIRMED consequential action still clears confirm + voice-id + policy +
@@ -2604,6 +2620,33 @@ impl Default for PersistenceConfig {
     }
 }
 
+/// [exposure] — the INBOUND EXPOSURE AUDITOR (exposure.rs): a READ-ONLY
+/// "nmap-of-self" that reads THIS machine's own listening socket table (via a
+/// fixed-arg `netstat -anv`, sending no packets), classifies each socket
+/// loopback-only vs network-exposed, and names the macOS sharing service on each
+/// exposed well-known port. It only observes and reports (secret-free counts +
+/// exposed detail); it closes nothing. The gated `open_settings_pane` actuator is
+/// the only remediation and stays behind the standard per-action confirm gate.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ExposureConfig {
+    /// Master switch for the auditor loop. SHIPS ON (read-only observability).
+    pub enabled: bool,
+    /// Seconds between scans (the listening surface moves on the order of app
+    /// launches, not seconds).
+    pub interval_secs: u64,
+    /// Seconds to wait after boot before the first scan (let the box settle).
+    pub startup_delay_secs: u64,
+}
+
+impl Default for ExposureConfig {
+    fn default() -> Self {
+        // On by default — it only reads the local socket table and reports. The
+        // cadence matches the other defensive sentinels (a slow scan).
+        Self { enabled: true, interval_secs: 300, startup_delay_secs: 40 }
+    }
+}
+
 /// [integrations] — the shared Chart-2 integration substrate (integrations.rs).
 /// `allow_consequential` is THE master gate for outward/side-effecting actions
 /// (post a message, create an event). It SHIPS ON (true) — the headline of the
@@ -3312,6 +3355,7 @@ impl Config {
             apps: section(&table, "apps", &mut issues),
             introspect: section(&table, "introspect", &mut issues),
             persistence: section(&table, "persistence", &mut issues),
+            exposure: section(&table, "exposure", &mut issues),
             integrations: section(&table, "integrations", &mut issues),
             standing: section(&table, "standing", &mut issues),
             drafts: section(&table, "drafts", &mut issues),

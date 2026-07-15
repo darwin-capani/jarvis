@@ -20,6 +20,7 @@ use anyhow::{anyhow, Context, Result};
 use tokio::process::Command;
 use tracing::warn;
 
+use crate::integrations::ActionMode;
 use crate::telemetry;
 
 /// Hard ceiling per spawned action command.
@@ -706,6 +707,132 @@ fn clamp_percent(percent: i64) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
+// open_settings_pane — guided remediation for the Inbound Exposure Auditor
+// ---------------------------------------------------------------------------
+
+/// One allowlisted macOS System Settings pane. `id` is the stable token the
+/// Exposure Auditor's remediation (and the model) names; `url` is the EXACT
+/// `x-apple.systempreferences:` deep link `open` receives. This actuator only
+/// ever OPENS one of these panes so the USER can flip a switch — it changes no
+/// setting itself.
+struct SettingsPane {
+    id: &'static str,
+    label: &'static str,
+    url: &'static str,
+}
+
+/// The HARDCODED allowlist of System Settings panes DARWIN may deep-link to. This
+/// is the ENTIRE universe of pane ids — anything not listed here is REFUSED. Each
+/// `url` is a fixed `x-apple.systempreferences:` scheme string, spawned DIRECTLY
+/// via `open`; it is deliberately NOT routed through `normalize_url`, which
+/// rightly refuses every non-http scheme. The panes are exactly the ones the
+/// exposure/posture readouts point at (Sharing to turn a service off, Firewall to
+/// block inbound, etc.) — no arbitrary deep link is reachable.
+const SETTINGS_PANES: &[SettingsPane] = &[
+    SettingsPane {
+        id: "sharing",
+        label: "Sharing",
+        url: "x-apple.systempreferences:com.apple.Sharing-Settings.extension",
+    },
+    SettingsPane {
+        id: "firewall",
+        label: "Network Firewall",
+        url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Firewall",
+    },
+    SettingsPane {
+        id: "privacy_security",
+        label: "Privacy & Security",
+        url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension",
+    },
+    SettingsPane {
+        id: "login_items",
+        label: "Login Items & Extensions",
+        url: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
+    },
+    SettingsPane {
+        id: "network",
+        label: "Network",
+        url: "x-apple.systempreferences:com.apple.Network-Settings.extension",
+    },
+    SettingsPane {
+        id: "software_update",
+        label: "Software Update",
+        url: "x-apple.systempreferences:com.apple.preferences.softwareupdate",
+    },
+    SettingsPane {
+        id: "filevault",
+        label: "FileVault",
+        url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?FileVault",
+    },
+];
+
+/// PURE: resolve an allowlisted pane id to its pane, or `None` when the id is not
+/// in the hardcoded allowlist. Case-insensitive on the id token; NOTHING else is
+/// accepted — no arbitrary URL, no scheme, no path, no `x-apple.*` string the
+/// caller supplies.
+fn resolve_settings_pane(pane_id: &str) -> Option<&'static SettingsPane> {
+    let want = pane_id.trim().to_ascii_lowercase();
+    SETTINGS_PANES.iter().find(|p| p.id == want)
+}
+
+/// Whether `pane_id` is one the actuator will open — the public predicate the
+/// Exposure Auditor uses to verify a remediation link before it offers one, so a
+/// service can never point at a pane id the actuator would refuse. Exercised by
+/// the exposure tests (every mapped remediation pane must resolve here); also the
+/// natural validation hook for a future HUD "open Settings" jump.
+#[allow(dead_code)] // public predicate; exercised by exposure.rs's service-map test
+pub fn is_known_settings_pane(pane_id: &str) -> bool {
+    resolve_settings_pane(pane_id).is_some()
+}
+
+/// The allowlisted pane ids, for a refusal message + the tool schema doc.
+fn settings_pane_ids() -> String {
+    SETTINGS_PANES.iter().map(|p| p.id).collect::<Vec<_>>().join(", ")
+}
+
+/// Open ONE allowlisted macOS System Settings pane so the USER can flip a switch
+/// (turn a sharing service off, enable the firewall, …). GUIDED REMEDIATION for
+/// the Inbound Exposure Auditor: it deep-links to the exact pane and CHANGES
+/// NOTHING itself — the toggle is the user's own action. Benign-only + gated:
+///   * only an id in the HARDCODED `SETTINGS_PANES` allowlist is honored; an
+///     unknown / nonsense id is REFUSED (never a fabricated or arbitrary URL, and
+///     never a caller-supplied scheme string);
+///   * the pane URL is a fixed `x-apple.systempreferences:` string spawned
+///     DIRECTLY via `open` — deliberately NOT through `normalize_url`, which
+///     rightly refuses non-http schemes;
+///   * CONSEQUENTIAL: in [`ActionMode::DryRun`] it returns a faithful preview and
+///     opens nothing; only [`ActionMode::Execute`] (master switch ON + a fresh
+///     human confirm, via the standard park-and-replay gate) actually opens it.
+pub async fn open_settings_pane(pane_id: &str, mode: ActionMode) -> Result<String> {
+    let Some(pane) = resolve_settings_pane(pane_id) else {
+        return Err(anyhow!(
+            "refusing to open settings pane '{pane_id}': it is not in the allowlist ({})",
+            settings_pane_ids()
+        ));
+    };
+    if mode == ActionMode::DryRun {
+        return Ok(format!(
+            "[dry run] Would open System Settings to the {} pane so you can change it there \
+             (I change nothing myself). Enable consequential actions and confirm to open it.",
+            pane.label
+        ));
+    }
+    let out = run_command("/usr/bin/open", &[pane.url]).await?;
+    if out.status.success() {
+        Ok(format!(
+            "Opened System Settings to {} — flip the switch there; I changed nothing.",
+            pane.label
+        ))
+    } else {
+        Err(anyhow!(
+            "opening the {} settings pane failed: {}",
+            pane.label,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // system_status
 // ---------------------------------------------------------------------------
 
@@ -1040,6 +1167,58 @@ mod tests {
         assert_eq!(clamp_percent(55), 55);
         assert_eq!(clamp_percent(100), 100);
         assert_eq!(clamp_percent(940), 100);
+    }
+
+    // -- open_settings_pane: the allowlisted guided-remediation actuator -------
+
+    #[test]
+    fn settings_pane_allowlist_resolves_known_and_refuses_unknown() {
+        // Every allowlisted id resolves to a fixed x-apple.systempreferences: URL —
+        // never an http URL and never something normalize_url could ever accept.
+        for pane in SETTINGS_PANES {
+            let got = resolve_settings_pane(pane.id).expect("allowlisted id resolves");
+            assert_eq!(got.id, pane.id);
+            assert!(
+                got.url.starts_with("x-apple.systempreferences:"),
+                "pane {} must deep-link a settings scheme, got {}",
+                pane.id,
+                got.url
+            );
+            assert!(is_known_settings_pane(pane.id));
+        }
+        // Id match is case-insensitive and trims surrounding space.
+        assert!(resolve_settings_pane("  SHARING ").is_some());
+        // An unknown / nonsense / injection-y id is NOT in the allowlist.
+        for bad in ["", "sharingX", "nonsense", "../etc", "https://evil.tld", "file:///etc/passwd"] {
+            assert!(resolve_settings_pane(bad).is_none(), "{bad:?} must not resolve");
+            assert!(!is_known_settings_pane(bad));
+        }
+    }
+
+    #[tokio::test]
+    async fn open_settings_pane_refuses_an_unknown_pane_id() {
+        // A nonsense pane id is REFUSED (an Err) in BOTH modes — it never falls
+        // through to spawning `open`, and the refusal names the allowlist.
+        let dry = open_settings_pane("totally-made-up", ActionMode::DryRun).await;
+        assert!(dry.is_err(), "unknown pane id must be refused even as a dry run");
+        let err = open_settings_pane("totally-made-up", ActionMode::Execute).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not in the allowlist"), "refusal explains why: {msg}");
+        assert!(msg.contains("sharing"), "refusal lists the real allowlist: {msg}");
+        // An attempt to smuggle an arbitrary scheme as the "pane id" is refused too.
+        assert!(open_settings_pane("x-apple.systempreferences:com.apple.evil", ActionMode::Execute)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn open_settings_pane_dry_run_previews_a_known_pane_without_opening() {
+        // DryRun for an allowlisted pane returns a faithful preview and spawns
+        // nothing — the master-off / not-yet-confirmed path.
+        let out = open_settings_pane("firewall", ActionMode::DryRun).await.unwrap();
+        assert!(out.starts_with("[dry run]"), "must be a dry-run preview: {out}");
+        assert!(out.contains("Network Firewall"), "names the exact pane: {out}");
+        assert!(out.to_lowercase().contains("change nothing"), "states it changes nothing: {out}");
     }
 
     #[test]

@@ -204,6 +204,13 @@ pub const CONSEQUENTIAL_TOOLS: &[&str] = &[
     // NO secret (the token goes to the Keychain out-of-band) and the connector is
     // added INERT (agents=[], every tool gated).
     "connector_add",
+    // Guided remediation for the Inbound Exposure Auditor: it deep-links to ONE
+    // allowlisted System Settings pane so the USER can flip a switch. It changes
+    // no setting itself and only ever OPENS an allowlisted `x-apple.system
+    // preferences:` pane — but opening a settings pane on the user's behalf is a
+    // visible UI side effect, so it is gated PER ACTION like every other actuator:
+    // it parks for a spoken yes and never auto-opens.
+    "open_settings_pane",
 ];
 
 /// Whether a tool name is consequential (side-effecting) and therefore must be
@@ -937,12 +944,15 @@ mod tests {
         // connector_add adds an MCP connector (a persistent config mutation) — it
         // MUST be gated (it always parks for a spoken yes; it never auto-applies).
         assert!(is_consequential_tool("connector_add"), "connector_add must be gated (it parks, never auto-applies)");
-        // Exactly the 19 gate-routed tools, no dupes.
-        assert_eq!(CONSEQUENTIAL_TOOLS.len(), 19, "expected 19 consequential tools");
+        // open_settings_pane opens an allowlisted System Settings pane (a visible UI
+        // side effect) — it MUST be gated per action (it parks; it never auto-opens).
+        assert!(is_consequential_tool("open_settings_pane"), "open_settings_pane must be gated (it parks, never auto-opens)");
+        // Exactly the 20 gate-routed tools, no dupes.
+        assert_eq!(CONSEQUENTIAL_TOOLS.len(), 20, "expected 20 consequential tools");
         let mut sorted = CONSEQUENTIAL_TOOLS.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(sorted.len(), 19, "no duplicate consequential tool names");
+        assert_eq!(sorted.len(), 20, "no duplicate consequential tool names");
     }
 
     #[test]

@@ -724,6 +724,18 @@ fn tool_defs() -> &'static Value {
                 }
             },
             {
+                "name": "open_settings_pane",
+                "description": "Open one macOS System Settings pane so the USER can flip a switch there (turn a sharing service off, enable the firewall, ...). This is GUIDED REMEDIATION for the inbound-exposure / posture readouts: it deep-links to the exact pane and CHANGES NOTHING itself. CONSEQUENTIAL: it defaults to a DRY-RUN PREVIEW and opens nothing; it always asks for a spoken confirmation first and never auto-opens. pane_id must be one of the allowlisted ids: sharing, firewall, privacy_security, login_items, network, software_update, filevault — any other id is refused.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "pane_id": {"type": "string", "description": "Allowlisted pane id: one of sharing, firewall, privacy_security, login_items, network, software_update, filevault"},
+                        "confirm": {"type": "boolean", "description": "true ONLY after the user explicitly approved opening this exact pane; otherwise a dry-run preview"}
+                    },
+                    "required": ["pane_id"]
+                }
+            },
+            {
                 "name": "system_status",
                 "description": "Current CPU, memory, disk and uptime of the machine DARWIN runs on. Call this when the user asks how the system is doing.",
                 "input_schema": {"type": "object", "properties": {}}
@@ -3133,6 +3145,12 @@ struct WebSearchArgs {
 #[derive(Deserialize)]
 struct SetVolumeArgs {
     percent: i64,
+}
+#[derive(Deserialize)]
+struct OpenSettingsPaneArgs {
+    pane_id: String,
+    #[serde(default)]
+    confirm: bool,
 }
 #[derive(Deserialize)]
 struct RememberFactArgs {
@@ -7048,6 +7066,17 @@ async fn dispatch_tool(
         "set_volume" => match serde_json::from_value::<SetVolumeArgs>(input.clone()) {
             Ok(args) => actions::set_volume(args.percent).await,
             Err(e) => Err(anyhow!("invalid set_volume arguments: {e}")),
+        },
+        // Guided remediation for the Inbound Exposure Auditor. CONSEQUENTIAL: the
+        // mode rides gate(confirm) — DryRun (the default / master-off / unconfirmed)
+        // returns a preview and opens nothing; Execute opens the exact allowlisted
+        // System Settings pane. An unknown pane id is refused inside the actuator.
+        "open_settings_pane" => match serde_json::from_value::<OpenSettingsPaneArgs>(input.clone()) {
+            Ok(args) => {
+                let mode = crate::integrations::gate(args.confirm);
+                actions::open_settings_pane(&args.pane_id, mode).await
+            }
+            Err(e) => Err(anyhow!("invalid open_settings_pane arguments: {e}")),
         },
         "system_status" => actions::system_status().await,
         "remember_fact" => match serde_json::from_value::<RememberFactArgs>(input.clone()) {
@@ -12690,6 +12719,7 @@ mod tests {
                 "open_url",
                 "web_search",
                 "set_volume",
+                "open_settings_pane",
                 "system_status",
                 "remember_fact",
                 "recall_facts",
