@@ -232,6 +232,10 @@ impl Quat {
     }
 
     /// Hamilton product `self * o` (apply `o` then `self`).
+    // `Quat` is a FROZEN type with a frozen inherent API (see module docs); this
+    // is a named inherent method callers invoke as `q.mul(other)`, deliberately
+    // NOT a `std::ops::Mul` impl, so keep it inherent rather than a trait.
+    #[allow(clippy::should_implement_trait)]
     #[inline]
     pub fn mul(self, o: Quat) -> Quat {
         Quat {

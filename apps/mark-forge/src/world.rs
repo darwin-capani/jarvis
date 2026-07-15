@@ -21,6 +21,7 @@
 //!      pairs, NOT ~n²/2 (truncating AFTER an O(n²) enumeration would not help — the
 //!      enumeration itself is bounded);
 //!   3. the contacts fed to the solver are truncated to [`MAX_CONTACTS_PER_SUBSTEP`].
+//!
 //! Bounded-per-frame (layers 2+3) × bounded-frame-count (layer 1) ⇒ one clamped op
 //! over the worst case the [`crate::ipc::MAX_BODIES`] cap allows completes in
 //! seconds (measured, pinned by a worst-case test), not the ~tens of minutes the
@@ -310,6 +311,7 @@ impl World {
     ///      O(budget) pairs/manifolds, NOT ~n²/2 (truncating the list AFTER an
     ///      O(n²) enumeration would not bound the enumeration itself);
     ///   3. the resulting contact set is truncated to [`MAX_CONTACTS_PER_SUBSTEP`].
+    ///
     /// Layers 2+3 make each FRAME O(budget); layer 1 caps the frame count — so the
     /// whole op over the worst case the [`crate::ipc::MAX_BODIES`] cap allows
     /// completes in seconds (pinned by the worst-case test), not the ~tens of

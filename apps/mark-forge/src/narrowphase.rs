@@ -14,13 +14,13 @@
 //!   - sphere–sphere : center distance vs radius sum.
 //!   - sphere–plane  : signed distance of the center to the half-space surface.
 //!   - box–plane     : the box's 8 oriented corners vs the half-space; every
-//!                     penetrating corner becomes a contact (a resting box on a
-//!                     plane yields its 4 face corners — a stable manifold).
+//!     penetrating corner becomes a contact (a resting box on a
+//!     plane yields its 4 face corners — a stable manifold).
 //!   - box–box (SAT) : separating-axis test over the 6 face normals (3 per box)
-//!                     and the 9 edge–edge cross axes; the minimum-penetration
-//!                     axis is the contact normal. Face contacts are produced by
-//!                     reference/incident face clipping (Sutherland–Hodgman);
-//!                     edge contacts by the closest points of the two edges.
+//!     and the 9 edge–edge cross axes; the minimum-penetration
+//!     axis is the contact normal. Face contacts are produced by
+//!     reference/incident face clipping (Sutherland–Hodgman);
+//!     edge contacts by the closest points of the two edges.
 
 use crate::body::{Body, BodyId, Shape};
 use crate::broadphase::Pair;
@@ -699,8 +699,8 @@ fn best_face_axis(axes: &[Vec3; 3], dir: Vec3) -> (usize, f64) {
     let mut best_idx = 0;
     let mut best_sign = 1.0;
     let mut best_dot = f64::NEG_INFINITY;
-    for i in 0..3 {
-        let d = axes[i].dot(dir);
+    for (i, &axis) in axes.iter().enumerate() {
+        let d = axis.dot(dir);
         if d.abs() > best_dot {
             best_dot = d.abs();
             best_idx = i;
@@ -716,11 +716,11 @@ fn most_antiparallel_face(axes: &[Vec3; 3], dir: Vec3) -> (usize, f64) {
     let mut best_idx = 0;
     let mut best_sign = 1.0;
     let mut best_dot = f64::INFINITY;
-    for i in 0..3 {
-        // Outward face normals are ±axes[i]; we want the one with the most
+    for (i, &axis) in axes.iter().enumerate() {
+        // Outward face normals are ±axis; we want the one with the most
         // negative dot with `dir`.
         for &sign in &[1.0_f64, -1.0_f64] {
-            let d = (axes[i] * sign).dot(dir);
+            let d = (axis * sign).dot(dir);
             if d < best_dot {
                 best_dot = d;
                 best_idx = i;

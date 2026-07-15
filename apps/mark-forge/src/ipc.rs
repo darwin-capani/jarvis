@@ -20,7 +20,8 @@
 //!   - `{"type":"start"|"refresh"|"stop"}` — daemon control verbs
 //!     ([`HostControl`]); `stop` exits cleanly.
 //!   - `{"op":"…", …}` — Mark-Forge ops ([`Op`], SPEC §7).
-//!   [`parse_command`] classifies each line by presence of `op` vs `type`.
+//!
+//! [`parse_command`] classifies each line by presence of `op` vs `type`.
 //!
 //! Outbound (app → host), stamped with the token on EVERY line: the daemon
 //! relays `type:"items"` lines whose `data.topic` is a declared topic
@@ -914,7 +915,7 @@ enum LoopAction {
 ///   - a spawn the world REFUSES (cap /   → still emits the unchanged scene AND a
 ///     non-finite, see [`spawn_refusal`])   `log` line explaining the refusal;
 ///   - an UNKNOWN / malformed line        → a `dropped line: …` log, never a panic,
-///                                           always [`LoopAction::Continue`].
+///     always [`LoopAction::Continue`].
 ///
 /// EVERY line written here is token-stamped (telemetry via [`emit`], logs via
 /// [`log_line`]); the token is the one constructor argument both take, so a line

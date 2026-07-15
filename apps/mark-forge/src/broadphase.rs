@@ -558,10 +558,10 @@ mod tests {
         // the emitted pair list must be ascending by (a, b) and stable.
         let mut w = World::new();
         // A clump of mutually-overlapping spheres near the origin.
-        let _0 = sphere_at(&mut w, Vec3::new(0.0, 0.0, 0.0));
-        let _1 = sphere_at(&mut w, Vec3::new(0.5, 0.0, 0.0));
-        let _2 = sphere_at(&mut w, Vec3::new(0.0, 0.5, 0.0));
-        let _3 = sphere_at(&mut w, Vec3::new(0.5, 0.5, 0.0));
+        let _b0 = sphere_at(&mut w, Vec3::new(0.0, 0.0, 0.0));
+        let _b1 = sphere_at(&mut w, Vec3::new(0.5, 0.0, 0.0));
+        let _b2 = sphere_at(&mut w, Vec3::new(0.0, 0.5, 0.0));
+        let _b3 = sphere_at(&mut w, Vec3::new(0.5, 0.5, 0.0));
         let pairs = candidate_pairs(&w);
         // Must be sorted ascending.
         let mut sorted = pairs.clone();
