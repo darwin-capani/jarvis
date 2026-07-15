@@ -18,18 +18,18 @@
 //!     mirroring `daemon::audio::bind_audio_socket` / the command channel bind).
 //!   - REQUEST: the daemon connects and sends EXACTLY ONE '\n'-terminated UTF-8
 //!     JSON line:
-//!       {"token":"<command.token>","action":{…},"target_desc":"<string>"}
+//!     {"token":"<command.token>","action":{…},"target_desc":"<string>"}
 //!     where `action` is one of (internally-tagged on `kind`):
-//!       {"kind":"click","x":<i32>,"y":<i32>}
-//!       {"kind":"type","text":"<string>"}
-//!       {"kind":"key","combo":"<string>"}
+//!     {"kind":"click","x":<i32>,"y":<i32>}
+//!     {"kind":"type","text":"<string>"}
+//!     {"kind":"key","combo":"<string>"}
 //!   - The HUD verifies `token` by a CONSTANT-TIME equality compare against the
 //!     SAME per-boot capability token the command channel uses — read HERE via
 //!     `crate::command::read_token`. A missing/empty/mismatched token => the HUD
 //!     closes the connection and posts NOTHING.
 //!   - The HUD posts EXACTLY ONE CGEvent for the single action (one request = one
 //!     actuation = one connection) and replies ONE '\n'-terminated JSON line:
-//!       {"ok":<bool>,"detail":"<string>"}
+//!     {"ok":<bool>,"detail":"<string>"}
 //!     `ok:false` with an HONEST detail when Accessibility is not granted
 //!     (`AXIsProcessTrusted()==false`) or the post failed — NEVER a fabricated
 //!     success.
@@ -99,8 +99,8 @@ impl Reply {
     fn fail(detail: impl Into<String>) -> Self {
         Self { ok: false, detail: detail.into() }
     }
-    /// Serialize to the ONE '\n'-terminated JSON line the daemon reads back. PURE
-    /// + unit-tested. serde_json escapes `detail`, so the reply is always a single
+    /// Serialize to the ONE '\n'-terminated JSON line the daemon reads back. PURE +
+    /// unit-tested. serde_json escapes `detail`, so the reply is always a single
     /// physical line.
     pub fn encode(&self) -> String {
         // to_string never fails for this fixed `{ok:bool, detail:string}` shape.

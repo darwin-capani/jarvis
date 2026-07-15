@@ -564,12 +564,18 @@ fn split_assignment(line: &str) -> Option<(&str, &str)> {
     Some((key, v))
 }
 
+/// A `(section, key)` address into the settings TOML.
+type SectionKey = (String, String);
+/// One resolved write: which `(section, key)` to update and the value token to
+/// put there.
+type ResolvedWrite = (SectionKey, String);
+
 /// Read the live `(section, key) -> raw value token` map from the TOML text, for
 /// EVERY whitelisted flat setting AND the autonomy `enabled`/`mode` pairs. Pure
 /// over the text. Only the FIRST occurrence of a key within a section is taken
 /// (TOML forbids duplicates; we are defensive).
-fn read_raw_values(text: &str) -> BTreeMap<(String, String), String> {
-    let mut out: BTreeMap<(String, String), String> = BTreeMap::new();
+fn read_raw_values(text: &str) -> BTreeMap<SectionKey, String> {
+    let mut out: BTreeMap<SectionKey, String> = BTreeMap::new();
     let mut section = String::new();
     for line in text.lines() {
         if let Some(h) = section_header(line) {
@@ -692,7 +698,7 @@ fn render_token(kind: Kind, value: &SettingValue) -> Result<String, String> {
 /// (section, key) -> token writes it produces. A flat setting yields ONE write;
 /// a 3-way autonomy control yields TWO (enabled + mode). REJECTS an unknown id,
 /// a wrong type, an out-of-range/option value. Pure.
-fn resolve_change(change: &Change) -> Result<Vec<((String, String), String)>, String> {
+fn resolve_change(change: &Change) -> Result<Vec<ResolvedWrite>, String> {
     // 3-way autonomy control: the id is a bare section name.
     if AUTONOMY_SECTIONS.contains(&change.id.as_str()) {
         let state = match &change.value {
@@ -738,7 +744,7 @@ fn resolve_change(change: &Change) -> Result<Vec<((String, String), String)>, St
 /// Pure over the text; the only caller does the I/O.
 fn apply_writes_in_place(
     text: &str,
-    writes: &BTreeMap<(String, String), String>,
+    writes: &BTreeMap<SectionKey, String>,
 ) -> Result<String, String> {
     // Preserve the file's original line endings: we rebuild from the original
     // line slices and re-insert '\n', then restore a missing trailing newline.
@@ -968,7 +974,7 @@ pub fn apply_changes(text: &str, changes: &[Change]) -> Result<String, String> {
         return Err("no changes supplied".to_string());
     }
     // Validate every change up front; collect the concrete writes.
-    let mut writes: BTreeMap<(String, String), String> = BTreeMap::new();
+    let mut writes: BTreeMap<SectionKey, String> = BTreeMap::new();
     for change in changes {
         for (target, token) in resolve_change(change)? {
             writes.insert(target, token);

@@ -163,6 +163,7 @@ fn install_root() -> Option<PathBuf> {
 ///      JARVIS` (production: the app was copied to /Applications, divorced from
 ///      the install tree, so the walk above can't find it).
 ///   4. otherwise walk up from the current working directory (dev fallback).
+///
 /// Returns a structured error string when nothing qualifies.
 fn resolve_jarvis_root() -> Result<PathBuf, String> {
     if let Ok(env_root) = std::env::var("JARVIS_ROOT") {

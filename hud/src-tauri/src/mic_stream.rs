@@ -11,12 +11,12 @@
 //! WIRE CONTRACT (must match `daemon/src/...` app-audio ingest byte-for-byte):
 //!   - socket: `<root>/state/ipc/audio_in.sock` (daemon binds; 0700 dir / 0600 sock)
 //!   - HANDSHAKE: exactly one '\n'-terminated UTF-8 JSON line:
-//!       {"token":"<command.token>","sample_rate":<u32>,"channels":<u16>}
+//!     {"token":"<command.token>","sample_rate":<u32>,"channels":<u16>}
 //!     verified daemon-side with `apps::verify_command_token` — the SAME per-boot
 //!     HMAC capability token the command channel uses (read here from
 //!     `state/ipc/command.token`, reusing `command::read_token`).
 //!   - FRAMES (repeated, after the handshake line):
-//!       [4 bytes u32 LE = N, the f32 sample count][N * 4 bytes f32 LE samples]
+//!     [4 bytes u32 LE = N, the f32 sample count][N * 4 bytes f32 LE samples]
 //!     i.e. exactly what [`encode_frame`] produces — the inverse of the daemon's
 //!     parse. On EOF / write error the daemon stops ingest for the connection.
 //!

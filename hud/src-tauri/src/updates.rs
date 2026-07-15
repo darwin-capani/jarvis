@@ -14,6 +14,7 @@
 //!      tauri.conf.json's `plugins.updater.pubkey`;
 //!   2. a published GitHub Release carrying a signed bundle + a `latest.json`
 //!      manifest the release CI generates.
+//!
 //! Until BOTH exist, the committed `pubkey` is the PLACEHOLDER string and there is
 //! no real `latest.json` to fetch. This command DETECTS that and returns a clean,
 //! honest "not configured / no update" result — it NEVER pretends an update is

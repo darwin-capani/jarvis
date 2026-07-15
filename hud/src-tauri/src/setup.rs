@@ -13,7 +13,7 @@
 //!
 //!   * `open_setup_install()` -> opens Terminal.app running the PUBLIC install
 //!     one-liner
-//!       curl -fsSL https://raw.githubusercontent.com/darwin-capani/jarvis/main/install.sh | bash -s -- -y
+//!     curl -fsSL https://raw.githubusercontent.com/darwin-capani/jarvis/main/install.sh | bash -s -- -y
 //!     This MIRRORS uninstall.rs's `open_uninstall` osascript/Terminal pattern.
 //!
 //! WHY TERMINAL (do NOT change to a GUI-spawned child): the installer provisions

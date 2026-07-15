@@ -538,8 +538,8 @@ async fn verify_and_store(id: String, secret: String) -> Result<StoreResult, Str
 /* ------------------------------------------------------- Google connect (OAuth) */
 
 /// Outcome of asking the HUD to connect Google. The browser consent + loopback
-/// run inside the DAEMON at runtime (it opens the URL, binds the loopback, mints
-/// + stores the refresh token); the HUD has no daemon handle in a pure build, so
+/// run inside the DAEMON at runtime (it opens the URL, binds the loopback, mints +
+/// stores the refresh token); the HUD has no daemon handle in a pure build, so
 /// this command is an honest stub that tells the user where the flow lives. It
 /// reports whether both client halves are on file, and whether a refresh token
 /// already exists (the only real signal of "connected").
