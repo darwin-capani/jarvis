@@ -1751,6 +1751,10 @@ async fn main() -> Result<()> {
             .with_max_entries(cfg.audit.max_entries),
     );
     audit::install(cfg.audit.enabled, audit_log);
+    // Activate the external tamper-anchor: verify the audit chain head against the
+    // Keychain-held anchor (a separate OS protection domain), report an honest
+    // mismatch, and re-anchor the current head. Self-gates (no-op when audit is off).
+    audit::verify_and_reanchor_on_start().await;
 
     // The optimizer Trace Store: opened + held for the daemon's life exactly like
     // Memory, in its OWN dedicated SQLite file (state/optimize.db). The turn loop
