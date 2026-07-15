@@ -41,6 +41,26 @@ pub async fn snapshot() -> Result<String> {
     Ok(format_egress(&conns))
 }
 
+/// Sample the current outbound connections as `(process, remote)` pairs for the
+/// longitudinal beacon detector (`egress_beacon.rs`), where `remote` is the
+/// `host:port` endpoint. Reuses the SAME read-only lsof snapshot + parser +
+/// dedupe as [`snapshot`] — it changes nothing. A sampling miss (lsof missing or
+/// timed out) yields an empty vec rather than an error: a skipped sample is not
+/// fatal to the detector, it just means no new observation this tick.
+pub async fn sample_talkers() -> Vec<(String, String)> {
+    match run(LSOF, &["-i", "-nP", "-sTCP:ESTABLISHED"], EGRESS_TIMEOUT).await {
+        Ok(output) => {
+            let mut conns = parse_lsof(&output);
+            dedupe(&mut conns);
+            conns.into_iter().map(|c| (c.command, c.remote)).collect()
+        }
+        Err(e) => {
+            warn!(error = %e, "egress_beacon: connection sample failed");
+            Vec::new()
+        }
+    }
+}
+
 /// Run a fixed read-only command (program + args, NEVER a shell string), bounded
 /// by `timeout` + kill_on_drop, and return its stdout as text. Mirrors the
 /// posture.rs / actions.rs command discipline.

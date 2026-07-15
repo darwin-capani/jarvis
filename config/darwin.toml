@@ -62,6 +62,20 @@ enabled = true          # master gate. SHIPS ON (full-power default). The read-o
 [chart]                  # #41 DATA -> CHART. NEUTRAL PRESENTATION: serializes a ChartSpec (the EXACT data points) as a `chart.data` telemetry envelope the HUD plots exactly — no interpolation, no invented/extrapolated point, honest axes + honest-empty. Changes no gate, takes no action, reaches no network.
 enabled = true          # master gate. SHIPS ON (full-power default). "chart this"/"plot the system load" surfaces the latest REAL system snapshot's exact cpu/mem values as a chart.data envelope (honest-empty when no reading is available yet). Changes no gate, reaches no network — safe to enable outright. Set false to disable.
 
+[egress]                 # EGRESS BASELINE + BEACON DETECTOR (egress_beacon.rs) — the longitudinal follow-on to the read-only Egress Sentinel. Samples the SAME lsof outbound snapshot, keeps a BOUNDED baseline, and runs two PURE classifiers: first-seen talker + regular-interval beacon cadence (the C2-callback signature). READ-ONLY. Any "block" is PROPOSE-ONLY: a pf rule rendered as TEXT you apply yourself with sudo — the loop NEVER mutates the firewall. UID-scoped: unprivileged lsof sees only same-UID processes (stated in every alert frame). Alerts RIDE EDITH's quiet-hours (from [proactive]) + cooldown + debounce so they never spam.
+enabled = true              # master gate. SHIPS ON (full-power default) — pure read-only observability, like [introspect]/[audit]. With it false the sampling loop is simply not spawned. Set false to disable.
+startup_delay_secs = 45     # wait this long after boot before the first sample (let the host settle)
+sample_interval_secs = 60   # seconds between outbound-connection samples. Beacon-cadence resolution is bounded by this: a beacon that opens AND closes entirely between two samples is invisible to snapshot sampling (an honest limit, not a bug).
+retention_secs = 86400      # a talker unseen for longer than this (seconds) is pruned from the baseline (1 day; bounded retention)
+max_talkers = 2048          # hard cap on distinct talkers held; the least-recently-seen is evicted when a new talker would exceed it (bounded memory)
+max_samples_per_talker = 64 # ring cap on rising-edge timestamps kept per talker (bounded memory)
+beacon_min_samples = 6      # minimum rising-edge timestamps before a beacon-cadence verdict is trusted (=> 5 intervals)
+beacon_min_interval_secs = 30    # mean inter-arrival at/above this — below it a series is bursty reconnection noise, not a beacon
+beacon_max_interval_secs = 3600  # mean inter-arrival at/below this — above it the cadence is indistinguishable from ordinary slow polling at our sample resolution (1 hour)
+beacon_max_jitter = 0.15    # coefficient-of-variation ceiling (stddev/mean of the deltas). A tight, regular cadence sits well below this; a jittery/random one blows past it.
+alert_cooldown_secs = 21600 # per-talker alert cooldown (seconds): don't renag on the same host (6 hours)
+alert_min_gap_secs = 300    # global debounce (seconds): never two egress alerts closer than this (5 minutes) — on top of EDITH quiet hours
+
 [screen_context]         # #42 CONTINUOUS SCREEN CONTEXT — the MOST privacy-sensitive read feature. A bounded/redacted/transient in-RAM ring of recent on-screen OCR snapshots, fed by a DEVICE-gated continuous capture loop, recallable ("what was I working on") + forgettable ("forget my screen context"). Glyph-only, never a face/identity; pixels never leave the device; READ-ONLY.
 enabled = true          # master gate. SHIPS ON (full-power default), the MOST privacy-sensitive read — INERT WITHOUT TCC: the continuous capture loop STILL requires runtime macOS Screen-Recording consent; the flag cannot grant it, so without consent it captures NOTHING (the ring never grows, no WATCHING indicator fires). The ring stays redacted + transient (off lifelong memory / optimizer / disk) + bounded (cap below) + forgettable, with the WATCHING indicator. Set false to disable.
 interval_secs = 30      # cadence the device-gated loop grabs ONE frame (floored to >= 1). A calmer/faster watch.

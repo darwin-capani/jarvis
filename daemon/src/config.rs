@@ -171,6 +171,17 @@ pub struct Config {
     /// changes no gate, takes no action, reaches no network — safe to enable
     /// outright.
     pub chart: ChartConfig,
+    /// [egress] — EGRESS BASELINE + BEACON DETECTOR (egress_beacon.rs), the
+    /// longitudinal follow-on to the read-only Egress Sentinel. `enabled` SHIPS ON
+    /// (full-power default) — like `[introspect]`/`[audit]` it is pure, READ-ONLY
+    /// observability: it samples the SAME lsof outbound snapshot, keeps a BOUNDED
+    /// baseline, and runs two PURE classifiers (first-seen talker + regular-interval
+    /// beacon cadence). Alerts RIDE EDITH's quiet-hours (`[proactive]`) + cooldown +
+    /// debounce so they never spam, and any "block" is PROPOSE-ONLY: a pf rule
+    /// rendered as TEXT the user applies with sudo — the loop never mutates the
+    /// firewall. UID-scoped (unprivileged lsof sees only same-UID processes; stated
+    /// in every frame). With `enabled` false the sampling loop is simply not spawned.
+    pub egress: EgressConfig,
 }
 
 /// Every section and key the config knows, for unknown-key diagnostics
@@ -648,6 +659,28 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // point, honest axes/empty); it changes no gate, takes no action, reaches no
     // network — safe to enable outright. Listed so the key never reads as a typo.
     ("chart", &["enabled"]),
+    // [egress] — EGRESS BASELINE + BEACON DETECTOR (egress_beacon.rs). `enabled`
+    // SHIPS ON (read-only observability). The remaining keys tune the bounded
+    // baseline retention and the beacon-cadence + alert-suppression thresholds;
+    // quiet-hours is inherited from [proactive], not repeated here. Listed so a
+    // key never reads as a typo.
+    (
+        "egress",
+        &[
+            "enabled",
+            "startup_delay_secs",
+            "sample_interval_secs",
+            "retention_secs",
+            "max_talkers",
+            "max_samples_per_talker",
+            "beacon_min_samples",
+            "beacon_min_interval_secs",
+            "beacon_max_interval_secs",
+            "beacon_max_jitter",
+            "alert_cooldown_secs",
+            "alert_min_gap_secs",
+        ],
+    ),
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1383,6 +1416,74 @@ impl Default for ChartConfig {
         // interpolation/invented point, honest-empty). Changes no gate, takes no
         // action, reaches no network — safe to enable outright.
         Self { enabled: true }
+    }
+}
+
+/// [egress] — EGRESS BASELINE + BEACON DETECTOR (egress_beacon.rs), the
+/// longitudinal follow-on to the read-only Egress Sentinel. `enabled` SHIPS ON:
+/// like `[introspect]`/`[audit]` it is pure READ-ONLY observability — it samples
+/// the SAME lsof outbound snapshot, keeps a BOUNDED baseline, and runs two PURE
+/// classifiers (first-seen talker + regular-interval beacon cadence). Alerts RIDE
+/// EDITH's quiet-hours (inherited from `[proactive]`) + cooldown + debounce so
+/// they never spam, and any "block" is PROPOSE-ONLY: a pf rule rendered as TEXT
+/// the user applies with sudo — the loop never mutates the firewall.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct EgressConfig {
+    /// Master switch for the sampling loop. SHIPS ON (read-only observability);
+    /// with it false the loop is simply not spawned.
+    pub enabled: bool,
+    /// Seconds to wait after boot before the first sample (let the host settle).
+    pub startup_delay_secs: u64,
+    /// Seconds between outbound-connection samples. The beacon-cadence resolution
+    /// is bounded by this: a beacon that opens AND closes entirely between two
+    /// samples is invisible to snapshot sampling (an honest limit, not a bug).
+    pub sample_interval_secs: u64,
+    /// A talker not seen for longer than this (seconds) is pruned from the
+    /// baseline (bounded retention).
+    pub retention_secs: u64,
+    /// Hard cap on distinct talkers held; the least-recently-seen is evicted when
+    /// a new talker would exceed it (bounded memory).
+    pub max_talkers: usize,
+    /// Ring cap on rising-edge timestamps kept per talker (bounded memory).
+    pub max_samples_per_talker: usize,
+    /// Minimum rising-edge timestamps before a beacon-cadence verdict is trusted.
+    pub beacon_min_samples: usize,
+    /// Mean inter-arrival at/above this (seconds) — below it a series is treated
+    /// as bursty reconnection noise, not a beacon.
+    pub beacon_min_interval_secs: u64,
+    /// Mean inter-arrival at/below this (seconds) — above it the cadence is
+    /// indistinguishable from ordinary slow polling at our sample resolution.
+    pub beacon_max_interval_secs: u64,
+    /// Coefficient-of-variation ceiling (stddev/mean of the deltas). A tight,
+    /// regular cadence sits well below this; a jittery/random one blows past it.
+    pub beacon_max_jitter: f64,
+    /// Per-talker alert cooldown (seconds): don't renag on the same host.
+    pub alert_cooldown_secs: u64,
+    /// Global debounce (seconds): never two egress alerts closer than this.
+    pub alert_min_gap_secs: u64,
+}
+
+impl Default for EgressConfig {
+    fn default() -> Self {
+        // SHIPS ON (read-only observability). Conservative retention + beacon/alert
+        // thresholds: sample once a minute, keep a day of baseline, flag only tight
+        // (CV <= 0.15) regular cadences between 30s and 1h, and gate alerts behind a
+        // 6h per-host cooldown + a 5-min global debounce (on top of EDITH quiet hours).
+        Self {
+            enabled: true,
+            startup_delay_secs: 45,
+            sample_interval_secs: 60,
+            retention_secs: 24 * 60 * 60, // 1 day
+            max_talkers: 2048,
+            max_samples_per_talker: 64,
+            beacon_min_samples: 6,
+            beacon_min_interval_secs: 30,
+            beacon_max_interval_secs: 60 * 60, // 1 hour
+            beacon_max_jitter: 0.15,
+            alert_cooldown_secs: 6 * 60 * 60, // 6 hours
+            alert_min_gap_secs: 5 * 60,       // 5 minutes
+        }
     }
 }
 
@@ -3041,6 +3142,7 @@ impl Config {
             power: section(&table, "power", &mut issues),
             report: section(&table, "report", &mut issues),
             chart: section(&table, "chart", &mut issues),
+            egress: section(&table, "egress", &mut issues),
         };
 
         // SELECTABLE QUANTIZATION (#39) value validation: an unknown [inference]
