@@ -339,14 +339,14 @@ mod tests {
     }
 
     fn tempdir(tag: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("jarvis-overnight-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("darwin-overnight-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
     }
 
     fn task(id: &str, status: TaskStatus) -> OvernightTask {
-        OvernightTask { id: id.into(), prompt: "p".into(), agent: "jarvis".into(), enqueued: "2026-07-13T20:00:00Z".into(), status, result: String::new() }
+        OvernightTask { id: id.into(), prompt: "p".into(), agent: "darwin".into(), enqueued: "2026-07-13T20:00:00Z".into(), status, result: String::new() }
     }
 
     #[test]
@@ -367,17 +367,17 @@ mod tests {
     fn enqueue_bounds_the_prompt_and_caps_the_backlog() {
         // A prompt longer than the cap is stored truncated.
         let long = "x".repeat(PROMPT_MAX + 500);
-        let tasks = plan_enqueue(vec![], &long, "jarvis", "2026-07-13T20:00:00Z").unwrap();
+        let tasks = plan_enqueue(vec![], &long, "darwin", "2026-07-13T20:00:00Z").unwrap();
         assert!(tasks[0].prompt.chars().count() <= PROMPT_MAX);
 
         // A full backlog of all-Queued tasks refuses further enqueue.
         let full: Vec<OvernightTask> = (0..MAX_QUEUE).map(|i| task(&format!("q{i}"), TaskStatus::Queued)).collect();
-        assert!(plan_enqueue(full, "another", "jarvis", "2026-07-13T20:00:00Z").is_none());
+        assert!(plan_enqueue(full, "another", "darwin", "2026-07-13T20:00:00Z").is_none());
 
         // But a finished task is evicted to make room.
         let mut mixed: Vec<OvernightTask> = (0..MAX_QUEUE - 1).map(|i| task(&format!("q{i}"), TaskStatus::Queued)).collect();
         mixed.insert(0, task("old-done", TaskStatus::Done));
-        let after = plan_enqueue(mixed, "fresh", "jarvis", "2026-07-13T20:00:00Z").unwrap();
+        let after = plan_enqueue(mixed, "fresh", "darwin", "2026-07-13T20:00:00Z").unwrap();
         assert_eq!(after.len(), MAX_QUEUE);
         assert!(!after.iter().any(|t| t.id == "old-done"), "the finished task was evicted");
     }
@@ -389,11 +389,11 @@ mod tests {
         // gated runner would never execute the task. Off must REFUSE (like
         // distill/sync) and persist nothing.
         let dir = tempdir("offq");
-        let reply = enqueue(&dir, false, "look into X", "jarvis", "2026-07-13T20:00:00Z");
+        let reply = enqueue(&dir, false, "look into X", "darwin", "2026-07-13T20:00:00Z");
         assert!(reply.contains("off"), "honest refusal, not a fabricated ack: {reply}");
         assert!(load_queue(&dir).is_empty(), "no task persisted while off");
         // On, the same call queues.
-        let reply = enqueue(&dir, true, "look into X", "jarvis", "2026-07-13T20:00:00Z");
+        let reply = enqueue(&dir, true, "look into X", "darwin", "2026-07-13T20:00:00Z");
         assert!(reply.contains("Queued"), "{reply}");
         assert_eq!(load_queue(&dir).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
@@ -407,7 +407,7 @@ mod tests {
         // fail deterministically.
         let dir = tempdir("nosave");
         std::fs::create_dir_all(queue_path(&dir)).unwrap(); // queue.json as a DIR
-        let reply = enqueue(&dir, true, "look into X", "jarvis", "2026-07-13T20:00:00Z");
+        let reply = enqueue(&dir, true, "look into X", "darwin", "2026-07-13T20:00:00Z");
         assert!(reply.contains("NOT queued"), "honest refusal on failed persist: {reply}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -456,9 +456,9 @@ mod tests {
     #[test]
     fn brief_folds_counts_and_previews_finished_work_newest_first() {
         let tasks = vec![
-            OvernightTask { id: "a".into(), prompt: "look into A".into(), agent: "jarvis".into(), enqueued: "t".into(), status: TaskStatus::Done, result: "found A".into() },
+            OvernightTask { id: "a".into(), prompt: "look into A".into(), agent: "darwin".into(), enqueued: "t".into(), status: TaskStatus::Done, result: "found A".into() },
             task("q", TaskStatus::Queued),
-            OvernightTask { id: "b".into(), prompt: "look into B".into(), agent: "jarvis".into(), enqueued: "t".into(), status: TaskStatus::Failed, result: "err".into() },
+            OvernightTask { id: "b".into(), prompt: "look into B".into(), agent: "darwin".into(), enqueued: "t".into(), status: TaskStatus::Failed, result: "err".into() },
         ];
         let brief = plan_brief(&tasks);
         assert_eq!(brief.done, 1);
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn stored_text_is_redacted() {
         // A prompt carrying an email is redacted before it is stored.
-        let tasks = plan_enqueue(vec![], "email bob@example.com about lunch", "jarvis", "2026-07-13T20:00:00Z").unwrap();
+        let tasks = plan_enqueue(vec![], "email bob@example.com about lunch", "darwin", "2026-07-13T20:00:00Z").unwrap();
         assert!(!tasks[0].prompt.contains("bob@example.com"), "PII redacted at store time");
     }
 }

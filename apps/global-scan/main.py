@@ -1,10 +1,10 @@
 #!/usr/bin/env python3.11
-"""Global-Scan — JARVIS micro-app: world intel feed aggregator.
+"""Global-Scan — DARWIN micro-app: world intel feed aggregator.
 
 First app on the micro-app runtime substrate (docs/SANDBOX.md). It runs as a
-separate, seatbelt-sandboxed process launched by jarvisd, talks to the daemon
+separate, seatbelt-sandboxed process launched by darwind, talks to the daemon
 over a per-app Unix socket using newline-delimited JSON, and authenticates every
-line it sends with the capability token jarvisd minted for this launch.
+line it sends with the capability token darwind minted for this launch.
 
 What it does, honestly framed: it polls OPEN, reputable, non-paywalled RSS/Atom
 feeds (apps/global-scan/feeds.toml), dedupes and ranks the latest items
@@ -15,9 +15,9 @@ It predicts nothing and surveils no one — it reads syndication feeds publisher
 offer openly.
 
 Protocol (must match the daemon's app host, CONTRACT part B):
-  env JARVIS_APP_SOCKET  abs path to state/ipc/apps/global-scan.sock
-  env JARVIS_APP_TOKEN   capability token to stamp on every outbound line
-  env JARVIS_APP_NAME    this app's name (defaults to "global-scan")
+  env DARWIN_APP_SOCKET  abs path to state/ipc/apps/global-scan.sock
+  env DARWIN_APP_TOKEN   capability token to stamp on every outbound line
+  env DARWIN_APP_NAME    this app's name (defaults to "global-scan")
 
   app -> host (one JSON object per line):
     {"token": <env>, "type": "items",  "data": {"brief", "items":[...], "fetched_at"}}
@@ -33,7 +33,7 @@ LLM summaries go through the daemon-mediated generate PROXY, not the raw
 inference socket (security finding #4, docs/SANDBOX.md). The proxy lives at
 state/ipc/apps/generate.sock, accepts ONLY op=generate, is token-gated, caps
 max_tokens at 256, and rate-limits per app. The request stamps name + the
-JARVIS_APP_TOKEN capability token; on any ok=false reply (op_not_permitted,
+DARWIN_APP_TOKEN capability token; on any ok=false reply (op_not_permitted,
 unauthorized, rate_limited, inference_unavailable) OR an unreachable proxy the
 app falls back to extractive summaries exactly as before. The app is granted
 ONLY this proxy socket — it can no longer reach the multiplexed inference.sock.
@@ -87,7 +87,7 @@ REFRESH_INTERVAL_S = 10 * 60       # ~10 min between cycles
 TOP_N = 20                         # items kept and emitted per cycle
 FETCH_TIMEOUT_S = 12               # per-feed HTTP timeout
 MAX_FEED_BYTES = 4 * 1024 * 1024   # cap on one feed body (guards OOM / drip-feed)
-USER_AGENT = "JARVIS-GlobalScan/0.1 (+micro-app; RSS reader)"
+USER_AGENT = "DARWIN-GlobalScan/0.1 (+micro-app; RSS reader)"
 # Daemon-mediated generate PROXY (NOT the raw inference.sock): op-restricted,
 # token-gated, 256-token-capped, rate-limited. This is the ONLY socket the app
 # is granted (manifest fs_read), closing security finding #4.
@@ -434,7 +434,7 @@ class InferenceClient:
     """Minimal JSONL client for the daemon-mediated generate PROXY (op=generate
     ONLY), at state/ipc/apps/generate.sock.
 
-    Every request stamps this app's name + the JARVIS_APP_TOKEN capability token
+    Every request stamps this app's name + the DARWIN_APP_TOKEN capability token
     the daemon minted for this launch; the proxy verifies the token, caps
     max_tokens, rate-limits, and forwards to the inference server. Best-effort:
     any connect/read/parse failure — or an ok=false reply (op_not_permitted,
@@ -519,8 +519,8 @@ def enhance(items: list[dict], link: "HostLink | None") -> tuple[str, bool]:
     # Name + capability token from the launch env. Under --selftest neither is
     # set, so the token is "" and the proxy is treated as unavailable (straight
     # to extractive). Under the daemon both are present and stamp every request.
-    app_name = os.environ.get("JARVIS_APP_NAME", APP_NAME)
-    app_token = os.environ.get("JARVIS_APP_TOKEN", "")
+    app_name = os.environ.get("DARWIN_APP_NAME", APP_NAME)
+    app_token = os.environ.get("DARWIN_APP_TOKEN", "")
     client = InferenceClient(LLM_SOCKET, app_name, app_token)
     llm_ok = client.available()
 
@@ -637,12 +637,12 @@ def run_cycle(feeds: dict[str, list[str]], link: "HostLink | None") -> dict:
 # Main run loop (sandboxed mode, driven by the host).
 # --------------------------------------------------------------------------- #
 def main() -> int:
-    sock_path = os.environ.get("JARVIS_APP_SOCKET")
-    token = os.environ.get("JARVIS_APP_TOKEN")
+    sock_path = os.environ.get("DARWIN_APP_SOCKET")
+    token = os.environ.get("DARWIN_APP_TOKEN")
     if not sock_path or not token:
         sys.stderr.write(
-            "global-scan: JARVIS_APP_SOCKET and JARVIS_APP_TOKEN must be set "
-            "(this app runs under jarvisd, not standalone)\n"
+            "global-scan: DARWIN_APP_SOCKET and DARWIN_APP_TOKEN must be set "
+            "(this app runs under darwind, not standalone)\n"
         )
         return 2
 

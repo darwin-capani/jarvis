@@ -3,13 +3,13 @@ import { checkForUpdates } from "../tauri/bridge";
 import { aboutCheckView, type AboutCheckView } from "../core/about";
 
 /* ======================================================================== *
- * ABOUT PANEL — the custom "About J.A.R.V.I.S." panel.                       *
+ * ABOUT PANEL — the custom "About D.A.R.W.I.N." panel.                       *
  *                                                                            *
  * WHY CUSTOM: the macOS standard about panel can only show static text, so   *
  * it cannot host a working "Check for Updates" button. The Rust shell        *
  * replaces the system "About" menu item with one that emits `menu://about`;  *
  * App listens for it and mounts this panel. Layout, top to bottom:           *
- *   J.A.R.V.I.S.  ·  Version <x>  ·  [ Check for Updates ]  ·  status line    *
+ *   D.A.R.W.I.N.  ·  Version <x>  ·  [ Check for Updates ]  ·  status line    *
  *   ·  made by darwin capani                                                  *
  * (the user's ask: the Check-for-Updates button directly under the version,  *
  *  and the "made by darwin capani" credit directly under that button).       *
@@ -61,7 +61,7 @@ export default function AboutPanel({ version, onClose, onUpdateAvailable }: Abou
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="About J.A.R.V.I.S."
+        aria-label="About D.A.R.W.I.N."
       >
         {/* A compact, self-contained reactor glyph (no CoreScene dependency). */}
         <div className="about-orb" aria-hidden="true">
@@ -69,7 +69,7 @@ export default function AboutPanel({ version, onClose, onUpdateAvailable }: Abou
           <span className="about-orb-core" />
         </div>
 
-        <div className="about-name">J.A.R.V.I.S.</div>
+        <div className="about-name">D.A.R.W.I.N.</div>
         <div className="about-version">Version {version}</div>
 
         {/* Right under the version — the working Check-for-Updates button. */}

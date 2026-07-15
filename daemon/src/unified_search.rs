@@ -843,7 +843,7 @@ mod tests {
         Episode {
             id,
             ts: ts.to_string(),
-            agent_namespace: "agent.jarvis".to_string(),
+            agent_namespace: "agent.darwin".to_string(),
             utterance_redacted: utterance.to_string(),
             topic: topic.to_string(),
             salient_entities: vec![],
@@ -1198,23 +1198,23 @@ mod tests {
     fn world_candidates_cite_entities_and_relationships() {
         let entities = vec![Entity {
             entity_type: EntityType::Project,
-            id: "jarvis".to_string(),
-            name: "Project JARVIS".to_string(),
+            id: "darwin".to_string(),
+            name: "Project DARWIN".to_string(),
             attributes: vec![("status".to_string(), "active".to_string())],
         }];
         let relationships = vec![Relationship {
-            from: "jarvis".to_string(),
+            from: "darwin".to_string(),
             relation: "owned_by".to_string(),
             to: "darwin".to_string(),
             value: String::new(),
         }];
-        let cands = world_candidates(&entities, &relationships, "jarvis");
+        let cands = world_candidates(&entities, &relationships, "darwin");
         assert_eq!(cands.len(), 2);
-        // Entity cited as project:jarvis.
+        // Entity cited as project:darwin.
         assert!(cands.iter().any(|c| c.citation
             == Citation::World {
                 kind: "project".to_string(),
-                id: "jarvis".to_string()
+                id: "darwin".to_string()
             }));
         // Relationship cited as a relationship anchor.
         assert!(cands.iter().any(|c| matches!(

@@ -1,7 +1,7 @@
-# Releasing JARVIS (sign, notarize, auto-update)
+# Releasing DARWIN (sign, notarize, auto-update)
 
 This is the one-time setup and the per-release steps for shipping a signed,
-notarized, auto-updatable JARVIS HUD `.app`/`.dmg`.
+notarized, auto-updatable DARWIN HUD `.app`/`.dmg`.
 
 > **Honest hard gate.** This pipeline is wired end-to-end and is turnkey, but it
 > cannot produce a real signed/notarized release without **your own** Apple
@@ -64,12 +64,12 @@ Run this **once**, on your own machine, and keep the private key secret:
 
 ```bash
 cd hud
-npm run tauri signer generate -- -w ~/.jarvis-updater.key
+npm run tauri signer generate -- -w ~/.darwin-updater.key
 ```
 
 This prints (and writes) two things:
 
-- a **private key** (the file `~/.jarvis-updater.key`, plus its password if you
+- a **private key** (the file `~/.darwin-updater.key`, plus its password if you
   set one) — **NEVER commit this; it goes into a CI secret only**;
 - a **public key** (a base64 blob) — this is safe to publish.
 
@@ -80,7 +80,7 @@ placeholder:
 "plugins": {
   "updater": {
     "endpoints": [
-      "https://github.com/darwin-capani/jarvis/releases/latest/download/latest.json"
+      "https://github.com/darwin-capani/darwin/releases/latest/download/latest.json"
     ],
     "pubkey": "PASTE_YOUR_PUBLIC_KEY_HERE"   // was REPLACE_WITH_TAURI_UPDATER_PUBLIC_KEY
   }
@@ -104,7 +104,7 @@ repository secret**. Add each of these (names must match exactly):
 | `APPLE_ID` | your Apple ID email |
 | `APPLE_PASSWORD` | the app-specific password (step 1.5) |
 | `APPLE_TEAM_ID` | your 10-char Team ID |
-| `TAURI_SIGNING_PRIVATE_KEY` | the contents of `~/.jarvis-updater.key` (step 2) |
+| `TAURI_SIGNING_PRIVATE_KEY` | the contents of `~/.darwin-updater.key` (step 2) |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | its password (set an empty secret if you used none) |
 
 `GITHUB_TOKEN` is provided automatically by Actions — you do not add it.
@@ -137,8 +137,8 @@ repository secret**. Add each of these (names must match exactly):
 ### Verifying a built app locally (optional)
 
 ```bash
-spctl -a -vv "JARVIS.app"     # should say: accepted, source=Notarized Developer ID
-codesign -dv --verbose=4 "JARVIS.app"   # check the identity + hardened runtime flag
+spctl -a -vv "DARWIN.app"     # should say: accepted, source=Notarized Developer ID
+codesign -dv --verbose=4 "DARWIN.app"   # check the identity + hardened runtime flag
 ```
 
 ---

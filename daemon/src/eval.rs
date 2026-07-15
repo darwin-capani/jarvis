@@ -1,4 +1,4 @@
-//! EVAL FRAMEWORK — the measured scorecard for a live JARVIS.
+//! EVAL FRAMEWORK — the measured scorecard for a live DARWIN.
 //!
 //! This module turns the raw instrumentation the daemon already collects into
 //! three HONESTLY-MEASURED aggregates the HUD's Eval/Optimizer panel renders:
@@ -841,13 +841,13 @@ mod tests {
         // 8 Success + 2 CorrectedNextTurn = 10 usable. correction rate = 2/10.
         let mut traces = Vec::new();
         for _ in 0..8 {
-            traces.push(trace("hello there", "jarvis", Outcome::Success));
+            traces.push(trace("hello there", "darwin", Outcome::Success));
         }
         traces.push(trace("switch agent now", "gecko", Outcome::CorrectedNextTurn));
         traces.push(trace("no the other one", "midas", Outcome::CorrectedNextTurn));
         // A couple of non-usable traces must NOT count in the denominator.
-        traces.push(trace("errored", "jarvis", Outcome::Failed));
-        traces.push(trace("ambiguous", "jarvis", Outcome::Unknown));
+        traces.push(trace("errored", "darwin", Outcome::Failed));
+        traces.push(trace("ambiguous", "darwin", Outcome::Unknown));
 
         let agg = accuracy_from_traces(&traces);
         assert_eq!(agg.usable_n, 10);
@@ -860,11 +860,11 @@ mod tests {
     fn accuracy_routing_matches_score_config_on_held_out() {
         // Build a corpus where the baseline replay-router gets every Success
         // right: use utterances with NO routing cue, which the baseline routes to
-        // the orchestrator "jarvis"; record them as jarvis Success. The held-out
+        // the orchestrator "darwin"; record them as darwin Success. The held-out
         // accuracy must then equal score_config's accuracy on the held-out split.
         let mut traces = Vec::new();
         for _ in 0..20 {
-            traces.push(trace("plain words only", "jarvis", Outcome::Success));
+            traces.push(trace("plain words only", "darwin", Outcome::Success));
         }
         let agg = accuracy_from_traces(&traces);
         // Held-out carve is non-empty for 20 usable traces.
@@ -876,7 +876,7 @@ mod tests {
             .expect("held-out split")
             .accuracy();
         assert!((routing - direct).abs() < 1e-12);
-        // No-cue utterances all route to jarvis -> every Success reproduced -> 1.0.
+        // No-cue utterances all route to darwin -> every Success reproduced -> 1.0.
         assert!((routing - 1.0).abs() < 1e-12);
     }
 
@@ -900,7 +900,7 @@ mod tests {
         // fabricated value: routing accuracy is Some over held_out_n == 1, and the
         // correction rate over the one usable trace is 0.0 (a Success, no
         // correction). It cross-checks exactly against the optimize primitive.
-        let traces = vec![trace("plain words only", "jarvis", Outcome::Success)];
+        let traces = vec![trace("plain words only", "darwin", Outcome::Success)];
         let agg = accuracy_from_traces(&traces);
         assert_eq!(agg.held_out_n, 1);
         let routing = agg.routing_accuracy.expect("a thin held-out -> a measured value");
@@ -908,7 +908,7 @@ mod tests {
             .expect("held-out split")
             .accuracy();
         assert!((routing - direct).abs() < 1e-12);
-        // No-cue utterance routes to jarvis, the recorded pick -> reproduced -> 1.0.
+        // No-cue utterance routes to darwin, the recorded pick -> reproduced -> 1.0.
         assert!((routing - 1.0).abs() < 1e-12);
         assert_eq!(agg.correction_rate, Some(0.0));
         assert_eq!(agg.usable_n, 1);
@@ -930,7 +930,7 @@ mod tests {
             cache_read_tokens: 5000,
         });
         let traces: Vec<Trace> = (0..20)
-            .map(|_| trace("plain words only", "jarvis", Outcome::Success))
+            .map(|_| trace("plain words only", "darwin", Outcome::Success))
             .collect();
         let lat = st.latency();
         let cost = st.cost(CostRates::default());

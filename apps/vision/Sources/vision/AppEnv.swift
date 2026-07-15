@@ -4,15 +4,15 @@
 // Contract (daemon/src/apps.rs, ~line 1286): the host passes the per-app
 // socket + capability token via the launch ENV ONLY (never argv — argv is
 // world-readable via ps). The three keys are:
-//     JARVIS_APP_TOKEN   hex HMAC-SHA256 capability token; stamped on EVERY
+//     DARWIN_APP_TOKEN   hex HMAC-SHA256 capability token; stamped on EVERY
 //                        app->host line so the host can verify it.
-//     JARVIS_APP_SOCKET  absolute path to this app's per-app Unix socket
+//     DARWIN_APP_SOCKET  absolute path to this app's per-app Unix socket
 //                        (JSONL); the app connect()s to it.
-//     JARVIS_APP_NAME    the app's name ("vision"); matches the manifest +
+//     DARWIN_APP_NAME    the app's name ("vision"); matches the manifest +
 //                        directory + telemetry "name".
 //
 // Interim TCC-declaration channel (until the daemon schema gains camera/screen
-// — see manifest.toml): JARVIS_VISION_CAMERA / JARVIS_VISION_SCREEN, parsed as
+// — see manifest.toml): DARWIN_VISION_CAMERA / DARWIN_VISION_SCREEN, parsed as
 // booleans, default false. These DECLARE intent only; macOS TCC remains the
 // real gate and is requested on-device at first capture.
 
@@ -43,11 +43,11 @@ public struct AppEnv: Sendable, Equatable {
     /// Env var keys — single source of truth (the daemon writes these exact
     /// names; do not rename without changing apps.rs).
     public enum Key {
-        public static let token  = "JARVIS_APP_TOKEN"
-        public static let socket = "JARVIS_APP_SOCKET"
-        public static let name   = "JARVIS_APP_NAME"
-        public static let camera = "JARVIS_VISION_CAMERA"
-        public static let screen = "JARVIS_VISION_SCREEN"
+        public static let token  = "DARWIN_APP_TOKEN"
+        public static let socket = "DARWIN_APP_SOCKET"
+        public static let name   = "DARWIN_APP_NAME"
+        public static let camera = "DARWIN_VISION_CAMERA"
+        public static let screen = "DARWIN_VISION_SCREEN"
     }
 
     /// Why the env was unusable — surfaced as a clean exit, not a crash.

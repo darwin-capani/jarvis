@@ -6,7 +6,7 @@ import { sendCommand } from "../tauri/command";
 import Frame from "./Frame";
 
 /**
- * MEMORY // EPISODIC TIMELINE + WHAT JARVIS KNOWS ABOUT YOU.
+ * MEMORY // EPISODIC TIMELINE + WHAT DARWIN KNOWS ABOUT YOU.
  *
  * The HUD-side surface for the episodic store (Core-A, daemon/src/episodic.rs)
  * and the user model (Core-B, daemon/src/user_model.rs). It is TELEMETRY-FED and
@@ -15,7 +15,7 @@ import Frame from "./Frame";
  * bodies or the profile entries. That is the privacy line, kept deliberately:
  *
  *   - OBSERVED, NOT CLAIRVOYANT — every entry comes from a real recorded turn;
- *     the panel shows THAT JARVIS remembered, with the agent + time, never a
+ *     the panel shows THAT DARWIN remembered, with the agent + time, never a
  *     fabricated memory. Gated-out turns (transient screen-read, abandoned turn,
  *     voice-id UNVERIFIED, store off) are shown honestly as "not kept".
  *   - LOCAL + VOICE-INSPECTED — the redacted utterance/summary and the profile
@@ -42,13 +42,13 @@ const MEMORY_HUE = agentProfile("mnemosyne")?.hue ?? 280;
  *  forgets anything itself; the daemon is the trust boundary. */
 const FORGET_USER_MODEL_PHRASE = "Forget everything you know about me — clear my whole user model.";
 
-/** Strip the agent namespace prefix to a short scope label (e.g. "agent.jarvis"
- *  -> "JARVIS", "agent.mnemosyne" -> "MNEMOSYNE"). The shared scope reads as
+/** Strip the agent namespace prefix to a short scope label (e.g. "agent.darwin"
+ *  -> "DARWIN", "agent.mnemosyne" -> "MNEMOSYNE"). The shared scope reads as
  *  "SHARED". An empty/odd value still renders rather than dropping. */
 function scopeLabel(agent: string): string {
   if (agent.length === 0) return "SHARED";
   const bare = agent.startsWith("agent.") ? agent.slice("agent.".length) : agent;
-  if (bare === "jarvis") return "SHARED";
+  if (bare === "darwin") return "SHARED";
   return bare.toUpperCase();
 }
 
@@ -119,10 +119,10 @@ export default function MemoryPanel({ memory }: { memory: MemoryState }) {
           </div>
         </div>
 
-        {/* ---- WHAT JARVIS KNOWS ABOUT YOU — the user-model inspector. ---- */}
+        {/* ---- WHAT DARWIN KNOWS ABOUT YOU — the user-model inspector. ---- */}
         <div className="mem-section">
           <div className="mem-section-head">
-            <span className="mem-section-label">WHAT JARVIS KNOWS ABOUT YOU</span>
+            <span className="mem-section-label">WHAT DARWIN KNOWS ABOUT YOU</span>
             <span className="mem-section-note">observed profile · not certain</span>
           </div>
 
@@ -156,7 +156,7 @@ export default function MemoryPanel({ memory }: { memory: MemoryState }) {
             Preferences, patterns, recurring topics and style — each entry carries
             HOW MANY TIMES it was observed and the episodes/facts it came from. The
             profile lives local in the daemon; ask{" "}
-            <b>&ldquo;what do you know about me&rdquo;</b> and JARVIS reads it back
+            <b>&ldquo;what do you know about me&rdquo;</b> and DARWIN reads it back
             WITH its provenance. It can be WRONG — say{" "}
             <b>&ldquo;that&rsquo;s wrong, &hellip;&rdquo;</b> to correct an entry.
           </div>
@@ -226,7 +226,7 @@ function ForgetControl({ shell, hasModel }: { shell: boolean; hasModel: boolean 
           disabled={disabled}
           title={
             !shell
-              ? "available in the JARVIS desktop app"
+              ? "available in the DARWIN desktop app"
               : !hasModel
                 ? "nothing observed to forget yet"
                 : "clear the whole observed user model"

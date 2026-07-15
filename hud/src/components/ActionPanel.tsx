@@ -25,7 +25,7 @@ import Frame from "./Frame";
  *     name + step count + last-replay outcome. The full draft body, a token, a
  *     resolved credential, or a macro's literal secret never reach this panel —
  *     there is no such field on the wire to render.
- *   - #25 drafts: "review & send — JARVIS never auto-sends." A draft is a
+ *   - #25 drafts: "review & send — DARWIN never auto-sends." A draft is a
  *     suggestion; the draft module has no send path; an actual send is a
  *     SEPARATE explicit action that rides the existing gate.
  *   - #26 missions: "loads paused on restart; steps re-gated." A persisted
@@ -78,7 +78,7 @@ function DraftsSection({ drafts }: { drafts: PendingDraft[] }) {
         ))}
       </div>
       <div className="act-note dim-note">
-        Review &amp; send — JARVIS never auto-sends. A draft is a suggestion you
+        Review &amp; send — DARWIN never auto-sends. A draft is a suggestion you
         review; sending it is a separate, gated action. The full body never
         leaves the device on this surface.
       </div>

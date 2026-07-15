@@ -1,7 +1,7 @@
 #!/opt/homebrew/bin/python3.11
-"""JARVIS model deployment CLI.
+"""DARWIN model deployment CLI.
 
-Downloads and smoke-tests the local models declared in config/jarvis.toml
+Downloads and smoke-tests the local models declared in config/darwin.toml
 ([models] llm / stt). MLX imports are deferred into main() / the deploy
 functions so `--help` and py_compile work without the venv.
 
@@ -22,10 +22,10 @@ import wave
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = PROJECT_ROOT / "config" / "jarvis.toml"
+CONFIG_PATH = PROJECT_ROOT / "config" / "darwin.toml"
 
-# Contract fallback defaults (used when config/jarvis.toml is missing).
-# Keep in lockstep with server.py and config/jarvis.toml [models].
+# Contract fallback defaults (used when config/darwin.toml is missing).
+# Keep in lockstep with server.py and config/darwin.toml [models].
 DEFAULT_LLM = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
 DEFAULT_STT = "mlx-community/whisper-small-mlx"
 
@@ -37,12 +37,12 @@ LLM_FALLBACKS = [
     "mlx-community/Llama-3.2-3B-Instruct-4bit",
 ]
 
-SMOKE_PROMPT = "You are JARVIS. Confirm you are online in one short sentence."
+SMOKE_PROMPT = "You are DARWIN. Confirm you are online in one short sentence."
 SMOKE_MAX_TOKENS = 64
 
 
 def load_model_ids():
-    """Read [models] llm/stt from config/jarvis.toml, with contract defaults."""
+    """Read [models] llm/stt from config/darwin.toml, with contract defaults."""
     llm, stt = DEFAULT_LLM, DEFAULT_STT
     try:
         import tomllib  # stdlib on 3.11+
@@ -192,7 +192,7 @@ def deploy_stt(stt_id):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="deploy_models.py",
-        description="Download and smoke-test the JARVIS local models (MLX, Apple GPU via Metal).",
+        description="Download and smoke-test the DARWIN local models (MLX, Apple GPU via Metal).",
     )
     parser.add_argument(
         "--check",
@@ -204,7 +204,7 @@ def main(argv=None):
         action="store_true",
         help="if the configured primary LLM repo id is definitively unavailable (404), "
         "try alternate model families; the run still exits non-zero until "
-        "config/jarvis.toml [models].llm is edited to the deployed id",
+        "config/darwin.toml [models].llm is edited to the deployed id",
     )
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--llm-only", action="store_true", help="only deploy the LLM")
@@ -252,7 +252,7 @@ def main(argv=None):
             f"[deploy] * PRIMARY LLM {llm_id!r} WAS NOT DEPLOYED.\n"
             f"[deploy] * The fallback {deployed_llm!r} was verified instead, but the\n"
             "[deploy] * server will still try to load the configured primary at runtime.\n"
-            f"[deploy] * EDIT config/jarvis.toml [models].llm = \"{deployed_llm}\" before use.\n"
+            f"[deploy] * EDIT config/darwin.toml [models].llm = \"{deployed_llm}\" before use.\n"
             "[deploy] * Exiting non-zero so automation does not treat this as a clean deploy.\n"
             "[deploy] *********************************************************************",
             file=sys.stderr,

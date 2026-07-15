@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 
 /**
- * Cinematic multi-stage power-on shown the first time JARVIS connects (the
+ * Cinematic multi-stage power-on shown the first time DARWIN connects (the
  * "wake"): a scan sweep + corner brackets draw the frame, the reticle rings
- * ignite and the J.A.R.V.I.S. mark resolves, a subsystem checklist ticks ONLINE
+ * ignite and the D.A.R.W.I.N. mark resolves, a subsystem checklist ticks ONLINE
  * one by one, then "ALL SYSTEMS ONLINE" lands and the whole overlay fades to
  * reveal the live HUD (whose panels then materialize in).
  *
@@ -14,12 +14,12 @@ import { useEffect, useRef } from "react";
  *    (CSS zeroes the animations; the timer just shortens).
  *  - Purely presentational + aria-hidden: it gates nothing and renders above
  *    everything, so a missed/!mounted reveal never affects the HUD beneath it.
- *  - The subsystem names are real JARVIS subsystems (no fabricated metrics).
+ *  - The subsystem names are real DARWIN subsystems (no fabricated metrics).
  */
 
 const SUBSYSTEMS = [
   "MLX RUNTIME",
-  "JARVISD DAEMON",
+  "DARWIND DAEMON",
   "27-AGENT CONSTELLATION",
   "TELEMETRY LINK",
   "MEMORY STORE",
@@ -96,8 +96,8 @@ export default function BootReveal({
       <div className="boot-center">
         <div className="boot-ring" />
         <div className="boot-ring boot-ring-2" />
-        <div className="boot-mark">J.A.R.V.I.S.</div>
-        <div className="boot-sub">JUST A RATHER VERY INTELLIGENT SYSTEM</div>
+        <div className="boot-mark">D.A.R.W.I.N.</div>
+        <div className="boot-sub">DIGITAL ASSISTANT RUNNING WHOLLY IN-HOUSE, NATIVELY</div>
         <ul className="boot-checklist">
           {SUBSYSTEMS.map((name, i) => (
             <li key={name} style={{ animationDelay: `${(1.2 + i * 0.2).toFixed(2)}s` }}>

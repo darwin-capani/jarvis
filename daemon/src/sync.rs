@@ -257,7 +257,7 @@ fn remote_beats_local(
 
 /// Read-or-mint this device's stable id (meta.device_id). Minted via
 /// `upsert_fact` (the trusted path — a model can't forge a reserved key), so it
-/// persists in jarvis.db and is AUTOMATICALLY excluded from every sync bundle
+/// persists in darwin.db and is AUTOMATICALLY excluded from every sync bundle
 /// (meta.* is never synced). 128 bits of CSPRNG hex.
 pub async fn device_id(memory: &crate::memory::Memory) -> String {
     if let Ok(Some(id)) = memory.get_fact("meta.device_id").await {
@@ -728,7 +728,7 @@ mod tests {
         }
     }
     fn tempdir(tag: &str) -> TempDir {
-        let p = std::env::temp_dir().join(format!("jarvis-sync-test-{}-{tag}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("darwin-sync-test-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         TempDir(p)

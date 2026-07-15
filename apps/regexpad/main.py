@@ -7,8 +7,8 @@ import signal
 import socket
 import sys
 
-TOKEN = os.environ.get("JARVIS_APP_TOKEN", "")
-SOCKET_PATH = os.environ.get("JARVIS_APP_SOCKET", "")
+TOKEN = os.environ.get("DARWIN_APP_TOKEN", "")
+SOCKET_PATH = os.environ.get("DARWIN_APP_SOCKET", "")
 
 _MATCH_CAP = 50
 # ReDoS defense: a user-supplied pattern can catastrophically backtrack (e.g.
@@ -135,7 +135,7 @@ def drain_lines(buf, max_frame=MAX_FRAME_BYTES):
 
 def main():
     if not TOKEN or not SOCKET_PATH:
-        print("missing JARVIS_APP_TOKEN / JARVIS_APP_SOCKET; not launched by jarvisd", file=sys.stderr)
+        print("missing DARWIN_APP_TOKEN / DARWIN_APP_SOCKET; not launched by darwind", file=sys.stderr)
         return 1
     conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     conn.connect(SOCKET_PATH)

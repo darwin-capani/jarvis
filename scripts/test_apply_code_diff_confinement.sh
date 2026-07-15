@@ -16,7 +16,7 @@
 # regardless of how patch parses the header. The strengthened header pre-scan
 # stays as a best-effort fast-fail tamper signal. This mirrors apply_heal.sh.
 #
-# This test is HERMETIC: it NEVER invokes jarvisd, the daemon, cargo, launchd,
+# This test is HERMETIC: it NEVER invokes darwind, the daemon, cargo, launchd,
 # sqlite, a model, or any network. It exercises (a) the script's strengthened
 # pre-scan (sliced verbatim from the live script) and (b) the real
 # `confined_patch` sandbox helper against a fake codebase layout in a temp dir —

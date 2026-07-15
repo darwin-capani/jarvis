@@ -1,8 +1,8 @@
 //! IN-PROCESS microphone capture → daemon app-audio ingest (the HUD side).
 //!
-//! WHY this lives in the HUD, not the daemon: only `JARVIS.app` carries
+//! WHY this lives in the HUD, not the daemon: only `DARWIN.app` carries
 //! `NSMicrophoneUsageDescription` + the audio-input entitlement, so opening the
-//! mic from THIS process is the only way macOS shows a clean "JARVIS" prompt
+//! mic from THIS process is the only way macOS shows a clean "DARWIN" prompt
 //! (the daemon opening cpal would surface an opaque/again-and-again prompt or be
 //! denied). So we capture here and STREAM the raw f32 PCM to the daemon over a
 //! local Unix socket; the daemon feeds those exact `Vec<f32>` chunks into the
@@ -134,7 +134,7 @@ pub fn start_mic_stream(state: tauri::State<'_, MicState>) -> MicStatus {
     //    daemon hasn't finished its handoff; bail cleanly, no mic.
     let root = match crate::heal::resolve_root_for_command() {
         Ok(r) => r,
-        Err(e) => return MicStatus::off(format!("cannot resolve JARVIS root: {e}")),
+        Err(e) => return MicStatus::off(format!("cannot resolve DARWIN root: {e}")),
     };
     let token = match crate::command::read_token(&root) {
         Ok(t) => t,
@@ -179,7 +179,7 @@ pub fn start_mic_stream(state: tauri::State<'_, MicState>) -> MicStatus {
     //    socket and lives for the duration of the capture. The cpal callback
     //    (realtime thread) must not block: it ships raw chunks over a std
     //    channel; the owner thread encodes + writes them to the socket. This is
-    //    the act that fires the clean JARVIS mic prompt.
+    //    the act that fires the clean DARWIN mic prompt.
     let stream_config: cpal::StreamConfig = supported.into();
     let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
     // Report channel: the owner thread tells us whether the stream actually
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn audio_socket_path_is_under_state_ipc() {
-        let p = audio_socket_path(Path::new("/jarvis"));
-        assert_eq!(p, Path::new("/jarvis/state/ipc/audio_in.sock"));
+        let p = audio_socket_path(Path::new("/darwin"));
+        assert_eq!(p, Path::new("/darwin/state/ipc/audio_in.sock"));
     }
 }

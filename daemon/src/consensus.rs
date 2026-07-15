@@ -340,7 +340,7 @@ mod tests {
     }
     fn mem(tag: &str) -> (crate::memory::Memory, TempDb) {
         let path = std::env::temp_dir()
-            .join(format!("jarvis-consensus-test-{}-{tag}.db", std::process::id()));
+            .join(format!("darwin-consensus-test-{}-{tag}.db", std::process::id()));
         let db = TempDb(path.clone());
         (crate::memory::Memory::open(&path).unwrap(), db)
     }

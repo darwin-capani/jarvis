@@ -1,8 +1,8 @@
-//! FOCUS PROFILES (#24) — a PERMISSION-NEUTRAL lens over JARVIS's proactive
-//! surfaces. A focus profile answers ONE question: of the things JARVIS could
+//! FOCUS PROFILES (#24) — a PERMISSION-NEUTRAL lens over DARWIN's proactive
+//! surfaces. A focus profile answers ONE question: of the things DARWIN could
 //! proactively show or say, which should it stay quiet about right now? It can
-//! make JARVIS do LESS — surface fewer signal categories, render a terser brief,
-//! hold back suggestions — and it can NEVER make JARVIS do MORE.
+//! make DARWIN do LESS — surface fewer signal categories, render a terser brief,
+//! hold back suggestions — and it can NEVER make DARWIN do MORE.
 //!
 //! ## The sacred invariant: a profile can only QUIET, never LOOSEN
 //! This module is the #24 gate's enforcement, and the enforcement is at the
@@ -61,7 +61,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// `Critical` is the never-silenced floor: a profile may quiet everything else
 /// (news, routine, calendar, mail), but DeepFocus/Sleep still let a genuinely
-/// critical signal through, so JARVIS does not go silent on something urgent
+/// critical signal through, so DARWIN does not go silent on something urgent
 /// just because the user asked for fewer interruptions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -631,7 +631,7 @@ mod tests {
     fn property_no_profile_broadens_the_permission_surface() {
         // THE #24 GATE, machine-checked: for EVERY profile and EVERY base, the
         // tuned behavior is NO BROADER than the base on every axis. A profile can
-        // only ever make JARVIS quieter — never surface a category the base
+        // only ever make DARWIN quieter — never surface a category the base
         // suppressed, never get louder, never un-quiet suggestions.
         for base in bases() {
             for profile in all_profiles() {

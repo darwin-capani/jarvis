@@ -3,21 +3,21 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.jarvis.daemon</string>
+    <string>com.darwin.daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>__JARVIS_ROOT__/boot/run_daemon.sh</string>
+        <string>__DARWIN_ROOT__/boot/run_daemon.sh</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>WorkingDirectory</key>
-    <string>__JARVIS_ROOT__</string>
+    <string>__DARWIN_ROOT__</string>
     <key>StandardOutPath</key>
-    <string>__JARVIS_ROOT__/state/logs/launchd-daemon.log</string>
+    <string>__DARWIN_ROOT__/state/logs/launchd-daemon.log</string>
     <key>StandardErrorPath</key>
-    <string>__JARVIS_ROOT__/state/logs/launchd-daemon.log</string>
+    <string>__DARWIN_ROOT__/state/logs/launchd-daemon.log</string>
     <key>ProcessType</key>
     <string>Interactive</string>
     <key>ThrottleInterval</key>

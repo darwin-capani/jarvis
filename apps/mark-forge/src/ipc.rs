@@ -9,12 +9,12 @@
 //! verbatim.
 //!
 //! Runtime contract (`daemon/src/apps.rs`, runtime = "binary", mirror of
-//! silicon-canvas): jarvisd execs the prebuilt `mark-forge` binary under
+//! silicon-canvas): darwind execs the prebuilt `mark-forge` binary under
 //! `sandbox-exec`, handing it the socket + token via the ENVIRONMENT (NEVER argv
 //! — argv is world-readable via `ps`):
-//!   - `JARVIS_APP_SOCKET` — abs path of `state/ipc/apps/mark-forge.sock`
-//!   - `JARVIS_APP_TOKEN`  — the capability token stamped on every outbound line
-//!   - `JARVIS_APP_NAME`   — "mark-forge"
+//!   - `DARWIN_APP_SOCKET` — abs path of `state/ipc/apps/mark-forge.sock`
+//!   - `DARWIN_APP_TOKEN`  — the capability token stamped on every outbound line
+//!   - `DARWIN_APP_NAME`   — "mark-forge"
 //!
 //! Inbound (host → app), one JSON object per line:
 //!   - `{"type":"start"|"refresh"|"stop"}` — daemon control verbs
@@ -67,14 +67,14 @@ impl AppEnv {
     /// app only runs under the daemon (the binary's `main` maps this to exit
     /// code 2).
     pub fn from_env() -> Result<Self> {
-        let socket_path = std::env::var_os("JARVIS_APP_SOCKET")
+        let socket_path = std::env::var_os("DARWIN_APP_SOCKET")
             .map(PathBuf::from)
             .ok_or(MarkForgeError::Unauthorized)?;
-        let token = std::env::var("JARVIS_APP_TOKEN")
+        let token = std::env::var("DARWIN_APP_TOKEN")
             .ok()
             .filter(|t| !t.is_empty())
             .ok_or(MarkForgeError::Unauthorized)?;
-        let name = std::env::var("JARVIS_APP_NAME").unwrap_or_else(|_| "mark-forge".to_string());
+        let name = std::env::var("DARWIN_APP_NAME").unwrap_or_else(|_| "mark-forge".to_string());
         Ok(AppEnv { socket_path, token, name })
     }
 }
@@ -442,7 +442,7 @@ impl Telemetry {
 /// drop and nests `{topic, payload}` under `data`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutboundLine {
-    /// The capability token from `JARVIS_APP_TOKEN`, stamped on every line.
+    /// The capability token from `DARWIN_APP_TOKEN`, stamped on every line.
     pub token: String,
     /// Always `"items"` for a telemetry drop (`"log"` is used only for logs).
     #[serde(rename = "type")]
@@ -1305,7 +1305,7 @@ mod tests {
         // Across a representative op stream — spawn (scene), step (step+bodies),
         // state.get (scene+bodies), an over-cap/invalid refusal (log), and a
         // malformed line (log) — EVERY single line the app writes back carries
-        // the exact JARVIS_APP_TOKEN as its top-level "token" field. A line can
+        // the exact DARWIN_APP_TOKEN as its top-level "token" field. A line can
         // never leave this app unstamped (the daemon drops unstamped lines).
         let mut state = AppState::new();
         let token = "cap-tok-7f3a";

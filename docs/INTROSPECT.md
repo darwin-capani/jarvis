@@ -3,7 +3,7 @@
 Status: **IMPLEMENTED.** The observability core is live end-to-end (daemon → telemetry → HUD):
 
 - **`jit` manifest capability** (`daemon/src/apps.rs`) — a declared, token-bound, SBPL-derived JIT/dynamic-code-generation permission (default-deny), mirroring the `gpu`/`camera`/`screen` pattern.
-- **`daemon/src/introspect.rs`** — a READ-ONLY sentinel over jarvisd's own sandboxed children: SBPL **profile-drift** detection (fingerprint-vs-on-disk), per-app **RSS/CPU anomaly** classification via `sysinfo`, and cooperative **dyld module attestation** (trust-on-first-use baseline). Relays through the existing telemetry bus; wired in `main.rs` behind `[introspect].enabled` (ships ON).
+- **`daemon/src/introspect.rs`** — a READ-ONLY sentinel over darwind's own sandboxed children: SBPL **profile-drift** detection (fingerprint-vs-on-disk), per-app **RSS/CPU anomaly** classification via `sysinfo`, and cooperative **dyld module attestation** (trust-on-first-use baseline). Relays through the existing telemetry bus; wired in `main.rs` behind `[introspect].enabled` (ships ON).
 - **Module attestation protocol** — the app→host wire gains a `modules` message type (`apps.rs`); the reference in-proc stub is `apps/_sdk/dyld_report.py` (public `_dyld_*` API, no entitlement), wired into `apps/example-plugin` and `apps/global-scan`. The Swift micro-app **vision** reports too, via a deliberate *additive* extension to its `VisionEvent` contract (a `modules` relay type + `Sources/vision/DyldReport.swift`) — compile- and test-verified (`swift build` + 205 tests).
 - **`posture.rs`** folds a secret-free introspection tally into its read-only report.
 - **User-queryable** — the read-only cloud tool `aegis_introspect` (Defense & Privacy agent) answers "are my apps healthy / any tampering?" with `introspect::status_summary()` (counts + recent findings); the daemon retains a bounded, secret-free findings ring for it.
@@ -12,7 +12,7 @@ Status: **IMPLEMENTED.** The observability core is live end-to-end (daemon → t
 
 - **Endpoint Security — full stack, feature-gated** — the pure, CI-tested classifier (`SecurityEvent` mprotect-exec / MAP_JIT / GET_TASK / signal → `classify_security_event` [a `jit=false` app making memory executable = W^X violation; a `GET_TASK` = attach/inject signal] → `ingest_security_event` → `introspect.security_event` telemetry + HUD finding) is now driven by a **live NOTIFY client** behind the default-off `endpoint-security` Cargo feature. The fragile `es_message_t` parsing lives in a C shim (`daemon/csrc/es_shim.c`) compiled against Apple's real header (struct layouts compiler-verified); Rust sees a flat scalar ABI (`daemon/src/es.rs`) and maps events to OUR tracked apps via `introspect::app_for_pid`. **COMPILE+LINK verified** here (`cargo build --features endpoint-security` builds the shim + links `-lEndpointSecurity`/`-lbsm` — no entitlement needed to *link*); **runtime is device-gated** — `es_new_client` needs root + the restricted `com.apple.developer.endpoint-security.client` entitlement + a notarized host, so `es::start()` returns an honest error off-device and the light path is unaffected. NOTIFY-only (never AUTH — it never blocks/wedges the subject).
 
-Deferred (with the honest cost recorded below): the tamper-resistant out-of-process `task_for_pid`/Mach-port corroboration of the cooperative module report (its `cs.debugger` entitlement wouldn't even yield task ports for jarvisd's own hardened processes).
+Deferred (with the honest cost recorded below): the tamper-resistant out-of-process `task_for_pid`/Mach-port corroboration of the cooperative module report (its `cs.debugger` entitlement wouldn't even yield task ports for darwind's own hardened processes).
 
 This document also records the **state-of-the-art macOS/Apple-Silicon (arm64e) OS-internals facts** the design rests on. They were adversarially verified against a live macOS 26.5.1 machine; where the naïve/textbook version is wrong, the correction is stated. Do not "simplify" these back to the Windows/Linux model — this is an Apple-Silicon system.
 
@@ -20,14 +20,14 @@ This document also records the **state-of-the-art macOS/Apple-Silicon (arm64e) O
 
 ## 1. Why the light path (and NOT Endpoint Security / task_for_pid / ptrace)
 
-The decisive fact: **jarvisd already OWNS the processes it wants to observe.** `apps.rs::run_once` spawns each micro-app as a **same-UID child** under `sandbox-exec` and holds its `tokio::process::Child`. That collapses the cost of introspection:
+The decisive fact: **darwind already OWNS the processes it wants to observe.** `apps.rs::run_once` spawns each micro-app as a **same-UID child** under `sandbox-exec` and holds its `tokio::process::Child`. That collapses the cost of introspection:
 
 | Mechanism | Gives | Cost on current macOS | Decision |
 |---|---|---|---|
 | `sysinfo` (libproc under the hood) | per-child RSS/CPU | **none** for same-UID/owned children | **shipped** |
 | SHA-256 of the profile we wrote | tamper detection | none (`sha2` already a dep) | **shipped** |
 | Endpoint Security (`ES_EVENT_TYPE_NOTIFY_{EXEC,MMAP,MPROTECT,SIGNAL,GET_TASK}`) | authoritative kernel security events; `GET_TASK` = "someone is attaching/injecting" | **root + Apple-approved `com.apple.developer.endpoint-security.client` + notarization + Full Disk Access**; host may be a launch daemon *or* a system extension (a sysext is NOT strictly required — Apple's own `eslogger` is a daemon); **NOTIFY-only** (AUTH blocks the subject thread until a variable `deadline`, and a slow client is killed) | **deferred** |
-| `task_for_pid` + `mach_vm_read` | remote `dyld_all_image_infos`, memory | `com.apple.security.cs.debugger`, which only yields ports for `get-task-allow` (debuggable/non-hardened) targets — it would **not** work on jarvisd's own hardened/notarized processes; blocked by SIP on Apple-signed targets | **deferred** (prefer in-proc self-report) |
+| `task_for_pid` + `mach_vm_read` | remote `dyld_all_image_infos`, memory | `com.apple.security.cs.debugger`, which only yields ports for `get-task-allow` (debuggable/non-hardened) targets — it would **not** work on darwind's own hardened/notarized processes; blocked by SIP on Apple-signed targets | **deferred** (prefer in-proc self-report) |
 | DTrace | `fbt`/`pid`/`syscall` providers | `pid`/`syscall` work on your own processes with SIP on, but `fbt`/kernel need SIP weakened from Recovery (`csrutil enable --without dtrace`) | **never** (not shippable on-device) |
 | `ptrace` / `PT_DENY_ATTACH` | — | anti-debug facility; stops the target; exclusive; no memory peek (that's Mach) | **never** (wrong model for cooperating children) |
 
@@ -44,7 +44,7 @@ The verified arm64e reality (drives *what is even observable*):
 - **No stable public syscall-number ABI** (like Windows/ntdll, unlike Linux) — hook *semantic* events, never hardcoded `svc` numbers.
 - Much "kernel" work is `mach_msg` RPC or **commpage** reads (`mach_absolute_time` reads `CNTVCT_EL0` + a commpage timebase offset with no `svc` at all) — invisible to a syscall tracer. This is why the shipped design samples *resource counters* (via libproc/sysinfo) rather than tracing syscalls.
 
-Unprivileged tracing primitive JARVIS may emit into during development: **`os_signpost`** (`POINTS_OF_INTEREST`), which Instruments surfaces. (`fs_usage`/Instruments Time Profiler consume kdebug via ktrace; `sample(1)` is a Mach stack-walker, not a kdebug consumer.)
+Unprivileged tracing primitive DARWIN may emit into during development: **`os_signpost`** (`POINTS_OF_INTEREST`), which Instruments surfaces. (`fs_usage`/Instruments Time Profiler consume kdebug via ktrace; `sample(1)` is a Mach stack-walker, not a kdebug consumer.)
 
 ---
 
@@ -80,7 +80,7 @@ Verified facts for when this is built:
 
 **Live dlopen re-reporting (shipped).** Beyond the one-shot startup report, `dyld_report.watch()` registers a `_dyld_register_func_for_add_image` callback that flips a thread-safe flag on any image loaded *after* the initial set; the app re-sends a fresh report from its own thread when the flag is set (`modules_changed_and_clear()`), so a runtime `dlopen` is caught too — not just the launch-time load set. The callback only sets an event (no cross-thread socket write). global-scan uses this in its poll loop; **vision** uses the Swift equivalent (`DyldReport.watch()`/`consumeChanged()`, `OSAllocatedUnfairLock`-guarded) and re-attests after each host op — which matters most for vision, since Vision/ScreenCaptureKit/CoreML load *lazily when capture starts*, after the one-shot report. Verified: Python on-device (a runtime `dlopen` of Vision.framework flipped the flag: 353→470 images) and Swift in-test (`testWatchFiresOnARuntimeDlopen`). The baseline is re-seeded per launch (`introspect::reset_module_baseline`), so a legitimately-updated app is not false-flagged.
 
-**Honest scope — cooperative, not tamper-proof.** Because the socket is token-authenticated, a *different* process cannot forge a report, so this reliably catches injection into an **otherwise-honest** app and gives an auditable inventory. It is **not** a defense against a **fully-compromised** app that lies about its own modules — that deeper compromise is bounded by the sandbox + token model. The tamper-resistant out-of-process corroboration (`task_for_pid` → `dyld_all_image_infos`) stays deferred: `com.apple.security.cs.debugger` would not even yield task ports for jarvisd's own hardened processes.
+**Honest scope — cooperative, not tamper-proof.** Because the socket is token-authenticated, a *different* process cannot forge a report, so this reliably catches injection into an **otherwise-honest** app and gives an auditable inventory. It is **not** a defense against a **fully-compromised** app that lies about its own modules — that deeper compromise is bounded by the sandbox + token model. The tamper-resistant out-of-process corroboration (`task_for_pid` → `dyld_all_image_infos`) stays deferred: `com.apple.security.cs.debugger` would not even yield task ports for darwind's own hardened processes.
 
 ---
 

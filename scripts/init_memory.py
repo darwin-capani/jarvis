@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""JARVIS persistent-memory initializer (stdlib only).
+"""DARWIN persistent-memory initializer (stdlib only).
 
-Creates the runtime state directory tree and state/jarvis.db with the schema
+Creates the runtime state directory tree and state/darwin.db with the schema
 shared with the Rust daemon. Idempotent: safe to run repeatedly.
 
 SCHEMA — keep in sync with the Rust daemon:
@@ -13,7 +13,7 @@ SCHEMA — keep in sync with the Rust daemon:
   transcripts(id INTEGER PRIMARY KEY, ts TEXT NOT NULL, wav_path TEXT,
               text TEXT NOT NULL, intent TEXT, routed_to TEXT,
               response TEXT)
-    — response is what JARVIS replied; recent_exchanges(n) selects rows
+    — response is what DARWIN replied; recent_exchanges(n) selects rows
       WHERE response IS NOT NULL. The daemon applies the same column as an
       idempotent ALTER TABLE migration for databases created before it.
 """
@@ -78,17 +78,17 @@ def apply_migrations(conn):
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
             print(f"[db] migrated: added {table}.{column} {col_type}")
-    # Audit fix: the phase marker used to be stored as 'jarvis.phase', which
+    # Audit fix: the phase marker used to be stored as 'darwin.phase', which
     # the daemon's meta.%-only prompt filter does NOT exclude — system
     # bookkeeping was injected into every persona prompt as a "user fact"
     # and was deletable by the consolidation pass. Rename in place; the
     # 'meta.' prefix is filtered from prompts and protected from
     # model-driven writes everywhere.
     migrated = conn.execute(
-        "UPDATE facts SET key = 'meta.phase' WHERE key = 'jarvis.phase'"
+        "UPDATE facts SET key = 'meta.phase' WHERE key = 'darwin.phase'"
     ).rowcount
     if migrated:
-        print("[db] migrated: renamed fact jarvis.phase -> meta.phase")
+        print("[db] migrated: renamed fact darwin.phase -> meta.phase")
 
 
 def init_memory(root):
@@ -99,7 +99,7 @@ def init_memory(root):
         path.mkdir(parents=True, exist_ok=True)
         print(f"[dirs] ok: {path}")
 
-    db_path = root / "state" / "jarvis.db"
+    db_path = root / "state" / "darwin.db"
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(SCHEMA)
@@ -151,7 +151,7 @@ def init_memory(root):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="init_memory.py",
-        description="Create the JARVIS state/ tree and initialize state/jarvis.db (idempotent).",
+        description="Create the DARWIN state/ tree and initialize state/darwin.db (idempotent).",
     )
     parser.add_argument(
         "--root",

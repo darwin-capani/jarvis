@@ -1,15 +1,15 @@
 //! CUSTOM WAKE-WORD (#32) — the PURE, conservative wake-phrase matcher.
 //!
 //! This module answers ONE question, with no I/O, no globals, and no mic: does a
-//! transcript contain the configured wake phrase (e.g. "jarvis", or a user-chosen
+//! transcript contain the configured wake phrase (e.g. "darwin", or a user-chosen
 //! "computer", "hey edith")? It is the gate the always-listening activation path
-//! consults to decide "is this utterance for JARVIS" — but the always-listening
+//! consults to decide "is this utterance for DARWIN" — but the always-listening
 //! mic loop itself is DEVICE-GATED; only this pure matcher is proven headlessly.
 //!
 //! ## Posture (ON by default; the default phrase preserves today's behavior)
 //!
 //! `[wake].enabled` SHIPS ON (full-power default): since `[wake].phrase` defaults to
-//! "jarvis", activation is byte-for-byte today's unless the phrase is changed (the
+//! "darwin", activation is byte-for-byte today's unless the phrase is changed (the
 //! always-listening loop that consults the matcher is DEVICE-GATED on mic/TCC). With
 //! it false the matcher is never consulted. [`wake_gate`] folds the switch in so a caller can pass the
 //! config straight through.
@@ -17,14 +17,14 @@
 //! ## Conservatism (the whole point — never a false wake)
 //!
 //! [`wake_match`] is deliberately strict so an ambient transcript never spuriously
-//! activates JARVIS:
+//! activates DARWIN:
 //!   * case / punctuation / whitespace-insensitive (normalized to lowercase
-//!     alphanumeric tokens), so "Jarvis,", "JARVIS" and "jarvis" all match;
+//!     alphanumeric tokens), so "Darwin,", "DARWIN" and "darwin" all match;
 //!   * the phrase must appear as a CONTIGUOUS run of whole tokens — it NEVER matches
-//!     on a substring of a larger unrelated word ("jar vis" or "jarvisated" do not
-//!     match "jarvis"); the token boundary is the protection;
+//!     on a substring of a larger unrelated word ("dar win" or "darwinated" do not
+//!     match "darwin"); the token boundary is the protection;
 //!   * a SMALL per-token edit-distance tolerance (Levenshtein <= 1 for tokens long
-//!     enough to afford it) absorbs a one-character STT slip ("jarvus", "jarvis"),
+//!     enough to afford it) absorbs a one-character STT slip ("darvin" for "darwin"),
 //!     but never collapses two genuinely different short words;
 //!   * an EMPTY / blank phrase NEVER matches (fail-safe: a misconfigured empty phrase
 //!     cannot turn every utterance into a wake).
@@ -43,7 +43,7 @@ const FUZZY_MIN_TOKEN_LEN: usize = 4;
 
 /// Normalize text into lowercase alphanumeric tokens, dropping all punctuation and
 /// collapsing whitespace. This is what makes the match case/punct/whitespace-
-/// insensitive: "Jarvis, are you there?" -> ["jarvis", "are", "you", "there"].
+/// insensitive: "Darwin, are you there?" -> ["darwin", "are", "you", "there"].
 fn tokenize(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
@@ -98,7 +98,7 @@ fn token_matches(transcript_tok: &str, phrase_tok: &str) -> bool {
 ///   * an EMPTY / blank phrase returns false (a misconfigured empty phrase can never
 ///     wake on every utterance);
 ///   * the phrase tokens must appear as a CONTIGUOUS token subsequence, so a substring
-///     of a larger unrelated word ("jarvisated", "jar vis") never matches "jarvis";
+///     of a larger unrelated word ("darwinated", "dar win") never matches "darwin";
 ///   * each token may differ by at most one edit, and only when the phrase token is at
 ///     least [`FUZZY_MIN_TOKEN_LEN`] chars (short tokens are exact).
 ///
@@ -131,7 +131,7 @@ pub fn wake_match(transcript: &str, phrase: &str) -> bool {
 /// `[wake].enabled` switch in: when the switch is OFF this returns true unconditionally
 /// (activation is byte-for-byte today's — the matcher gates nothing), and when ON it
 /// returns whether the configured phrase matches the transcript. Default phrase
-/// ("jarvis") preserves today's wake behavior when the feature is turned on.
+/// ("darwin") preserves today's wake behavior when the feature is turned on.
 ///
 /// PURE: a function of the config + the transcript, no I/O. Wired at the activation
 /// site (see audio.rs / router.rs); the always-listening loop that produces the
@@ -151,9 +151,9 @@ mod tests {
 
     #[test]
     fn matches_the_exact_phrase_case_and_punct_insensitive() {
-        assert!(wake_match("Jarvis, are you there?", "jarvis"));
-        assert!(wake_match("JARVIS", "jarvis"));
-        assert!(wake_match("hey jarvis what's the time", "jarvis"));
+        assert!(wake_match("Darwin, are you there?", "darwin"));
+        assert!(wake_match("DARWIN", "darwin"));
+        assert!(wake_match("hey darwin what's the time", "darwin"));
         // A multi-word phrase, contiguous run of tokens, mixed case + punctuation.
         assert!(wake_match("Hey, EDITH — open the door", "hey edith"));
         assert!(wake_match("computer, lights on", "computer"));
@@ -163,34 +163,34 @@ mod tests {
     fn absorbs_a_single_stt_slip_on_a_long_token() {
         // One-character substitution / deletion on a long token (>= FUZZY_MIN_TOKEN_LEN)
         // is tolerated — a realistic STT mishearing of the wake word.
-        assert!(wake_match("jarvus turn on the lights", "jarvis"), "1-sub slip");
-        assert!(wake_match("jarvi are you up", "jarvis"), "1-del slip");
-        assert!(wake_match("jarviss status", "jarvis"), "1-ins slip");
+        assert!(wake_match("darvin turn on the lights", "darwin"), "1-sub slip");
+        assert!(wake_match("darwi are you up", "darwin"), "1-del slip");
+        assert!(wake_match("darwins status", "darwin"), "1-ins slip");
     }
 
     #[test]
     fn rejects_unrelated_transcripts() {
-        assert!(!wake_match("turn on the kitchen lights", "jarvis"));
-        assert!(!wake_match("what is the weather today", "jarvis"));
-        // A genuinely different word two edits away never matches.
-        assert!(!wake_match("the harvest was good", "jarvis"));
+        assert!(!wake_match("turn on the kitchen lights", "darwin"));
+        assert!(!wake_match("what is the weather today", "darwin"));
+        // A genuinely different word several edits away never matches.
+        assert!(!wake_match("the harvest was good", "darwin"));
     }
 
     #[test]
     fn never_matches_a_substring_of_a_larger_word_or_split_tokens() {
         // Substring of a larger unrelated word: the token boundary protects us.
-        assert!(!wake_match("the jarvisated report is ready", "jarvis"));
-        // Split across two tokens must NOT match (each token compared whole).
-        assert!(!wake_match("put it in the jar vis a vis the lid", "jarvis"));
+        assert!(!wake_match("the darwinated report is ready", "darwin"));
+        // The phrase split across two tokens must NOT match (each token compared whole).
+        assert!(!wake_match("say dar win to me slowly", "darwin"));
     }
 
     #[test]
     fn empty_or_blank_phrase_never_matches() {
         assert!(!wake_match("anything at all", ""));
         assert!(!wake_match("anything at all", "   "));
-        assert!(!wake_match("jarvis", ",.!"), "punctuation-only phrase has no tokens");
+        assert!(!wake_match("darwin", ",.!"), "punctuation-only phrase has no tokens");
         // And an empty transcript never matches a real phrase.
-        assert!(!wake_match("", "jarvis"));
+        assert!(!wake_match("", "darwin"));
     }
 
     #[test]
@@ -211,15 +211,15 @@ mod tests {
     }
 
     #[test]
-    fn gate_ships_on_by_default_with_phrase_jarvis_and_off_path_opens_the_gate() {
-        // Shipped default: wake.enabled = true with phrase "jarvis" -> activation
-        // requires the "jarvis" wake word, which IS today's behavior (the phrase
+    fn gate_ships_on_by_default_with_phrase_darwin_and_off_path_opens_the_gate() {
+        // Shipped default: wake.enabled = true with phrase "darwin" -> activation
+        // requires the "darwin" wake word, which IS today's behavior (the phrase
         // default preserves it). Turning the switch OFF opens the gate regardless of
         // text (the off path still exists).
         let cfg = Config::default();
         assert!(cfg.wake.enabled, "wake gating ships ON (full-power default)");
-        assert_eq!(cfg.wake.phrase, "jarvis", "default phrase preserves today's behavior");
-        assert!(wake_gate(&cfg, "jarvis status report"), "default phrase present -> gate open");
+        assert_eq!(cfg.wake.phrase, "darwin", "default phrase preserves today's behavior");
+        assert!(wake_gate(&cfg, "darwin status report"), "default phrase present -> gate open");
         assert!(!wake_gate(&cfg, "status report"), "default phrase absent -> gate closed");
 
         // Explicitly OFF: the gate is OPEN regardless of text.
@@ -233,13 +233,13 @@ mod tests {
     fn gate_enforces_the_phrase_when_enabled() {
         let mut cfg = Config::default();
         cfg.wake.enabled = true;
-        // Default phrase still "jarvis": activation requires the wake word now.
-        assert!(wake_gate(&cfg, "jarvis status report"), "phrase present -> gate open");
+        // Default phrase still "darwin": activation requires the wake word now.
+        assert!(wake_gate(&cfg, "darwin status report"), "phrase present -> gate open");
         assert!(!wake_gate(&cfg, "status report"), "phrase absent -> gate closed");
         // A custom phrase gates on that phrase instead.
         cfg.wake.phrase = "computer".to_string();
         assert!(wake_gate(&cfg, "Computer, lights"));
-        assert!(!wake_gate(&cfg, "jarvis are you there"), "old phrase no longer wakes");
+        assert!(!wake_gate(&cfg, "darwin are you there"), "old phrase no longer wakes");
         // An empty configured phrase, even with the switch on, never opens the gate
         // (fail-safe) — a misconfigured empty phrase can't wake on everything.
         cfg.wake.phrase = "  ".to_string();
@@ -248,10 +248,10 @@ mod tests {
 
     #[test]
     fn edit_distance_is_correct_for_the_fuzz_boundary() {
-        assert_eq!(edit_distance("jarvis", "jarvis"), 0);
-        assert_eq!(edit_distance("jarvis", "jarvus"), 1);
-        assert_eq!(edit_distance("jarvis", "jarvi"), 1);
-        assert_eq!(edit_distance("jarvis", "harvest"), 3);
+        assert_eq!(edit_distance("darwin", "darwin"), 0);
+        assert_eq!(edit_distance("darwin", "darvin"), 1);
+        assert_eq!(edit_distance("darwin", "darwi"), 1);
+        assert_eq!(edit_distance("darwin", "marvin"), 2);
         assert_eq!(edit_distance("", "abc"), 3);
     }
 }

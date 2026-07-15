@@ -1,7 +1,7 @@
-# JARVIS HUD
+# DARWIN HUD
 
 The fullscreen face of the machine: a Tauri 2 + React + TypeScript + React-Three-Fiber
-app that renders live `jarvisd` telemetry as a dark-glass, cyan-holographic heads-up
+app that renders live `darwind` telemetry as a dark-glass, cyan-holographic heads-up
 display. Design spec: [`docs/HUD.md`](../docs/HUD.md).
 
 The HUD is a **pure client** of the daemon's WebSocket telemetry broadcast on
@@ -22,7 +22,7 @@ npm run tauri dev     # full shell (window, keychain commands, F11)
 ## Production build
 
 ```sh
-npm run tauri build   # bundles JARVIS.app (macOS only)
+npm run tauri build   # bundles DARWIN.app (macOS only)
 ```
 
 ## Tests & checks
@@ -50,9 +50,9 @@ reconnect → offline → idle, the 12s stuck-state decay, and the degradation l
 | **Center core** (R3F) | core state machine | Wireframe icosahedron + inner energy sphere + ~6k-particle orbit field. Idle = slow breathing; listening = pulse synced to live mic RMS; processing = accelerated spin; thinking-local = cyan surge; thinking-cloud = violet shift + upward particle stream; speaking = amplitude pulses (synthetic envelope, RMS-modulated when available). Bloom included; particles + bloom degrade automatically if frame time stays over 20ms. |
 | **Status bar** (top) | connection, `daemon.started`, `inference.unavailable`, `heal.*` | LINK / INFERENCE / CLOUD KEY indicators, heal burst counter, current core state, clock, fullscreen + settings buttons. |
 | **Latency strip** | `pipeline.completed` | Stacked stt / classify / route / speak bar with ms labels, total, and a first-audio marker. |
-| **Left panel** | `stt.transcript`, `route.completed`, `intent.classified` | Transcript feed (YOU / JARVIS lines, cloud replies tagged violet, autoscroll) with an intent chip (label + confidence bar, amber under 0.6). |
+| **Left panel** | `stt.transcript`, `route.completed`, `intent.classified` | Transcript feed (YOU / DARWIN lines, cloud replies tagged violet, autoscroll) with an intent chip (label + confidence bar, amber under 0.6). |
 | **Right panel** | `system.load`, `memory.learned`, `action.executed` | CPU / MEM / DISK / UPTIME animated gauges plus the learned-facts and actions tickers. |
-| **Bottom strip** | `audio.level` | 64-bar canvas equalizer folded from the 128-sample RMS history; idle shimmer when silent; violet while JARVIS itself is speaking (mic muted). |
+| **Bottom strip** | `audio.level` | 64-bar canvas equalizer folded from the 128-sample RMS history; idle shimmer when silent; violet while DARWIN itself is speaking (mic muted). |
 | **Toasts** | `memory.learned`, `action.executed`, `memory.consolidated` | `LEARNED: key = value`, `ACTION: tool — outcome`, consolidation summaries. |
 
 A red **LOCAL INFERENCE OFFLINE** banner appears on `inference.unavailable` and
@@ -61,7 +61,7 @@ clears on the next successful event from source `local`.
 ## Fullscreen
 
 `F11` toggles fullscreen, as does the `⛶` button in the status bar (Tauri window
-API). The window opens 1440×900, titled **JARVIS**, on `#05080C`.
+API). The window opens 1440×900, titled **DARWIN**, on `#05080C`.
 
 ### Kiosk takeover (Phase-2, device-gated)
 
@@ -124,7 +124,7 @@ and the pill shows `ON FILE`. On open, `keychain_status(account)` per id shows
 `CONNECT (OAUTH)` button and "arrives with the *label* integration". No fake verify.
 
 **Storage and safety.** Keychain access is **in-process** via the Security.framework
-bindings (`security-framework` crate) — service `com.jarvis.daemon`, account from the
+bindings (`security-framework` crate) — service `com.darwin.daemon`, account from the
 registry — so secret material never lands on any subprocess `argv`. The backend
 validates every `account` argument against the registry **allowlist** and rejects
 unknown accounts, so the frontend cannot write arbitrary Keychain items. Secrets are
@@ -134,7 +134,7 @@ request's auth header (`x-api-key` / `Authorization: Bearer`).
 **Storing a token ≠ the integration working.** This build verifies + stores
 credentials; the agents that *use* them (e.g. Steve opening GitHub PRs) are a separate
 build. The daemon resolves the Anthropic key at startup — `ANTHROPIC_API_KEY` env
-first, else the Keychain item — so **restart jarvisd after changing the Anthropic
+first, else the Keychain item — so **restart darwind after changing the Anthropic
 key.** The status bar's CLOUD KEY indicator reflects `cloud_key_present` from the
 daemon's `daemon.started` event.
 

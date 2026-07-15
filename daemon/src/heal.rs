@@ -101,10 +101,10 @@ const DRAFT_TIMEOUT: Duration = Duration::from_secs(240);
 const REVIEW_MAX_TOKENS: u32 = 4096;
 const REVIEW_TIMEOUT: Duration = Duration::from_secs(180);
 
-const DRAFT_SYSTEM: &str = "You are JARVIS's self-repair drafter: an expert Rust engineer who \
+const DRAFT_SYSTEM: &str = "You are DARWIN's self-repair drafter: an expert Rust engineer who \
      produces minimal unified diffs. Respond with ONLY the diff(s) — no prose outside the \
      requested structure, no code fences inside a diff.";
-const REVIEW_SYSTEM: &str = "You are JARVIS's adversarial self-repair reviewer: a skeptical \
+const REVIEW_SYSTEM: &str = "You are DARWIN's adversarial self-repair reviewer: a skeptical \
      senior Rust engineer. You judge whether a candidate patch fixes the ROOT CAUSE of a fault \
      (not merely silences the symptom) and has no obvious side effects. Be harsh; a passing \
      test suite is necessary but NOT sufficient.";
@@ -370,8 +370,8 @@ impl Diagnosis {
 }
 
 /// Known daemon subsystems, matched against the module-path target token of an
-/// ERROR line (`jarvis_core::<subsystem>::...`). First match in burst order
-/// wins; "unknown" when nothing matches (e.g. a bare `jarvis_core` target).
+/// ERROR line (`darwin_core::<subsystem>::...`). First match in burst order
+/// wins; "unknown" when nothing matches (e.g. a bare `darwin_core` target).
 const SUBSYSTEMS: &[&str] = &[
     "audio",
     "inference",
@@ -389,8 +389,8 @@ const SUBSYSTEMS: &[&str] = &[
 ];
 
 /// The tracing target token of a log line: the 3rd whitespace field, stripped
-/// of a trailing ':'. For `<ts> ERROR jarvis_core::router: msg` that is
-/// `jarvis_core::router`.
+/// of a trailing ':'. For `<ts> ERROR darwin_core::router: msg` that is
+/// `darwin_core::router`.
 fn target_token(line: &str) -> Option<&str> {
     let mut fields = line.split_whitespace();
     fields.next()?; // ts
@@ -404,7 +404,7 @@ fn infer_subsystem(burst_lines: &[String]) -> String {
     for line in burst_lines {
         if let Some(target) = target_token(line) {
             for sub in SUBSYSTEMS {
-                // Match `jarvis_core::<sub>` or `jarvis_core::<sub>::...`.
+                // Match `darwin_core::<sub>` or `darwin_core::<sub>::...`.
                 let needle = format!("::{sub}");
                 if target.ends_with(&needle) || target.contains(&format!("{needle}::")) {
                     return (*sub).to_string();
@@ -628,7 +628,7 @@ fn draft_prompt(d: &Diagnosis, n: usize) -> String {
             .join("\n\n")
     };
     format!(
-        "The JARVIS daemon (a Rust crate; sources under src/) hit an error burst and needs a \
+        "The DARWIN daemon (a Rust crate; sources under src/) hit an error burst and needs a \
          minimal source fix.\n\n\
          Diagnosis:\n\
          - subsystem: {subsystem}\n\
@@ -1280,7 +1280,7 @@ fn diagnosis_json(d: &Diagnosis) -> String {
 }
 
 /// (8a) Propose: artifacts + meta.heal_pending + heal.proposal. The
-/// first-contact brief reads meta.heal_pending, so JARVIS tells the user.
+/// first-contact brief reads meta.heal_pending, so DARWIN tells the user.
 #[allow(clippy::too_many_arguments)]
 async fn propose(
     memory: &Memory,
@@ -1366,7 +1366,7 @@ async fn auto_apply(daemon_dir: &Path, heal_root: &Path, ts: u64, diff: &str, re
     info!(
         ts,
         "heal: patch applied and rebuilt; exiting for a clean restart (launchd KeepAlive \
-         restarts jarvisd into the new binary; under `cargo run` this is a stop)"
+         restarts darwind into the new binary; under `cargo run` this is a stop)"
     );
     // Give the telemetry hub a beat to flush heal.applied to the HUD.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1546,7 +1546,7 @@ async fn run_cargo(dir: &Path, args: &[&str], timeout: Duration) -> anyhow::Resu
 
 // ---------------------------------------------------------------------------
 // (6 of contract) HEAL DRILL — the ONE real cloud path, invoked by the
-// verifier via `jarvisd --heal-drill`. It runs the FULL real pipeline
+// verifier via `darwind --heal-drill`. It runs the FULL real pipeline
 // (diagnose -> Opus draft -> stage -> validate -> review -> propose) against a
 // PLANTED FAULT in a throwaway temp crate. It NEVER touches the real daemon/.
 // ---------------------------------------------------------------------------
@@ -1561,11 +1561,11 @@ const DRILL_PLANTED_LIB: &str =
 fn drill_burst_scan() -> LogScan {
     let now = Utc::now().to_rfc3339();
     let lines = [
-        format!("{now} ERROR jarvis_core::router: compile guard failed in src/lib.rs:3 error=cannot find value `y` in this scope"),
-        format!("{now} ERROR jarvis_core::router: compile guard failed in src/lib.rs:3 error=cannot find value `y` in this scope"),
-        format!("{now} ERROR jarvis_core::router: compile guard failed in src/lib.rs:3 error=cannot find value `y` in this scope"),
-        format!("{now} ERROR jarvis_core::router: compile guard failed in src/lib.rs:3 error=cannot find value `y` in this scope"),
-        format!("{now} ERROR jarvis_core::router: compile guard failed in src/lib.rs:3 error=cannot find value `y` in this scope"),
+        format!("{now} ERROR darwin_core::router: compile guard failed in src/lib.rs:3 error=cannot find value `y` in this scope"),
+        format!("{now} ERROR darwin_core::router: compile guard failed in src/lib.rs:3 error=cannot find value `y` in this scope"),
+        format!("{now} ERROR darwin_core::router: compile guard failed in src/lib.rs:3 error=cannot find value `y` in this scope"),
+        format!("{now} ERROR darwin_core::router: compile guard failed in src/lib.rs:3 error=cannot find value `y` in this scope"),
+        format!("{now} ERROR darwin_core::router: compile guard failed in src/lib.rs:3 error=cannot find value `y` in this scope"),
     ];
     scan_tail(lines.join("\n"))
 }
@@ -1576,7 +1576,7 @@ fn drill_burst_scan() -> LogScan {
 /// proposals/<ts>/`. Returns the proposal dir on success. The real daemon/ is
 /// never touched.
 ///
-/// Invoked by `jarvisd --heal-drill` (see main.rs); the model id is the
+/// Invoked by `darwind --heal-drill` (see main.rs); the model id is the
 /// configured heavy model so the drill exercises exactly the production path.
 pub async fn run_heal_drill(model: &str) -> anyhow::Result<PathBuf> {
     if anthropic::resolve_api_key().await.is_none() {
@@ -1584,10 +1584,10 @@ pub async fn run_heal_drill(model: &str) -> anyhow::Result<PathBuf> {
     }
     telemetry::init(); // safe if already initialized (OnceLock no-op)
 
-    // Throwaway sandbox: <tmpdir>/jarvis-heal-drill-<pid>-<ts>/.
+    // Throwaway sandbox: <tmpdir>/darwin-heal-drill-<pid>-<ts>/.
     let ts = now_secs();
     let sandbox = std::env::temp_dir().join(format!(
-        "jarvis-heal-drill-{}-{ts}",
+        "darwin-heal-drill-{}-{ts}",
         std::process::id()
     ));
     let crate_dir = sandbox.join("daemon");
@@ -1595,7 +1595,7 @@ pub async fn run_heal_drill(model: &str) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(crate_dir.join("src"))?;
     std::fs::write(
         crate_dir.join("Cargo.toml"),
-        "[package]\nname = \"jarvis-heal-drill\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+        "[package]\nname = \"darwin-heal-drill\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
     )?;
     std::fs::write(crate_dir.join("src").join("lib.rs"), DRILL_PLANTED_LIB)?;
 
@@ -1658,19 +1658,19 @@ mod tests {
     #[test]
     fn matches_only_the_level_field() {
         assert!(is_error_line(
-            "2026-06-12T01:02:03.456789Z ERROR jarvis_core::audio: capture stopped"
+            "2026-06-12T01:02:03.456789Z ERROR darwin_core::audio: capture stopped"
         ));
         // Level field is space-padded by the fmt layer; split_whitespace copes.
         assert!(is_error_line(
-            "2026-06-12T01:02:03.456789Z  ERROR jarvis_core::audio: capture stopped"
+            "2026-06-12T01:02:03.456789Z  ERROR darwin_core::audio: capture stopped"
         ));
         // INFO line quoting "ERROR" in the message must not count.
         assert!(!is_error_line(
-            "2026-06-12T01:02:03.456789Z  INFO jarvis_core: responding response=\"The log shows ERROR entries\""
+            "2026-06-12T01:02:03.456789Z  INFO darwin_core: responding response=\"The log shows ERROR entries\""
         ));
         // The watchdog's own WARN must not count.
         assert!(!is_error_line(
-            "2026-06-12T01:02:03.456789Z  WARN jarvis_core::heal: heal: error burst detected but self_heal.enabled = false"
+            "2026-06-12T01:02:03.456789Z  WARN darwin_core::heal: heal: error burst detected but self_heal.enabled = false"
         ));
     }
 
@@ -1681,13 +1681,13 @@ mod tests {
     fn detector_fires_on_a_simulated_inference_outage() {
         let now = Utc::now().to_rfc3339();
         let tail = [
-            format!("{now}  INFO jarvis_core: jarvisd starting"),
-            format!("{now} ERROR jarvis_core: transcription failed; is the inference server up? error=inference socket unavailable at state/ipc/inference.sock"),
-            format!("{now} ERROR jarvis_core: classification failed error=inference classify timed out after 30s"),
-            format!("{now} ERROR jarvis_core::router: converse failed before any audio; falling back to generate+speak error=..."),
-            format!("{now} ERROR jarvis_core::router: local generate unavailable; falling back to raw data error=..."),
-            format!("{now} ERROR jarvis_core::router: cloud completion failed; degrading to local generate error=..."),
-            format!("{now}  WARN jarvis_core: fact extraction failed"),
+            format!("{now}  INFO darwin_core: darwind starting"),
+            format!("{now} ERROR darwin_core: transcription failed; is the inference server up? error=inference socket unavailable at state/ipc/inference.sock"),
+            format!("{now} ERROR darwin_core: classification failed error=inference classify timed out after 30s"),
+            format!("{now} ERROR darwin_core::router: converse failed before any audio; falling back to generate+speak error=..."),
+            format!("{now} ERROR darwin_core::router: local generate unavailable; falling back to raw data error=..."),
+            format!("{now} ERROR darwin_core::router: cloud completion failed; degrading to local generate error=..."),
+            format!("{now}  WARN darwin_core: fact extraction failed"),
         ]
         .join("\n");
         let scan = scan_tail(tail);
@@ -1708,8 +1708,8 @@ mod tests {
     fn a_single_total_loss_line_triggers() {
         let now = Utc::now().to_rfc3339();
         let tail = format!(
-            "{now}  INFO jarvis_core::audio: audio capture running\n\
-             {now} ERROR jarvis_core::audio: audio capture stopped error=no default input device"
+            "{now}  INFO darwin_core::audio: audio capture running\n\
+             {now} ERROR darwin_core::audio: audio capture stopped error=no default input device"
         );
         let scan = scan_tail(tail);
         assert_eq!(scan.burst_count, 1);
@@ -1719,7 +1719,7 @@ mod tests {
         // The same words inside an INFO line must NOT trigger.
         let now = Utc::now().to_rfc3339();
         let scan = scan_tail(format!(
-            "{now}  INFO jarvis_core: responding response=\"audio capture stopped earlier, sir\""
+            "{now}  INFO darwin_core: responding response=\"audio capture stopped earlier, sir\""
         ));
         assert!(!scan.triggered());
     }
@@ -1728,7 +1728,7 @@ mod tests {
     fn stale_errors_outside_the_window_do_not_trigger() {
         let tail = (0..6)
             .map(|i| {
-                format!("2020-01-01T00:00:0{i}.000000Z ERROR jarvis_core: transcription failed; is the inference server up?")
+                format!("2020-01-01T00:00:0{i}.000000Z ERROR darwin_core: transcription failed; is the inference server up?")
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -1741,7 +1741,7 @@ mod tests {
     fn four_errors_are_below_the_burst_limit() {
         let now = Utc::now().to_rfc3339();
         let tail = (0..4)
-            .map(|_| format!("{now} ERROR jarvis_core: classification failed"))
+            .map(|_| format!("{now} ERROR darwin_core: classification failed"))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(!scan_tail(tail).triggered());
@@ -1753,12 +1753,12 @@ mod tests {
     fn diagnosis_extracts_signature_files_subsystem_from_synthetic_lines() {
         let now = Utc::now().to_rfc3339();
         let tail = [
-            format!("{now}  INFO jarvis_core: jarvisd starting"),
-            format!("{now} ERROR jarvis_core::router: converse failed at src/router.rs:122 error=socket closed"),
-            format!("{now} ERROR jarvis_core::router: converse failed at src/router.rs:122 error=timed out after 30s"),
-            format!("{now} ERROR jarvis_core::router: classification failed error=inference classify timed out"),
-            format!("{now} ERROR jarvis_core::router: cloud completion failed; degrading to local"),
-            format!("{now} ERROR jarvis_core::router: local generate unavailable in src/inference.rs:88"),
+            format!("{now}  INFO darwin_core: darwind starting"),
+            format!("{now} ERROR darwin_core::router: converse failed at src/router.rs:122 error=socket closed"),
+            format!("{now} ERROR darwin_core::router: converse failed at src/router.rs:122 error=timed out after 30s"),
+            format!("{now} ERROR darwin_core::router: classification failed error=inference classify timed out"),
+            format!("{now} ERROR darwin_core::router: cloud completion failed; degrading to local"),
+            format!("{now} ERROR darwin_core::router: local generate unavailable in src/inference.rs:88"),
         ]
         .join("\n");
         let scan = scan_tail(tail);
@@ -1789,9 +1789,9 @@ mod tests {
     #[test]
     fn diagnosis_subsystem_falls_back_to_unknown() {
         let now = Utc::now().to_rfc3339();
-        // Bare `jarvis_core` target (no subsystem segment).
+        // Bare `darwin_core` target (no subsystem segment).
         let tail = (0..5)
-            .map(|_| format!("{now} ERROR jarvis_core: transcription failed error=x"))
+            .map(|_| format!("{now} ERROR darwin_core: transcription failed error=x"))
             .collect::<Vec<_>>()
             .join("\n");
         let d = build_diagnosis(&scan_tail(tail));
@@ -1809,7 +1809,7 @@ mod tests {
 
         let now = Utc::now().to_rfc3339();
         let tail = (0..5)
-            .map(|_| format!("{now} ERROR jarvis_core::router: compile failed in src/lib.rs:2 error=cannot find value `y`"))
+            .map(|_| format!("{now} ERROR darwin_core::router: compile failed in src/lib.rs:2 error=cannot find value `y`"))
             .collect::<Vec<_>>()
             .join("\n");
         let mut d = build_diagnosis(&scan_tail(tail));
@@ -1840,7 +1840,7 @@ mod tests {
     fn diagnosis_json_roundtrips() {
         let now = Utc::now().to_rfc3339();
         let tail = (0..5)
-            .map(|_| format!("{now} ERROR jarvis_core::audio: audio capture stopped error=device gone"))
+            .map(|_| format!("{now} ERROR darwin_core::audio: audio capture stopped error=device gone"))
             .collect::<Vec<_>>()
             .join("\n");
         let d = build_diagnosis(&scan_tail(tail));
@@ -2080,7 +2080,7 @@ mod tests {
     fn report_carries_diagnosis_diff_validation_review_and_apply_command() {
         let now = Utc::now().to_rfc3339();
         let tail = (0..5)
-            .map(|_| format!("{now} ERROR jarvis_core::router: classification failed error=x in src/router.rs:42"))
+            .map(|_| format!("{now} ERROR darwin_core::router: classification failed error=x in src/router.rs:42"))
             .collect::<Vec<_>>()
             .join("\n");
         let d = build_diagnosis(&scan_tail(tail));
@@ -2184,7 +2184,7 @@ mod tests {
     impl TempRoot {
         fn new(tag: &str) -> Self {
             let dir = std::env::temp_dir().join(format!(
-                "jarvis-heal-test-{}-{tag}",
+                "darwin-heal-test-{}-{tag}",
                 std::process::id()
             ));
             let _ = std::fs::remove_dir_all(&dir);
@@ -2201,7 +2201,7 @@ mod tests {
     fn burst_scan_for_lib() -> LogScan {
         let now = Utc::now().to_rfc3339();
         let tail = (0..5)
-            .map(|_| format!("{now} ERROR jarvis_core::router: compile failed in src/lib.rs:2 error=cannot find value `y`"))
+            .map(|_| format!("{now} ERROR darwin_core::router: compile failed in src/lib.rs:2 error=cannot find value `y`"))
             .collect::<Vec<_>>()
             .join("\n");
         scan_tail(tail)
@@ -2381,7 +2381,7 @@ mod tests {
     /// (6 of contract) THE HEAL DRILL via the REAL cloud. #[ignore] by default
     /// — the ONLY cloud path in this module, run explicitly by the verifier:
     ///   cargo test --release heal_drill_real_cloud -- --ignored --nocapture
-    /// (or `jarvisd --heal-drill`). It heals a planted fault in a TEMP crate,
+    /// (or `darwind --heal-drill`). It heals a planted fault in a TEMP crate,
     /// proving diagnose -> Opus draft -> stage -> validate -> review -> propose
     /// end to end. Skips gracefully (passes) when no API key is present so an
     /// offline `--ignored` run does not spuriously fail.
@@ -2401,9 +2401,9 @@ mod tests {
         assert!(dir.join("review.md").exists());
         let report = std::fs::read_to_string(dir.join("report.md")).unwrap();
         assert!(report.contains("VALIDATED"), "drill proposal must be validated:\n{report}");
-        // Clean up the throwaway sandbox (it lives under tmp/jarvis-heal-drill-*).
+        // Clean up the throwaway sandbox (it lives under tmp/darwin-heal-drill-*).
         if let Some(sandbox) = dir.ancestors().find(|p| {
-            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("jarvis-heal-drill-"))
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("darwin-heal-drill-"))
         }) {
             let _ = std::fs::remove_dir_all(sandbox);
         }

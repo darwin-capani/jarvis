@@ -13,9 +13,9 @@ const mk = (status: UpdateCheck["status"], detail = "", version?: string | null)
 
 describe("aboutCheckView", () => {
   it("up_to_date -> the reassuring latest-version line (the user's explicit ask)", () => {
-    const v = aboutCheckView(mk("up_to_date", "JARVIS is on the latest version."));
+    const v = aboutCheckView(mk("up_to_date", "DARWIN is on the latest version."));
     expect(v.kind).toBe("uptodate");
-    expect(v.text).toBe("JARVIS is on the latest version.");
+    expect(v.text).toBe("DARWIN is on the latest version.");
     expect(v.version).toBeNull();
   });
 
@@ -46,7 +46,7 @@ describe("aboutCheckView", () => {
   });
 
   it("unavailable (browser/no shell) -> honest detail", () => {
-    const v = aboutCheckView(mk("unavailable", "Updates are checked from the JARVIS desktop app."));
+    const v = aboutCheckView(mk("unavailable", "Updates are checked from the DARWIN desktop app."));
     expect(v.kind).toBe("error");
     expect(v.version).toBeNull();
   });

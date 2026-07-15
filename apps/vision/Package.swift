@@ -1,5 +1,5 @@
 // swift-tools-version: 6.0
-// Vision — JARVIS on-device computer-vision micro-app.
+// Vision — DARWIN on-device computer-vision micro-app.
 //
 // Defensive, on-device ONLY. Uses Apple's BUILT-IN Vision/Core ML requests
 // (no external model download, fully offline). Inference runs headlessly on
@@ -49,7 +49,7 @@ let package = Package(
                 .linkedFramework("ImageIO"),
                 .linkedFramework("Foundation"),
                 // EMBED Info.plist into the binary's __TEXT,__info_plist section so
-                // macOS reads CFBundleDisplayName="J.A.R.V.I.S." for this binary's
+                // macOS reads CFBundleDisplayName="D.A.R.W.I.N." for this binary's
                 // Camera/Screen TCC prompts (it is the real capturer) plus the
                 // Camera/Mic usage strings. SwiftPM resolves this linker path
                 // relative to the PACKAGE ROOT, so it works with both `swift build`

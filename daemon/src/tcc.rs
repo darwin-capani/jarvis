@@ -282,7 +282,7 @@ fn format_inventory(grants: &[Grant]) -> String {
 fn unavailable_message(reason: &str) -> String {
     format!(
         "I can't read the macOS privacy database (TCC) right now, so I won't guess which apps hold \
-         which grants. On modern macOS this store is protected — grant JARVIS Full Disk Access in \
+         which grants. On modern macOS this store is protected — grant DARWIN Full Disk Access in \
          System Settings › Privacy & Security › Full Disk Access to let me inventory it (read-only; \
          I never change a permission). [{reason}]"
     )
@@ -306,7 +306,7 @@ type BaselineRow = (String, String, String);
 /// The durable TCC baseline (`state/tcc_baseline.db`). Its OWN dedicated SQLite
 /// file, plaintext or SQLCipher-encrypted exactly like `audit.db` (open /
 /// open_encrypted). An async Mutex serializes access (mirrors AuditLog). The
-/// baseline stores app grants JARVIS has already seen so a later scan can flag
+/// baseline stores app grants DARWIN has already seen so a later scan can flag
 /// what is NEW — it is not sensitive, but it follows the same at-rest discipline.
 pub struct TccBaseline {
     conn: Mutex<Connection>,

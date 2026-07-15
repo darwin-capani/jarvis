@@ -63,7 +63,7 @@ describe("audio-i/o folding helpers (events.ts)", () => {
       turns: 0,
     });
     // Default phrase preserves today's behavior; nothing dropped yet.
-    expect(s.wake).toEqual({ phrase: "jarvis", lastDropped: false });
+    expect(s.wake).toEqual({ phrase: "darwin", lastDropped: false });
   });
 
   /* ---- #30 live interpretation ---- */
@@ -221,7 +221,7 @@ describe("audio-i/o in the HUD reducer", () => {
     const s = initialState().audioIo;
     expect(s.interpret.active).toBe(false);
     expect(s.diarization.seen).toBe(false);
-    expect(s.wake.phrase).toBe("jarvis");
+    expect(s.wake.phrase).toBe("darwin");
   });
 
   it("folds the #30 interpret.segment_fed + interpret.segment events", () => {
@@ -273,8 +273,8 @@ describe("AudioIoPanel render", () => {
     expect(html).toContain("AUDIO // I/O");
     expect(html).toContain("INTERPRET OFF");
     expect(html).toContain("NOT SEEN");
-    // The configured wake word is named (default jarvis).
-    expect(html).toContain("jarvis");
+    // The configured wake word is named (default darwin).
+    expect(html).toContain("darwin");
     // Honest device-gated + EL-Scribe-only + never-fabricated copy.
     const lower = html.toLowerCase();
     expect(lower).toContain("device-gated");
@@ -323,7 +323,7 @@ describe("AudioIoPanel render", () => {
       text: "PRIVATE",
       translation: "SECRETO",
     });
-    a = applyUtteranceNoWake(a, { phrase: "jarvis", path: "/state/audio/x.wav" });
+    a = applyUtteranceNoWake(a, { phrase: "darwin", path: "/state/audio/x.wav" });
     const html = renderPanel(a);
     expect(html).not.toContain("PRIVATE");
     expect(html).not.toContain("SECRETO");

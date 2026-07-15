@@ -4,14 +4,14 @@ import Frame from "./Frame";
 /**
  * CONNECTOR // MARKETPLACE — the browsable front door of the self-extension
  * engine: a curated catalog of vetted Model-Context-Protocol (MCP) connectors
- * JARVIS can plug into, each cross-referenced against the LIVE configured set so
+ * DARWIN can plug into, each cross-referenced against the LIVE configured set so
  * you can see what is already CONFIGURED vs AVAILABLE (and the credential each
  * needs).
  *
  * SAFETY CONTRACT (do not regress):
  *   - REVIEW-ONLY. There is NO button here that adds a connector, writes config,
  *     stores a token, or runs a server. Adding an MCP connector is a CONSEQUENTIAL
- *     mutation of the most dangerous external surface in JARVIS (an MCP server
+ *     mutation of the most dangerous external surface in DARWIN (an MCP server
  *     runs code); it must go through the gated path (scoped config write +
  *     Keychain token + a read-only tools/list handshake before arming). This
  *     panel only SHOWS what is available so the user can decide.
@@ -86,7 +86,7 @@ export default function ConnectorMarketplacePanel({ mcp }: { mcp: McpStatus | nu
             <span className="connectors-count-label">CONFIGURED</span>
           </div>
           <div className="connectors-note dim-note">
-            Vetted MCP connectors JARVIS can plug into. Adding one is a gated action
+            Vetted MCP connectors DARWIN can plug into. Adding one is a gated action
             (scoped config entry + Keychain token + a read-only handshake before it
             arms) — review-only here.
           </div>

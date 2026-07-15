@@ -1,7 +1,7 @@
 /**
  * Telemetry WebSocket client. The HUD is a pure CLIENT of the daemon's
  * broadcast server on ws://127.0.0.1:7177 — it never binds that port and
- * never sends anything meaningful (jarvisd ignores inbound frames).
+ * never sends anything meaningful (darwind ignores inbound frames).
  *
  * Reconnect: 1s -> 5s linear backoff, forever. The backoff counter resets
  * only after a connection has stayed open for HEALTHY_RESET_MS — a

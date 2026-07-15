@@ -20,7 +20,7 @@
 /** localStorage key for the once-only first-run flag. Versioned so a future
  *  re-onboarding (new surfaces worth re-explaining) can ship by bumping the
  *  suffix without colliding with an already-dismissed v1. */
-export const ONBOARDING_SEEN_KEY = "jarvis.onboarding.seen.v1";
+export const ONBOARDING_SEEN_KEY = "darwin.onboarding.seen.v1";
 
 /** The value written when the wizard has been completed/skipped. A presence
  *  check is enough; the literal is fixed so a test can assert it exactly. */
@@ -28,7 +28,7 @@ export const ONBOARDING_SEEN_VALUE = "1";
 
 /** Where a step's primary action ROUTES. Each target maps to an EXISTING,
  *  already-gated surface — the wizard opens it, it never reimplements it.
- *   - "settings-system"      : the System Settings tab (config/jarvis.toml editor):
+ *   - "settings-system"      : the System Settings tab (config/darwin.toml editor):
  *                              TCC guidance lives here, plus the file-search +
  *                              code RAG-roots editors and voice enrolment controls.
  *   - "settings-credentials" : the Credentials & Gates tab: the cloud key, OAuth
@@ -66,9 +66,9 @@ export interface OnboardingStep {
 export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
   {
     id: "welcome",
-    title: "Welcome — JARVIS is armed but gated",
+    title: "Welcome — DARWIN is armed but gated",
     body: [
-      "JARVIS can see, hear, and act — but every consequential or outward action is GATED. Nothing reaches the world without passing the confirmation gate, the master switch, and (when enabled) the owner voice-id check.",
+      "DARWIN can see, hear, and act — but every consequential or outward action is GATED. Nothing reaches the world without passing the confirmation gate, the master switch, and (when enabled) the owner voice-id check.",
       "Autonomy is ARMED but propose-only: self-heal, the app forge, and the optimizer are enabled by default, yet they only ever PROPOSE — each one drafts a change and waits for you to apply it, never acting on its own. Answers stay on-device unless you opt into a cloud tier.",
       "This quick tour just points you at the existing setup surfaces. It never changes a setting or grants a permission for you — you do each gated step yourself.",
     ],
@@ -79,7 +79,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     id: "permissions",
     title: "macOS permissions (TCC)",
     body: [
-      "To hear you and see the screen, macOS must grant Microphone, Accessibility, and Screen Recording to the JARVIS app — in System Settings → Privacy & Security. macOS asks you directly; JARVIS cannot grant these for you.",
+      "To hear you and see the screen, macOS must grant Microphone, Accessibility, and Screen Recording to the DARWIN app — in System Settings → Privacy & Security. macOS asks you directly; DARWIN cannot grant these for you.",
       "Open System Settings below for the in-app guidance on which permissions each capability needs. Until you grant them, those capabilities simply stay inert — nothing fails silently.",
     ],
     route: "settings-system",
@@ -100,7 +100,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
     title: "File search & code roots (optional)",
     body: [
       "On-device file/code search is OFF and indexes NOTHING until you allowlist a folder. Contents and embeddings never leave the device.",
-      "Add the folders JARVIS may index under System Settings → File-search folders and Code-intelligence roots. Each entry is an absolute path you choose explicitly — there is no whole-disk scan.",
+      "Add the folders DARWIN may index under System Settings → File-search folders and Code-intelligence roots. Each entry is an absolute path you choose explicitly — there is no whole-disk scan.",
     ],
     route: "settings-system",
     actionLabel: "Open System Settings",

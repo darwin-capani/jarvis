@@ -1,13 +1,13 @@
 //! SYSTEM ACCESS — fire the REAL macOS TCC permission prompts from THIS app
-//! bundle (JARVIS.app), so the user sees a clean "JARVIS" dialog rather than
+//! bundle (DARWIN.app), so the user sees a clean "DARWIN" dialog rather than
 //! nothing.
 //!
 //! WHY HERE (not the daemon): macOS attributes a permission to the binary that
 //! requests it, and only shows a prompt for a process that (a) carries the
 //! matching usage-description string and (b) can present a foreground dialog.
-//! JARVIS.app satisfies both (its Info.plist has NSMicrophoneUsageDescription /
+//! DARWIN.app satisfies both (its Info.plist has NSMicrophoneUsageDescription /
 //! NSCameraUsageDescription / NSAppleEventsUsageDescription and it is a real app
-//! bundle). The background `jarvisd` is a bare LaunchAgent binary and cannot. So
+//! bundle). The background `darwind` is a bare LaunchAgent binary and cannot. So
 //! the APP requests each device permission here; Stage 2 routes the captured data
 //! from the app to the daemon so the features actually use the app's grant.
 //!
@@ -112,14 +112,14 @@ mod imp {
                 PromptResult::new(
                     true,
                     "not_determined",
-                    &format!("Asked macOS for {label} access — approve the JARVIS prompt."),
+                    &format!("Asked macOS for {label} access — approve the DARWIN prompt."),
                 )
             }
             3 => PromptResult::new(false, "granted", &format!("{label} access is already granted.")),
             2 => PromptResult::new(
                 false,
                 "denied",
-                &format!("{label} was previously denied — re-enable JARVIS in System Settings."),
+                &format!("{label} was previously denied — re-enable DARWIN in System Settings."),
             ),
             _ => PromptResult::new(
                 false,
@@ -151,7 +151,7 @@ mod imp {
             PromptResult::new(
                 true,
                 "not_determined",
-                "Asked macOS for Screen Recording — approve the JARVIS prompt (you may need to quit & reopen JARVIS).",
+                "Asked macOS for Screen Recording — approve the DARWIN prompt (you may need to quit & reopen DARWIN).",
             )
         }
     }
@@ -172,7 +172,7 @@ mod imp {
             PromptResult::new(
                 true,
                 "not_determined",
-                "Asked macOS for Accessibility — approve the JARVIS prompt, then enable JARVIS in the pane.",
+                "Asked macOS for Accessibility — approve the DARWIN prompt, then enable DARWIN in the pane.",
             )
         }
     }
@@ -186,14 +186,14 @@ mod imp {
             return PromptResult::new(
                 false,
                 "denied",
-                "Input Monitoring was previously denied — re-enable JARVIS in System Settings.",
+                "Input Monitoring was previously denied — re-enable DARWIN in System Settings.",
             );
         }
         let granted = unsafe { IOHIDRequestAccess(KIOHID_REQUEST_TYPE_LISTEN_EVENT) };
         PromptResult::new(
             true,
             if granted { "granted" } else { "not_determined" },
-            "Asked macOS for Input Monitoring — approve the JARVIS prompt.",
+            "Asked macOS for Input Monitoring — approve the DARWIN prompt.",
         )
     }
 

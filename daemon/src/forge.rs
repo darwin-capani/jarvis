@@ -1,4 +1,4 @@
-//! Self-Forge: JARVIS authoring a NEW sandboxed micro-app from a goal.
+//! Self-Forge: DARWIN authoring a NEW sandboxed micro-app from a goal.
 //!
 //! This is heal.rs generalized — from "patch a daemon bug" to "author a whole
 //! micro-app" — behind the EXACT same hard gates. The self-heal drafter feeds
@@ -90,7 +90,7 @@ const MAX_NET_HOSTS: usize = 6;
 /// is a sign the model went off the rails; reject rather than stage it.
 const MAX_AUTHORED_FILE_BYTES: usize = 256 * 1024;
 
-const DRAFT_SYSTEM: &str = "You are JARVIS's app forge: an expert engineer who authors a small, \
+const DRAFT_SYSTEM: &str = "You are DARWIN's app forge: an expert engineer who authors a small, \
      SELF-CONTAINED, sandboxable micro-app from a goal. You output a strict file manifest and \
      nothing else — no prose outside the requested structure. The app must build and pass its own \
      tests offline, and request the MINIMAL permissions it truly needs.";
@@ -147,7 +147,7 @@ impl ForgeBrain for CloudBrain {
 /// will accept (the validator is still the hard gate; the prompt only nudges).
 fn draft_prompt(goal: &str) -> String {
     format!(
-        "Author a small, self-contained JARVIS micro-app that accomplishes this goal:\n\n\
+        "Author a small, self-contained DARWIN micro-app that accomplishes this goal:\n\n\
          GOAL: {goal}\n\n\
          A micro-app is one directory under apps/<name>/ with a manifest.toml (the SANDBOX.md \
          schema) plus its source and tests. It runs under a default-deny macOS seatbelt profile \
@@ -428,7 +428,7 @@ fn validate_manifest(manifest_toml: &str, dir_name: &str, project_root: &Path) -
     Ok(manifest)
 }
 
-/// Deploy-time re-validation gate, callable from the `jarvisd
+/// Deploy-time re-validation gate, callable from the `darwind
 /// --validate-forge-manifest <manifest_path> <app_name>` CLI dispatch.
 ///
 /// scripts/apply_forge.sh calls THIS instead of re-implementing the
@@ -1142,7 +1142,7 @@ pub async fn forge_app(root: &Path, cfg: &Config, memory: &Memory, goal: &str) -
 
 // ---------------------------------------------------------------------------
 // FORGE DRILL — the ONE real cloud path, invoked by the verifier via
-// `jarvisd --forge-drill`. It runs the FULL real pipeline (draft -> stage ->
+// `darwind --forge-drill`. It runs the FULL real pipeline (draft -> stage ->
 // validate -> propose) against a FIXED benign goal in a throwaway temp root. It
 // NEVER touches the real apps/ and NEVER deploys.
 // ---------------------------------------------------------------------------
@@ -1160,7 +1160,7 @@ const DRILL_GOAL: &str = "A tiny offline utility micro-app that reverses an ASCI
 /// the proposal dir on success. The real apps/ is never touched, nothing is
 /// deployed, nothing is run beyond the confined staging build/test.
 ///
-/// Invoked by `jarvisd --forge-drill` (see main.rs); the model id is the
+/// Invoked by `darwind --forge-drill` (see main.rs); the model id is the
 /// configured heavy model so the drill exercises exactly the production path.
 pub async fn run_forge_drill(model: &str) -> Result<PathBuf> {
     if anthropic::resolve_api_key().await.is_none() {
@@ -1169,7 +1169,7 @@ pub async fn run_forge_drill(model: &str) -> Result<PathBuf> {
     telemetry::init(); // safe if already initialized (OnceLock no-op)
 
     let ts = now_secs();
-    let sandbox = std::env::temp_dir().join(format!("jarvis-forge-drill-{}-{ts}", std::process::id()));
+    let sandbox = std::env::temp_dir().join(format!("darwin-forge-drill-{}-{ts}", std::process::id()));
     // A real .venv is not present in the sandbox; the drill goal yields a Rust
     // app, so the python interpreter path is never exercised.
     std::fs::create_dir_all(sandbox.join("apps"))?;
@@ -1475,7 +1475,7 @@ mod tests {
     // parses with that SAME toml crate, so both forms are caught.
     #[test]
     fn validate_manifest_file_catches_toml_parser_differential() {
-        let dir = std::env::temp_dir().join(format!("jarvis-forge-gate-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("darwin-forge-gate-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let root = std::env::temp_dir();
         let write = |body: &str| {
@@ -1573,7 +1573,7 @@ mod tests {
     struct TempRoot(PathBuf);
     impl TempRoot {
         fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("jarvis-forge-test-{}-{tag}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("darwin-forge-test-{}-{tag}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             TempRoot(dir)
@@ -1597,7 +1597,7 @@ mod tests {
          [[bin]]\nname = \"reverser\"\npath = \"src/main.rs\"\n\
          === FILE: src/main.rs ===\n\
          pub fn reverse(s: &str) -> String { s.chars().rev().collect() }\n\
-         fn main() { println!(\"{}\", reverse(\"jarvis\")); }\n\n\
+         fn main() { println!(\"{}\", reverse(\"darwin\")); }\n\n\
          #[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn reverses() {\n        \
          assert_eq!(reverse(\"abc\"), \"cba\");\n    }\n}\n"
             .to_string()
@@ -1835,7 +1835,7 @@ mod tests {
         copied
     }
 
-    /// Resolve an already-built jarvisd that implements the deploy-time gate, for
+    /// Resolve an already-built darwind that implements the deploy-time gate, for
     /// the hermetic apply_forge.sh harness (which runs the script in a temp ROOT
     /// with no daemon/ tree to build). Prefer an existing release/debug binary
     /// under this crate's target/; build the release binary once if neither
@@ -1844,24 +1844,24 @@ mod tests {
     fn resolve_gate_binary() -> PathBuf {
         let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
         for prof in ["release", "debug"] {
-            let cand = target.join(prof).join("jarvisd");
+            let cand = target.join(prof).join("darwind");
             if cand.is_file() {
                 return cand;
             }
         }
         // Neither exists in this checkout — build the release binary once.
         let status = std::process::Command::new(env!("CARGO"))
-            .args(["build", "--release", "--bin", "jarvisd"])
+            .args(["build", "--release", "--bin", "darwind"])
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .status()
-            .expect("build jarvisd for the apply_forge gate test");
-        assert!(status.success(), "building jarvisd for the gate test failed");
-        target.join("release").join("jarvisd")
+            .expect("build darwind for the apply_forge gate test");
+        assert!(status.success(), "building darwind for the gate test failed");
+        target.join("release").join("darwind")
     }
 
     /// Run the copied apply_forge.sh `<ts> --yes` and return (success, combined
     /// stdout+stderr). Points the script's deploy-time gate at an already-built
-    /// jarvisd via JARVISD_VALIDATE_BIN so the hermetic temp ROOT (which has no
+    /// darwind via DARWIND_VALIDATE_BIN so the hermetic temp ROOT (which has no
     /// daemon/ tree) need not build one.
     fn run_apply_forge(script: &Path, ts: u64) -> (bool, String) {
         let gate_bin = resolve_gate_binary();
@@ -1869,7 +1869,7 @@ mod tests {
             .arg(script)
             .arg(ts.to_string())
             .arg("--yes")
-            .env("JARVISD_VALIDATE_BIN", &gate_bin)
+            .env("DARWIND_VALIDATE_BIN", &gate_bin)
             .output()
             .expect("spawn apply_forge.sh");
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -2012,7 +2012,7 @@ mod tests {
     /// THE real-cloud forge drill. #[ignore] by default — the ONLY cloud path in
     /// this module, run explicitly by the verifier:
     ///   cargo test --release forge_drill_real_cloud -- --ignored --nocapture
-    /// (or `jarvisd --forge-drill`). It authors a benign zero-permission app via
+    /// (or `darwind --forge-drill`). It authors a benign zero-permission app via
     /// the REAL cloud, proving draft -> stage -> validate -> propose end to end.
     /// Skips gracefully (passes) when no API key is present.
     #[tokio::test]
@@ -2030,7 +2030,7 @@ mod tests {
         assert!(report.contains("VALIDATED"), "drill proposal must be validated:\n{report}");
         // Clean up the throwaway sandbox.
         if let Some(sandbox) = dir.ancestors().find(|p| {
-            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("jarvis-forge-drill-"))
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("darwin-forge-drill-"))
         }) {
             let _ = std::fs::remove_dir_all(sandbox);
         }

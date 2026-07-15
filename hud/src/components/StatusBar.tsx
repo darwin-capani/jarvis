@@ -222,7 +222,7 @@ function LocalToolsChip({ lt }: { lt: LocalToolsStatus }) {
  *  ElevenLabs premium voices). HONEST by construction: the hover copy states that
  *  on the CLOUD path the spoken text LEAVES the device to be synthesized, that
  *  on-device Kokoro is the private default and the fallback on any cloud error, and
- *  that this is VOICE-ONLY — it changes how JARVIS sounds, no safety gate, and the
+ *  that this is VOICE-ONLY — it changes how DARWIN sounds, no safety gate, and the
  *  telemetry carries no key. Before any voice.tier telemetry the chip rests on a dim
  *  AWAITING marker. */
 function VoiceTierChip({ v }: { v: VoiceTierStatus }) {
@@ -230,7 +230,7 @@ function VoiceTierChip({ v }: { v: VoiceTierStatus }) {
   const label = voiceTierLabel(v.backend);
   const title =
     `Voice: ${label}. ${voiceTierDetail(v.backend)} ` +
-    "VOICE-ONLY — changes how JARVIS sounds, not any safety gate. On-device Kokoro " +
+    "VOICE-ONLY — changes how DARWIN sounds, not any safety gate. On-device Kokoro " +
     "is the private/offline default + the fallback; the cloud voice tier ships OFF " +
     "and needs an ElevenLabs key + online to engage. (No key or voice id is ever " +
     "shown here — only which backend spoke.)" +
@@ -293,7 +293,7 @@ function VoiceModeChip({ v }: { v: VoiceModeStatus }) {
     `Tone: ${profile} · ${v.rich ? "rich prosody" : "coarse/neutral prosody"}` +
     `${v.whisper ? " · whisper ON" : ""}. ` +
     `${voiceModeRichDetail(v)} ${voiceModeWhisperDetail(v)} ` +
-    "EXPRESSIVENESS-ONLY — changes how JARVIS sounds (tone + soft/terse delivery), " +
+    "EXPRESSIVENESS-ONLY — changes how DARWIN sounds (tone + soft/terse delivery), " +
     "not any safety gate. Rich prosody is ElevenLabs-v3-gated (the on-device default " +
     "gets a coarse rate-only mapping, never faked); whisper changes delivery only and " +
     "never suppresses a required confirmation. (No key, voice id, or text is ever " +
@@ -315,7 +315,7 @@ function VoiceModeChip({ v }: { v: VoiceModeStatus }) {
  *  GROUND-TRUTH `active`, never `config` alone, so a config-on-but-key-failed run
  *  reads honestly as NOT ENCRYPTED — never a false green. The hover copy spells out
  *  that this protects data AT REST ON DISK only (NOT against a live-process/root
- *  attacker — the key + decrypted pages are in RAM while jarvisd runs), names the
+ *  attacker — the key + decrypted pages are in RAM while darwind runs), names the
  *  cipher + key location, and states the scope is partial (the config TOML + the
  *  in-RAM working set are NOT covered). Renders nothing until the snapshot arrives
  *  so the bar is not cluttered before the daemon reports. */
@@ -328,7 +328,7 @@ function EncryptionChip({ sec }: { sec: SecurityStatus }) {
   const honesty =
     sec.honesty ||
     "Protects data AT REST ON DISK only — NOT against a live-process/root attacker " +
-      "(the key + decrypted data are in RAM while jarvisd runs). Partial scope: the " +
+      "(the key + decrypted data are in RAM while darwind runs). Partial scope: the " +
       "config TOML and the in-RAM working set are NOT encrypted.";
   const cipher = sec.cipher ? `${sec.cipher}. ` : "";
   const keyLoc = sec.keyLocation ? `Key: ${sec.keyLocation}. ` : "";
@@ -465,7 +465,7 @@ export default function StatusBar({
   return (
     <header className="statusbar">
       <span className="status-ident">
-        J.A.R.V.I.S <span className="ident-sub">MAIN // GENERAL</span>
+        D.A.R.W.I.N <span className="ident-sub">MAIN // GENERAL</span>
       </span>
       <span className="status-item">
         <span className={`dot ${connected ? "ok" : "off"}`} />

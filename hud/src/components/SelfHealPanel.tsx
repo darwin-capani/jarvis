@@ -245,8 +245,8 @@ function Proposal({
             type: "applyOk",
             restarted,
             message: restarted
-              ? "Healed. JARVIS restarted on the new build."
-              : "Healed. Restart jarvisd to run the healed build.",
+              ? "Healed. DARWIN restarted on the new build."
+              : "Healed. Restart darwind to run the healed build.",
           });
         } else {
           dispatch({

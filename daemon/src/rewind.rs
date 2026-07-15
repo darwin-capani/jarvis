@@ -565,7 +565,7 @@ mod tests {
         Episode {
             id: 0,
             ts: ts.to_string(),
-            agent_namespace: "agent.jarvis".to_string(),
+            agent_namespace: "agent.darwin".to_string(),
             utterance_redacted: String::new(),
             topic: topic.to_string(),
             salient_entities: Vec::new(),

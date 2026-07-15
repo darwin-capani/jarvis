@@ -27,10 +27,10 @@ import { str } from "./events";
 
 /* ------------------------------------------------------------------------ *
  * Agent targeting — the deck lets the operator address a specific agent or  *
- * let Jarvis-Prime route. "" (the sentinel) means auto-route.               *
+ * let Darwin-Prime route. "" (the sentinel) means auto-route.               *
  * ------------------------------------------------------------------------ */
 
-/** The sentinel agent target meaning "let Jarvis-Prime route" (no agent ref on
+/** The sentinel agent target meaning "let Darwin-Prime route" (no agent ref on
  *  the wire — the daemon resolves to the orchestrator). */
 export const AUTO_ROUTE = "";
 

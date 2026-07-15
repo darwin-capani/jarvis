@@ -3,7 +3,7 @@
 //! Meta's token model differs from the generic OAuth2 providers in `oauth2.rs`:
 //! there is NO refresh token. The installed-app dance yields a SHORT-lived user
 //! access token, which you then EXCHANGE (once, server-side) for a LONG-lived
-//! (~60-day) token. JARVIS stores THAT long-lived token in the Keychain and uses
+//! (~60-day) token. DARWIN stores THAT long-lived token in the Keychain and uses
 //! it directly as the bearer — there is no silent refresh. When it expires the
 //! user must reconnect, so [`MetaAuth::access_token`] returns a friendly
 //! "reconnect in Settings" error rather than attempting a refresh.
@@ -67,7 +67,7 @@ pub const META_SCOPES: &[&str] = &["ads_read", "ads_management"];
 
 /// Keychain account names for Meta Ads. `meta_app_id` / `meta_app_secret` are the
 /// app credentials the user pastes in Settings; `meta_long_lived_token` is the
-/// ~60-day token JARVIS WRITES after the short->long exchange (the ONLY token
+/// ~60-day token DARWIN WRITES after the short->long exchange (the ONLY token
 /// persisted — there is no refresh token); `meta_ad_account_id` is the ad account
 /// the calls target (e.g. `act_1234567890`). Mirrored on the foundation allowlist
 /// in `mod.rs`.

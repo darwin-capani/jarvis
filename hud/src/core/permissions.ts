@@ -1,5 +1,5 @@
 /**
- * SYSTEM ACCESS — the macOS Privacy & Security permissions JARVIS uses, plus the
+ * SYSTEM ACCESS — the macOS Privacy & Security permissions DARWIN uses, plus the
  * honest contract around (re-)requesting them.
  *
  * HONESTY CONTRACT (do not regress): macOS does NOT let any app grant itself a
@@ -8,7 +8,7 @@
  * MOST an app may do is (1) DEEP-LINK the user to the exact Privacy pane and
  * (2) trigger the native PROMPT for the few categories that have one, the first
  * time it actually uses them. So this surface OPENS the right pane and explains
- * each permission — the user flips the switch. We NEVER imply JARVIS can grant
+ * each permission — the user flips the switch. We NEVER imply DARWIN can grant
  * itself anything; "re-request" means re-open the pane / re-trigger the prompt.
  *
  * Each pane KEY below MUST exist in the Rust allowlist (hud/src-tauri/src/
@@ -29,7 +29,7 @@ export interface PermissionPane {
   anchor: string;
   /** Pane name exactly as it reads in System Settings. */
   label: string;
-  /** Plain-English reason JARVIS uses it. */
+  /** Plain-English reason DARWIN uses it. */
   why: string;
 }
 
@@ -44,7 +44,7 @@ export const PERMISSION_PANES: PermissionPane[] = [
     key: "accessibility",
     anchor: "Privacy_Accessibility",
     label: "Accessibility",
-    why: "Control your Mac — click, type, and drive other apps when you ask JARVIS to act for you.",
+    why: "Control your Mac — click, type, and drive other apps when you ask DARWIN to act for you.",
   },
   {
     key: "screen",
@@ -62,7 +62,7 @@ export const PERMISSION_PANES: PermissionPane[] = [
     key: "input_monitoring",
     anchor: "Privacy_ListenEvent",
     label: "Input Monitoring",
-    why: "Catch the wake word or a hotkey from any app, so “Jarvis…” works anywhere.",
+    why: "Catch the wake word or a hotkey from any app, so “Darwin…” works anywhere.",
   },
   {
     key: "automation",
@@ -74,7 +74,7 @@ export const PERMISSION_PANES: PermissionPane[] = [
     key: "camera",
     anchor: "Privacy_Camera",
     label: "Camera",
-    why: "On-device vision when you ask JARVIS to watch the camera. Stays off until you ask.",
+    why: "On-device vision when you ask DARWIN to watch the camera. Stays off until you ask.",
   },
 ];
 
@@ -85,11 +85,11 @@ export const PERMISSION_KEYS: string[] = PERMISSION_PANES.map((p) => p.key);
 export const PERMISSIONS_COPY = {
   title: "SYSTEM ACCESS // macOS PERMISSIONS",
   lede:
-    "JARVIS is most capable with broad access to your Mac. Click REQUEST and JARVIS asks macOS directly — you'll see a system prompt to Allow. macOS still decides: for your safety no app can switch a permission on for itself, so you confirm each one.",
+    "DARWIN is most capable with broad access to your Mac. Click REQUEST and DARWIN asks macOS directly — you'll see a system prompt to Allow. macOS still decides: for your safety no app can switch a permission on for itself, so you confirm each one.",
   howTitle: "How this works",
   how: [
-    "Click REQUEST and macOS shows a JARVIS permission prompt — choose Allow.",
-    "If a permission was already decided, or has no prompt (Full Disk Access, Automation), JARVIS opens the exact Settings pane so you can switch it on there.",
+    "Click REQUEST and macOS shows a DARWIN permission prompt — choose Allow.",
+    "If a permission was already decided, or has no prompt (Full Disk Access, Automation), DARWIN opens the exact Settings pane so you can switch it on there.",
     "You can change any answer later in System Settings → Privacy & Security.",
   ],
   requestAll: "RE-REQUEST ALL PERMISSIONS",

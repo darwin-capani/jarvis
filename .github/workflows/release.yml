@@ -1,4 +1,4 @@
-# WS4a — JARVIS HUD release pipeline (sign + notarize + staple + publish).
+# WS4a — DARWIN HUD release pipeline (sign + notarize + staple + publish).
 #
 # WHAT IT DOES: on a pushed `v*` tag, builds the Tauri HUD .app/.dmg on macOS,
 # CODE-SIGNS it with the owner's Developer ID, NOTARIZES + STAPLES it with Apple,
@@ -73,7 +73,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable channel
         with:
           toolchain: stable
-          # JARVIS is Apple-Silicon-only (arm64 + Metal/MLX/ANE), so we build for
+          # DARWIN is Apple-Silicon-only (arm64 + Metal/MLX/ANE), so we build for
           # aarch64 ONLY — a universal/x86_64 slice can't run the OS and breaks the
           # updater's latest.json signature matching (the renamed _universal artifact
           # doesn't match the .sig, so tauri-action skips latest.json).
@@ -169,7 +169,7 @@ jobs:
           # Reuse the pushed tag as the release tag/name; ship a draft so the owner
           # reviews + publishes (publishing is what makes latest.json the "latest").
           tagName: ${{ github.ref_name }}
-          releaseName: "JARVIS ${{ github.ref_name }}"
+          releaseName: "DARWIN ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
           # Apple-Silicon-only build (matches the OS); the aarch64 artifact name and

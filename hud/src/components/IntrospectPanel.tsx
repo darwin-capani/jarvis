@@ -2,7 +2,7 @@ import type { IntrospectStatus, IntrospectCapability } from "../core/events";
 import Frame from "./Frame";
 
 /**
- * INTROSPECT // MICRO-APP SENTINEL — the ambient READ-ONLY view of jarvisd's own
+ * INTROSPECT // MICRO-APP SENTINEL — the ambient READ-ONLY view of darwind's own
  * sandboxed micro-apps, fed by the introspect.snapshot / introspect.profile_drift
  * / introspect.anomaly / introspect.module_violation / introspect.modattest
  * telemetry from daemon/src/introspect.rs. It surfaces the SANDBOX-INTEGRITY
@@ -49,7 +49,7 @@ export default function IntrospectPanel({
             </span>
           </div>
           <div className="introspect-note dim-note">
-            Read-only watch over JARVIS's own sandboxed micro-apps: SBPL profile
+            Read-only watch over DARWIN's own sandboxed micro-apps: SBPL profile
             tamper, runaway RSS/CPU, and unexpected loaded modules (dyld). It
             reports; it never kills, unloads, or changes a profile.
           </div>

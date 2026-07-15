@@ -19,7 +19,7 @@ fn main() {
             // not honored the same way on this cargo). build.rs only compiles the
             // shim and points rustc at where the archive lives.
             .cargo_metadata(false)
-            .compile("jarvis_es_shim");
+            .compile("darwin_es_shim");
         let out = std::env::var("OUT_DIR").expect("OUT_DIR set by cargo");
         println!("cargo:rustc-link-search=native={out}");
         println!("cargo:rerun-if-changed=csrc/es_shim.c");

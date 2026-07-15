@@ -2,7 +2,7 @@ import type { AttributionHealth } from "../core/events";
 import Frame from "./Frame";
 
 /**
- * CAPABILITY // HEALTH — the PROPOSE-ONLY ambient view of how JARVIS's own
+ * CAPABILITY // HEALTH — the PROPOSE-ONLY ambient view of how DARWIN's own
  * agents and skills are performing, computed from the outcome-labelled trace
  * corpus (daemon/src/attribution.rs, attribution.health). It surfaces how many
  * well-sampled capabilities are reliable vs failing, and NAMES the failing ones

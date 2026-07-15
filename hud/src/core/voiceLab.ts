@@ -112,7 +112,7 @@ export function voiceLabGateCopy(reason: VoiceLabDisabledReason | null): string 
         "nothing is created — it never fabricates a voice or a dictionary."
       );
     case "no_shell":
-      return "The Voice Lab requires the JARVIS desktop app.";
+      return "The Voice Lab requires the DARWIN desktop app.";
     case "tier_off":
       return "The cloud tier is off. Turn on cloud TTS ([voice].cloud_tier) to use the Voice Lab.";
     case "no_key":
@@ -298,7 +298,7 @@ export function designVoiceOutcomeCopy(outcome: VoiceLabOutcome, agent: string):
     case "failed":
       return `Couldn't design the voice for ${a} — the cloud request didn't go through. Nothing was created.`;
     case "no_shell":
-      return "Designing a voice requires the JARVIS desktop app.";
+      return "Designing a voice requires the DARWIN desktop app.";
   }
 }
 
@@ -319,6 +319,6 @@ export function pronunciationOutcomeCopy(
     case "failed":
       return `Couldn't add the pronunciation for “${w}” — the cloud request didn't go through. Nothing was created.`;
     case "no_shell":
-      return "Adding a pronunciation requires the JARVIS desktop app.";
+      return "Adding a pronunciation requires the DARWIN desktop app.";
   }
 }

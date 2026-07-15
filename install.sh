@@ -1,16 +1,16 @@
 #!/bin/bash
-# install.sh — the ONE command that installs ALL of J.A.R.V.I.S., built FRESH,
+# install.sh — the ONE command that installs ALL of D.A.R.W.I.N., built FRESH,
 # into a per-user home with no sudo.
 #
-#   curl -fsSL https://raw.githubusercontent.com/darwin-capani/jarvis/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/darwin-capani/darwin/main/install.sh | bash
 #
 # (./install.sh also works from a local clone — it copies *this* clone into the
 #  install home, builds every artifact fresh there, and loads the LaunchAgents.)
 #
 # Install home (per-user, no sudo, relocatable — the daemon + boot wrappers are
-# JARVIS_ROOT-relative, so the tree runs from wherever it lands):
+# DARWIN_ROOT-relative, so the tree runs from wherever it lands):
 #
-#   ~/Library/Application Support/JARVIS
+#   ~/Library/Application Support/DARWIN
 #
 # What it does (staged):
 #   1. PREFLIGHT  — macOS + arm64, Xcode CLT, Rust, Python 3.11, Node/npm.
@@ -31,13 +31,13 @@
 #                   boot wrappers source it) reads the SAME cache
 #   5. BUILD      — cargo build --release (daemon + apps), swift build, HUD/Tauri .app
 #   6. AUTOSTART  — consent-gated (see --yes): render + load the 2 LaunchAgents
-#                   via scripts/install_boot.sh --install (RunAtLoad STARTS JARVIS)
-#   7. FINISH     — "JARVIS IS ONLINE" + honest next-steps (TCC grants, keys, wake word)
+#                   via scripts/install_boot.sh --install (RunAtLoad STARTS DARWIN)
+#   7. FINISH     — "DARWIN IS ONLINE" + honest next-steps (TCC grants, keys, wake word)
 #
 # Flags:
 #   --check / --dry-run   print the full plan and run only READ-ONLY detection
 #                         (prereq provisioning is PLANNED, never executed)
-#   --yes / -y            assume "yes" to the consent prompts (the JARVIS-
+#   --yes / -y            assume "yes" to the consent prompts (the DARWIN-
 #                         actuation confirm()s). Today that is ONE gate: stage 6
 #                         AUTOSTART, loading the LaunchAgents that START the
 #                         armed OS (declining leaves autostart MANUAL, enable
@@ -85,35 +85,35 @@ _src_root=""
 
 # We are a real clone iff this script's dir exists AND has scripts/ui.sh next to
 # it. If not (piped / standalone) AND we have not already bootstrapped, fetch.
-if [ -z "${JARVIS_BOOTSTRAPPED:-}" ] && { [ -z "$_src_root" ] || [ ! -f "$_src_root/scripts/ui.sh" ]; }; then
-    echo "  J.A.R.V.I.S. installer — fetching source…" >&2
+if [ -z "${DARWIN_BOOTSTRAPPED:-}" ] && { [ -z "$_src_root" ] || [ ! -f "$_src_root/scripts/ui.sh" ]; }; then
+    echo "  D.A.R.W.I.N. installer — fetching source…" >&2
 
-    _tmp="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-install.XXXXXX")"
+    _tmp="$(mktemp -d "${TMPDIR:-/tmp}/darwin-install.XXXXXX")"
     # Remove the temp tree on ANY exit of THIS (bootstrap) shell. The child
     # install.sh runs in a SEPARATE process with its own ui.sh cursor traps, so
     # this EXIT/INT/TERM trap is independent of (does not clobber) the child's.
     trap 'rm -rf "$_tmp"' EXIT INT TERM
 
     _fetched=""
-    # Tarball FIRST — no git / Xcode CLT needed. Extracts as jarvis-main/.
-    if curl -fsSL "https://codeload.github.com/darwin-capani/jarvis/tar.gz/refs/heads/main" \
+    # Tarball FIRST — no git / Xcode CLT needed. Extracts as darwin-main/.
+    if curl -fsSL "https://codeload.github.com/darwin-capani/darwin/tar.gz/refs/heads/main" \
         | tar -xz -C "$_tmp" 2>/dev/null; then
         _fetched=1
     elif command -v git >/dev/null 2>&1 \
-        && git clone --depth 1 "https://github.com/darwin-capani/jarvis" "$_tmp/jarvis-main" >/dev/null 2>&1; then
+        && git clone --depth 1 "https://github.com/darwin-capani/darwin" "$_tmp/darwin-main" >/dev/null 2>&1; then
         _fetched=1
     fi
 
     if [ -z "$_fetched" ]; then
-        echo "error: could not fetch the JARVIS source." >&2
+        echo "error: could not fetch the DARWIN source." >&2
         echo "       Need network access plus curl (or git)." >&2
-        echo "       Manual: git clone https://github.com/darwin-capani/jarvis && cd jarvis && ./install.sh" >&2
+        echo "       Manual: git clone https://github.com/darwin-capani/darwin && cd darwin && ./install.sh" >&2
         exit 1
     fi
 
-    # Resolve the fetched dir (the jarvis* dir under $_tmp holding install.sh).
+    # Resolve the fetched dir (the darwin* dir under $_tmp holding install.sh).
     _dir=""
-    for _cand in "$_tmp"/jarvis-main "$_tmp"/jarvis-* "$_tmp"/jarvis; do
+    for _cand in "$_tmp"/darwin-main "$_tmp"/darwin-* "$_tmp"/darwin; do
         if [ -f "$_cand/install.sh" ] && [ -f "$_cand/scripts/ui.sh" ]; then
             _dir="$_cand"; break
         fi
@@ -126,7 +126,7 @@ if [ -z "${JARVIS_BOOTSTRAPPED:-}" ] && { [ -z "$_src_root" ] || [ ! -f "$_src_r
     # Re-run from the real tree, passing ALL args through. RUN (not exec) so the
     # EXIT trap above can remove $_tmp after the child finishes; capture the
     # child's exit code so set -e does not abort before we propagate it.
-    JARVIS_BOOTSTRAPPED=1 bash "$_dir/install.sh" "$@"
+    DARWIN_BOOTSTRAPPED=1 bash "$_dir/install.sh" "$@"
     rc=$?
     exit "$rc"
 fi
@@ -141,7 +141,7 @@ if [ -f "$SRC_ROOT/scripts/ui.sh" ]; then
     # shellcheck disable=SC1091
     source "$SRC_ROOT/scripts/ui.sh"
 else
-    echo "error: scripts/ui.sh not found next to install.sh (run from a JARVIS clone)" >&2
+    echo "error: scripts/ui.sh not found next to install.sh (run from a DARWIN clone)" >&2
     exit 1
 fi
 ui_init
@@ -149,7 +149,7 @@ ui_init
 # ----------------------------------------------------------------------------
 # Configuration.
 # ----------------------------------------------------------------------------
-JARVIS_HOME="$HOME/Library/Application Support/JARVIS"
+DARWIN_HOME="$HOME/Library/Application Support/DARWIN"
 PY311_CANDIDATES=(
     "/opt/homebrew/bin/python3.11"
     "/usr/local/bin/python3.11"
@@ -261,7 +261,7 @@ run_quiet() {
     [ "${1:-}" = "--" ] && shift
     if [ "$#" -eq 0 ]; then ui_warn "run_quiet: no command given"; return 0; fi
     local log rc=0
-    log="$(mktemp "${TMPDIR:-/tmp}/jarvis-provision.XXXXXX")" || { ui_err "$label (could not create a log file)"; return 1; }
+    log="$(mktemp "${TMPDIR:-/tmp}/darwin-provision.XXXXXX")" || { ui_err "$label (could not create a log file)"; return 1; }
     # ui_spin animates the spinner and reports ok/err; the inner bash -c funnels
     # BOTH streams of the real installer into $log so nothing leaks onto the HUD.
     # `set -e` would abort on ui_spin's non-zero, so capture rc behind `|| rc=$?`.
@@ -282,8 +282,8 @@ run_quiet() {
 #
 # These auto-install the INSTALLABLE build prereqs (Rust via rustup; Python 3.11
 # + Node via Homebrew, bootstrapping Homebrew itself if absent) so a fresh Mac
-# just works. They are NOT gated on the JARVIS consequential confirm() — a build
-# toolchain is a prerequisite, not JARVIS actuation. They run only when
+# just works. They are NOT gated on the DARWIN consequential confirm() — a build
+# toolchain is a prerequisite, not DARWIN actuation. They run only when
 # DO_PROVISION=1 and MODE=install; --check only PLANS them and --no-provision
 # disables them (reverting to detect + instruct + fatal). Everything is
 # idempotent: anything already present is detected and skipped.
@@ -474,11 +474,11 @@ ensure_homebrew() {
 # ----------------------------------------------------------------------------
 # HUD-APP PLACEMENT (STAGE 5 helper).
 #
-# The Tauri build produces JARVIS.app inside the build tree. On its own that is
+# The Tauri build produces DARWIN.app inside the build tree. On its own that is
 # not discoverable — a user can't find or launch it. These helpers INSTALL the
 # built app into /Applications (or ~/Applications) so the command-line install
 # ends with a launchable app right where macOS users expect it, and set
-# INSTALLED_APP_PATH for the "OPEN JARVIS" next-step.
+# INSTALLED_APP_PATH for the "OPEN DARWIN" next-step.
 # ----------------------------------------------------------------------------
 
 # Is the app at $1 a NOTARIZED / Developer-ID-signed build (i.e. the official
@@ -489,7 +489,7 @@ is_notarized_app() {
     codesign -dvv "$1" 2>&1 | grep -q "Authority=Developer ID Application"
 }
 
-# Install the freshly-built JARVIS.app ($1) into the first writable Applications
+# Install the freshly-built DARWIN.app ($1) into the first writable Applications
 # dir. Sets the global INSTALLED_APP_PATH to where it ended up. Never fatal — if
 # every copy fails, INSTALLED_APP_PATH falls back to the build path (the app DOES
 # exist there) with an honest "move it yourself" note. Idempotent: a prior local
@@ -498,7 +498,7 @@ place_hud_app() {
     local src="$1"
     INSTALLED_APP_PATH=""
     if [ -z "$src" ] || [ ! -d "$src" ]; then
-        ui_warn "tauri build produced no JARVIS.app to install"
+        ui_warn "tauri build produced no DARWIN.app to install"
         return 0
     fi
 
@@ -508,12 +508,12 @@ place_hud_app() {
     for cand in "/Applications" "$HOME/Applications"; do
         { [ -d "$cand" ] || mkdir -p "$cand" 2>/dev/null; } || continue
         [ -w "$cand" ] || continue
-        dest="$cand/JARVIS.app"
+        dest="$cand/DARWIN.app"
 
         # Never downgrade/clobber the official signed app (the .dmg build, which
         # may also be RUNNING in the first-run flow) — leave it, point the user at it.
         if [ -d "$dest" ] && is_notarized_app "$dest"; then
-            ui_ok "JARVIS.app already installed (signed) at $dest — left in place."
+            ui_ok "DARWIN.app already installed (signed) at $dest — left in place."
             INSTALLED_APP_PATH="$dest"
             return 0
         fi
@@ -528,9 +528,9 @@ place_hud_app() {
     done
 
     # Could not place it anywhere — honest: the app exists in the build tree.
-    ui_warn "Could not copy JARVIS.app into Applications (permissions?)."
+    ui_warn "Could not copy DARWIN.app into Applications (permissions?)."
     ui_note "It is built at:  $src"
-    ui_note "Move it with:    ditto \"$src\" \"\$HOME/Applications/JARVIS.app\""
+    ui_note "Move it with:    ditto \"$src\" \"\$HOME/Applications/DARWIN.app\""
     INSTALLED_APP_PATH="$src"
     return 0
 }
@@ -544,20 +544,20 @@ print_next_steps_directives() {
     local lead_note="${1:-}"
     # Where the HUD app landed (set by place_hud_app in a real install); in --check
     # the build has not run, so show the default destination it WOULD install to.
-    local _app_path="${INSTALLED_APP_PATH:-/Applications/JARVIS.app}"
+    local _app_path="${INSTALLED_APP_PATH:-/Applications/DARWIN.app}"
     printf '\n'
     ui_info "${UI_BOLD}${UI_CYAN}NEXT-STEP DIRECTIVES${UI_RESET} — full-power default: consequential actions are ARMED, still gated per action${lead_note}:"
 
-    ui_panel "1" "OPEN JARVIS" \
+    ui_panel "1" "OPEN DARWIN" \
         "The HUD app is installed at ${UI_BRIGHT}${_app_path}${UI_RESET}." \
         "Open it from ${UI_ICE}Finder > Applications${UI_RESET}, or run:" \
-        "  ${UI_CYAN}open -a JARVIS${UI_RESET}" \
+        "  ${UI_CYAN}open -a DARWIN${UI_RESET}" \
         "It connects to the daemon automatically; the first launch triggers the" \
         "macOS permission prompts described next."
 
     ui_panel "2" "TCC PERMISSIONS" \
         "macOS will prompt for ${UI_BRIGHT}Accessibility${UI_RESET}, ${UI_BRIGHT}Microphone${UI_RESET}, and ${UI_BRIGHT}Screen Recording${UI_RESET}" \
-        "the first time JARVIS needs each. Many full-power features (UI automation," \
+        "the first time DARWIN needs each. Many full-power features (UI automation," \
         "live interpret, sound monitor, screen context) stay ${UI_BRIGHT}inert${UI_RESET} until you grant" \
         "these in ${UI_ICE}System Settings > Privacy & Security${UI_RESET}. They cannot be pre-granted."
 
@@ -567,7 +567,7 @@ print_next_steps_directives() {
         "voice/STT tier, and self-heal/forge drafting all need a key. To enable, put" \
         "  ${UI_CYAN}export ANTHROPIC_API_KEY=...${UI_RESET}" \
         "  ${UI_CYAN}export ELEVENLABS_API_KEY=...${UI_RESET}" \
-        "in  ${UI_GREY}$JARVIS_HOME/state/env.sh${UI_RESET}  and  ${UI_BRIGHT}chmod 600${UI_RESET}  it (state/ is gitignored)," \
+        "in  ${UI_GREY}$DARWIN_HOME/state/env.sh${UI_RESET}  and  ${UI_BRIGHT}chmod 600${UI_RESET}  it (state/ is gitignored)," \
         "or store them in the macOS Keychain. Local inference works fully offline" \
         "with no key at all; enabling a gate != active without the key."
 
@@ -577,13 +577,13 @@ print_next_steps_directives() {
         "To enable image generation:" \
         "  1. accept the licence (free) at" \
         "     ${UI_ICE}https://huggingface.co/black-forest-labs/FLUX.1-schnell${UI_RESET}" \
-        "  2. authenticate:  ${UI_CYAN}\"$JARVIS_HOME/.venv/bin/hf\" auth login${UI_RESET}" \
+        "  2. authenticate:  ${UI_CYAN}\"$DARWIN_HOME/.venv/bin/hf\" auth login${UI_RESET}" \
         "     (or  ${UI_CYAN}export HF_TOKEN=hf_...${UI_RESET}  before re-running)" \
         "  3. re-run the installer — it resumes from cache and pulls FLUX with your token." \
         "Everything else works without this; only image generation needs it."
 
     ui_panel "5" "VOICE WAKE WORD  +  GATES THAT STAY ENFORCED" \
-        "Say \"${UI_BRIGHT}JARVIS${UI_RESET}\" to wake it once the daemon is up." \
+        "Say \"${UI_BRIGHT}DARWIN${UI_RESET}\" to wake it once the daemon is up." \
         "The installer ships the ${UI_BRIGHT}master switch ON${UI_RESET} (consequential actions ARMED)," \
         "but every consequential action STILL requires a ${UI_BRIGHT}fresh per-action confirm${UI_RESET} +" \
         "voice-id (if enrolled) + per-action policy + ${UI_BRIGHT}!lockdown${UI_RESET} — these are enforced at" \
@@ -591,14 +591,14 @@ print_next_steps_directives() {
         "PROPOSE-ONLY${UI_RESET} (drafts a validated patch you apply via scripts/apply_heal.sh," \
         "and inert until ANTHROPIC_API_KEY is set). Lockdown/panic forces everything off."
 
-    ui_panel "6" "BOOT-TO-JARVIS" \
+    ui_panel "6" "BOOT-TO-DARWIN" \
         "For a deployment Mac, enable auto-login so the gui-domain agents start at" \
         "power-on (see ${UI_ICE}scripts/install_boot.sh${UI_RESET} checklist)." \
         "${UI_YELLOW}Do not install these agents on a dev machine.${UI_RESET}"
 
-    ui_panel "7" "REMOVE JARVIS COMPLETELY" \
+    ui_panel "7" "REMOVE DARWIN COMPLETELY" \
         "Run" \
-        "  ${UI_CYAN}\"$JARVIS_HOME/uninstall.sh\"${UI_RESET}" \
+        "  ${UI_CYAN}\"$DARWIN_HOME/uninstall.sh\"${UI_RESET}" \
         "(two typed confirmations; --dry-run to preview)."
 
     printf '\n'
@@ -609,16 +609,16 @@ print_next_steps_directives() {
 # Banner.
 # ----------------------------------------------------------------------------
 # The banner runs the arc-reactor power-up + system diagnostic (motion only on
-# an interactive tty), frames the HUD with "OPERATOR // $JARVIS_OPERATOR" along
+# an interactive tty), frames the HUD with "OPERATOR // $DARWIN_OPERATOR" along
 # the top edge, and greets the operator by name as the system comes online.
-jarvis_banner
+darwin_banner
 if [ "$MODE" = "check" ]; then
     ui_info "DRY RUN (--check): printing the plan + read-only detection only."
     ui_info "No venv, no downloads, no build, no ~/Library writes, no launchctl."
 fi
-ui_info "Operator:     ${JARVIS_OPERATOR}"
+ui_info "Operator:     ${DARWIN_OPERATOR}"
 ui_info "Source tree:  $SRC_ROOT"
-ui_info "Install home: $JARVIS_HOME"
+ui_info "Install home: $DARWIN_HOME"
 
 # ============================================================================
 # STAGE 1 — PREFLIGHT
@@ -631,10 +631,10 @@ PREFLIGHT_FATAL=0
 OS_NAME="$(uname -s)"
 ARCH="$(uname -m)"
 if [ "$OS_NAME" != "Darwin" ]; then
-    ui_err "JARVIS requires macOS (found: $OS_NAME)."
+    ui_err "DARWIN requires macOS (found: $OS_NAME)."
     PREFLIGHT_FATAL=1
 elif [ "$ARCH" != "arm64" ]; then
-    ui_err "JARVIS requires Apple Silicon (arm64). Found: $ARCH — Intel Macs are unsupported (MLX is Metal/Apple-GPU only)."
+    ui_err "DARWIN requires Apple Silicon (arm64). Found: $ARCH — Intel Macs are unsupported (MLX is Metal/Apple-GPU only)."
     PREFLIGHT_FATAL=1
 else
     OS_VER="$(sw_vers -productVersion 2>/dev/null || echo '?')"
@@ -658,7 +658,7 @@ elif [ "$DO_PROVISION" -eq 0 ]; then
     # Opt-out: revert to the old detect + instruct + fatal behavior.
     ui_warn "Xcode Command Line Tools not found."
     ui_note "--no-provision: install with:  xcode-select --install   (then re-run)"
-    ui_err "The Command Line Tools (clang/git/make) are required to build JARVIS."
+    ui_err "The Command Line Tools (clang/git/make) are required to build DARWIN."
     PREFLIGHT_FATAL=1
 else
     # MODE=install + provisioning ON: trigger Apple's CLT installer and WAIT for
@@ -741,7 +741,7 @@ elif [ "$DO_PROVISION" -eq 0 ]; then
     PREFLIGHT_FATAL=1
 else
     # MODE=install + provisioning ON: install via rustup, no confirm() gate (a
-    # build toolchain is a prerequisite, not JARVIS actuation). rustup's verbose
+    # build toolchain is a prerequisite, not DARWIN actuation). rustup's verbose
     # "Rust is installed now. Great! … add ~/.cargo/bin to PATH …" block is
     # captured to a temp log by run_quiet so only the clean spinner shows; the
     # log tail surfaces on failure.
@@ -878,37 +878,37 @@ RSYNC_EXCLUDES+=(--exclude ".DS_Store" --exclude "*.pyc" --exclude "state/env.sh
 ui_info "Excluding from the copy (built/fetched fresh in the home): ${EXCLUDE_DIRS[*]}"
 
 if [ "$MODE" = "check" ]; then
-    plan "mkdir -p \"$JARVIS_HOME\""
-    plan "rsync -a ${RSYNC_EXCLUDES[*]} \"$SRC_ROOT/\" \"$JARVIS_HOME/\""
+    plan "mkdir -p \"$DARWIN_HOME\""
+    plan "rsync -a ${RSYNC_EXCLUDES[*]} \"$SRC_ROOT/\" \"$DARWIN_HOME/\""
     ui_note "(source == install home would be a no-op copy; the build/model/launch"
     ui_note " stages would still run against the home)"
 else
-    mkdir -p "$JARVIS_HOME"
-    if [ "$SRC_ROOT" = "$JARVIS_HOME" ]; then
+    mkdir -p "$DARWIN_HOME"
+    if [ "$SRC_ROOT" = "$DARWIN_HOME" ]; then
         ui_ok "Source IS the install home — already in place, nothing to copy."
     elif command -v rsync >/dev/null 2>&1; then
         ui_spin "copying project tree -> install home" -- \
-            rsync -a "${RSYNC_EXCLUDES[@]}" "$SRC_ROOT/" "$JARVIS_HOME/"
-        ui_ok "Project tree placed at $JARVIS_HOME"
+            rsync -a "${RSYNC_EXCLUDES[@]}" "$SRC_ROOT/" "$DARWIN_HOME/"
+        ui_ok "Project tree placed at $DARWIN_HOME"
     else
         # Fallback: tar-pipe with excludes (rsync is standard on macOS, but be safe).
         TAR_EXCLUDES=()
         for d in "${EXCLUDE_DIRS[@]}"; do TAR_EXCLUDES+=(--exclude "./$d"); done
         TAR_EXCLUDES+=(--exclude "./.DS_Store")
         ui_spin "copying project tree (tar) -> install home" -- bash -c \
-            "tar -C '$SRC_ROOT' ${TAR_EXCLUDES[*]} -cf - . | tar -C '$JARVIS_HOME' -xf -"
-        ui_ok "Project tree placed at $JARVIS_HOME"
+            "tar -C '$SRC_ROOT' ${TAR_EXCLUDES[*]} -cf - . | tar -C '$DARWIN_HOME' -xf -"
+        ui_ok "Project tree placed at $DARWIN_HOME"
     fi
 fi
 
-export JARVIS_ROOT="$JARVIS_HOME"
-ui_info "export JARVIS_ROOT=\"$JARVIS_ROOT\""
+export DARWIN_ROOT="$DARWIN_HOME"
+ui_info "export DARWIN_ROOT=\"$DARWIN_ROOT\""
 
 # From here on, paths are relative to the install home (so we build IN PLACE
 # where the LaunchAgents expect the artifacts). In --check the home may not
 # exist yet, so the build/model commands are only described.
-HOME_PY_REQ="$JARVIS_HOME/inference/requirements.txt"
-VENV="$JARVIS_HOME/.venv"
+HOME_PY_REQ="$DARWIN_HOME/inference/requirements.txt"
+VENV="$DARWIN_HOME/.venv"
 VENV_PY="$VENV/bin/python"
 VENV_PIP="$VENV/bin/pip"
 
@@ -920,13 +920,13 @@ VENV_PIP="$VENV/bin/pip"
 # "install/runtime HF_HOME split" scripts/doctor.sh flags. If state/env.sh
 # ALREADY sets HF_HOME (a prior run, or the user pointing at a bigger disk),
 # HONOR it for the install-time download too — the two must never disagree.
-ENV_SH="$JARVIS_HOME/state/env.sh"
-HF_HOME_DIR="$JARVIS_HOME/models"
+ENV_SH="$DARWIN_HOME/state/env.sh"
+HF_HOME_DIR="$DARWIN_HOME/models"
 if [ -f "$ENV_SH" ] && grep -qE '^[[:space:]]*export[[:space:]]+HF_HOME=' "$ENV_SH" 2>/dev/null; then
-    # Evaluate env.sh EXACTLY as the boot wrappers do (JARVIS_ROOT set, file
+    # Evaluate env.sh EXACTLY as the boot wrappers do (DARWIN_ROOT set, file
     # sourced by bash) — but in a THROWAWAY subshell so none of its other
     # exports leak into this installer process.
-    _env_hf="$(JARVIS_ROOT="$JARVIS_HOME" bash -c '. "$1" >/dev/null 2>&1; printf "%s" "${HF_HOME:-}"' _ "$ENV_SH" 2>/dev/null || true)"
+    _env_hf="$(DARWIN_ROOT="$DARWIN_HOME" bash -c '. "$1" >/dev/null 2>&1; printf "%s" "${HF_HOME:-}"' _ "$ENV_SH" 2>/dev/null || true)"
     [ -n "$_env_hf" ] && HF_HOME_DIR="$_env_hf"
 fi
 
@@ -934,23 +934,23 @@ fi
 # wrapper sources) so the daemon + inference server find the models this
 # installer downloads. Idempotent: an existing HF_HOME line is left in place
 # (it was honored above); the file is created chmod 600 when absent (the
-# documented secrets convention). Written JARVIS_ROOT-relative so the tree
+# documented secrets convention). Written DARWIN_ROOT-relative so the tree
 # stays relocatable, with the install home as the literal fallback.
 persist_hf_home() {
     if [ -f "$ENV_SH" ] && grep -qE '^[[:space:]]*export[[:space:]]+HF_HOME=' "$ENV_SH" 2>/dev/null; then
         ui_ok "runtime model cache already pinned: HF_HOME -> $HF_HOME_DIR (state/env.sh — left in place)"
         return 0
     fi
-    mkdir -p "$JARVIS_HOME/state"
+    mkdir -p "$DARWIN_HOME/state"
     if [ ! -f "$ENV_SH" ]; then
         {
-            printf '# state/env.sh — JARVIS runtime environment (gitignored; keep this chmod 600).\n'
+            printf '# state/env.sh — DARWIN runtime environment (gitignored; keep this chmod 600).\n'
             printf '# Sourced by the boot wrappers + scripts/bringup.sh. Put API keys here, e.g.\n'
             printf '#   export ANTHROPIC_API_KEY=...\n'
         } > "$ENV_SH"
         chmod 600 "$ENV_SH"
     fi
-    printf 'export HF_HOME="${JARVIS_ROOT:-%s}/models"\n' "$JARVIS_HOME" >> "$ENV_SH"
+    printf 'export HF_HOME="${DARWIN_ROOT:-%s}/models"\n' "$DARWIN_HOME" >> "$ENV_SH"
     ui_ok "runtime model cache pinned: HF_HOME -> $HF_HOME_DIR (persisted in state/env.sh, which the boot wrappers source)"
 }
 
@@ -1034,7 +1034,7 @@ ui_info "HF_HOME -> $HF_HOME_DIR (ONE cache for installer + runtime, via state/e
 # by uninstall.sh), never in a stray ~/.cache/huggingface the runtime would
 # otherwise default to.
 if [ "$MODE" = "check" ]; then
-    plan "append 'export HF_HOME=…/models' to \"$JARVIS_HOME/state/env.sh\"   # the boot wrappers source it, so the RUNTIME uses this same cache"
+    plan "append 'export HF_HOME=…/models' to \"$DARWIN_HOME/state/env.sh\"   # the boot wrappers source it, so the RUNTIME uses this same cache"
 else
     persist_hf_home
 fi
@@ -1087,7 +1087,7 @@ else
             :
         else
             failed_models+=("$m")
-            ui_warn "could not pre-download $m — JARVIS will fetch it on first use (or the dependent feature stays inert)."
+            ui_warn "could not pre-download $m — DARWIN will fetch it on first use (or the dependent feature stays inert)."
         fi
     done
     ui_progress 100 "models cached"
@@ -1095,7 +1095,7 @@ else
         ui_ok "Every model the OS uses is pre-downloaded into $HF_HOME_DIR"
     else
         ui_warn "Pre-downloaded all but ${#failed_models[@]} of $total model(s): ${failed_models[*]}"
-        ui_note "The rest of JARVIS installs + runs normally; only each skipped model's"
+        ui_note "The rest of DARWIN installs + runs normally; only each skipped model's"
         ui_note "feature stays inert until it's available. Re-run to retry — downloads resume from cache."
         # GATED-MODEL guidance: a 'requires approval' / 'Access denied' failure (e.g.
         # FLUX.1-schnell, the IMAGE model) is NOT a bug — that repo is gated on Hugging
@@ -1118,7 +1118,7 @@ ui_stage 5 "$TOTAL_STAGES" "BUILD FRESH"
 
 # Cargo manifests to build --release, in dependency-friendly order.
 CARGO_MANIFESTS=(
-    "daemon/Cargo.toml"                 # jarvisd (the daemon)
+    "daemon/Cargo.toml"                 # darwind (the daemon)
     "apps/silicon-canvas/Cargo.toml"    # silicon-canvas
     "apps/mark-forge/Cargo.toml"        # mark-forge
     "apps/nexus/core/Cargo.toml"        # nexus_core
@@ -1126,46 +1126,46 @@ CARGO_MANIFESTS=(
 
 if [ "$MODE" = "check" ]; then
     for mf in "${CARGO_MANIFESTS[@]}"; do
-        plan "$CARGO build --release --manifest-path \"$JARVIS_HOME/$mf\""
+        plan "$CARGO build --release --manifest-path \"$DARWIN_HOME/$mf\""
     done
-    plan "swift build -c release --package-path \"$JARVIS_HOME/apps/vision\""
-    plan "(cd \"$JARVIS_HOME/hud\" && npm ci && npm run tauri build)   # -> JARVIS.app"
-    plan "ditto <built JARVIS.app> /Applications/JARVIS.app   # install the app (left alone if a SIGNED copy is already there)"
+    plan "swift build -c release --package-path \"$DARWIN_HOME/apps/vision\""
+    plan "(cd \"$DARWIN_HOME/hud\" && npm ci && npm run tauri build)   # -> DARWIN.app"
+    plan "ditto <built DARWIN.app> /Applications/DARWIN.app   # install the app (left alone if a SIGNED copy is already there)"
     ui_note "every artifact is built FRESH in the install home (never shipped prebuilt)."
 else
     for mf in "${CARGO_MANIFESTS[@]}"; do
         crate="$(dirname "$mf")"
-        if [ -f "$JARVIS_HOME/$mf" ]; then
+        if [ -f "$DARWIN_HOME/$mf" ]; then
             ui_spin "cargo build --release ($crate)" -- \
-                "$CARGO" build --release --manifest-path "$JARVIS_HOME/$mf"
+                "$CARGO" build --release --manifest-path "$DARWIN_HOME/$mf"
         else
             ui_warn "skip $mf (not present in the home)"
         fi
     done
     # Verify the daemon binary landed (the LaunchAgent crash-loops without it).
-    if [ -x "$JARVIS_HOME/daemon/target/release/jarvisd" ]; then
-        ui_ok "daemon binary: daemon/target/release/jarvisd (fresh)"
+    if [ -x "$DARWIN_HOME/daemon/target/release/darwind" ]; then
+        ui_ok "daemon binary: daemon/target/release/darwind (fresh)"
     else
-        ui_err "jarvisd not produced by the daemon build"; exit 1
+        ui_err "darwind not produced by the daemon build"; exit 1
     fi
-    # Verify the PDF memory-jail helper landed next to jarvisd. Built by the same
+    # Verify the PDF memory-jail helper landed next to darwind. Built by the same
     # `cargo build --release` (it is a [[bin]] in the daemon crate). Its absence is
-    # NON-fatal — jarvisd falls back to the weaker in-process PDF guard and logs a
+    # NON-fatal — darwind falls back to the weaker in-process PDF guard and logs a
     # warning — but a real install should ship it, so warn (don't exit) if missing.
-    if [ -x "$JARVIS_HOME/daemon/target/release/pdfjail" ]; then
+    if [ -x "$DARWIN_HOME/daemon/target/release/pdfjail" ]; then
         ui_ok "PDF memory-jail: daemon/target/release/pdfjail (fresh)"
     else
         ui_warn "pdfjail helper not produced — PDF extraction will use the weaker in-process guard"
     fi
     # Swift vision app.
-    if [ -f "$JARVIS_HOME/apps/vision/Package.swift" ]; then
+    if [ -f "$DARWIN_HOME/apps/vision/Package.swift" ]; then
         ui_spin "swift build -c release (apps/vision)" -- \
-            swift build -c release --package-path "$JARVIS_HOME/apps/vision"
+            swift build -c release --package-path "$DARWIN_HOME/apps/vision"
     fi
     # HUD / Tauri release .app.
-    if [ -f "$JARVIS_HOME/hud/package.json" ]; then
-        ui_spin "npm ci (HUD deps)" -- bash -c "cd '$JARVIS_HOME/hud' && NPM_CONFIG_UPDATE_NOTIFIER=false npm ci --no-fund --no-audit --loglevel=error"
-        # Build JARVIS.app for THIS Mac. Two deliberate --config overrides:
+    if [ -f "$DARWIN_HOME/hud/package.json" ]; then
+        ui_spin "npm ci (HUD deps)" -- bash -c "cd '$DARWIN_HOME/hud' && NPM_CONFIG_UPDATE_NOTIFIER=false npm ci --no-fund --no-audit --loglevel=error"
+        # Build DARWIN.app for THIS Mac. Two deliberate --config overrides:
         #   * targets=["app"]              — a local install only needs the .app
         #     (place_hud_app copies it into /Applications). The .dmg is a
         #     DISTRIBUTION artifact that CI builds + signs + notarizes; building
@@ -1181,9 +1181,9 @@ else
         # calmly below and filter the raw warn line so a clean build reads clean.
         # `set -o pipefail` keeps a REAL build failure fatal through the sed filter
         # (sed always exits 0, so without pipefail a failed build would look ok).
-        ui_note "local build: JARVIS.app is ad-hoc code-signed (not Apple-notarized) — notarization is only for the downloadable release; this build runs fine here"
-        ui_spin "npm run tauri build (-> JARVIS.app)" -- bash -c "set -o pipefail; cd '$JARVIS_HOME/hud' && NPM_CONFIG_UPDATE_NOTIFIER=false NPM_CONFIG_FUND=false npm run tauri -- build --config '{\"bundle\":{\"targets\":[\"app\"],\"createUpdaterArtifacts\":false}}' 2>&1 | sed -e '/skipping app notarization/d'"
-        APP_BUNDLE="$(find "$JARVIS_HOME/hud/src-tauri/target/release/bundle" -maxdepth 2 -name 'JARVIS.app' 2>/dev/null | head -1 || true)"
+        ui_note "local build: DARWIN.app is ad-hoc code-signed (not Apple-notarized) — notarization is only for the downloadable release; this build runs fine here"
+        ui_spin "npm run tauri build (-> DARWIN.app)" -- bash -c "set -o pipefail; cd '$DARWIN_HOME/hud' && NPM_CONFIG_UPDATE_NOTIFIER=false NPM_CONFIG_FUND=false npm run tauri -- build --config '{\"bundle\":{\"targets\":[\"app\"],\"createUpdaterArtifacts\":false}}' 2>&1 | sed -e '/skipping app notarization/d'"
+        APP_BUNDLE="$(find "$DARWIN_HOME/hud/src-tauri/target/release/bundle" -maxdepth 2 -name 'DARWIN.app' 2>/dev/null | head -1 || true)"
         if [ -n "$APP_BUNDLE" ]; then
             ui_ok "HUD bundled: $APP_BUNDLE"
             # INSTALL the app into /Applications (or ~/Applications) so it is
@@ -1191,10 +1191,10 @@ else
             place_hud_app "$APP_BUNDLE"
         else
             # A successful build with targets=["app"] ALWAYS emits
-            # bundle/macos/JARVIS.app, so reaching here means the build silently
+            # bundle/macos/DARWIN.app, so reaching here means the build silently
             # failed — be FATAL like the daemon-binary check above, never report a
             # successful install without the HUD app.
-            ui_err "tauri build reported success but produced no JARVIS.app"; exit 1
+            ui_err "tauri build reported success but produced no DARWIN.app"; exit 1
         fi
     fi
     ui_ok "All release artifacts built fresh in the install home."
@@ -1205,11 +1205,11 @@ fi
 # ============================================================================
 ui_stage 6 "$TOTAL_STAGES" "AUTOSTART"
 
-BOOT_SCRIPT="$JARVIS_HOME/scripts/install_boot.sh"
+BOOT_SCRIPT="$DARWIN_HOME/scripts/install_boot.sh"
 [ -f "$BOOT_SCRIPT" ] || BOOT_SCRIPT="$SRC_ROOT/scripts/install_boot.sh"
 
 if [ "$MODE" = "check" ]; then
-    plan "\"$BOOT_SCRIPT\" --install   # renders + bootstraps com.jarvis.inference + com.jarvis.daemon"
+    plan "\"$BOOT_SCRIPT\" --install   # renders + bootstraps com.darwin.inference + com.darwin.daemon"
     ui_note "AUTOSTART is delegated to the existing scripts/install_boot.sh (its"
     ui_note "launchctl logic is reused verbatim, not reimplemented)."
     if [ -x "$BOOT_SCRIPT" ]; then
@@ -1217,14 +1217,14 @@ if [ "$MODE" = "check" ]; then
         "$BOOT_SCRIPT" 2>&1 | sed 's/^/      /' || true
     fi
 else
-    # THE JARVIS-ACTUATION CONSENT GATE (the confirm() that --yes assumes yes
+    # THE DARWIN-ACTUATION CONSENT GATE (the confirm() that --yes assumes yes
     # to): loading these LaunchAgents does not just place files — RunAtLoad
     # STARTS the armed OS (daemon + inference) now and at every login. All the
     # stages above were build/placement; this is the step that turns it on, so
     # it asks first. Declining is NOT fatal: the install stays complete, the
     # stage-7 board reports AUTOSTART: MANUAL, and install_boot.sh enables it
     # any time later.
-    if confirm "Load the LaunchAgents and start JARVIS now (autostart at every login)?"; then
+    if confirm "Load the LaunchAgents and start DARWIN now (autostart at every login)?"; then
         ui_info "Loading the 2 LaunchAgents via scripts/install_boot.sh --install ..."
         "$BOOT_SCRIPT" --install
         ui_ok "LaunchAgents installed + loaded (RunAtLoad starts them)."
@@ -1252,7 +1252,7 @@ ui_stage 7 "$TOTAL_STAGES" "FINISH"
 # Agent constellation size: count the [[agent]] tables in the placed roster
 # (falls back to the source tree if the home copy is not readable). A real,
 # truthful count — never fabricated; omitted (neutral "CONFIGURED") if unknown.
-AGENTS_TOML="$JARVIS_HOME/config/agents.toml"
+AGENTS_TOML="$DARWIN_HOME/config/agents.toml"
 [ -f "$AGENTS_TOML" ] || AGENTS_TOML="$SRC_ROOT/config/agents.toml"
 AGENT_COUNT=""
 if [ -f "$AGENTS_TOML" ]; then
@@ -1267,22 +1267,22 @@ fi
 # is ON but PROPOSE-ONLY and inert without ANTHROPIC_API_KEY. Confirm from the
 # placed config when readable; if the line is unreadable, state the ON default —
 # we report the shipped truth, and detect a user OVERRIDE to OFF if present.
-JARVIS_TOML="$JARVIS_HOME/config/jarvis.toml"
-[ -f "$JARVIS_TOML" ] || JARVIS_TOML="$SRC_ROOT/config/jarvis.toml"
+DARWIN_TOML="$DARWIN_HOME/config/darwin.toml"
+[ -f "$DARWIN_TOML" ] || DARWIN_TOML="$SRC_ROOT/config/darwin.toml"
 # NOTE: keep every status tag PURE ASCII — the board aligns the "[ TAG ]" column
 # by byte length (${#tag}); a multibyte glyph (em-dash) would mis-measure and
 # nudge the closing bracket out of column. "ARMED (gated)" is ASCII + honest.
 CONSEQ_TAG="ARMED (gated)"
 SELFHEAL_TAG="ON (propose)"
-if [ -f "$JARVIS_TOML" ]; then
-    if grep -qE '^[[:space:]]*allow_consequential[[:space:]]*=[[:space:]]*false' "$JARVIS_TOML" 2>/dev/null; then
+if [ -f "$DARWIN_TOML" ]; then
+    if grep -qE '^[[:space:]]*allow_consequential[[:space:]]*=[[:space:]]*false' "$DARWIN_TOML" 2>/dev/null; then
         # Honesty: if a user pre-flipped the master switch OFF in their config, say
         # so plainly rather than printing the ON default. (Default ships true.)
         CONSEQ_TAG="OFF (disarmed)"
     fi
     # Self-heal is under [self_heal].enabled; report a user OVERRIDE to OFF if present.
-    if grep -qE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*false[[:space:]]*#?.*' "$JARVIS_TOML" 2>/dev/null \
-        && awk '/^\[self_heal\]/{f=1;next} /^\[/{f=0} f && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*false/{print;exit}' "$JARVIS_TOML" 2>/dev/null | grep -q .; then
+    if grep -qE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*false[[:space:]]*#?.*' "$DARWIN_TOML" 2>/dev/null \
+        && awk '/^\[self_heal\]/{f=1;next} /^\[/{f=0} f && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*false/{print;exit}' "$DARWIN_TOML" 2>/dev/null | grep -q .; then
         SELFHEAL_TAG="OFF"
     fi
 fi
@@ -1299,7 +1299,7 @@ if [ "$MODE" = "check" ]; then
     agents_plan="WILL CONFIGURE"
     [ -n "$AGENT_COUNT" ] && agents_plan="$AGENT_COUNT PLANNED"
     ui_status_board "BOOT MANIFEST  (dry-run preview)" \
-        "CORE DAEMON (jarvisd)|WILL BUILD" \
+        "CORE DAEMON (darwind)|WILL BUILD" \
         "INFERENCE ENGINE / MLX|WILL BUILD" \
         "ON-DEVICE MODELS|$models_plan" \
         "HUD INTERFACE|WILL INSTALL" \
@@ -1327,12 +1327,12 @@ fi
 # CORE DAEMON: the release binary the LaunchAgent runs. Stage 5 hard-exits if it
 # is absent, so reaching here with the file present means it BUILT.
 DAEMON_TAG="SKIPPED"
-[ -x "$JARVIS_HOME/daemon/target/release/jarvisd" ] && DAEMON_TAG="BUILT"
+[ -x "$DARWIN_HOME/daemon/target/release/darwind" ] && DAEMON_TAG="BUILT"
 
 # INFERENCE ENGINE / MLX: the venv python with the full dep set (stage 3). READY
 # means the interpreter is present in the home; it is installed, not "running".
 ENGINE_TAG="DEFERRED"
-[ -x "$JARVIS_HOME/.venv/bin/python" ] && ENGINE_TAG="READY"
+[ -x "$DARWIN_HOME/.venv/bin/python" ] && ENGINE_TAG="READY"
 
 # ON-DEVICE MODELS: DEFERRED when --no-models; otherwise count the model dirs that
 # actually materialized under HF_HOME (models--<org>--<repo>). A real count — if
@@ -1345,11 +1345,11 @@ else
     if [ "$_mcount" -gt 0 ]; then MODELS_TAG="$_mcount RESIDENT"; else MODELS_TAG="RESIDENT"; fi
 fi
 
-# HUD INTERFACE: the Tauri bundle. INSTALLED if place_hud_app put JARVIS.app into
+# HUD INTERFACE: the Tauri bundle. INSTALLED if place_hud_app put DARWIN.app into
 # an Applications dir; BUILT if it landed in the bundle tree but wasn't placed;
 # else SKIPPED (e.g. no hud/package.json or the bundle did not appear).
 HUD_TAG="SKIPPED"
-if find "$JARVIS_HOME/hud/src-tauri/target/release/bundle" -maxdepth 2 -name 'JARVIS.app' 2>/dev/null | grep -q . ; then
+if find "$DARWIN_HOME/hud/src-tauri/target/release/bundle" -maxdepth 2 -name 'DARWIN.app' 2>/dev/null | grep -q . ; then
     HUD_TAG="BUILT"
 fi
 case "${INSTALLED_APP_PATH:-}" in
@@ -1364,8 +1364,8 @@ if [ -n "$AGENT_COUNT" ]; then AGENTS_TAG="$AGENT_COUNT READY"; else AGENTS_TAG=
 # ~/Library/LaunchAgents (stage 6 renders + bootstraps both); otherwise MANUAL.
 AGENT_DIR="$HOME/Library/LaunchAgents"
 _loaded=0
-[ -f "$AGENT_DIR/com.jarvis.inference.plist" ] && _loaded=$(( _loaded + 1 ))
-[ -f "$AGENT_DIR/com.jarvis.daemon.plist" ]    && _loaded=$(( _loaded + 1 ))
+[ -f "$AGENT_DIR/com.darwin.inference.plist" ] && _loaded=$(( _loaded + 1 ))
+[ -f "$AGENT_DIR/com.darwin.daemon.plist" ]    && _loaded=$(( _loaded + 1 ))
 if [ "$_loaded" -eq 2 ]; then AUTOSTART_TAG="ENABLED"; else AUTOSTART_TAG="MANUAL"; fi
 
 # --- the cinematic finale + the HONEST status board ---
@@ -1374,7 +1374,7 @@ ui_online
 # HONEST SYSTEM STATUS BOARD — precise verbs, real flags, the SAFE posture stated
 # plainly. No RUNNING/ONLINE on a factual row; no fabricated counts.
 ui_status_board "BOOT MANIFEST" \
-    "CORE DAEMON (jarvisd)|$DAEMON_TAG" \
+    "CORE DAEMON (darwind)|$DAEMON_TAG" \
     "INFERENCE ENGINE / MLX|$ENGINE_TAG" \
     "ON-DEVICE MODELS|$MODELS_TAG" \
     "HUD INTERFACE|$HUD_TAG" \

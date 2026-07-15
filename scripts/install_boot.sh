@@ -1,9 +1,9 @@
 #!/bin/bash
-# install_boot.sh — boot-to-JARVIS LaunchAgent installer.
+# install_boot.sh — boot-to-DARWIN LaunchAgent installer.
 #
 # Renders the plist templates in boot/ with the real project root, installs
 # them into ~/Library/LaunchAgents, and (re)starts both agents so the M4 Mini
-# powers on directly into the JARVIS environment.
+# powers on directly into the DARWIN environment.
 #
 # Usage:
 #   scripts/install_boot.sh              # DRY RUN: print the plan, change nothing
@@ -11,12 +11,12 @@
 #   scripts/install_boot.sh --uninstall  # bootout both agents and remove rendered plists
 set -euo pipefail
 
-JARVIS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DARWIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 CARGO="$HOME/.cargo/bin/cargo"
 [ -x "$CARGO" ] || CARGO="$(command -v cargo || true)"
 AGENT_DIR="$HOME/Library/LaunchAgents"
-LABELS=("com.jarvis.inference" "com.jarvis.daemon")
+LABELS=("com.darwin.inference" "com.darwin.daemon")
 GUI_DOMAIN="gui/$(id -u)"
 
 MODE="dry-run"
@@ -54,12 +54,12 @@ wait_for_bootout() {
 post_install_checklist() {
     cat <<EOF
 
-Post-install checklist (boot-to-JARVIS):
+Post-install checklist (boot-to-DARWIN):
   1. Enable auto-login: System Settings > Users & Groups > Automatically log in as
      this user. Without it the Mini stops at the login window and launchd never
      starts the gui domain agents.
   2. Cloud fallback key: put 'export ANTHROPIC_API_KEY=...' in
-     $JARVIS_ROOT/state/env.sh and chmod 600 it (state/ is gitignored).
+     $DARWIN_ROOT/state/env.sh and chmod 600 it (state/ is gitignored).
   3. Optional cosmetic de-macOS-ing for the pre-HUD era:
        defaults write com.apple.dock autohide -bool true && killall Dock
      Note: true shell replacement (no Dock, no menu bar, no Finder ever) ships
@@ -71,16 +71,16 @@ if [ "$MODE" = "dry-run" ]; then
     cat <<EOF
 DRY RUN — no changes made. Re-run with --install to execute, --uninstall to remove.
 
-Resolved JARVIS_ROOT: $JARVIS_ROOT
+Resolved DARWIN_ROOT: $DARWIN_ROOT
 
 Plan for --install:
-  1. Preflight: require $JARVIS_ROOT/.venv/bin/python (the inference agent
+  1. Preflight: require $DARWIN_ROOT/.venv/bin/python (the inference agent
      would otherwise crash-loop every ~10s under KeepAlive).
   2. Build the release daemon, then verify the binary exists:
-       $CARGO build --release --manifest-path "$JARVIS_ROOT/daemon/Cargo.toml"
-  3. Render plist templates (sed 's|__JARVIS_ROOT__|$JARVIS_ROOT|g'):
-       $JARVIS_ROOT/boot/com.jarvis.inference.plist -> $AGENT_DIR/com.jarvis.inference.plist
-       $JARVIS_ROOT/boot/com.jarvis.daemon.plist    -> $AGENT_DIR/com.jarvis.daemon.plist
+       $CARGO build --release --manifest-path "$DARWIN_ROOT/daemon/Cargo.toml"
+  3. Render plist templates (sed 's|__DARWIN_ROOT__|$DARWIN_ROOT|g'):
+       $DARWIN_ROOT/boot/com.darwin.inference.plist -> $AGENT_DIR/com.darwin.inference.plist
+       $DARWIN_ROOT/boot/com.darwin.daemon.plist    -> $AGENT_DIR/com.darwin.daemon.plist
   4. Lint each rendered plist: plutil -lint <plist>
   5. For each agent (inference, then daemon):
        launchctl bootout $GUI_DOMAIN/<label> 2>/dev/null || true
@@ -104,7 +104,7 @@ if [ "$MODE" = "uninstall" ]; then
         echo "==> rm -f $AGENT_DIR/$label.plist"
         rm -f "$AGENT_DIR/$label.plist"
     done
-    echo "Uninstalled. JARVIS LaunchAgents removed; auto-login (if enabled) is untouched."
+    echo "Uninstalled. DARWIN LaunchAgents removed; auto-login (if enabled) is untouched."
     exit 0
 fi
 
@@ -113,7 +113,7 @@ fi
 # Preflight: both agents run KeepAlive=true, so a missing executable becomes a
 # silent ~10s crash-loop behind a successful-looking install. Fail early instead.
 echo "==> Preflight checks"
-VENV_PYTHON="$JARVIS_ROOT/.venv/bin/python"
+VENV_PYTHON="$DARWIN_ROOT/.venv/bin/python"
 if [ ! -x "$VENV_PYTHON" ]; then
     echo "error: $VENV_PYTHON missing — set up the venv per the README Quick start" >&2
     echo "       before installing boot agents." >&2
@@ -126,21 +126,21 @@ if [ ! -x "$CARGO" ]; then
 fi
 
 echo "==> Building release daemon"
-"$CARGO" build --release --manifest-path "$JARVIS_ROOT/daemon/Cargo.toml"
+"$CARGO" build --release --manifest-path "$DARWIN_ROOT/daemon/Cargo.toml"
 
-JARVISD_BIN="$JARVIS_ROOT/daemon/target/release/jarvisd"
-if [ ! -x "$JARVISD_BIN" ]; then
-    echo "error: $JARVISD_BIN missing after build" >&2
+DARWIND_BIN="$DARWIN_ROOT/daemon/target/release/darwind"
+if [ ! -x "$DARWIND_BIN" ]; then
+    echo "error: $DARWIND_BIN missing after build" >&2
     exit 1
 fi
 
-mkdir -p "$AGENT_DIR" "$JARVIS_ROOT/state/logs"
+mkdir -p "$AGENT_DIR" "$DARWIN_ROOT/state/logs"
 
 for label in "${LABELS[@]}"; do
-    template="$JARVIS_ROOT/boot/$label.plist"
+    template="$DARWIN_ROOT/boot/$label.plist"
     rendered="$AGENT_DIR/$label.plist"
     echo "==> Rendering $template -> $rendered"
-    sed "s|__JARVIS_ROOT__|$JARVIS_ROOT|g" "$template" > "$rendered"
+    sed "s|__DARWIN_ROOT__|$DARWIN_ROOT|g" "$template" > "$rendered"
     echo "==> Linting $rendered"
     plutil -lint "$rendered"
 done

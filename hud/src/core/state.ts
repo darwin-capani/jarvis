@@ -223,10 +223,10 @@ export type CoreState =
   | "speaking";
 
 export interface TranscriptLine {
-  who: "user" | "jarvis";
+  who: "user" | "darwin";
   text: string;
   ts: string; // envelope ts (verbatim from the daemon)
-  routedTo?: string; // jarvis lines: "local" | "cloud" per route.completed
+  routedTo?: string; // darwin lines: "local" | "cloud" per route.completed
   seq: number;
 }
 
@@ -529,7 +529,7 @@ export interface EpisodeEntry {
  *  store + the user model. It holds ONLY observed ACTIVITY (counts, timestamps,
  *  agents, the eviction proof) — never episode bodies or profile entries, which
  *  are LOCAL to the daemon and inspected by voice. This is the privacy line: the
- *  HUD never broadcasts what JARVIS remembers, it reports THAT it remembered,
+ *  HUD never broadcasts what DARWIN remembers, it reports THAT it remembered,
  *  bounded and forgettable. */
 export interface MemoryState {
   /** Newest-first ring of episode-store outcomes (the timeline). Bounded. */
@@ -562,7 +562,7 @@ export interface MemoryState {
  *  sends / runs / replays: the panel is review-only.
  *
  *  HONESTY (held verbatim in the panel copy):
- *   - drafts: a draft is a SUGGESTION the user reviews + sends — JARVIS NEVER
+ *   - drafts: a draft is a SUGGESTION the user reviews + sends — DARWIN NEVER
  *     auto-sends it (the draft module has no send path; a send is a separate
  *     gated action). Only the subject + a bounded preview ride this surface,
  *     never the full body, never a secret.
@@ -593,7 +593,7 @@ export interface HudState {
   gauges: SystemGauges;
   lastTimings: PipelineTimings | null;
 
-  /** Daemon-side is_speaking(): mic is muted because JARVIS is talking.
+  /** Daemon-side is_speaking(): mic is muted because DARWIN is talking.
    *  Changes only at TTS boundaries — NOT per audio frame. */
   micMuted: boolean;
   /** Consecutive frames above LISTEN_ENTER_RMS while in `idle`. */
@@ -682,7 +682,7 @@ export interface HudState {
    *  turning a protection on is the user's own action in System Settings. */
   posture: PostureSnapshot | null;
   /** The ambient capability-health snapshot (attribution.health): how many of
-   *  JARVIS's own agents/skills are reliable vs failing, with the failing ones
+   *  DARWIN's own agents/skills are reliable vs failing, with the failing ones
    *  flagged. Null until the sentinel emits. PROPOSE-ONLY (flags, never acts). */
   attributionHealth: AttributionHealth | null;
   /** The AT-REST ENCRYPTION surface (security.status): the honest posture of the
@@ -694,7 +694,7 @@ export interface HudState {
    *  ENCRYPTED AT REST / NOT ENCRYPTED from `active` (never config alone), so a
    *  config-on-but-key-failed session reads honestly as NOT ENCRYPTED. Encryption
    *  protects AT REST ON DISK only — the in-RAM working set + key are NOT protected
-   *  while jarvisd runs; the four sensitive SQLite stores + the voiceid owner blob
+   *  while darwind runs; the four sensitive SQLite stores + the voiceid owner blob
    *  are covered, the config TOML + Keychain item are not. */
   security: SecurityStatus | null;
   /** The WEBHOOK TRIGGERS surface (#35; webhook.received). The accumulated
@@ -755,7 +755,7 @@ export interface HudState {
    *  Hits are only ever real returned citations — never fabricated. */
   docSearch: DocSearchResult | null;
   /** Whether the daemon's PDF memory-jail helper (pdfjail) is present next to the
-   *  running jarvisd (docsearch.status, audit-snapshot cadence). `false` means PDF
+   *  running darwind (docsearch.status, audit-snapshot cadence). `false` means PDF
    *  text extraction is running on the WEAKER in-process guard (its documented
    *  decompression-bomb residuals) — the DocSearchPanel shows an amber pill so the
    *  fallback is never silent. Null until the first status frame arrives (an
@@ -996,7 +996,7 @@ export interface HudState {
   /** The live VOICE-TIER surface — folded from the per-reply `voice.tier`
    *  telemetry (which TTS backend voiced the last reply: ON-DEVICE Kokoro vs the
    *  optional CLOUD ElevenLabs voices). Always present (seeded with the honest
-   *  awaiting resting state). VOICE-ONLY: it changes how JARVIS SOUNDS, no safety
+   *  awaiting resting state). VOICE-ONLY: it changes how DARWIN SOUNDS, no safety
    *  gate. HONEST: ON-DEVICE = private/offline default + fallback; CLOUD VOICE =
    *  premium voices where the spoken text leaves the device to synthesize. The
    *  telemetry carries NO key/voice id — only {backend, agent}. */
@@ -1019,7 +1019,7 @@ export interface HudState {
    *  real-translation count surface, never a fabricated translation; diarization is
    *  ElevenLabs-Scribe-ONLY (`backendCanDiarize` is the ground-truth bit — false on
    *  on-device whisper, which is an honest single stream, never a fabricated speaker);
-   *  the active wake word is the configured phrase (default "jarvis"). SECRET-FREE —
+   *  the active wake word is the configured phrase (default "darwin"). SECRET-FREE —
    *  only languages / booleans / counts / the wake phrase ride this surface; never the
    *  transcript text, a translation, or the wav path. */
   audioIo: AudioIoStatus;
@@ -1027,7 +1027,7 @@ export interface HudState {
   /** The live VOICE-MODE surface — folded from the per-reply `voice.prosody`
    *  telemetry (#33 adaptive tone + #34 whisper). Always present (seeded with the
    *  honest OFF/neutral default both features ship at). EXPRESSIVENESS-ONLY: it
-   *  changes how JARVIS SOUNDS (tone + soft/terse delivery), no safety gate. HONEST:
+   *  changes how DARWIN SOUNDS (tone + soft/terse delivery), no safety gate. HONEST:
    *  the `rich` bit is the ground truth that EL-v3 audio-tags/stability/style were
    *  ACTUALLY applied (true only on ElevenLabs v3 — Kokoro/non-v3 get a coarse
    *  rate-only mapping, never faked); whisper changes DELIVERY only and never
@@ -1111,7 +1111,7 @@ export interface HudState {
   /** The PROACTIVE-INTELLIGENCE SUGGESTIONS feed (#13 + #14) — the propose-only
    *  habit-automation offers + predictive suggestions the daemon mined from the
    *  redacted, agent-scoped episodic store (proactive.suggestion). Newest-first +
-   *  bounded. These are OBSERVED-pattern SUGGESTIONS, never actions: JARVIS never
+   *  bounded. These are OBSERVED-pattern SUGGESTIONS, never actions: DARWIN never
    *  auto-acts on them (every card carries auto_acts=false). A habit offer's
    *  Accept routes through the EXISTING gated standing-mission creation verb (NOT
    *  an ungated create); a predictive suggestion is intel only (no Accept). Ships
@@ -1279,7 +1279,7 @@ export type HudAction =
   // dismisses the offer locally so it is not re-shown.
   | { type: "suggestion.dismiss"; id: string }
   // WS4 auto-update — push a single transient INFO toast for the silent
-  // launch-update notice ("Updating JARVIS to <version>…"). This is a pure,
+  // launch-update notice ("Updating DARWIN to <version>…"). This is a pure,
   // non-blocking surface action (no daemon, no authority): it only adds a toast
   // to the existing stack so an auto-install (pref ON) is never a silent
   // surprise. It does NOT download/install — the install runs through the
@@ -1748,7 +1748,7 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       const response = str(env.data, "response");
       if (response === null) return s;
       return pushTranscript(s, {
-        who: "jarvis",
+        who: "darwin",
         text: response,
         ts: env.ts,
         routedTo: str(env.data, "routed_to") ?? undefined,
@@ -1970,7 +1970,7 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
     }
 
     case "agent.active": {
-      // Jarvis-Prime delegated to (or roll-call surfaced) an agent. Resolve
+      // Darwin-Prime delegated to (or roll-call surfaced) an agent. Resolve
       // role/hue from the event, falling back to the static roster mirror so a
       // known agent always lights even on a minimal {name} event. Unknown
       // names still light (honesty: the daemon roster is truth) using the
@@ -2629,7 +2629,7 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
     case "docsearch.status": {
       // The daemon's periodic document-extraction guard status (main.rs::
       // audit_snapshot_task -> docsearch::emit_status): whether the pdfjail
-      // memory-jail helper sits next to the running jarvisd. parsePdfJailAvailable
+      // memory-jail helper sits next to the running darwind. parsePdfJailAvailable
       // is STRICT — only a literal JSON `true` claims the jail is armed (never
       // overclaim the stronger guard) — so `false` here honestly covers both "the
       // daemon says the helper is missing" and "the payload was malformed". The
@@ -3106,7 +3106,7 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
 
     // #32 CUSTOM WAKE-WORD (wake.rs + audio.rs/router.rs). Emitted when an utterance is
     // DROPPED for lacking the configured wake phrase. Records the ACTIVE wake `phrase`
-    // (default "jarvis") + that the gate has dropped something (the honest "gate is
+    // (default "darwin") + that the gate has dropped something (the honest "gate is
     // live" signal). The `path` (a local wav path) is deliberately not surfaced.
     case "utterance.no_wake":
       return { ...s, audioIo: applyUtteranceNoWake(s.audioIo, env.data) };
@@ -3256,7 +3256,7 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
     /* ---- #25 AUTO-DRAFT (draft.rs) — REVIEW-ONLY, NEVER auto-sent ---------- */
     case "draft.composed": {
       // A draft module produced a REVIEWABLE pending draft (status=draft). It is
-      // a SUGGESTION the user reviews + sends — JARVIS never sends it from here
+      // a SUGGESTION the user reviews + sends — DARWIN never sends it from here
       // (the draft module has no send path). parseDraftComposed pins status to
       // "draft" and clips the preview HARD (the full body never rides the wire);
       // a payload with no usable id is dropped (nothing to key/forget).

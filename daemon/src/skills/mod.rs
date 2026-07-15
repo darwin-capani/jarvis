@@ -1,4 +1,4 @@
-//! The SKILL FRAMEWORK — JARVIS's hand-written, in-tree library of small,
+//! The SKILL FRAMEWORK — DARWIN's hand-written, in-tree library of small,
 //! composable capabilities plus the open standard that lets the library grow.
 //!
 //! A [`SkillDef`] is the unit: a `snake_case` name, a category, a description of

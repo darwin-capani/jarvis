@@ -20,7 +20,7 @@ import Frame from "./Frame";
 /**
  * COMMAND DECK — the interactive Iron-Man holotable command surface. The first
  * INBOUND surface in the HUD: a command input to talk to agents (pick one or let
- * Jarvis-Prime route), one-tap brief / mission launchers, an interactive
+ * Darwin-Prime route), one-tap brief / mission launchers, an interactive
  * constellation (the full roster as an addressable deck), and a PENDING-ACTIONS
  * TRAY that surfaces cross-turn confirmations (Approve/Deny) and forge proposals
  * (Review/Dismiss — Dismiss only, with the manual apply command shown).
@@ -187,7 +187,7 @@ export default function CommandDeck({
         <div className="cmd-deck-body">
           <div className="cmd-deck-head">
             <span className="cmd-deck-sub">
-              Address an agent or let Jarvis-Prime route. Consequential actions
+              Address an agent or let Darwin-Prime route. Consequential actions
               park for your approval.
             </span>
             <button className="cmd-deck-close" onClick={onClose} aria-label="Close deck">
@@ -279,7 +279,7 @@ export default function CommandDeck({
               onChange={(e) => setTarget(e.target.value)}
               aria-label="Target agent"
             >
-              <option value={AUTO_ROUTE}>Auto-route (Jarvis-Prime)</option>
+              <option value={AUTO_ROUTE}>Auto-route (Darwin-Prime)</option>
               {ROSTER.map((a) => (
                 <option key={a.name} value={a.name}>
                   {a.name} — {a.role}

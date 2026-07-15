@@ -25,7 +25,7 @@ const API_VERSION: &str = "2023-06-01";
 // API key resolution
 //
 // Order: the ANTHROPIC_API_KEY environment variable, else the macOS Keychain
-// item the HUD settings panel writes (service com.jarvis.daemon / account
+// item the HUD settings panel writes (service com.darwin.daemon / account
 // anthropic_api_key). Resolved exactly once into a OnceLock at first use —
 // main() calls resolve_api_key() eagerly at startup so daemon.started can
 // carry cloud_key_present. The key VALUE must never reach logs or telemetry;
@@ -34,7 +34,7 @@ const API_VERSION: &str = "2023-06-01";
 
 const ENV_API_KEY: &str = "ANTHROPIC_API_KEY";
 const SECURITY_BIN: &str = "/usr/bin/security";
-const KEYCHAIN_SERVICE: &str = "com.jarvis.daemon";
+const KEYCHAIN_SERVICE: &str = "com.darwin.daemon";
 const KEYCHAIN_ACCOUNT: &str = "anthropic_api_key";
 /// security(1) is bounded like every actions.rs command: 5s + kill_on_drop.
 const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -189,7 +189,7 @@ fn spoken_cap(requested: u32) -> u32 {
 /// ONCE and that one shared cached prefix is reused by all agents.
 static PERSONA: OnceLock<String> = OnceLock::new();
 
-/// The JARVIS root, stored at startup so the per-agent persona resolver can read
+/// The DARWIN root, stored at startup so the per-agent persona resolver can read
 /// inference/personas/<name>.txt without threading a `&Path` through every cloud
 /// call site (mirrors how PERSONA is read once from a root). Set by
 /// `init_persona`; absent only in tests / paths that skip startup, in which case
@@ -228,7 +228,7 @@ fn persona() -> &'static str {
 /// The ACTIVE AGENT's own persona text (inference/personas/<name>.txt), trimmed,
 /// for threading into the cloud system as the per-agent cached block.
 ///
-/// Returns None for the ORCHESTRATOR (`is_orchestrator` true): jarvis voices the
+/// Returns None for the ORCHESTRATOR (`is_orchestrator` true): darwin voices the
 /// global persona (persona.txt), so duplicating it as a per-agent block would be
 /// redundant — the orchestrator's cloud system is just the shared preamble (one
 /// breakpoint), and the per-agent breakpoint is simply not spent. A specialist
@@ -399,7 +399,7 @@ pub fn debate_gate() -> bool {
     ANSWERS_GATE.get().copied().unwrap_or(ANSWERS_GATE_OFF).5
 }
 
-/// Derive the bare agent id (e.g. `jarvis`, `friday`) the MCP per-server allowlist
+/// Derive the bare agent id (e.g. `darwin`, `friday`) the MCP per-server allowlist
 /// keys on, from the active agent's memory namespace (`agent.<name>`). The cloud
 /// path carries the namespace, not the bare id; MCP's `agent_may_use` wants the
 /// id. A namespace already in bare form (or any unexpected shape) is returned
@@ -543,12 +543,12 @@ fn system_blocks_with_preamble(
 /// last. Pairs with an empty side are skipped (the API rejects empty text).
 fn build_messages(history: &[(String, String)], utterance: &str) -> Vec<Value> {
     let mut messages = Vec::with_capacity(history.len() * 2 + 1);
-    for (user, jarvis) in history {
-        if user.trim().is_empty() || jarvis.trim().is_empty() {
+    for (user, darwin) in history {
+        if user.trim().is_empty() || darwin.trim().is_empty() {
             continue;
         }
         messages.push(json!({"role": "user", "content": user}));
-        messages.push(json!({"role": "assistant", "content": jarvis}));
+        messages.push(json!({"role": "assistant", "content": darwin}));
     }
     messages.push(json!({"role": "user", "content": utterance}));
     messages
@@ -597,7 +597,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "oracle_ask",
-                "description": "Run a READ-ONLY SQL query over JARVIS's local optimizer trace corpus (the privacy-redacted log of past turns) and get the rows back. Use for an analytical question about the user's OWN usage/history that a single SELECT can answer (e.g. 'which agent fails most', 'how many failed turns this week', 'busiest intents'). The ONLY table is `traces(id INTEGER, ts INTEGER /*unix seconds*/, utterance_redacted TEXT, intent TEXT, agent TEXT, mode TEXT, tool_or_skill TEXT, outcome TEXT, latency_ms INTEGER)`; `outcome` is one of 'success','corrected_next_turn','failed','unknown'. STRICTLY read-only — only a single SELECT/WITH/EXPLAIN runs (the engine rejects any write) and at most 50 rows return. Write the SQL yourself from the user's question.",
+                "description": "Run a READ-ONLY SQL query over DARWIN's local optimizer trace corpus (the privacy-redacted log of past turns) and get the rows back. Use for an analytical question about the user's OWN usage/history that a single SELECT can answer (e.g. 'which agent fails most', 'how many failed turns this week', 'busiest intents'). The ONLY table is `traces(id INTEGER, ts INTEGER /*unix seconds*/, utterance_redacted TEXT, intent TEXT, agent TEXT, mode TEXT, tool_or_skill TEXT, outcome TEXT, latency_ms INTEGER)`; `outcome` is one of 'success','corrected_next_turn','failed','unknown'. STRICTLY read-only — only a single SELECT/WITH/EXPLAIN runs (the engine rejects any write) and at most 50 rows return. Write the SQL yourself from the user's question.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -608,7 +608,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "capability_report",
-                "description": "Get a READ-ONLY evidence report on which of JARVIS's own AGENTS and TOOLS/SKILLS are actually working, computed from the local outcome-labelled trace corpus. Returns a curated, opinionated summary: per-agent and per-tool/skill turn counts, success rate, and an honest flag (reliable / mixed / failing / insufficient data), with low-sample capabilities explicitly NOT judged. Use when the user asks which agent or skill performs best/worst, what's reliable, what's failing, or what's load-bearing vs unused. Distinct from oracle_ask (which runs raw SQL you write): this is the pre-built, sample-size-honest performance analysis. Changes nothing.",
+                "description": "Get a READ-ONLY evidence report on which of DARWIN's own AGENTS and TOOLS/SKILLS are actually working, computed from the local outcome-labelled trace corpus. Returns a curated, opinionated summary: per-agent and per-tool/skill turn counts, success rate, and an honest flag (reliable / mixed / failing / insufficient data), with low-sample capabilities explicitly NOT judged. Use when the user asks which agent or skill performs best/worst, what's reliable, what's failing, or what's load-bearing vs unused. Distinct from oracle_ask (which runs raw SQL you write): this is the pre-built, sample-size-honest performance analysis. Changes nothing.",
                 "input_schema": {
                     "type": "object",
                     "properties": {}
@@ -616,7 +616,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "promotion_candidates",
-                "description": "Get a READ-ONLY report of which of JARVIS's skills have earned PROMOTION to first-class status: skills that are BOTH eval-verified (they passed their declared known-answer eval vectors at registry build) AND live-proven (a high success rate over enough real turns in the local trace corpus). PROPOSE-ONLY — it recommends, it changes nothing. Honest when none qualify (it states exactly what a candidate needs). Use when the user asks which skills are the strongest / most trusted / should be promoted or elevated.",
+                "description": "Get a READ-ONLY report of which of DARWIN's skills have earned PROMOTION to first-class status: skills that are BOTH eval-verified (they passed their declared known-answer eval vectors at registry build) AND live-proven (a high success rate over enough real turns in the local trace corpus). PROPOSE-ONLY — it recommends, it changes nothing. Honest when none qualify (it states exactly what a candidate needs). Use when the user asks which skills are the strongest / most trusted / should be promoted or elevated.",
                 "input_schema": {
                     "type": "object",
                     "properties": {}
@@ -663,7 +663,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "connector_add",
-                "description": "Add an MCP connector (a new tool server) to JARVIS. CONSEQUENTIAL: this writes a vetted [[mcp.servers]] entry to the user's config and ALWAYS asks for a spoken confirmation first (it never auto-applies). It NEVER handles secrets — do NOT pass any token/key/password; if the connector needs one, set uses_token=true and the user stores it in the Keychain out-of-band. The connector is added INERT (no agent may use it, every tool gated) and connects on the next restart after the user grants agents. For http, give an https:// url; for stdio, give an absolute command path. Use when the user asks to add/install/connect an MCP server or tool connector by name.",
+                "description": "Add an MCP connector (a new tool server) to DARWIN. CONSEQUENTIAL: this writes a vetted [[mcp.servers]] entry to the user's config and ALWAYS asks for a spoken confirmation first (it never auto-applies). It NEVER handles secrets — do NOT pass any token/key/password; if the connector needs one, set uses_token=true and the user stores it in the Keychain out-of-band. The connector is added INERT (no agent may use it, every tool gated) and connects on the next restart after the user grants agents. For http, give an https:// url; for stdio, give an absolute command path. Use when the user asks to add/install/connect an MCP server or tool connector by name.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -724,7 +724,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "system_status",
-                "description": "Current CPU, memory, disk and uptime of the machine JARVIS runs on. Call this when the user asks how the system is doing.",
+                "description": "Current CPU, memory, disk and uptime of the machine DARWIN runs on. Call this when the user asks how the system is doing.",
                 "input_schema": {"type": "object", "properties": {}}
             },
             {
@@ -741,7 +741,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "recall_facts",
-                "description": "List the facts currently stored about the user. Call this when answering depends on something the user may have told JARVIS before.",
+                "description": "List the facts currently stored about the user. Call this when answering depends on something the user may have told DARWIN before.",
                 "input_schema": {"type": "object", "properties": {}}
             },
             {
@@ -1185,7 +1185,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "mnemosyne_recall",
-                "description": "Run MNEMOSYNE's semantic recall: RANK the facts already stored in long-term memory by relevance to a query and return the top matches. READ-ONLY — it retrieves, it stores nothing, sends nothing to the cloud, and changes nothing. Call this when the user asks what they said/told JARVIS before, what JARVIS remembers about a topic, to dig up a past note, or whether something was discussed. HONESTY ABOUT METHOD: ranking is RUNTIME-SELECTED. When the on-device inference server is running, recall is NEURAL — cosine similarity over on-device embedding vectors (the server mean-pools its resident model's hidden states), so it matches on MEANING, not just words. When that server is down, it FALLS BACK to lexical BM25 (term overlap, weighted by word distinctiveness, length-normalized) — keyword-semantic, not vector-semantic. The returned report NAMES whichever method actually ran; report it the same way (neural on-device embeddings, or lexical BM25 on fallback) and never claim neural when it fell back. Neural recall needs the inference server up; never claim measured embedding quality. It NEVER fabricates: when nothing stored is relevant (or memory is empty) it honestly returns that there is nothing on the topic yet — do not invent a memory in that case. Returns the matched facts (key + value) most-relevant first, deduplicated.",
+                "description": "Run MNEMOSYNE's semantic recall: RANK the facts already stored in long-term memory by relevance to a query and return the top matches. READ-ONLY — it retrieves, it stores nothing, sends nothing to the cloud, and changes nothing. Call this when the user asks what they said/told DARWIN before, what DARWIN remembers about a topic, to dig up a past note, or whether something was discussed. HONESTY ABOUT METHOD: ranking is RUNTIME-SELECTED. When the on-device inference server is running, recall is NEURAL — cosine similarity over on-device embedding vectors (the server mean-pools its resident model's hidden states), so it matches on MEANING, not just words. When that server is down, it FALLS BACK to lexical BM25 (term overlap, weighted by word distinctiveness, length-normalized) — keyword-semantic, not vector-semantic. The returned report NAMES whichever method actually ran; report it the same way (neural on-device embeddings, or lexical BM25 on fallback) and never claim neural when it fell back. Neural recall needs the inference server up; never claim measured embedding quality. It NEVER fabricates: when nothing stored is relevant (or memory is empty) it honestly returns that there is nothing on the topic yet — do not invent a memory in that case. Returns the matched facts (key + value) most-relevant first, deduplicated.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -1197,7 +1197,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "episodic_recall",
-                "description": "Recall past EPISODES — JARVIS's durable, redacted, bounded record of completed interactions (one episode per past turn: what was said, the topic, a short summary). READ-ONLY: it ranks/returns only REAL recorded episodes and never fabricates one. Call this when the user asks what you talked about, what happened recently, or to surface a past conversation on a topic ('what did we discuss about the launch', 'remind me what I asked you yesterday', 'recap our recent chats'). TWO recall modes, combined: TEMPORAL (leave 'query' empty to get the most RECENT episodes newest-first; optionally narrow with 'since' or the 'from'/'to' window) and TOPICAL (give a 'query' to RANK episodes by relevance to it). HONESTY ABOUT SCOPE + METHOD: recall is AGENT-SCOPED — you see only this agent's own episodes plus shared ones, never another agent's. Topical ranking is RUNTIME-SELECTED: neural on-device embeddings when the inference server is up, else lexical BM25 — the report NAMES whichever ran; report it the same way and never claim neural on fallback. The store is BOUNDED (it keeps the recent past, not everything forever) and REDACTED (secrets/PII are stripped before store). When nothing matches (or nothing is recorded yet) it honestly says so — do not invent an episode. Returns the matched episodes (time + summary) most-relevant (or most-recent) first.",
+                "description": "Recall past EPISODES — DARWIN's durable, redacted, bounded record of completed interactions (one episode per past turn: what was said, the topic, a short summary). READ-ONLY: it ranks/returns only REAL recorded episodes and never fabricates one. Call this when the user asks what you talked about, what happened recently, or to surface a past conversation on a topic ('what did we discuss about the launch', 'remind me what I asked you yesterday', 'recap our recent chats'). TWO recall modes, combined: TEMPORAL (leave 'query' empty to get the most RECENT episodes newest-first; optionally narrow with 'since' or the 'from'/'to' window) and TOPICAL (give a 'query' to RANK episodes by relevance to it). HONESTY ABOUT SCOPE + METHOD: recall is AGENT-SCOPED — you see only this agent's own episodes plus shared ones, never another agent's. Topical ranking is RUNTIME-SELECTED: neural on-device embeddings when the inference server is up, else lexical BM25 — the report NAMES whichever ran; report it the same way and never claim neural on fallback. The store is BOUNDED (it keeps the recent past, not everything forever) and REDACTED (secrets/PII are stripped before store). When nothing matches (or nothing is recorded yet) it honestly says so — do not invent an episode. Returns the matched episodes (time + summary) most-relevant (or most-recent) first.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -1284,7 +1284,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "world_query",
-                "description": "Read the WORLD MODEL — JARVIS's shared, structured picture of the user's world (entities: projects, people, deadlines, tasks, topics, threads; the relationships between them; and each entity's attributes/state). Returns the STRUCTURED state about whatever you ask: the matching entities with their attributes, plus the relationships that touch them. READ-ONLY — it retrieves, it stores nothing, sends nothing, changes nothing. Call this when the user asks about a project, person, deadline, task, or topic, or 'what's going on with X', or for the picture of how things connect — it grounds your reply in the SHARED model every agent shares (so you reason over one coherent world, not isolated facts). 'about' is the topic/entity to look up in the user's own words; leave it empty to get the whole (bounded) model. HONESTY: it returns only what has actually been recorded — an unknown topic comes back EMPTY (say there's nothing on it yet; never invent an entity or a relationship). It reads only the shared world tier — it can never surface another agent's private notes.",
+                "description": "Read the WORLD MODEL — DARWIN's shared, structured picture of the user's world (entities: projects, people, deadlines, tasks, topics, threads; the relationships between them; and each entity's attributes/state). Returns the STRUCTURED state about whatever you ask: the matching entities with their attributes, plus the relationships that touch them. READ-ONLY — it retrieves, it stores nothing, sends nothing, changes nothing. Call this when the user asks about a project, person, deadline, task, or topic, or 'what's going on with X', or for the picture of how things connect — it grounds your reply in the SHARED model every agent shares (so you reason over one coherent world, not isolated facts). 'about' is the topic/entity to look up in the user's own words; leave it empty to get the whole (bounded) model. HONESTY: it returns only what has actually been recorded — an unknown topic comes back EMPTY (say there's nothing on it yet; never invent an entity or a relationship). It reads only the shared world tier — it can never surface another agent's private notes.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -1294,12 +1294,12 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "world_update",
-                "description": "Record structured knowledge into the WORLD MODEL — JARVIS's shared picture of the user's world that EVERY agent reads. Use it to set an ATTRIBUTE on an entity (e.g. project JARVIS status=active, deadline thesis due=2026-06-30) or to record a RELATIONSHIP between two entities (e.g. project JARVIS owned_by Darwin). This writes SHARED USER-KNOWLEDGE — it is NOT a consequential external action (it sends nothing, launches nothing, moves nothing), so it needs no confirmation; it simply makes what you've learned part of the model all agents share. Call this when the user tells you a durable fact about a project/person/deadline/task/topic, or how two of those relate. For an ATTRIBUTE: set 'entity_type' (one of: project, person, deadline, task, topic, thread), 'entity' (the entity's name), 'attribute' (what you're recording, e.g. status, due, role), and 'value'. For a RELATIONSHIP: set 'from' (one entity name), 'relation' (e.g. owns, blocks, depends_on, member_of), and 'to' (the other entity name); 'value' is an optional detail on the edge. Input is validated and bounded. It only ever writes the shared world tier — it can never write into another agent's private notes.",
+                "description": "Record structured knowledge into the WORLD MODEL — DARWIN's shared picture of the user's world that EVERY agent reads. Use it to set an ATTRIBUTE on an entity (e.g. project DARWIN status=active, deadline thesis due=2026-06-30) or to record a RELATIONSHIP between two entities (e.g. project DARWIN owned_by Darwin). This writes SHARED USER-KNOWLEDGE — it is NOT a consequential external action (it sends nothing, launches nothing, moves nothing), so it needs no confirmation; it simply makes what you've learned part of the model all agents share. Call this when the user tells you a durable fact about a project/person/deadline/task/topic, or how two of those relate. For an ATTRIBUTE: set 'entity_type' (one of: project, person, deadline, task, topic, thread), 'entity' (the entity's name), 'attribute' (what you're recording, e.g. status, due, role), and 'value'. For a RELATIONSHIP: set 'from' (one entity name), 'relation' (e.g. owns, blocks, depends_on, member_of), and 'to' (the other entity name); 'value' is an optional detail on the edge. Input is validated and bounded. It only ever writes the shared world tier — it can never write into another agent's private notes.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "entity_type": {"type": "string", "description": "For an attribute write: the entity's kind — one of project, person, deadline, task, topic, thread."},
-                        "entity": {"type": "string", "description": "For an attribute write: the entity's name (e.g. 'Project JARVIS', 'Darwin')."},
+                        "entity": {"type": "string", "description": "For an attribute write: the entity's name (e.g. 'Project DARWIN', 'Darwin')."},
                         "attribute": {"type": "string", "description": "For an attribute write: what is being recorded (e.g. 'status', 'due', 'role')."},
                         "from": {"type": "string", "description": "For a relationship write: the source entity's name."},
                         "relation": {"type": "string", "description": "For a relationship write: how they relate (e.g. 'owns', 'blocks', 'depends_on', 'member_of')."},
@@ -1310,7 +1310,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "user_model_query",
-                "description": "Read the USER MODEL — JARVIS's structured, COMPOUNDING picture of the user, built ONLY from observed interactions: their PREFERENCES, behavioral PATTERNS/habits, RECURRING TOPICS, and COMMUNICATION STYLE. Each entry carries HOW MANY TIMES it was observed (its confidence) and its PROVENANCE (which past episodes/facts it was derived from). Call this when the user asks 'what do you know about me', 'what have you noticed about me', 'what are my preferences', or to surface the profile with its evidence. READ-ONLY — it retrieves, stores nothing, sends nothing, changes nothing. 'about' narrows to a topic in the user's own words; leave it empty for the whole (bounded) profile. HONESTY (load-bearing): it surfaces ONLY what was actually OBSERVED — it is NOT clairvoyant and NEVER invents a preference. An entry earns its place only after a repeated signal (or an explicit stated fact), so a one-off mention is not shown. An unknown topic comes back EMPTY (say there's nothing observed yet). The model can be WRONG — tell the user they can correct or forget any entry (via the correct/forget paths). It reads only the shared user-model tier — it can never surface another agent's private notes.",
+                "description": "Read the USER MODEL — DARWIN's structured, COMPOUNDING picture of the user, built ONLY from observed interactions: their PREFERENCES, behavioral PATTERNS/habits, RECURRING TOPICS, and COMMUNICATION STYLE. Each entry carries HOW MANY TIMES it was observed (its confidence) and its PROVENANCE (which past episodes/facts it was derived from). Call this when the user asks 'what do you know about me', 'what have you noticed about me', 'what are my preferences', or to surface the profile with its evidence. READ-ONLY — it retrieves, stores nothing, sends nothing, changes nothing. 'about' narrows to a topic in the user's own words; leave it empty for the whole (bounded) profile. HONESTY (load-bearing): it surfaces ONLY what was actually OBSERVED — it is NOT clairvoyant and NEVER invents a preference. An entry earns its place only after a repeated signal (or an explicit stated fact), so a one-off mention is not shown. An unknown topic comes back EMPTY (say there's nothing observed yet). The model can be WRONG — tell the user they can correct or forget any entry (via the correct/forget paths). It reads only the shared user-model tier — it can never surface another agent's private notes.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -1320,7 +1320,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "user_model_correct",
-                "description": "CORRECT or REMOVE one entry in the USER MODEL — the user-fixable half of JARVIS's observed picture of the user. Use it when the user says JARVIS got something wrong about them ('no, I actually prefer X', 'that's not right, drop that') so the profile reflects the truth they stated. Provide 'facet' (one of: preference, pattern, topic, style) and 'subject' (the entry's subject, e.g. 'editor', 'tone'). To OVERRIDE the entry, set 'observation' to the corrected statement (it replaces the observation and marks the entry as a USER CORRECTION, resetting its observed-count). To DELETE the entry, leave 'observation' empty. This writes only the shared user-model tier — it can never touch another agent's private notes. It changes JARVIS's belief about the user, nothing external (sends nothing, launches nothing), so it needs no confirmation. Honesty: it only ever edits an entry the user is explicitly correcting — it never invents one.",
+                "description": "CORRECT or REMOVE one entry in the USER MODEL — the user-fixable half of DARWIN's observed picture of the user. Use it when the user says DARWIN got something wrong about them ('no, I actually prefer X', 'that's not right, drop that') so the profile reflects the truth they stated. Provide 'facet' (one of: preference, pattern, topic, style) and 'subject' (the entry's subject, e.g. 'editor', 'tone'). To OVERRIDE the entry, set 'observation' to the corrected statement (it replaces the observation and marks the entry as a USER CORRECTION, resetting its observed-count). To DELETE the entry, leave 'observation' empty. This writes only the shared user-model tier — it can never touch another agent's private notes. It changes DARWIN's belief about the user, nothing external (sends nothing, launches nothing), so it needs no confirmation. Honesty: it only ever edits an entry the user is explicitly correcting — it never invents one.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -1333,7 +1333,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "user_model_forget",
-                "description": "FORGET the WHOLE user model — delete every entry in JARVIS's observed picture of the user (preferences, patterns, recurring topics, communication style). Call this when the user asks JARVIS to forget what it knows about them, clear their profile, or start fresh. It clears ONLY the shared user-model tier (it does not touch the world model, stored facts, or episodes — those have their own forget paths); nothing external is affected. This is the FORGETTABLE contract: the user is always in control of the profile. Takes no arguments. It honestly reports how many entries were forgotten.",
+                "description": "FORGET the WHOLE user model — delete every entry in DARWIN's observed picture of the user (preferences, patterns, recurring topics, communication style). Call this when the user asks DARWIN to forget what it knows about them, clear their profile, or start fresh. It clears ONLY the shared user-model tier (it does not touch the world model, stored facts, or episodes — those have their own forget paths); nothing external is affected. This is the FORGETTABLE contract: the user is always in control of the profile. Takes no arguments. It honestly reports how many entries were forgotten.",
                 "input_schema": {"type": "object", "properties": {}}
             },
             {
@@ -1394,12 +1394,12 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "dume_devices",
-                "description": "List the smart-home devices and their current states from the user's Home Assistant hub (entity id, friendly name, and on/off-or-value state). READ-ONLY — it makes no changes. Call this when the user asks what smart-home devices they have, what's on or off, or to check the state of their home. This reads the user's OWN Home Assistant hub over its local API — JARVIS does NOT talk HomeKit directly. If smart home isn't configured (no Home Assistant URL + token in Settings) it says so. Takes no arguments.",
+                "description": "List the smart-home devices and their current states from the user's Home Assistant hub (entity id, friendly name, and on/off-or-value state). READ-ONLY — it makes no changes. Call this when the user asks what smart-home devices they have, what's on or off, or to check the state of their home. This reads the user's OWN Home Assistant hub over its local API — DARWIN does NOT talk HomeKit directly. If smart home isn't configured (no Home Assistant URL + token in Settings) it says so. Takes no arguments.",
                 "input_schema": {"type": "object", "properties": {}}
             },
             {
                 "name": "dume_control",
-                "description": "Control a smart-home device through the user's Home Assistant hub by calling a service on it (e.g. turn a light on/off, set a thermostat, lock/unlock a door). CONSEQUENTIAL: it defaults to a DRY-RUN PREVIEW of the exact change and moves NOTHING. Set confirm=true ONLY after the user has explicitly approved THIS specific change to THIS device. Even with confirm=true it still will NOT make the change unless the operator has separately enabled outward actions; otherwise it returns a preview. entity_id is the Home Assistant entity like 'light.living_room' (its domain is the part before the dot); action is the service to call ('turn_on', 'turn_off', 'lock', 'unlock', 'set', …); value is an OPTIONAL JSON object of extra service fields (e.g. {\"brightness\": 180} or {\"temperature\": 70}). Control goes through the user's OWN hub — JARVIS does not talk HomeKit directly.",
+                "description": "Control a smart-home device through the user's Home Assistant hub by calling a service on it (e.g. turn a light on/off, set a thermostat, lock/unlock a door). CONSEQUENTIAL: it defaults to a DRY-RUN PREVIEW of the exact change and moves NOTHING. Set confirm=true ONLY after the user has explicitly approved THIS specific change to THIS device. Even with confirm=true it still will NOT make the change unless the operator has separately enabled outward actions; otherwise it returns a preview. entity_id is the Home Assistant entity like 'light.living_room' (its domain is the part before the dot); action is the service to call ('turn_on', 'turn_off', 'lock', 'unlock', 'set', …); value is an OPTIONAL JSON object of extra service fields (e.g. {\"brightness\": 180} or {\"temperature\": 70}). Control goes through the user's OWN hub — DARWIN does not talk HomeKit directly.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -1413,7 +1413,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "midas_balances",
-                "description": "Read the current balances on the user's linked bank accounts via Plaid (each account's name plus its available and current balance). READ-ONLY — it makes no changes and CANNOT move money. Call this when the user asks what their balance is, how much money they have, or what's in their accounts. This reads the user's OWN accounts through Plaid; it needs the user's Plaid app (client id + secret in Settings) AND a linked-institution access token from Plaid Link (a frontend step JARVIS does not perform) — if any is missing it says 'no linked accounts — connect via Plaid in Settings'. MIDAS reads only; it never transfers, pays, or trades. Takes no arguments.",
+                "description": "Read the current balances on the user's linked bank accounts via Plaid (each account's name plus its available and current balance). READ-ONLY — it makes no changes and CANNOT move money. Call this when the user asks what their balance is, how much money they have, or what's in their accounts. This reads the user's OWN accounts through Plaid; it needs the user's Plaid app (client id + secret in Settings) AND a linked-institution access token from Plaid Link (a frontend step DARWIN does not perform) — if any is missing it says 'no linked accounts — connect via Plaid in Settings'. MIDAS reads only; it never transfers, pays, or trades. Takes no arguments.",
                 "input_schema": {"type": "object", "properties": {}}
             },
             {
@@ -1495,12 +1495,12 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "aegis_introspect",
-                "description": "Report how JARVIS's OWN sandboxed micro-apps are behaving: how many are observed, plus any SBPL seatbelt profile-drift (an on-disk profile tampered since launch), runaway RSS/CPU anomalies, unexpected loaded dyld modules (injection / unexpected dlopen), and recent findings. READ-ONLY and DEFENSIVE — it only reports what the introspection sentinel observed about the daemon's own children; it NEVER kills an app, unloads a module, or changes a profile. Call this when the user asks whether their apps are healthy, if anything is wrong with the micro-apps, about app integrity/tampering, or for a self-diagnostics/introspection check. Takes no arguments.",
+                "description": "Report how DARWIN's OWN sandboxed micro-apps are behaving: how many are observed, plus any SBPL seatbelt profile-drift (an on-disk profile tampered since launch), runaway RSS/CPU anomalies, unexpected loaded dyld modules (injection / unexpected dlopen), and recent findings. READ-ONLY and DEFENSIVE — it only reports what the introspection sentinel observed about the daemon's own children; it NEVER kills an app, unloads a module, or changes a profile. Call this when the user asks whether their apps are healthy, if anything is wrong with the micro-apps, about app integrity/tampering, or for a self-diagnostics/introspection check. Takes no arguments.",
                 "input_schema": {"type": "object", "properties": {}}
             },
             {
                 "name": "aegis_report",
-                "description": "One combined FULL security check of this Mac: machine posture (FileVault/firewall/SIP/pending updates) + app privacy grants (TCC: which apps hold Camera/Screen/Mic/Accessibility/Full-Disk-Access) + micro-app introspection (JARVIS's own sandboxed apps — profile-drift, resource anomalies, unexpected loaded modules). READ-ONLY and DEFENSIVE — it only reports where the user stands and CHANGES NOTHING (each sub-check degrades honestly if it can't be read). Call this when the user wants a full/overall security check, a security review, to know 'am I secure', or a one-shot 'check everything'. Prefer this over the individual aegis_posture / aegis_introspect tools when the user wants the whole picture. Turning a protection on or changing a permission is the user's own action in System Settings. Takes no arguments.",
+                "description": "One combined FULL security check of this Mac: machine posture (FileVault/firewall/SIP/pending updates) + app privacy grants (TCC: which apps hold Camera/Screen/Mic/Accessibility/Full-Disk-Access) + micro-app introspection (DARWIN's own sandboxed apps — profile-drift, resource anomalies, unexpected loaded modules). READ-ONLY and DEFENSIVE — it only reports where the user stands and CHANGES NOTHING (each sub-check degrades honestly if it can't be read). Call this when the user wants a full/overall security check, a security review, to know 'am I secure', or a one-shot 'check everything'. Prefer this over the individual aegis_posture / aegis_introspect tools when the user wants the whole picture. Turning a protection on or changing a permission is the user's own action in System Settings. Takes no arguments.",
                 "input_schema": {"type": "object", "properties": {}}
             },
             {
@@ -1531,7 +1531,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "forge_app",
-                "description": "Kick off Self-Forge: have JARVIS DRAFT a brand-new, sandboxed micro-app from a goal, VALIDATE it (build + tests) in a CONFINED staging copy, and PROPOSE it for human review. Call this when the user asks you to BUILD / CREATE / FORGE a new little app or tool for a specific job ('build me an app that …', 'forge a tool to …'). PROPOSE-ONLY and HUMAN-GATED: this NEVER deploys the app, NEVER installs it into apps/, and NEVER runs the generated code live — it only writes a reviewable proposal under state/forge/proposals/<ts>/ and tells you the exact manual command (scripts/apply_forge.sh <ts>) a human must run to install it after reviewing. The forged app is born sandboxed (default-deny profile, minimal declared permissions). Self-Forge ships ON but is PROPOSE-ONLY and INERT WITHOUT A CLOUD KEY: when [forge] is disabled in config it does nothing and says so, and it needs the cloud to author (offline it reports it could not draft). goal is the plain-language description of the app to build.",
+                "description": "Kick off Self-Forge: have DARWIN DRAFT a brand-new, sandboxed micro-app from a goal, VALIDATE it (build + tests) in a CONFINED staging copy, and PROPOSE it for human review. Call this when the user asks you to BUILD / CREATE / FORGE a new little app or tool for a specific job ('build me an app that …', 'forge a tool to …'). PROPOSE-ONLY and HUMAN-GATED: this NEVER deploys the app, NEVER installs it into apps/, and NEVER runs the generated code live — it only writes a reviewable proposal under state/forge/proposals/<ts>/ and tells you the exact manual command (scripts/apply_forge.sh <ts>) a human must run to install it after reviewing. The forged app is born sandboxed (default-deny profile, minimal declared permissions). Self-Forge ships ON but is PROPOSE-ONLY and INERT WITHOUT A CLOUD KEY: when [forge] is disabled in config it does nothing and says so, and it needs the cloud to author (offline it reports it could not draft). goal is the plain-language description of the app to build.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -1542,7 +1542,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "standing_create",
-                "description": "ESTABLISH a STANDING MISSION: a durable, scheduled, autonomous goal JARVIS runs on a recurring schedule (e.g. 'every morning, review my deadlines and flag anything slipping'; 'every 6 hours, check the world model for blocked tasks'). Each run reasons over the shared World Model and runs through FURY's bounded mission engine. Call this ONLY when the user asks for something to happen REPEATEDLY / ON A SCHEDULE / STANDINGLY — not for a one-shot request (answer that directly) and not for a single multi-step job (use fury_mission). SAFETY — establishing a standing mission is a CONFIRMED action: this never silently spawns recurring autonomy. When consequential actions are enabled it PARKS for a spoken human 'yes' on a later turn (it previews 'I'll set up a standing mission to <goal>, <schedule> — confirm?' and creates nothing until confirmed); when they are off it only previews. Note the mission RUNS autonomously but can NEVER auto-send/post/spend — every consequential step a run proposes still waits for confirmation. The standing-missions subsystem ships ON ([standing].enabled = true), but establishing a mission is still confirmation-gated and no run can auto-send/post/spend; if the operator disables the subsystem, a created mission does not fire. Bounded: at most a few active missions. 'goal' is the recurring objective; 'schedule' is the cadence in plain words ('daily', 'daily at 7am', 'every 6 hours', 'on mail').",
+                "description": "ESTABLISH a STANDING MISSION: a durable, scheduled, autonomous goal DARWIN runs on a recurring schedule (e.g. 'every morning, review my deadlines and flag anything slipping'; 'every 6 hours, check the world model for blocked tasks'). Each run reasons over the shared World Model and runs through FURY's bounded mission engine. Call this ONLY when the user asks for something to happen REPEATEDLY / ON A SCHEDULE / STANDINGLY — not for a one-shot request (answer that directly) and not for a single multi-step job (use fury_mission). SAFETY — establishing a standing mission is a CONFIRMED action: this never silently spawns recurring autonomy. When consequential actions are enabled it PARKS for a spoken human 'yes' on a later turn (it previews 'I'll set up a standing mission to <goal>, <schedule> — confirm?' and creates nothing until confirmed); when they are off it only previews. Note the mission RUNS autonomously but can NEVER auto-send/post/spend — every consequential step a run proposes still waits for confirmation. The standing-missions subsystem ships ON ([standing].enabled = true), but establishing a mission is still confirmation-gated and no run can auto-send/post/spend; if the operator disables the subsystem, a created mission does not fire. Bounded: at most a few active missions. 'goal' is the recurring objective; 'schedule' is the cadence in plain words ('daily', 'daily at 7am', 'every 6 hours', 'on mail').",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -1639,7 +1639,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "skill_list",
-                "description": "DISCOVER JARVIS's SKILL LIBRARY: list the available skills (small, pure, in-tree capabilities — encoders, counters, converters, deterministic helpers) with a one-line 'when to use' for each, so you can pick one and run it with skill_invoke. READ-ONLY — it lists the catalog, it runs nothing and changes nothing. Call this when the user asks for a small utility/transform/lookup ('base64 this', 'count the words', 'roll 2d6') and you want to find the matching skill, or when asked what skills/utilities JARVIS has. Optional 'category' narrows the list to one heading (utilities, text, datetime, units, mathx, knowledge, finance, fun); omit it for the whole catalog. HONESTY: this is a hand-written in-tree library reported at its REAL shipped count — not a populated community marketplace. Entries marked [consequential] will PARK for a spoken yes when invoked; entries marked [source-gated] report they need a data source until one is configured.",
+                "description": "DISCOVER DARWIN's SKILL LIBRARY: list the available skills (small, pure, in-tree capabilities — encoders, counters, converters, deterministic helpers) with a one-line 'when to use' for each, so you can pick one and run it with skill_invoke. READ-ONLY — it lists the catalog, it runs nothing and changes nothing. Call this when the user asks for a small utility/transform/lookup ('base64 this', 'count the words', 'roll 2d6') and you want to find the matching skill, or when asked what skills/utilities DARWIN has. Optional 'category' narrows the list to one heading (utilities, text, datetime, units, mathx, knowledge, finance, fun); omit it for the whole catalog. HONESTY: this is a hand-written in-tree library reported at its REAL shipped count — not a populated community marketplace. Entries marked [consequential] will PARK for a spoken yes when invoked; entries marked [source-gated] report they need a data source until one is configured.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -1649,7 +1649,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "skill_invoke",
-                "description": "RUN one skill from JARVIS's skill library by name, passing its arguments. Use skill_list first to find the skill and learn its args. A PURE skill (the common case) runs immediately and returns its result deterministically. A skill marked [consequential] in the catalog MUTATES/ACTS outside the process: invoking it PARKS for a spoken human 'yes' on a later turn (it previews what it would do and does NOT act) exactly like a consequential built-in — leave 'confirm' absent/false; only the confirmation replay sets it true. A skill marked [source-gated] honestly reports it needs a data source until one is configured (it never fabricates). 'name' is the skill's snake_case id; 'args' is an object of that skill's arguments. An unknown skill name comes back as a friendly error.",
+                "description": "RUN one skill from DARWIN's skill library by name, passing its arguments. Use skill_list first to find the skill and learn its args. A PURE skill (the common case) runs immediately and returns its result deterministically. A skill marked [consequential] in the catalog MUTATES/ACTS outside the process: invoking it PARKS for a spoken human 'yes' on a later turn (it previews what it would do and does NOT act) exactly like a consequential built-in — leave 'confirm' absent/false; only the confirmation replay sets it true. A skill marked [source-gated] honestly reports it needs a data source until one is configured (it never fabricates). 'name' is the skill's snake_case id; 'args' is an object of that skill's arguments. An unknown skill name comes back as a friendly error.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -1664,7 +1664,7 @@ fn tool_defs() -> &'static Value {
     })
 }
 
-/// The tool-def wildcard the orchestrator (jarvis) holds: `["*"]` means every
+/// The tool-def wildcard the orchestrator (darwin) holds: `["*"]` means every
 /// tool is offered. Mirrors `agents::TOOLS_WILDCARD` (kept local so anthropic.rs
 /// carries no agents.rs dependency on the hot path).
 const TOOLS_WILDCARD: &str = "*";
@@ -1810,9 +1810,9 @@ pub async fn complete_with_tools(
     let api_key = resolve_api_key().await.ok_or_else(|| {
         anyhow!(
             "no Anthropic API key found; cloud routing requires one — export \
-             ANTHROPIC_API_KEY in jarvisd's environment, or save a key in the \
+             ANTHROPIC_API_KEY in darwind's environment, or save a key in the \
              Keychain (service {KEYCHAIN_SERVICE}, account {KEYCHAIN_ACCOUNT}) \
-             via the HUD settings panel, then restart JARVIS"
+             via the HUD settings panel, then restart DARWIN"
         )
     })?;
     // System rendered as ordered content blocks with a TWO-TIER prompt cache:
@@ -1858,7 +1858,7 @@ pub async fn complete_with_tools(
     // manager offers ONLY the active agent's allowlisted servers' tools (named
     // `mcp__<server>__<tool>`), and only when `[mcp].enabled` (a disabled manager
     // has no clients, so the list is empty). The agent id keys the per-server
-    // allowlist; the orchestrator's namespace is `agent.jarvis`. A cache
+    // allowlist; the orchestrator's namespace is `agent.darwin`. A cache
     // breakpoint on the last def caches the stable tool-defs prefix (tools render
     // before system). The cache breakpoint sits AFTER the MCP defs so the whole
     // offered surface — built-in + MCP — caches as one prefix.
@@ -2827,11 +2827,11 @@ pub async fn complete_plain(
 /// greetings, opinions) when [router].conversation_route sends it to the
 /// cloud. The local 4B is near-deterministic on bare greetings (a
 /// model-capacity ceiling); this path answers chat with cloud Opus/Haiku so
-/// JARVIS has genuinely varied, in-character personality.
+/// DARWIN has genuinely varied, in-character personality.
 ///
 /// It builds the SAME context the spoken paths use — persona + facts as the
 /// `system` prompt (`build_system`), recent exchanges as real alternating chat
-/// turns with the live utterance last (`build_messages`) — so JARVIS sounds
+/// turns with the live utterance last (`build_messages`) — so DARWIN sounds
 /// like one entity regardless of which model answers. Crucially it does NOT
 /// run the tool loop: a greeting must never trigger tool calls, so no `tools`
 /// param is sent and the model can only produce text. `max_tokens` is the
@@ -2843,12 +2843,12 @@ pub async fn complete_plain(
 /// is equally valid for Haiku 4.5 (the fast model, which has no adaptive
 /// thinking) — so one code path serves both conversation_route cloud variants.
 ///
-/// `avoid` is a short list of JARVIS's RECENT replies. Opus 4.8 takes NO
+/// `avoid` is a short list of DARWIN's RECENT replies. Opus 4.8 takes NO
 /// temperature/top_p/top_k parameter (sending one 400s), so sampling pressure
 /// is not a lever — the PROMPT is the only one. When `avoid` is non-empty its
 /// entries are folded into the `system` prompt as an explicit "do not reuse
 /// this wording" instruction, which CHANGES the prompt on every call and so
-/// forces identical user input (e.g. a repeated bare "Hi JARVIS") to vary
+/// forces identical user input (e.g. a repeated bare "Hi DARWIN") to vary
 /// instead of collapsing onto one peaked sequence. Empty `avoid` leaves the
 /// prompt untouched (first turn, or no recent replies to dodge).
 #[allow(clippy::too_many_arguments)] // mirrors the cloud chat turn's working set
@@ -2867,9 +2867,9 @@ pub async fn complete_persona(
     let api_key = resolve_api_key().await.ok_or_else(|| {
         anyhow!(
             "no Anthropic API key found; cloud conversation routing requires one — \
-             export ANTHROPIC_API_KEY in jarvisd's environment, or save a key in the \
+             export ANTHROPIC_API_KEY in darwind's environment, or save a key in the \
              Keychain (service {KEYCHAIN_SERVICE}, account {KEYCHAIN_ACCOUNT}) via the \
-             HUD settings panel, then restart JARVIS"
+             HUD settings panel, then restart DARWIN"
         )
     })?;
     let body = persona_body(
@@ -2927,7 +2927,7 @@ fn persona_body(
     //     to the utterance) so it MUST ride the uncached tail. Empty -> no block.
     //     ISOLATION: this comes from the shared tier ONLY (world_model reads only
     //     user.world.*), so it can never carry another agent's private notes.
-    //   - the live constellation roster (the agents JARVIS orchestrates), so the
+    //   - the live constellation roster (the agents DARWIN orchestrates), so the
     //     cloud brain can accurately name/list/describe the team rather than
     //     denying it exists (the cloud persona carries no static roster).
     //     Grounded data — never fabricated; an empty roster adds no block.
@@ -3748,7 +3748,7 @@ mod response_voice {
     use std::sync::Mutex;
 
     /// The current turn's response-voice-language. `None` = no tool requested a
-    /// target language for the spoken response, which reads as "JARVIS's own voice,
+    /// target language for the spoken response, which reads as "DARWIN's own voice,
     /// no hint" — exactly today's behavior. Set by the `babel_interpret` arm, read at
     /// the main.rs response-speak site, cleared at turn end by [`TurnLangGuard`].
     static RESPONSE_VOICE_LANG: Mutex<Option<String>> = Mutex::new(None);
@@ -6837,7 +6837,7 @@ fn skill_list_catalog_in(
     };
     if skills.is_empty() {
         return Ok(format!(
-            "No skills{scope} yet. (JARVIS's skill library is a hand-written, extensible in-tree set — this category has none so far.)"
+            "No skills{scope} yet. (DARWIN's skill library is a hand-written, extensible in-tree set — this category has none so far.)"
         ));
     }
     let lines: Vec<String> = skills.iter().map(|s| s.catalog_line()).collect();
@@ -6846,7 +6846,7 @@ fn skill_list_catalog_in(
     // how many are in that one category.
     let header = if category.is_none() {
         format!(
-            "{} skill(s) in JARVIS's hand-written in-tree library (extensible; not a community marketplace):",
+            "{} skill(s) in DARWIN's hand-written in-tree library (extensible; not a community marketplace):",
             reg.count()
         )
     } else {
@@ -7643,7 +7643,7 @@ async fn dispatch_tool(
             Err(e) => Err(anyhow!("invalid user_model_query arguments: {e}")),
         },
         // user_model_correct OVERRIDES or DELETES one profile entry the user is
-        // explicitly correcting (the CORRECTABLE contract). It edits JARVIS's
+        // explicitly correcting (the CORRECTABLE contract). It edits DARWIN's
         // BELIEF about the user — NOT a consequential external action (sends
         // nothing, launches nothing), so it deliberately does NOT route through
         // integrations::gate(). It writes ONLY user.model.* (never a private
@@ -7661,7 +7661,7 @@ async fn dispatch_tool(
         // user_model_forget clears the WHOLE user-model tier (the FORGETTABLE
         // contract). It deletes only user.model.* rows (the world model, facts, and
         // episodes are untouched — each has its own forget path). It changes only
-        // JARVIS's belief about the user, nothing external -> no gate.
+        // DARWIN's belief about the user, nothing external -> no gate.
         "user_model_forget" => Ok(user_model_forget_tool(memory).await),
         // -- STANDING MISSIONS (crate::standing) ------------------------------
         // standing_create is CONSEQUENTIAL: ESTABLISHING a standing mission spawns
@@ -7671,7 +7671,7 @@ async fn dispatch_tool(
         // when building the dry-run preview) returns the faithful ESTABLISH PREVIEW
         // naming the goal+schedule and CREATES NOTHING; only confirm=true — which
         // ONLY the spoken-yes replay sets — actually persists the mission. So
-        // execute_tool parks a create for a human yes, and JARVIS never silently
+        // execute_tool parks a create for a human yes, and DARWIN never silently
         // spawns a recurring mission. The [standing].enabled subsystem master switch
         // ships ON, so a created mission runs on schedule — but every consequential
         // step a RUN proposes parks again (it can never auto-send/post/spend), and
@@ -7803,7 +7803,7 @@ async fn dispatch_tool(
         // passes it to set_device, which previews the exact service call in DryRun
         // (issuing no request) and POSTs exactly one service call in Execute. So
         // with the gate OFF (the shipped default) or confirm=false, no device
-        // moves. HONESTY: control rides the user's OWN Home Assistant hub; JARVIS
+        // moves. HONESTY: control rides the user's OWN Home Assistant hub; DARWIN
         // does not talk HomeKit directly.
         "dume_devices" => match smarthome_client().await {
             Ok(client) => client.list_devices().await,
@@ -7829,7 +7829,7 @@ async fn dispatch_tool(
         // one. The client builder relays the friendly secret-free "no linked
         // accounts — connect via Plaid in Settings" error when the client_id/secret/
         // access_token are missing (the access token is minted by Plaid Link, a
-        // frontend step JARVIS does not perform). Plaid error_codes map to friendly
+        // frontend step DARWIN does not perform). Plaid error_codes map to friendly
         // language (ITEM_LOGIN_REQUIRED -> relink, INVALID_* -> creds) inside the
         // client; no secret is ever logged.
         "midas_balances" => match plaid_client().await {
@@ -7919,7 +7919,7 @@ async fn dispatch_tool(
         // integrations::gate(). Each check degrades honestly if it cannot be read.
         "aegis_posture" => crate::posture::local_posture().await,
         // aegis_introspect reports the introspection sentinel's read-only view of
-        // jarvisd's OWN sandboxed micro-apps (profile-drift / resource-anomalies /
+        // darwind's OWN sandboxed micro-apps (profile-drift / resource-anomalies /
         // module-violations + recent findings). REPORTS only — it changes nothing,
         // touches no gate, and holds no remediation path.
         "aegis_introspect" => Ok(crate::introspect::status_summary()),
@@ -7999,7 +7999,7 @@ async fn dispatch_tool(
                 // The returned text IS the translation and SHOULD be voiced in `to_lang`:
                 // record it for the response-speak site (only when something was actually
                 // rendered — an honest "nothing to interpret" / "couldn't translate" line
-                // is English and stays in JARVIS's own voice). The per-turn guard clears
+                // is English and stays in DARWIN's own voice). The per-turn guard clears
                 // this, so a non-Babel turn or the next turn never inherits it.
                 if outcome.translated {
                     set_response_voice_lang(Some(&args.to_lang));
@@ -8144,7 +8144,7 @@ pub(crate) fn edith_brief_now() -> String {
     let focus_profile = match ROOT.get() {
         Some(root) => {
             let (cfg, _issues) =
-                crate::config::Config::load(&root.join("config").join("jarvis.toml"));
+                crate::config::Config::load(&root.join("config").join("darwin.toml"));
             crate::focus::FocusProfile::from_config_str(&cfg.focus.profile)
         }
         None => crate::focus::FocusProfile::Default,
@@ -8242,7 +8242,7 @@ async fn run_forge_app(goal: &str, memory: &Memory) -> Result<String> {
             "I could not locate the project root to forge into, so nothing was drafted.".to_string(),
         );
     };
-    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("jarvis.toml"));
+    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("darwin.toml"));
     let brain = crate::forge::CloudBrain {
         model: cfg.cloud.heavy_model.clone(),
     };
@@ -8493,9 +8493,9 @@ struct InferenceEmbedder {
 
 impl InferenceEmbedder {
     /// Resolve the inference socket the same way the daemon does
-    /// (`<root>/state/ipc/inference.sock`, root from `JARVIS_ROOT` or the cwd).
+    /// (`<root>/state/ipc/inference.sock`, root from `DARWIN_ROOT` or the cwd).
     fn over_inference_socket() -> Self {
-        let root = std::env::var("JARVIS_ROOT")
+        let root = std::env::var("DARWIN_ROOT")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
@@ -8784,11 +8784,11 @@ async fn mnemosyne_recall(
 // -- DOC SEARCH helper (crate::docsearch) ----------------------------------------
 
 /// Resolve the on-device doc-chunk index path the same way the daemon does
-/// (`<root>/state/docsearch.db`, root from `JARVIS_ROOT` or the cwd) — mirroring
+/// (`<root>/state/docsearch.db`, root from `DARWIN_ROOT` or the cwd) — mirroring
 /// [`InferenceEmbedder::over_inference_socket`]'s root resolution so the tool
 /// reads exactly the store the daemon's index/reindex path wrote.
 fn docsearch_db_path() -> std::path::PathBuf {
-    let root = std::env::var("JARVIS_ROOT")
+    let root = std::env::var("DARWIN_ROOT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
@@ -8881,28 +8881,28 @@ async fn doc_search_tool(
 // -- CODE INTELLIGENCE helpers (crate::code) -------------------------------------
 
 /// The directory the code-intelligence PROPOSAL STORE lives under
-/// (state/code/proposals/<ts>/). `<root>/state/code`, root from JARVIS_ROOT/ROOT
+/// (state/code/proposals/<ts>/). `<root>/state/code`, root from DARWIN_ROOT/ROOT
 /// or the cwd — the SAME root-resolution every other store uses. PROPOSE-ONLY: a
 /// proposal is the ONLY thing ever written here; the user's code is never touched.
 fn code_root_dir() -> std::path::PathBuf {
     let root = ROOT
         .get()
         .cloned()
-        .or_else(|| std::env::var("JARVIS_ROOT").ok().map(std::path::PathBuf::from))
+        .or_else(|| std::env::var("DARWIN_ROOT").ok().map(std::path::PathBuf::from))
         .unwrap_or_else(|| {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         });
     root.join("state").join("code")
 }
 
-/// Load the live [code] config from the on-disk jarvis.toml (the same load the
+/// Load the live [code] config from the on-disk darwin.toml (the same load the
 /// forge/CLI paths use, one source of truth). When no root is resolved, returns
 /// the OFF default (so the tool reports off honestly rather than scanning).
 fn load_code_config() -> crate::config::CodeConfig {
     let Some(root) = ROOT.get() else {
         return crate::config::CodeConfig::default();
     };
-    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("jarvis.toml"));
+    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("darwin.toml"));
     cfg.code
 }
 
@@ -9104,27 +9104,27 @@ async fn code_propose_diff_tool(request: &str) -> String {
 
 // -- SANDBOXED SHELL / TERMINAL (crate::shell, #43) ------------------------------
 
-/// Load the live [shell] config from the on-disk jarvis.toml (one source of
+/// Load the live [shell] config from the on-disk darwin.toml (one source of
 /// truth, like load_code_config). When no root is resolved, returns the OFF
 /// default — so the tool reports off honestly rather than ever running.
 fn load_shell_config() -> crate::config::ShellConfig {
     let Some(root) = ROOT.get() else {
         return crate::config::ShellConfig::default();
     };
-    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("jarvis.toml"));
+    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("darwin.toml"));
     cfg.shell
 }
 
 // -- GATED UI AUTOMATION / ACTUATION (crate::ui_automation, #44) -----------------
 
-/// Load the live [ui_automation] config from the on-disk jarvis.toml (one source
+/// Load the live [ui_automation] config from the on-disk darwin.toml (one source
 /// of truth, like load_shell_config). When no root is resolved, returns the OFF
 /// default — so the tool reports off honestly rather than ever actuating.
 fn load_ui_automation_config() -> crate::config::UiAutomationConfig {
     let Some(root) = ROOT.get() else {
         return crate::config::UiAutomationConfig::default();
     };
-    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("jarvis.toml"));
+    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("darwin.toml"));
     cfg.ui_automation
 }
 
@@ -9215,9 +9215,9 @@ async fn ui_actuate_tool(request: &crate::ui_automation::ActuationRequest, confi
             // fabricated.
             telemetry::emit("system", "ui_actuate.actuating", json!({"action": plan.action().verb(), "target": plan.target_desc()}));
             // OPT-IN: when [ui_automation].actuate_via_app is true, the already-approved
-            // single action is POSTED THROUGH the HUD app (JARVIS.app) over
+            // single action is POSTED THROUGH the HUD app (DARWIN.app) over
             // state/ipc/actuate.sock so macOS attributes the Accessibility grant to
-            // JARVIS.app. Default false => the existing LOCAL CGEvent post, unchanged.
+            // DARWIN.app. Default false => the existing LOCAL CGEvent post, unchanged.
             // Every gate above ran first; this flag changes ONLY where the post lands.
             match crate::ui_automation::do_actuate(&plan, cfg.actuate_via_app).await {
                 Ok(result) => {
@@ -9243,19 +9243,19 @@ async fn ui_actuate_tool(request: &crate::ui_automation::ActuationRequest, confi
 }
 
 /// The daemon's own state dir (its db + secrets) — denied (read+write) in the
-/// sandbox profile so a sandboxed command can never touch JARVIS's own state.
+/// sandbox profile so a sandboxed command can never touch DARWIN's own state.
 fn daemon_state_dir() -> std::path::PathBuf {
     let root = ROOT
         .get()
         .cloned()
-        .or_else(|| std::env::var("JARVIS_ROOT").ok().map(std::path::PathBuf::from))
+        .or_else(|| std::env::var("DARWIN_ROOT").ok().map(std::path::PathBuf::from))
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
     root.join("state")
 }
 
 /// The throwaway scratch dir a sandboxed command may write to (the ONLY writable
 /// location under the deny-default profile). Rooted under state/shell/scratch/<ts>
-/// — distinct from the denied state/jarvis db + secrets, so the write-allow never
+/// — distinct from the denied state/darwin db + secrets, so the write-allow never
 /// overlaps a secret deny.
 fn shell_scratch_dir(ts: u64) -> std::path::PathBuf {
     daemon_state_dir().join("shell").join("scratch").join(ts.to_string())
@@ -9407,7 +9407,7 @@ fn load_heavy_model() -> String {
     match ROOT.get() {
         Some(root) => {
             let (cfg, _issues) =
-                crate::config::Config::load(&root.join("config").join("jarvis.toml"));
+                crate::config::Config::load(&root.join("config").join("darwin.toml"));
             cfg.cloud.heavy_model
         }
         None => crate::config::Config::default().cloud.heavy_model,
@@ -9882,7 +9882,7 @@ async fn user_model_query_tool(memory: &Memory, about: &str) -> String {
 
 /// Run the `user_model_correct` tool: OVERRIDE (non-empty observation) or DELETE
 /// (empty observation) one profile entry the user is explicitly correcting. It
-/// edits JARVIS's BELIEF about the user only — nothing external. Validates the
+/// edits DARWIN's BELIEF about the user only — nothing external. Validates the
 /// facet token, then delegates to the bounded writer in [`crate::user_model`].
 /// Returns a confirmation naming exactly what changed, or a friendly is-error
 /// message. It writes ONLY user.model.* and never invents an entry.
@@ -10213,7 +10213,7 @@ async fn standing_cancel_tool(memory: &Memory, id: &str) -> String {
 /// is unknown or the config is unreadable — the listing then honestly reports off.
 fn standing_subsystem_enabled() -> bool {
     let Some(root) = ROOT.get() else { return false };
-    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("jarvis.toml"));
+    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("darwin.toml"));
     cfg.standing.enabled
 }
 
@@ -10228,7 +10228,7 @@ fn missions_config() -> (bool, usize) {
     let Some(root) = ROOT.get() else {
         return (false, crate::durable_missions::DEFAULT_RETENTION);
     };
-    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("jarvis.toml"));
+    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("darwin.toml"));
     (cfg.missions.durable, cfg.missions.retention)
 }
 
@@ -10358,13 +10358,13 @@ async fn mission_cancel_tool(memory: &Memory, id: &str) -> String {
 /// Read the [drafts] config (enabled flag + retention) from the live config. Falls
 /// back to OFF + default retention when unavailable. NOTE: the flag governs only
 /// PROACTIVE drafting; an EXPLICIT draft_compose ask always composes a (reviewable,
-/// never-sent) draft — the off-flag never makes JARVIS refuse to help, and it can
+/// never-sent) draft — the off-flag never makes DARWIN refuse to help, and it can
 /// never enable a send (the module has no send path).
 fn drafts_config() -> (bool, usize) {
     let Some(root) = ROOT.get() else {
         return (false, crate::drafts::DEFAULT_RETENTION);
     };
-    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("jarvis.toml"));
+    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("darwin.toml"));
     (cfg.drafts.enabled, cfg.drafts.retention)
 }
 
@@ -10438,7 +10438,7 @@ async fn draft_forget_tool(memory: &Memory, id: &str) -> String {
 /// side-effecting skill fire unconfirmed.
 fn skills_subsystem_enabled() -> bool {
     let Some(root) = ROOT.get() else { return true };
-    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("jarvis.toml"));
+    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("darwin.toml"));
     cfg.skills.enabled
 }
 
@@ -10556,10 +10556,10 @@ struct OnDeviceTranslator {
 
 impl OnDeviceTranslator {
     /// Resolve the inference socket the same way the daemon does
-    /// (`<root>/state/ipc/inference.sock`, root from `JARVIS_ROOT` or the cwd) so
+    /// (`<root>/state/ipc/inference.sock`, root from `DARWIN_ROOT` or the cwd) so
     /// the live arm reaches the same on-device model the rest of the daemon uses.
     fn over_inference_socket() -> Self {
-        let root = std::env::var("JARVIS_ROOT")
+        let root = std::env::var("DARWIN_ROOT")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
@@ -11458,7 +11458,7 @@ mod tests {
     /// `tools` array so `has_tools` is true. Returns (memory, tools, allowed).
     fn loop_fixture(tag: &str) -> (Memory, Value, Vec<String>) {
         let path = std::env::temp_dir()
-            .join(format!("jarvis-toolloop-{}-{}.db", std::process::id(), tag));
+            .join(format!("darwin-toolloop-{}-{}.db", std::process::id(), tag));
         let _ = std::fs::remove_file(&path);
         let memory = Memory::open(&path).unwrap();
         let allowed = vec!["*".to_string()];
@@ -11478,7 +11478,7 @@ mod tests {
         let mut messages = build_messages(&[], "do the multi-step thing");
         tool_loop(
             "claude-test", 256, &system, &mut messages, brain, memory, executed, tools, allowed,
-            "agent.jarvis",
+            "agent.darwin",
             true, // these loop tests model a direct user turn (trusted)
         )
         .await
@@ -11760,7 +11760,7 @@ mod tests {
     /// The temp-db path `loop_fixture(tag)` uses, so each loop test cleans up its
     /// own file deterministically.
     fn memory_path(tag: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("jarvis-toolloop-{}-{}.db", std::process::id(), tag))
+        std::env::temp_dir().join(format!("darwin-toolloop-{}-{}.db", std::process::id(), tag))
     }
 
     // ===== OFFLINE BOUNDED TOOL-LOOP (task #3) ===============================
@@ -11838,7 +11838,7 @@ mod tests {
         let offered = offline_tools_for_agent(&safe_local_subset(&[]), allowed);
         local_tool_loop(
             brain, 200, "what do you know about me", &[], &[], memory, &offered, allowed,
-            "agent.jarvis", rounds,
+            "agent.darwin", rounds,
         )
         .await
     }
@@ -11964,10 +11964,10 @@ mod tests {
             })
         );
         // 3) A bare JSON object, no fence.
-        let bare = "{\"name\": \"world_query\", \"input\": {\"about\": \"jarvis\"}}";
+        let bare = "{\"name\": \"world_query\", \"input\": {\"about\": \"darwin\"}}";
         assert_eq!(
             parse_local_tool_call(bare),
-            Some(LocalToolCall { name: "world_query".into(), input: json!({"about": "jarvis"}) })
+            Some(LocalToolCall { name: "world_query".into(), input: json!({"about": "darwin"}) })
         );
         // 4) The FLAT-args shape (no explicit `input` key): every other key is an arg.
         let flat = "{\"name\": \"doc_search\", \"query\": \"launch plan\"}";
@@ -12088,7 +12088,7 @@ mod tests {
         ]);
         let out = local_tool_loop(
             &mut brain, 200, "brief me every morning", &[], &[], &memory, &offered, &allowed,
-            "agent.jarvis", 3,
+            "agent.darwin", 3,
         )
         .await;
         // The gate kept it in DryRun (switch OFF): no real side effect could occur,
@@ -12145,7 +12145,7 @@ mod tests {
         ]);
         let out = local_tool_loop(
             &mut brain, 200, "brief me every morning", &[], &[], &memory, &offered, &allowed,
-            "agent.jarvis", 3,
+            "agent.darwin", 3,
         )
         .await;
         // The tool PARKED — the loop reports a gate fired and ENDED (no further
@@ -12200,7 +12200,7 @@ mod tests {
         ]);
         let out = local_tool_loop(
             &mut brain, 200, "email bob", &[], &[], &memory, &offered, &allowed,
-            "agent.jarvis", 3,
+            "agent.darwin", 3,
         )
         .await;
         assert_eq!(out.tools_used, 0, "an out-of-subset tool is never executed");
@@ -12266,7 +12266,7 @@ mod tests {
     #[test]
     fn keychain_invocation_matches_the_contract() {
         assert_eq!(SECURITY_BIN, "/usr/bin/security");
-        assert_eq!(KEYCHAIN_SERVICE, "com.jarvis.daemon");
+        assert_eq!(KEYCHAIN_SERVICE, "com.darwin.daemon");
         assert_eq!(KEYCHAIN_ACCOUNT, "anthropic_api_key");
         assert_eq!(ENV_API_KEY, "ANTHROPIC_API_KEY");
         assert_eq!(KEYCHAIN_TIMEOUT.as_secs(), 5);
@@ -12275,7 +12275,7 @@ mod tests {
             [
                 "find-generic-password",
                 "-s",
-                "com.jarvis.daemon",
+                "com.darwin.daemon",
                 "-a",
                 "anthropic_api_key",
                 "-w"
@@ -12396,7 +12396,7 @@ mod tests {
     /// A representative shared preamble (the grounding/honesty + butler base).
     /// Stands in for persona.txt; its exact bytes are the SHARED cache key.
     const TEST_PREAMBLE: &str =
-        "You are JARVIS. Grounding — non-negotiable: never invent specifics, never claim \
+        "You are DARWIN. Grounding — non-negotiable: never invent specifics, never claim \
          an action you did not perform, you have no senses and no physical controls.";
 
     /// Pull every block carrying a cache breakpoint, in order, as text.
@@ -12758,7 +12758,7 @@ mod tests {
     #[tokio::test]
     async fn remember_fact_tool_rejects_meta_keys() {
         let path = std::env::temp_dir().join(format!(
-            "jarvis-anthropic-test-{}-meta.db",
+            "darwin-anthropic-test-{}-meta.db",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
@@ -12804,7 +12804,7 @@ mod tests {
     fn persona_body_carries_chat_context_and_no_tools() {
         let facts = vec![("user.name".to_string(), "Darwin".to_string())];
         let history = vec![("hello".to_string(), "Good evening, sir.".to_string())];
-        let body = persona_body("claude-opus-4-8", 200, "hi jarvis", &facts, &history, "", &[], None, "", "");
+        let body = persona_body("claude-opus-4-8", 200, "hi darwin", &facts, &history, "", &[], None, "", "");
 
         assert_eq!(body["model"], "claude-opus-4-8");
         assert_eq!(body["max_tokens"], 200);
@@ -12828,7 +12828,7 @@ mod tests {
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0]["content"], "hello");
         assert_eq!(messages[2]["role"], "user");
-        assert_eq!(messages[2]["content"], "hi jarvis");
+        assert_eq!(messages[2]["content"], "hi darwin");
     }
 
     /// The chat body THREADS the active agent's persona into `system` (so the
@@ -12891,7 +12891,7 @@ mod tests {
         let history: Vec<(String, String)> = Vec::new();
 
         // Empty avoid -> no anti-repeat instruction in system.
-        let empty = persona_body("claude-opus-4-8", 200, "hi jarvis", &facts, &history, "", &[], None, "", "");
+        let empty = persona_body("claude-opus-4-8", 200, "hi darwin", &facts, &history, "", &[], None, "", "");
         let empty_system = system_text(&empty);
         assert!(
             !empty_system.contains("do NOT reuse"),
@@ -12904,7 +12904,7 @@ mod tests {
             "Welcome back, sir.".to_string(),
             "  ".to_string(), // blank entries are dropped
         ];
-        let body = persona_body("claude-opus-4-8", 200, "hi jarvis", &facts, &history, "", &avoid, None, "", "");
+        let body = persona_body("claude-opus-4-8", 200, "hi darwin", &facts, &history, "", &avoid, None, "", "");
         let system = system_text(&body);
         assert!(system.contains("do NOT reuse"), "missing anti-repeat note: {system}");
         assert!(system.contains("Hello, sir. Good to have you back."), "missing reply 1: {system}");
@@ -12916,7 +12916,7 @@ mod tests {
         assert!(body.get("temperature").is_none());
     }
 
-    /// The constellation roster (the agents JARVIS orchestrates) is folded into
+    /// The constellation roster (the agents DARWIN orchestrates) is folded into
     /// the `system` prompt when non-empty, so the cloud brain can name/list the
     /// team instead of denying it exists. Empty roster leaves the prompt
     /// untouched; facts + the avoid note still ride alongside it.
@@ -12934,7 +12934,7 @@ mod tests {
         );
 
         // Non-empty roster -> the agents + roles appear in system, alongside facts.
-        let roster = "Your constellation — the agents you orchestrate:\n- jarvis (you, Prime Orchestrator) — orchestrator\n- vision — Research + OSINT\n- friday — daily brief";
+        let roster = "Your constellation — the agents you orchestrate:\n- darwin (you, Prime Orchestrator) — orchestrator\n- vision — Research + OSINT\n- friday — daily brief";
         let body = persona_body("claude-opus-4-8", 200, "list my agents", &facts, &history, roster, &avoid, None, "", "");
         let system = system_text(&body);
         assert!(system.contains("constellation"), "roster block missing: {system}");
@@ -12955,15 +12955,15 @@ mod tests {
     fn world_context_rides_the_uncached_tail_and_empty_adds_nothing() {
         let facts = vec![("user.name".to_string(), "Darwin".to_string())];
         let history: Vec<(String, String)> = Vec::new();
-        let world = "Entities:\n- [project] Project JARVIS (status=active)\n\
-                     Relationships:\n- project_jarvis owned_by darwin";
+        let world = "Entities:\n- [project] Project DARWIN (status=active)\n\
+                     Relationships:\n- project_darwin owned_by darwin";
 
         // With a world context, it appears in the system AND rides the UNCACHED
         // tail (no cache_control), while the persona prefix keeps its breakpoint.
         let body = persona_body(
             "claude-opus-4-8",
             200,
-            "how's jarvis going",
+            "how's darwin going",
             &facts,
             &history,
             "",
@@ -12983,7 +12983,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            tail_text.contains("Project JARVIS"),
+            tail_text.contains("Project DARWIN"),
             "world context missing from the uncached tail: {tail_text}"
         );
         assert!(
@@ -13002,7 +13002,7 @@ mod tests {
         let with_empty = persona_body(
             "claude-opus-4-8",
             200,
-            "how's jarvis going",
+            "how's darwin going",
             &facts,
             &history,
             "",
@@ -13014,7 +13014,7 @@ mod tests {
         let without_param = persona_body(
             "claude-opus-4-8",
             200,
-            "how's jarvis going",
+            "how's darwin going",
             &facts,
             &history,
             "",
@@ -13167,7 +13167,7 @@ mod tests {
     }
 
     /// Test wrapper for `execute_tool` under the orchestrator namespace
-    /// ("agent.jarvis"). Most tool tests don't exercise the namespace-scoped
+    /// ("agent.darwin"). Most tool tests don't exercise the namespace-scoped
     /// recall arms, so the orchestrator namespace is a faithful default; the
     /// recall-isolation test calls `execute_tool` directly with an explicit
     /// per-agent namespace.
@@ -13178,7 +13178,7 @@ mod tests {
         allowed: &[String],
     ) -> (String, bool) {
         // Tests through this helper model a direct user request (user_originated).
-        execute_tool(name, input, memory, allowed, "agent.jarvis", true).await
+        execute_tool(name, input, memory, allowed, "agent.darwin", true).await
     }
 
     /// Steve's shipped allowlist (the cloud-tool ids from config/agents.toml):
@@ -13776,7 +13776,7 @@ mod tests {
     #[tokio::test]
     async fn remember_fact_refuses_writing_another_agents_namespace() {
         let mem = open_temp_memory("ns-write-bind");
-        // jarvis (orchestrator) trying to write pepper's private note -> refused.
+        // darwin (orchestrator) trying to write pepper's private note -> refused.
         let (outcome, is_error) = exec_t(
             "remember_fact",
             &json!({"key": "agent.pepper.note", "value": "INJECT"}),
@@ -13799,10 +13799,10 @@ mod tests {
         .await;
         assert!(!is_error, "a shared user.* key must be writable: {outcome}");
         assert!(outcome.contains("Remembered"), "shared write should succeed: {outcome}");
-        // The agent's OWN namespace (exec_t runs as agent.jarvis) is allowed.
+        // The agent's OWN namespace (exec_t runs as agent.darwin) is allowed.
         let (outcome, is_error) = exec_t(
             "remember_fact",
-            &json!({"key": "agent.jarvis.note", "value": "mine"}),
+            &json!({"key": "agent.darwin.note", "value": "mine"}),
             &mem,
             &["remember_fact".to_string()],
         )
@@ -14303,9 +14303,9 @@ mod tests {
     #[tokio::test]
     async fn mcp_read_only_tool_runs_ungated() {
         let mgr = mcp_manager_files(vec!["friday".into()]).await;
-        // Orchestrator namespace -> agent id "jarvis" -> always allowed.
+        // Orchestrator namespace -> agent id "darwin" -> always allowed.
         let (outcome, is_error) =
-            execute_mcp_tool(&mgr, "mcp__files__read_file", &json!({"path": "/tmp/x"}), "agent.jarvis")
+            execute_mcp_tool(&mgr, "mcp__files__read_file", &json!({"path": "/tmp/x"}), "agent.darwin")
                 .await;
         assert!(!is_error, "read-only MCP tool must succeed: {outcome}");
         assert_eq!(outcome, "done");
@@ -14343,7 +14343,7 @@ mod tests {
             &mgr,
             "mcp__files__write_file",
             &json!({"path": "/tmp/x", "data": "hi"}),
-            "agent.jarvis",
+            "agent.darwin",
         )
         .await;
         assert!(!is_error, "a dry-run preview is not an error: {outcome}");
@@ -14384,7 +14384,7 @@ mod tests {
                 crate::integrations::consequential_allowed(),
                 "the cfg(test) override must report the switch ON"
             );
-            execute_mcp_tool(&mgr, "mcp__files__write_file", &input, "agent.jarvis").await
+            execute_mcp_tool(&mgr, "mcp__files__write_file", &input, "agent.darwin").await
         };
         // The override dropped above -> the switch reads OFF again for other tests.
         assert!(
@@ -14408,7 +14408,7 @@ mod tests {
             pending.tool, "mcp__files__write_file",
             "parked the exact flat MCP tool id"
         );
-        assert_eq!(pending.agent, "agent.jarvis", "parked the active agent namespace");
+        assert_eq!(pending.agent, "agent.darwin", "parked the active agent namespace");
         assert_eq!(pending.input, input, "parked the exact input for faithful replay");
     }
 
@@ -14444,7 +14444,7 @@ mod tests {
                 verified: false,
                 scope: crate::voiceid::GateScope::Consequential,
             });
-            execute_mcp_tool(&mgr, "mcp__files__write_file", &input, "agent.jarvis").await
+            execute_mcp_tool(&mgr, "mcp__files__write_file", &input, "agent.darwin").await
         };
 
         // Refused with the honest voice-id message — NOT a preview, NOT a park.
@@ -14478,7 +14478,7 @@ mod tests {
         // class_for_flat -> Consequential (fail-safe) for an undiscovered tool.
         assert!(mgr.class_for_flat("mcp__files__ghost").is_consequential());
         let (outcome, is_error) =
-            execute_mcp_tool(&mgr, "mcp__files__ghost", &json!({}), "agent.jarvis").await;
+            execute_mcp_tool(&mgr, "mcp__files__ghost", &json!({}), "agent.darwin").await;
         // OFF switch -> DryRun path -> the manager rejects the unknown tool.
         assert!(is_error, "unknown MCP tool must surface an error, not run: {outcome}");
     }
@@ -14534,7 +14534,7 @@ mod tests {
     #[test]
     fn agent_id_strips_the_namespace_prefix() {
         assert_eq!(agent_id_from_namespace("agent.friday"), "friday");
-        assert_eq!(agent_id_from_namespace("agent.jarvis"), "jarvis");
+        assert_eq!(agent_id_from_namespace("agent.darwin"), "darwin");
         // Already bare / unexpected shape -> returned as-is (fails closed downstream).
         assert_eq!(agent_id_from_namespace("friday"), "friday");
     }
@@ -14556,7 +14556,7 @@ mod tests {
             "mcp__files__write_file",
             &json!({"confirm": true, "path": "/tmp/x"}),
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             true,
         )
         .await;
@@ -15169,7 +15169,7 @@ mod tests {
     /// MNEMOSYNE's EPISODIC recall tool is read-only, hermetic, returns only REAL
     /// recorded episodes, reports its method HONESTLY, never fabricates, and is
     /// refused for an agent that does not hold it (isolation). It goes through
-    /// `execute_tool` (namespace "agent.jarvis"), which injects the live
+    /// `execute_tool` (namespace "agent.darwin"), which injects the live
     /// InferenceEmbedder — with no inference server in tests the socket fails fast
     /// and recall FALLS BACK to lexical BM25, so the method note names lexical.
     #[tokio::test]
@@ -15190,10 +15190,10 @@ mod tests {
         );
 
         // Record two real episodes under the shared orchestrator scope
-        // (exec_t recalls as "agent.jarvis").
-        record_episode(&cfg, &mem, "agent.jarvis", "I bought a blue sailboat named Nadia",
+        // (exec_t recalls as "agent.darwin").
+        record_episode(&cfg, &mem, "agent.darwin", "I bought a blue sailboat named Nadia",
             "ok", "conversation", false, voice).await.unwrap();
-        record_episode(&cfg, &mem, "agent.jarvis", "we discussed the rocket launch schedule",
+        record_episode(&cfg, &mem, "agent.darwin", "we discussed the rocket launch schedule",
             "ok", "conversation", false, voice).await.unwrap();
 
         // Topical recall surfaces the relevant episode, most-relevant first.
@@ -15927,7 +15927,7 @@ mod tests {
             assert_eq!(
                 current_response_voice_lang(),
                 None,
-                "an honest non-rendering leaves the response voice in JARVIS's own (English) voice"
+                "an honest non-rendering leaves the response voice in DARWIN's own (English) voice"
             );
         }
         assert_eq!(
@@ -16099,7 +16099,7 @@ mod tests {
         let facts = grounded_facts(
             "what did i say about my car",
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             &embedder,
             RAG_FACTS_WINDOW,
             RAG_FACTS_TOP_K,
@@ -16129,7 +16129,7 @@ mod tests {
         let feed = grounded_facts(
             "anything at all",
             &empty,
-            "agent.jarvis",
+            "agent.darwin",
             &TopicEmbedder { topic: vec!["anything"] },
             RAG_FACTS_WINDOW,
             RAG_FACTS_TOP_K,
@@ -16148,7 +16148,7 @@ mod tests {
         let feed = grounded_facts(
             "tell me about quantum chromodynamics",
             &stocked,
-            "agent.jarvis",
+            "agent.darwin",
             &TopicEmbedder { topic: vec!["quantum"] }, // nothing stored matches
             RAG_FACTS_WINDOW,
             RAG_FACTS_TOP_K,
@@ -16174,7 +16174,7 @@ mod tests {
         let feed = grounded_facts(
             "my car",
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             &embedder,
             RAG_FACTS_WINDOW,
             k,
@@ -16210,7 +16210,7 @@ mod tests {
         let feed = grounded_facts(
             "my car",
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             &embedder,
             RAG_FACTS_WINDOW,
             RAG_FACTS_TOP_K,
@@ -16241,7 +16241,7 @@ mod tests {
         mem.upsert_user_fact("user.project", "the rocket launch is set for Friday")
             .await
             .unwrap();
-        mem.upsert_user_fact("agent.jarvis.note", "my own rocket launch reminder")
+        mem.upsert_user_fact("agent.darwin.note", "my own rocket launch reminder")
             .await
             .unwrap();
         mem.upsert_user_fact("agent.pepper.note", "PEPPER-SECRET rocket launch budget")
@@ -16252,7 +16252,7 @@ mod tests {
         let feed = grounded_facts(
             "what about the rocket launch",
             &mem,
-            "agent.jarvis", // active agent is jarvis, NOT pepper
+            "agent.darwin", // active agent is darwin, NOT pepper
             &embedder,
             RAG_FACTS_WINDOW,
             RAG_FACTS_TOP_K,
@@ -16262,7 +16262,7 @@ mod tests {
 
         let rendered = facts_block(&feed);
         assert!(rendered.contains("user.project"), "shared fact must be grounded: {rendered}");
-        assert!(rendered.contains("agent.jarvis.note"), "active agent's own note may appear: {rendered}");
+        assert!(rendered.contains("agent.darwin.note"), "active agent's own note may appear: {rendered}");
         assert!(
             !rendered.contains("agent.pepper.note") && !rendered.contains("PEPPER-SECRET"),
             "another agent's private fact must NEVER reach the prompt via RAG: {rendered}"
@@ -16285,7 +16285,7 @@ mod tests {
         let feed = grounded_facts(
             "what do you remember about my car",
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             &DownEmbedder,
             RAG_FACTS_WINDOW,
             RAG_FACTS_TOP_K,
@@ -16379,7 +16379,7 @@ mod tests {
 
     /// Self-Forge's forge_app tool is WIRED and SCOPED: it is in the def array,
     /// in the dispatch arm, in the mirror, and on the allowlists of EXACTLY the
-    /// three agents the contract names (jarvis the orchestrator-wildcard, steve
+    /// three agents the contract names (darwin the orchestrator-wildcard, steve
     /// the CTO/builds agent, oracle the workflows agent) — and NOT on a
     /// general-purpose agent's surface (friday, an intel reader, must NOT hold
     /// it). An agent that does not hold it is refused at the allowlist gate
@@ -16401,10 +16401,10 @@ mod tests {
             .collect();
         assert!(names.contains(&"forge_app"), "forge_app must be a defined tool");
 
-        // ALLOWED on jarvis (orchestrator wildcard), steve, and oracle.
+        // ALLOWED on darwin (orchestrator wildcard), steve, and oracle.
         assert!(
             agent_may_use(&["*".to_string()], "forge_app"),
-            "the orchestrator wildcard (jarvis) must admit forge_app"
+            "the orchestrator wildcard (darwin) must admit forge_app"
         );
         assert!(
             agent_may_use(&canonical_tools("steve"), "forge_app"),
@@ -16992,7 +16992,7 @@ mod tests {
         // Record an attribute and a relationship via the tool dispatch.
         let (out, is_err) = dispatch_tool(
             "world_update",
-            &json!({"entity_type": "project", "entity": "Project JARVIS",
+            &json!({"entity_type": "project", "entity": "Project DARWIN",
                     "attribute": "status", "value": "active"}),
             &mem,
             "agent.pepper",
@@ -17004,7 +17004,7 @@ mod tests {
 
         let (rel_out, rel_err) = dispatch_tool(
             "world_update",
-            &json!({"from": "Project JARVIS", "relation": "owned by", "to": "Darwin"}),
+            &json!({"from": "Project DARWIN", "relation": "owned by", "to": "Darwin"}),
             &mem,
             "agent.pepper",
             true,
@@ -17015,14 +17015,14 @@ mod tests {
         // Query it back — the structured state surfaces the entity + relationship.
         let (q, q_err) = dispatch_tool(
             "world_query",
-            &json!({"about": "jarvis"}),
+            &json!({"about": "darwin"}),
             &mem,
             "agent.friday",
             true,
         )
         .await;
         assert!(!q_err, "world_query is read-only and must not error: {q}");
-        assert!(q.contains("Project JARVIS"), "entity missing from query: {q}");
+        assert!(q.contains("Project DARWIN"), "entity missing from query: {q}");
         assert!(q.contains("status=active"), "attribute missing from query: {q}");
         assert!(q.contains("owned_by"), "relationship missing from query: {q}");
 
@@ -17038,7 +17038,7 @@ mod tests {
             "world_query",
             &json!({"about": "submarine fleet logistics"}),
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             true,
         )
         .await;
@@ -17059,23 +17059,23 @@ mod tests {
 
         // A real shared world entity (any agent may have written it).
         crate::world_model::set_attribute(
-            &mem, crate::world_model::EntityType::Project, "Project JARVIS", "status", "active",
+            &mem, crate::world_model::EntityType::Project, "Project DARWIN", "status", "active",
         )
         .await
         .unwrap();
-        // PRIVATE notes in two agents' namespaces — one even mentions "jarvis".
-        mem.upsert_fact("agent.friday.secret", "FRIDAY-PRIVATE intel on jarvis")
+        // PRIVATE notes in two agents' namespaces — one even mentions "darwin".
+        mem.upsert_fact("agent.friday.secret", "FRIDAY-PRIVATE intel on darwin")
             .await
             .unwrap();
-        mem.upsert_fact("agent.pepper.secret", "PEPPER-PRIVATE reminder about jarvis")
+        mem.upsert_fact("agent.pepper.secret", "PEPPER-PRIVATE reminder about darwin")
             .await
             .unwrap();
 
         // grounded_world_live is namespace-INDEPENDENT (the world is shared), so
         // every agent gets the SAME shared context — and it carries the shared
         // entity but NEITHER private note.
-        let ctx = grounded_world_live("how is jarvis going", &mem).await;
-        assert!(ctx.contains("Project JARVIS"), "shared world entity must be present: {ctx}");
+        let ctx = grounded_world_live("how is darwin going", &mem).await;
+        assert!(ctx.contains("Project DARWIN"), "shared world entity must be present: {ctx}");
         assert!(
             !ctx.contains("FRIDAY-PRIVATE") && !ctx.contains("PEPPER-PRIVATE"),
             "a private agent note leaked into the shared world context: {ctx}"
@@ -17159,7 +17159,7 @@ mod tests {
             });
             propose_standing_mission(
                 "review my deadlines daily at 8",
-                "agent.jarvis",
+                "agent.darwin",
                 &["standing_create".to_string()],
                 &mem,
             )
@@ -17208,7 +17208,7 @@ mod tests {
 
     fn mem_path(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "jarvis-anthropic-test-{}-{tag}.db",
+            "darwin-anthropic-test-{}-{tag}.db",
             std::process::id()
         ))
     }

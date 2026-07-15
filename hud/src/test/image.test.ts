@@ -27,7 +27,7 @@ describe("parseImageGenerated (image.generated — on-device diffusion, METADATA
   it("parses the available (image saved on-device) outcome with metadata", () => {
     const g = parseImageGenerated({
       available: true,
-      path: "/Users/me/jarvis/state/images/img-2026.png",
+      path: "/Users/me/darwin/state/images/img-2026.png",
       model: "sdxl-turbo-mlx",
       size: 768,
       steps: 4,
@@ -35,7 +35,7 @@ describe("parseImageGenerated (image.generated — on-device diffusion, METADATA
     });
     expect(g).toEqual({
       available: true,
-      path: "/Users/me/jarvis/state/images/img-2026.png",
+      path: "/Users/me/darwin/state/images/img-2026.png",
       model: "sdxl-turbo-mlx",
       size: 768,
       steps: 4,

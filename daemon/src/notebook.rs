@@ -706,7 +706,7 @@ mod tests {
     impl TempDb {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "jarvis-notebook-test-{}-{}.db",
+                "darwin-notebook-test-{}-{}.db",
                 std::process::id(),
                 tag
             ));
@@ -767,7 +767,7 @@ mod tests {
     #[test]
     fn entry_keeps_only_grounded_citations_never_fabricates() {
         let report = mixed_report();
-        let entry = entry_from_report("agent.jarvis", "what is X", &report, "rendered answer [1]");
+        let entry = entry_from_report("agent.darwin", "what is X", &report, "rendered answer [1]");
         // Exactly ONE citation: the grounded source 1. The phantom (999) and the
         // uncited (0) contribute nothing, and the fetched-but-uncited source 2 is
         // NOT persisted either — a notebook holds only sources a grounded claim
@@ -789,18 +789,18 @@ mod tests {
         let db = TempDb::new("save-revisit");
         let mem = Memory::open(&db.0).unwrap();
         let report = mixed_report();
-        save_run(&mem, "agent.jarvis", "what is X", &report, "rendered answer [1]")
+        save_run(&mem, "agent.darwin", "what is X", &report, "rendered answer [1]")
             .await
             .unwrap();
 
-        let entries = revisit(&mem, "agent.jarvis", "what is X").await.unwrap();
+        let entries = revisit(&mem, "agent.darwin", "what is X").await.unwrap();
         assert_eq!(entries.len(), 1, "the saved run is revisited");
         assert_eq!(entries[0].topic, "what is X");
         assert_eq!(entries[0].synthesized, "rendered answer [1]");
         assert_eq!(entries[0].citations.len(), 1, "the grounded citation persisted");
         assert_eq!(entries[0].citations[0].url, "https://a.test");
         // A phrasing variant revisits the SAME notebook.
-        let again = revisit(&mem, "agent.jarvis", "my research on  WHAT IS X?").await.unwrap();
+        let again = revisit(&mem, "agent.darwin", "my research on  WHAT IS X?").await.unwrap();
         assert_eq!(again.len(), 1, "a phrasing variant hits the same notebook");
     }
 
@@ -808,18 +808,18 @@ mod tests {
     async fn append_accrues_source_memory_under_one_notebook() {
         let db = TempDb::new("append");
         let mem = Memory::open(&db.0).unwrap();
-        save_run(&mem, "agent.jarvis", "topic Z", &mixed_report(), "first run [1]")
+        save_run(&mem, "agent.darwin", "topic Z", &mixed_report(), "first run [1]")
             .await
             .unwrap();
         // A follow-up run on the SAME topic appends a second entry.
         let mut second = mixed_report();
         second.sources = vec![src(1, "New C", "https://c.test")];
         second.claims = vec![Claim::new("a new grounded point", 1)];
-        save_run(&mem, "agent.jarvis", "TOPIC Z", &second, "second run [1]")
+        save_run(&mem, "agent.darwin", "TOPIC Z", &second, "second run [1]")
             .await
             .unwrap();
 
-        let entries = revisit(&mem, "agent.jarvis", "topic Z").await.unwrap();
+        let entries = revisit(&mem, "agent.darwin", "topic Z").await.unwrap();
         assert_eq!(entries.len(), 2, "append accrues a second run in one notebook");
         // OLDEST first (accrual order).
         assert_eq!(entries[0].synthesized, "first run [1]");
@@ -831,7 +831,7 @@ mod tests {
     async fn revisit_unknown_topic_is_honest_empty_never_fabricates() {
         let db = TempDb::new("empty-revisit");
         let mem = Memory::open(&db.0).unwrap();
-        let entries = revisit(&mem, "agent.jarvis", "a topic never researched").await.unwrap();
+        let entries = revisit(&mem, "agent.darwin", "a topic never researched").await.unwrap();
         assert!(entries.is_empty(), "no saved run -> honest empty");
         let rendered = render_notebook("a topic never researched", &entries);
         assert!(
@@ -847,10 +847,10 @@ mod tests {
         let db = TempDb::new("never-fab");
         let mem = Memory::open(&db.0).unwrap();
         // The report cites a phantom 999 + an uncited 0; only source 1 is grounded.
-        save_run(&mem, "agent.jarvis", "verify me", &mixed_report(), "answer [1]")
+        save_run(&mem, "agent.darwin", "verify me", &mixed_report(), "answer [1]")
             .await
             .unwrap();
-        let entries = revisit(&mem, "agent.jarvis", "verify me").await.unwrap();
+        let entries = revisit(&mem, "agent.darwin", "verify me").await.unwrap();
         let urls: Vec<&str> = entries[0].citations.iter().map(|c| c.url.as_str()).collect();
         // Only the real, grounded URL — never the phantom, never the uncited
         // source's, never a fabricated one.
@@ -873,7 +873,7 @@ mod tests {
         let mem = Memory::open(&db.0).unwrap();
         save_run(&mem, "agent.friday", "markets", &mixed_report(), "friday run [1]").await.unwrap();
         save_run(&mem, "agent.jerome", "music", &mixed_report(), "jerome run [1]").await.unwrap();
-        save_run(&mem, "agent.jarvis", "weather", &mixed_report(), "shared run [1]").await.unwrap();
+        save_run(&mem, "agent.darwin", "weather", &mixed_report(), "shared run [1]").await.unwrap();
 
         // friday sees its own + the shared orchestrator notebook, never jerome's.
         let friday = mem.notebook_list("agent.friday", 20).await.unwrap();
@@ -894,7 +894,7 @@ mod tests {
         let db = TempDb::new("retain");
         let mem = Memory::open(&db.0).unwrap();
         for i in 0..5 {
-            save_run(&mem, "agent.jarvis", &format!("topic {i}"), &mixed_report(), &format!("run {i} [1]"))
+            save_run(&mem, "agent.darwin", &format!("topic {i}"), &mixed_report(), &format!("run {i} [1]"))
                 .await
                 .unwrap();
         }
@@ -903,7 +903,7 @@ mod tests {
         assert_eq!(deleted, 3, "the 3 oldest entries were evicted");
         assert_eq!(mem.notebook_entries_count().await.unwrap(), 2);
         // The orphaned citations were evicted too (no dangling rows).
-        let kept = mem.notebook_list("agent.jarvis", 20).await.unwrap();
+        let kept = mem.notebook_list("agent.darwin", 20).await.unwrap();
         let keys: Vec<&str> = kept.iter().map(|(k, _, _, _)| k.as_str()).collect();
         assert!(keys.contains(&"topic 4") && keys.contains(&"topic 3"), "newest survive: {keys:?}");
     }
@@ -912,12 +912,12 @@ mod tests {
     async fn forget_clears_one_notebook_and_its_citations() {
         let db = TempDb::new("forget");
         let mem = Memory::open(&db.0).unwrap();
-        save_run(&mem, "agent.jarvis", "keep me", &mixed_report(), "keep [1]").await.unwrap();
-        save_run(&mem, "agent.jarvis", "drop me", &mixed_report(), "drop [1]").await.unwrap();
-        let cleared = mem.forget_notebook("agent.jarvis", &topic_key("drop me")).await.unwrap();
+        save_run(&mem, "agent.darwin", "keep me", &mixed_report(), "keep [1]").await.unwrap();
+        save_run(&mem, "agent.darwin", "drop me", &mixed_report(), "drop [1]").await.unwrap();
+        let cleared = mem.forget_notebook("agent.darwin", &topic_key("drop me")).await.unwrap();
         assert_eq!(cleared, 1, "the named notebook's entry was forgotten");
-        assert!(revisit(&mem, "agent.jarvis", "drop me").await.unwrap().is_empty());
-        assert_eq!(revisit(&mem, "agent.jarvis", "keep me").await.unwrap().len(), 1, "the other survives");
+        assert!(revisit(&mem, "agent.darwin", "drop me").await.unwrap().is_empty());
+        assert_eq!(revisit(&mem, "agent.darwin", "keep me").await.unwrap().len(), 1, "the other survives");
     }
 
     // ---- intents -----------------------------------------------------------
@@ -977,12 +977,12 @@ mod tests {
 
         let intent = classify_notebook_intent("save this research").unwrap();
         assert!(matches!(intent, NotebookIntent::Save { topic: None }));
-        let out = dispatch(&mem, "agent.jarvis", intent).await.unwrap();
+        let out = dispatch(&mem, "agent.darwin", intent).await.unwrap();
         assert_eq!(out.verb, "saved");
 
         // The run was persisted under the run's own question and revisits cleanly,
         // holding ONLY the grounded citation.
-        let entries = revisit(&mem, "agent.jarvis", "what is X").await.unwrap();
+        let entries = revisit(&mem, "agent.darwin", "what is X").await.unwrap();
         assert_eq!(entries.len(), 1, "the bare save persisted the last run");
         assert_eq!(entries[0].synthesized, "answer [1]");
         assert_eq!(entries[0].citations.len(), 1, "only the grounded source persisted");
@@ -1000,7 +1000,7 @@ mod tests {
         let mem = Memory::open(&db.0).unwrap();
         // No run staged -> nothing to save.
         let _g = LastRunGuard::stage(None);
-        let out = dispatch(&mem, "agent.jarvis", NotebookIntent::Save { topic: None })
+        let out = dispatch(&mem, "agent.darwin", NotebookIntent::Save { topic: None })
             .await
             .unwrap();
         assert_eq!(out.verb, "save_none", "honest: no run to save");
@@ -1013,11 +1013,11 @@ mod tests {
     async fn dispatch_revisit_returns_the_saved_notebook() {
         let db = TempDb::new("dispatch-revisit");
         let mem = Memory::open(&db.0).unwrap();
-        save_run(&mem, "agent.jarvis", "black holes", &mixed_report(), "what I found [1]")
+        save_run(&mem, "agent.darwin", "black holes", &mixed_report(), "what I found [1]")
             .await
             .unwrap();
         let intent = classify_notebook_intent("show my research notebook on black holes").unwrap();
-        let out = dispatch(&mem, "agent.jarvis", intent).await.unwrap();
+        let out = dispatch(&mem, "agent.darwin", intent).await.unwrap();
         assert_eq!(out.verb, "revisit");
         assert!(out.reply.contains("black holes"), "{}", out.reply);
         assert!(out.reply.contains("https://a.test"), "the real source surfaces: {}", out.reply);
@@ -1029,7 +1029,7 @@ mod tests {
         let mem = Memory::open(&db.0).unwrap();
         let out = dispatch(
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             NotebookIntent::Revisit { topic: "never researched".to_string() },
         )
         .await
@@ -1041,25 +1041,25 @@ mod tests {
     async fn dispatch_list_and_forget() {
         let db = TempDb::new("dispatch-list-forget");
         let mem = Memory::open(&db.0).unwrap();
-        save_run(&mem, "agent.jarvis", "topic one", &mixed_report(), "one [1]").await.unwrap();
+        save_run(&mem, "agent.darwin", "topic one", &mixed_report(), "one [1]").await.unwrap();
         // LIST shows it.
-        let list = dispatch(&mem, "agent.jarvis", NotebookIntent::List).await.unwrap();
+        let list = dispatch(&mem, "agent.darwin", NotebookIntent::List).await.unwrap();
         assert_eq!(list.verb, "list");
         assert!(list.reply.contains("topic one"), "{}", list.reply);
         // FORGET clears it.
         let forget = dispatch(
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             NotebookIntent::Forget { topic: "topic one".to_string() },
         )
         .await
         .unwrap();
         assert_eq!(forget.verb, "forget");
-        assert!(revisit(&mem, "agent.jarvis", "topic one").await.unwrap().is_empty());
+        assert!(revisit(&mem, "agent.darwin", "topic one").await.unwrap().is_empty());
         // FORGET of a missing notebook is honest.
         let none = dispatch(
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             NotebookIntent::Forget { topic: "nothing here".to_string() },
         )
         .await
@@ -1095,7 +1095,7 @@ mod tests {
         // The entry the card is built from: simulate the already-redacted persisted
         // synthesized text (the store would have replaced the secret with [redacted]).
         let entry = entry_from_report(
-            "agent.jarvis",
+            "agent.darwin",
             "what is X",
             &report,
             "Key findings on X [1]. token [redacted]",
@@ -1132,7 +1132,7 @@ mod tests {
     #[test]
     fn build_card_bounds_a_long_snippet() {
         let long = "x".repeat(CARD_SNIPPET_CHARS * 3);
-        let entry = entry_from_report("agent.jarvis", "topic", &mixed_report(), &long);
+        let entry = entry_from_report("agent.darwin", "topic", &mixed_report(), &long);
         let card = build_card("saved", "topic", std::slice::from_ref(&entry));
         // Bounded to the cap (+ the single ellipsis char).
         assert!(
@@ -1155,7 +1155,7 @@ mod tests {
         // Sanity: the staged secret is never put into the synthesized text we save.
         assert!(!secret.is_empty());
 
-        let out = dispatch(&mem, "agent.jarvis", NotebookIntent::Save { topic: None })
+        let out = dispatch(&mem, "agent.darwin", NotebookIntent::Save { topic: None })
             .await
             .unwrap();
         assert_eq!(out.verb, "saved");
@@ -1172,7 +1172,7 @@ mod tests {
         let mem = Memory::open(&db.0).unwrap();
         let out = dispatch(
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             NotebookIntent::Revisit { topic: "never researched".to_string() },
         )
         .await
@@ -1189,14 +1189,14 @@ mod tests {
         let db = TempDb::new("dispatch-card-none");
         let mem = Memory::open(&db.0).unwrap();
         let _g = LastRunGuard::stage(None);
-        let save_none = dispatch(&mem, "agent.jarvis", NotebookIntent::Save { topic: None })
+        let save_none = dispatch(&mem, "agent.darwin", NotebookIntent::Save { topic: None })
             .await
             .unwrap();
         assert_eq!(save_none.verb, "save_none");
         assert!(save_none.card.is_none(), "nothing happened -> no card");
         let forget_none = dispatch(
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             NotebookIntent::Forget { topic: "nothing here".to_string() },
         )
         .await

@@ -1,6 +1,6 @@
 //! LIFE-LOG DIGEST — "what did I do this week?", built ONLY from real episodes.
 //!
-//! The episodic store (episodic.rs / memory.rs) holds JARVIS's redacted,
+//! The episodic store (episodic.rs / memory.rs) holds DARWIN's redacted,
 //! agent-scoped, bounded record of completed turns. This module builds a
 //! PERIODIC (daily / weekly) DIGEST over that store: a bounded, browsable summary
 //! of what REALLY happened in a window — "this week you worked on …" — assembled
@@ -386,7 +386,7 @@ mod tests {
     impl TempDb {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "jarvis-lifelog-test-{}-{}.db",
+                "darwin-lifelog-test-{}-{}.db",
                 std::process::id(),
                 tag
             ));
@@ -433,9 +433,9 @@ mod tests {
     fn build_from_episodes_counts_topics_and_ranks_themes() {
         // Newest-first, as the episodic readers return.
         let episodes = vec![
-            ep("agent.jarvis", "code", &["rocket", "engine"], "worked on rocket engine"),
-            ep("agent.jarvis", "code", &["rocket", "telemetry"], "added rocket telemetry"),
-            ep("agent.jarvis", "conversation", &["garden"], "talked about the garden"),
+            ep("agent.darwin", "code", &["rocket", "engine"], "worked on rocket engine"),
+            ep("agent.darwin", "code", &["rocket", "telemetry"], "added rocket telemetry"),
+            ep("agent.darwin", "conversation", &["garden"], "talked about the garden"),
         ];
         let d = build_from_episodes(Period::Week, &episodes);
         assert_eq!(d.episode_count, 3);
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn sparse_window_reports_only_what_it_holds() {
         // A single episode: the digest names exactly it, inventing nothing.
-        let episodes = vec![ep("agent.jarvis", "conversation", &["weather"], "asked about weather")];
+        let episodes = vec![ep("agent.darwin", "conversation", &["weather"], "asked about weather")];
         let d = build_from_episodes(Period::Day, &episodes);
         assert_eq!(d.episode_count, 1);
         assert_eq!(d.topics, vec!["conversation"]);
@@ -485,7 +485,7 @@ mod tests {
         let mut episodes = Vec::new();
         for i in 0..40 {
             episodes.push(ep(
-                "agent.jarvis",
+                "agent.darwin",
                 &format!("topic{i}"),
                 &[&format!("theme{i}")],
                 &format!("summary {i}"),
@@ -503,10 +503,10 @@ mod tests {
     async fn build_digest_reads_real_recent_episodes() {
         let db = TempDb::new("live");
         let mem = Memory::open(&db.0).unwrap();
-        seed(&mem, "agent.jarvis", "worked on the rocket engine design", "code").await;
-        seed(&mem, "agent.jarvis", "reviewed the rocket telemetry data", "code").await;
+        seed(&mem, "agent.darwin", "worked on the rocket engine design", "code").await;
+        seed(&mem, "agent.darwin", "reviewed the rocket telemetry data", "code").await;
 
-        let d = build_digest(&mem, "agent.jarvis", Period::Week).await;
+        let d = build_digest(&mem, "agent.darwin", Period::Week).await;
         assert_eq!(d.episode_count, 2, "both recent episodes are in the week window");
         assert!(d.themes.contains(&"rocket".to_string()), "real theme present: {:?}", d.themes);
     }
@@ -515,7 +515,7 @@ mod tests {
     async fn build_digest_empty_store_is_honest_empty() {
         let db = TempDb::new("live-empty");
         let mem = Memory::open(&db.0).unwrap();
-        let d = build_digest(&mem, "agent.jarvis", Period::Week).await;
+        let d = build_digest(&mem, "agent.darwin", Period::Week).await;
         assert!(d.is_empty(), "an empty store yields an honest empty digest");
         assert!(render_digest(&d).to_lowercase().contains("nothing logged"));
     }
@@ -528,7 +528,7 @@ mod tests {
         let mem = Memory::open(&db.0).unwrap();
         seed(&mem, "agent.friday", "friday tracked the markets going up", "conversation").await;
         seed(&mem, "agent.jerome", "jerome queued a song about the rain", "conversation").await;
-        seed(&mem, "agent.jarvis", "shared note about the weather forecast", "conversation").await;
+        seed(&mem, "agent.darwin", "shared note about the weather forecast", "conversation").await;
 
         // friday's digest: its own + shared themes, NEVER jerome's.
         let friday = build_digest(&mem, "agent.friday", Period::Week).await;
@@ -609,8 +609,8 @@ mod tests {
     #[test]
     fn build_card_carries_the_real_digest_and_themes() {
         let episodes = vec![
-            ep("agent.jarvis", "code", &["rocket", "engine"], "worked on rocket engine"),
-            ep("agent.jarvis", "code", &["rocket", "telemetry"], "added rocket telemetry"),
+            ep("agent.darwin", "code", &["rocket", "engine"], "worked on rocket engine"),
+            ep("agent.darwin", "code", &["rocket", "telemetry"], "added rocket telemetry"),
         ];
         let d = build_from_episodes(Period::Week, &episodes);
         let card = build_card(&d);
@@ -635,7 +635,7 @@ mod tests {
         // card never introduces raw content by feeding already-redacted summaries and
         // asserting the secret-shaped marker that WOULD have been there is absent.
         let episodes = vec![ep(
-            "agent.jarvis",
+            "agent.darwin",
             "conversation",
             &["account"],
             "set up the account, key [redacted]",
@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn build_card_bounds_a_long_summary() {
         let long = "y".repeat(CARD_SUMMARY_CHARS * 3);
-        let episodes = vec![ep("agent.jarvis", "code", &["t"], &long)];
+        let episodes = vec![ep("agent.darwin", "code", &["t"], &long)];
         let d = build_from_episodes(Period::Day, &episodes);
         let card = build_card(&d);
         assert!(

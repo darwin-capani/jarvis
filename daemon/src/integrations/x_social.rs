@@ -448,7 +448,7 @@ mod tests {
 
     fn created_tweet_json() -> &'static str {
         // Shape of X's 201 response to POST /2/tweets.
-        r#"{"data":{"id":"999000111","text":"Hello from JARVIS"}}"#
+        r#"{"data":{"id":"999000111","text":"Hello from DARWIN"}}"#
     }
 
     // -- READ: parsing -------------------------------------------------------
@@ -547,12 +547,12 @@ mod tests {
         let mock = MockTransport::new(); // no canned responses on purpose
         let c = client(mock);
         let out = c
-            .post_tweet("Hello from JARVIS", ActionMode::DryRun)
+            .post_tweet("Hello from DARWIN", ActionMode::DryRun)
             .await
             .unwrap();
         assert!(out.contains("[dry run]"), "got: {out}");
         // The PREVIEW carries the EXACT tweet text.
-        assert!(out.contains("Hello from JARVIS"), "got: {out}");
+        assert!(out.contains("Hello from DARWIN"), "got: {out}");
         assert_eq!(
             c.transport.requests().len(),
             0,
@@ -567,7 +567,7 @@ mod tests {
         let mock = MockTransport::new().on(HttpMethod::Post, "/tweets", 201, created_tweet_json());
         let c = client(mock);
         let out = c
-            .post_tweet("Hello from JARVIS", ActionMode::Execute)
+            .post_tweet("Hello from DARWIN", ActionMode::Execute)
             .await
             .unwrap();
         assert!(out.contains("Tweet posted"), "got: {out}");
@@ -580,7 +580,7 @@ mod tests {
         assert_eq!(req.method, HttpMethod::Post);
         assert!(req.url.ends_with("/tweets"), "got url: {}", req.url);
         // Body SHAPE — the tweet text in `text`.
-        assert_eq!(req.body.as_ref().unwrap()["text"], "Hello from JARVIS");
+        assert_eq!(req.body.as_ref().unwrap()["text"], "Hello from DARWIN");
         // Auth attached, value never asserted.
         assert!(req.has_header("authorization"));
     }

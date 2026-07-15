@@ -380,12 +380,12 @@ mod tests {
 
     #[tokio::test]
     async fn auth_whoami_reports_team_and_user() {
-        let body = r#"{"ok":true,"team":"Acme","user":"jarvisbot","team_id":"T1","user_id":"U1"}"#;
+        let body = r#"{"ok":true,"team":"Acme","user":"darwinbot","team_id":"T1","user_id":"U1"}"#;
         let mock = MockTransport::new().on(HttpMethod::Get, "auth.test", 200, body);
         let client = SlackClient::new(mock, FAKE_TOKEN);
         let out = client.auth_whoami().await.unwrap();
         assert!(out.contains("Acme"), "got: {out}");
-        assert!(out.contains("jarvisbot"), "got: {out}");
+        assert!(out.contains("darwinbot"), "got: {out}");
     }
 
     // -- ok=false -> friendly error -------------------------------------------

@@ -1,4 +1,4 @@
-//! Silicon Canvas — GPU schematic/PCB renderer micro-app for Project JARVIS.
+//! Silicon Canvas — GPU schematic/PCB renderer micro-app for Project DARWIN.
 //!
 //! Crate layout (one module per build phase; SPEC milestones §7):
 //!

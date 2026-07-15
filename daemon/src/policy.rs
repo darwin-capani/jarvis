@@ -959,7 +959,7 @@ mod tests {
 
     #[test]
     fn persists_and_reloads() {
-        let dir = std::env::temp_dir().join(format!("jarvis_policy_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("darwin_policy_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("policy.json");
         let _ = std::fs::remove_file(&path);
@@ -988,7 +988,7 @@ mod tests {
 
     #[test]
     fn corrupt_file_falls_back_to_ask_everywhere() {
-        let dir = std::env::temp_dir().join(format!("jarvis_policy_corrupt_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("darwin_policy_corrupt_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("policy.json");
         std::fs::write(&path, "{ this is not valid json ]]]").unwrap();

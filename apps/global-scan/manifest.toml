@@ -4,7 +4,7 @@
 #
 # net_hosts lists EXACTLY the feed hostnames apps/global-scan/feeds.toml polls
 # (every URL there was verified to return a parseable RSS/Atom feed). The
-# seatbelt profile jarvisd generates allows outbound network only to these
+# seatbelt profile darwind generates allows outbound network only to these
 # hosts; the daemon-mediated generate proxy socket is the app's one extra grant
 # (it never reaches the raw inference.sock — see docs/SANDBOX.md finding #4).
 

@@ -6,12 +6,12 @@ import Frame from "./Frame";
  * Protocol external-tool servers (daemon/src/mcp.rs). It lists every CONFIGURED
  * server, its transport, its connection status, the tools it exposes (badging a
  * CONSEQUENTIAL tool — one that parks behind the confirmation gate — distinctly
- * from a read-only one), and the per-server agent allowlist (which JARVIS agents
+ * from a read-only one), and the per-server agent allowlist (which DARWIN agents
  * may use that server's tools).
  *
  * SAFETY CONTRACT (do not regress):
  *   - REVIEW-ONLY. There is NO button here that connects a server, runs a tool,
- *     or changes a setting. MCP is the most dangerous external surface in JARVIS
+ *     or changes a setting. MCP is the most dangerous external surface in DARWIN
  *     (a server runs code on the user's machine); this panel only SHOWS the
  *     surface so the user can see what is wired and gated.
  *   - NEVER renders a token/secret. The wire snapshot carries only `usesToken`
@@ -37,12 +37,12 @@ export default function McpPanel({ mcp }: { mcp: McpStatus | null }) {
             <div className="mcp-off dim-note">
               MCP is OFF. No external tool server is connected and no MCP tool is
               offered to any agent. Enable <code>[mcp].enabled</code> in
-              jarvis.toml and configure a server to turn it on.
+              darwin.toml and configure a server to turn it on.
             </div>
           ) : mcp.servers.length === 0 ? (
             <div className="mcp-off dim-note">
               MCP is on, but no server is configured. Add a server under{" "}
-              <code>[[mcp.servers]]</code> in jarvis.toml — until then nothing
+              <code>[[mcp.servers]]</code> in darwin.toml — until then nothing
               connects and no MCP tool exists.
             </div>
           ) : (
@@ -109,7 +109,7 @@ function ServerRow({ server }: { server: McpServerStatus }) {
       </div>
 
       {/* The per-server agent allowlist — who may use this server's tools. The
-          orchestrator (jarvis) is always implicitly admitted; the daemon's
+          orchestrator (darwin) is always implicitly admitted; the daemon's
           config lists the additional agents shown here. */}
       <div className="mcp-agents">
         <span className="mcp-agents-label">AGENTS</span>

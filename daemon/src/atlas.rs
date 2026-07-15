@@ -1,8 +1,8 @@
-//! Capability Atlas — a unified, READ-ONLY enumeration of every JARVIS
+//! Capability Atlas — a unified, READ-ONLY enumeration of every DARWIN
 //! capability, each tagged ARMED (usable now) or INERT (shipped ON, but missing
 //! a dependency — a Keychain credential, a data source, …). It is the legibility
 //! layer of the self-extension engine: the one place that answers "what can
-//! JARVIS actually do right now, and what is one key away?".
+//! DARWIN actually do right now, and what is one key away?".
 //!
 //! There is no single capability registry in the daemon, so this module UNIONS
 //! the four enumeration surfaces — skills (`skills::global`), agents
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn agents_and_apps_are_registered_capabilities() {
-        let agents = [AgentRow { name: "jarvis", role: "Prime Orchestrator" }];
+        let agents = [AgentRow { name: "darwin", role: "Prime Orchestrator" }];
         let apps = [
             AppRow { name: "vision", description: "On-device sight.", running: true },
             AppRow { name: "nexus", description: "Audio matrix.", running: false },
@@ -334,7 +334,7 @@ mod tests {
         let entries = assemble(
             &[SkillRow { name: "hash_text", description: "Hash.", source_gated: false }],
             true,
-            &[AgentRow { name: "jarvis", role: "Prime" }],
+            &[AgentRow { name: "darwin", role: "Prime" }],
             &[],
             &present(&["github_pat"]),
         );

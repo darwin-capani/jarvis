@@ -5,7 +5,7 @@ import type { CoreState } from "../core/state";
  * "Neural conduits": faint energy channels curving from the core out to the
  * left/right panel columns, each carrying a travelling light pulse — the core
  * visibly feeding the readouts. Ambient and slow at rest; brighter + faster
- * whenever JARVIS is doing something (listening → speaking), violet on cloud
+ * whenever DARWIN is doing something (listening → speaking), violet on cloud
  * compute. Pure atmosphere: pointer-events:none, z:2 (above the vignette, below
  * the panels, which cover the conduits' far ends so they read as "entering" the
  * panels).

@@ -35,7 +35,7 @@ export default function TranscriptPanel({
         {lines.map((l) => (
           <div key={l.seq} className={`line ${l.who} ${l.routedTo === "cloud" ? "cloud" : ""}`}>
             <span className="who">
-              {l.who === "user" ? "YOU" : l.routedTo === "cloud" ? "JARVIS · CLOUD" : "JARVIS"}
+              {l.who === "user" ? "YOU" : l.routedTo === "cloud" ? "DARWIN · CLOUD" : "DARWIN"}
             </span>
             <span className="text">{l.text}</span>
           </div>

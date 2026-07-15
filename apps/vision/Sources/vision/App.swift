@@ -8,7 +8,7 @@
 //
 // THREE run modes (the binary chooses by argv):
 //   1. socket-served runtime (default, no args): the daemon launches us under
-//      sandbox-exec with JARVIS_APP_TOKEN / _SOCKET / _NAME in the env. We
+//      sandbox-exec with DARWIN_APP_TOKEN / _SOCKET / _NAME in the env. We
 //      connect to the per-app Unix socket, pump host Ops into the Pipeline, and
 //      emit token-stamped vision.* telemetry until the host stops us / the
 //      socket closes. This is the path daemon/src/apps.rs drives.
@@ -25,7 +25,7 @@
 //      here.
 //
 // Boot sequence (socket mode, all on-device, offline):
-//   1. Read the launch env (JARVIS_APP_TOKEN / _SOCKET / _NAME) into AppEnv. On
+//   1. Read the launch env (DARWIN_APP_TOKEN / _SOCKET / _NAME) into AppEnv. On
 //      a missing var, log to stderr (relayed as app.log) and exit non-zero —
 //      never run without a token (every app->host line must be stamped).
 //   2. Build the wiring: VisionEngine (built-in Vision, ANE/GPU, offline) ->
@@ -80,14 +80,14 @@ struct VisionApp {
 
     static func runSocketServed() async {
         // 1. Launch env (token + socket). Missing env -> clean non-zero exit.
-        //    The app only runs under jarvisd; an accidental standalone launch
+        //    The app only runs under darwind; an accidental standalone launch
         //    (no socket/token) exits 2, binding nothing (mirrors silicon-canvas).
         let env: AppEnv
         do {
             env = try AppEnv.loadFromProcess()
         } catch {
             FileHandle.standardError.write(Data(
-                "vision: \(error) (this app runs under jarvisd, not standalone; or use `vision analyze <imagepath>`)\n".utf8))
+                "vision: \(error) (this app runs under darwind, not standalone; or use `vision analyze <imagepath>`)\n".utf8))
             exit(2)
         }
 
@@ -468,11 +468,11 @@ struct VisionApp {
 
     static func printUsage() {
         let usage = """
-        vision — JARVIS on-device computer-vision micro-app (defensive, offline).
+        vision — DARWIN on-device computer-vision micro-app (defensive, offline).
 
         Run modes:
-          vision                          socket-served runtime (launched by jarvisd;
-                                          needs JARVIS_APP_TOKEN / _SOCKET / _NAME)
+          vision                          socket-served runtime (launched by darwind;
+                                          needs DARWIN_APP_TOKEN / _SOCKET / _NAME)
           vision analyze <imagepath>      headless: detect in one image, print JSON
           vision ocr <imagepath>          headless: read TEXT (OCR) in one image,
                                           print the vision.screen readout as JSON

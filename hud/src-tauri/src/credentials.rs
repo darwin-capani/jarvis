@@ -5,7 +5,7 @@
 //! NOT on this allowlist, so the frontend can never write an arbitrary item.
 //!
 //! NB: the Anthropic account string is EXACTLY "anthropic_api_key" because
-//! jarvisd reads that item at startup. Do not rename it.
+//! darwind reads that item at startup. Do not rename it.
 
 /// "bearer": paste a token + verify over HTTP. "oauth": a connection-STATUS row
 /// whose secret (the refresh token) is written by the daemon after a browser
@@ -17,7 +17,7 @@ pub enum Kind {
 }
 
 /// One registry entry. `id` dispatches verification; `account` is the Keychain
-/// account string under service com.jarvis.daemon. `label` is part of the
+/// account string under service com.darwin.daemon. `label` is part of the
 /// contracted shape and mirrors the TS registry; the backend itself never
 /// renders it (the panel does), so it is intentionally read-only here.
 #[derive(Debug, Clone, Copy)]
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn anthropic_account_is_unchanged_for_the_daemon() {
-        // jarvisd reads this exact item — renaming it would silently break the
+        // darwind reads this exact item — renaming it would silently break the
         // daemon's key lookup.
         assert_eq!(account_for_id("anthropic"), Some("anthropic_api_key"));
     }

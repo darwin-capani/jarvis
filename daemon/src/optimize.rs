@@ -1,7 +1,7 @@
 //! Optimization-from-usage — the TRACE STORE.
 //!
 //! This module is the FIRST half of the optimization-from-usage loop: a local,
-//! PII-REDACTED record of "what the user said (shape only) -> what JARVIS chose
+//! PII-REDACTED record of "what the user said (shape only) -> what DARWIN chose
 //! (agent/mode/tool) -> how it went (success / corrected-next-turn / failed)".
 //! A later Optimizer phase reads this corpus to PROPOSE a measured tuning of
 //! routing/selection (agent-pick, mode classification, lexical cue weights), and
@@ -796,7 +796,7 @@ impl RoutingConfig {
 /// REPLAY one utterance through a routing config: score every agent by summing
 /// the weights of its cue words that appear (whole-word) in the utterance, and
 /// return the highest-scoring agent. Ties (including the all-zero "no cue
-/// matched" case) resolve to the orchestrator fallback "jarvis" — exactly the
+/// matched" case) resolve to the orchestrator fallback "darwin" — exactly the
 /// live router's safe default. Pure + deterministic.
 ///
 /// Matching uses [`crate::agents::contains_word`] — the SAME word-boundary rule
@@ -823,13 +823,13 @@ fn replay_route(cfg: &RoutingConfig, utterance: &str) -> String {
                 // A genuine tie between two specialists is ambiguous — fall back
                 // to the orchestrator rather than guess (mirrors the live
                 // semantic-pick tie -> orchestrator rule).
-                best = Some(("jarvis".to_string(), *bs));
+                best = Some(("darwin".to_string(), *bs));
             }
             Some(_) => {}
             None => best = Some((agent.clone(), score)),
         }
     }
-    best.map(|(a, _)| a).unwrap_or_else(|| "jarvis".to_string())
+    best.map(|(a, _)| a).unwrap_or_else(|| "darwin".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1573,7 +1573,7 @@ mod tests {
     impl TempDb {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "jarvis-optimize-test-{}-{}.db",
+                "darwin-optimize-test-{}-{}.db",
                 std::process::id(),
                 tag
             ));
@@ -1705,7 +1705,7 @@ mod tests {
             let t = Trace::new(
                 "trace-canary-utterance",
                 "conversation",
-                "jarvis",
+                "darwin",
                 "chat",
                 "",
                 Outcome::Success,
@@ -1736,7 +1736,7 @@ mod tests {
         let t = Trace::new(
             "what's the weather",
             "conversation",
-            "jarvis",
+            "darwin",
             "chat",
             "",
             Outcome::Success,
@@ -1758,7 +1758,7 @@ mod tests {
         let store = TraceStore::open(&db.0).unwrap();
         store
             .record(&Trace::new(
-                "hi", "conversation", "jarvis", "chat", "", Outcome::Success, 100, 1_700_000_000,
+                "hi", "conversation", "darwin", "chat", "", Outcome::Success, 100, 1_700_000_000,
             ))
             .await
             .unwrap();
@@ -1794,7 +1794,7 @@ mod tests {
         // is usable again afterward (query_only was reset).
         assert_eq!(store.recent(10).await.unwrap().len(), 2, "rejected writes left the corpus intact");
         store
-            .record(&Trace::new("more", "conversation", "jarvis", "chat", "", Outcome::Success, 50, 1_700_000_100))
+            .record(&Trace::new("more", "conversation", "darwin", "chat", "", Outcome::Success, 50, 1_700_000_100))
             .await
             .unwrap();
         assert_eq!(store.recent(10).await.unwrap().len(), 3, "writes still work after a read-only query");
@@ -1937,7 +1937,7 @@ mod tests {
             &store,
             &format!("use my api key {secret} to call the thing"),
             "action",
-            "jarvis",
+            "darwin",
             "command",
             "",
             Outcome::Success,
@@ -2167,7 +2167,7 @@ mod tests {
         // The periodic pass: read recent + run the propose-only optimizer.
         let traces = store.recent(MAX_TRACES).await.unwrap();
         let artifacts = std::env::temp_dir().join(format!(
-            "jarvis-periodic-artifacts-{}-{}",
+            "darwin-periodic-artifacts-{}-{}",
             std::process::id(),
             "periodic"
         ));
@@ -2216,7 +2216,7 @@ mod tests {
         }
         let traces = store.recent(MAX_TRACES).await.unwrap();
         let artifacts = std::env::temp_dir().join(format!(
-            "jarvis-periodic-off-{}",
+            "darwin-periodic-off-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&artifacts);
@@ -2244,7 +2244,7 @@ mod optimizer_tests {
     impl TempDir {
         fn new(tag: &str) -> Self {
             let p = std::env::temp_dir().join(format!(
-                "jarvis-optimizer-test-{}-{}",
+                "darwin-optimizer-test-{}-{}",
                 std::process::id(),
                 tag
             ));
@@ -2285,12 +2285,12 @@ mod optimizer_tests {
     }
 
     #[test]
-    fn replay_route_falls_back_to_jarvis_on_no_cue_or_tie() {
+    fn replay_route_falls_back_to_darwin_on_no_cue_or_tie() {
         let base = RoutingConfig::baseline();
         // No domain cue at all -> orchestrator default.
-        assert_eq!(replay_route(&base, "hello there lovely day"), "jarvis");
-        // One cue from gecko and one from hercules -> exact tie -> jarvis.
-        assert_eq!(replay_route(&base, "crypto workout"), "jarvis");
+        assert_eq!(replay_route(&base, "hello there lovely day"), "darwin");
+        // One cue from gecko and one from hercules -> exact tie -> darwin.
+        assert_eq!(replay_route(&base, "crypto workout"), "darwin");
     }
 
     #[test]
@@ -2336,7 +2336,7 @@ mod optimizer_tests {
 
     /// Build a corpus where the baseline clearly mis-routes a tied utterance and
     /// a single cue upweight fixes it on BOTH splits. "crypto workout" ties at
-    /// baseline (-> jarvis), but every trace says the right agent is gecko;
+    /// baseline (-> darwin), but every trace says the right agent is gecko;
     /// upweighting gecko's "crypto" breaks the tie correctly. The corpus repeats
     /// the same labelled pattern so train and held-out agree (a real, not
     /// overfit, signal).

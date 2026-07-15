@@ -63,7 +63,7 @@ const MAX_PAGE: u32 = 1000;
 const MAX_UPLOAD_BYTES: usize = 5 * 1024 * 1024;
 /// MIME boundary for the multipart/related upload body. A fixed, secret-free
 /// literal — the request carries no token in its body, only the bearer header.
-const MULTIPART_BOUNDARY: &str = "jarvis-drive-boundary";
+const MULTIPART_BOUNDARY: &str = "darwin-drive-boundary";
 
 // ---------------------------------------------------------------------------
 // Typed response shapes — only the fields we surface are decoded. `#[serde(default)]`

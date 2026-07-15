@@ -250,7 +250,7 @@ final class InferenceTests: XCTestCase {
     }
 
     func testOCRReadsSynthesizedTextHeadlessly() throws {
-        guard let img = makeTextImage(["SUBMIT", "Hello JARVIS"]) else {
+        guard let img = makeTextImage(["SUBMIT", "Hello DARWIN"]) else {
             throw XCTSkip("could not render a text CGImage in this environment")
         }
         let engine = VisionEngine()
@@ -272,8 +272,8 @@ final class InferenceTests: XCTestCase {
         }
         XCTAssertTrue(joined.contains("submit"),
                       "real Vision OCR must read 'SUBMIT' from the synthesized image; got: \(joined)")
-        XCTAssertTrue(joined.contains("jarvis"),
-                      "real Vision OCR must read 'JARVIS' from the synthesized image; got: \(joined)")
+        XCTAssertTrue(joined.contains("darwin"),
+                      "real Vision OCR must read 'DARWIN' from the synthesized image; got: \(joined)")
     }
 
     func testOCRBoxesAreNormalizedAndConfidenceInRange() throws {

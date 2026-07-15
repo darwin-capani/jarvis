@@ -24,7 +24,7 @@ use crate::telemetry::{self, SystemSnapshot};
 /// read by first_contact_brief. "meta." prefix keeps it out of prompts.
 const META_LAST_INTERACTION: &str = "meta.last_interaction";
 /// Set by the self-heal pipeline when a validated proposal awaits review
-/// (cleared by scripts/apply_heal.sh); the brief mentions it so JARVIS
+/// (cleared by scripts/apply_heal.sh); the brief mentions it so DARWIN
 /// TELLS the user instead of silently parking the patch.
 const META_HEAL_PENDING: &str = "meta.heal_pending";
 /// Set by the Self-Forge pipeline when a validated app proposal awaits review

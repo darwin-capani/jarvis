@@ -19,7 +19,7 @@ import Frame from "./Frame";
  *     persisted. The parser drops any citation with no url AND no title — there
  *     is nothing to point at, so none is invented. An empty list is the honest
  *     "this run had no grounded sources".
- *   - PERSIST / READ ONLY. JARVIS saves a real run that ALREADY happened and
+ *   - PERSIST / READ ONLY. DARWIN saves a real run that ALREADY happened and
  *     reads runs that were really saved. NO live fetch happens here, NO source
  *     is invented, and there is NO button — this panel only SHOWS the activity
  *     the daemon already produced and spoke.
@@ -56,7 +56,7 @@ export default function ResearchNotebooksPanel({
           <div className="notebook-head">
             <span
               className={`notebook-pill verb-${card.verb}`}
-              title="what the last notebook command did — JARVIS saves a real run that already happened and reads runs really saved; nothing is fetched or invented here"
+              title="what the last notebook command did — DARWIN saves a real run that already happened and reads runs really saved; nothing is fetched or invented here"
             >
               {notebookVerbLabel(card.verb)}
             </span>
@@ -83,8 +83,8 @@ export default function ResearchNotebooksPanel({
           {card.runCount === 0 && card.citations.length === 0 && card.snippet.length === 0 ? (
             <div className="notebook-empty dim-note">
               {isList
-                ? "No research notebooks saved yet. Ask JARVIS to “save this research” after a run to start one."
-                : "Nothing saved on this topic yet — no runs, no sources. JARVIS will not invent one."}
+                ? "No research notebooks saved yet. Ask DARWIN to “save this research” after a run to start one."
+                : "Nothing saved on this topic yet — no runs, no sources. DARWIN will not invent one."}
             </div>
           ) : (
             <>
@@ -102,7 +102,7 @@ export default function ResearchNotebooksPanel({
 
           <div className="notebook-foot dim-note">
             Notebooks cite the REAL sources a research run actually fetched — the
-            pages JARVIS really consulted, never invented. Saving persists a run
+            pages DARWIN really consulted, never invented. Saving persists a run
             that already happened; revisiting reads what was really saved.
             Forgettable, bounded, read-only.
           </div>

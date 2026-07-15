@@ -42,9 +42,9 @@ function tel(state: HudState, e: TelemetryEnvelope, at = 1000): HudState {
 
 describe("parseEpisodicRecorded (episodic.recorded)", () => {
   it("parses a recorded turn with its agent scope", () => {
-    expect(parseEpisodicRecorded({ recorded: true, agent: "agent.jarvis" })).toEqual({
+    expect(parseEpisodicRecorded({ recorded: true, agent: "agent.darwin" })).toEqual({
       recorded: true,
-      agent: "agent.jarvis",
+      agent: "agent.darwin",
     });
   });
 
@@ -60,7 +60,7 @@ describe("parseEpisodicRecorded (episodic.recorded)", () => {
   });
 
   it("returns null without a real `recorded` boolean (no fabricated outcome)", () => {
-    expect(parseEpisodicRecorded({ agent: "agent.jarvis" })).toBeNull();
+    expect(parseEpisodicRecorded({ agent: "agent.darwin" })).toBeNull();
     expect(parseEpisodicRecorded({ recorded: "yes" })).toBeNull();
     expect(parseEpisodicRecorded({})).toBeNull();
   });
@@ -68,11 +68,11 @@ describe("parseEpisodicRecorded (episodic.recorded)", () => {
   it("never carries content — only the bit + agent are on the parsed shape", () => {
     const r = parseEpisodicRecorded({
       recorded: true,
-      agent: "agent.jarvis",
+      agent: "agent.darwin",
       utterance: "secret thing",
       summary: "should never appear",
     });
-    expect(r).toEqual({ recorded: true, agent: "agent.jarvis" });
+    expect(r).toEqual({ recorded: true, agent: "agent.darwin" });
     expect(Object.keys(r ?? {})).toEqual(["recorded", "agent"]);
   });
 });
@@ -131,11 +131,11 @@ describe("memory reducer — episodic timeline", () => {
 
   it("prepends recorded turns newest-first with agent + ts", () => {
     let s = initialState();
-    s = tel(s, env("episodic.recorded", { recorded: true, agent: "agent.jarvis" }));
+    s = tel(s, env("episodic.recorded", { recorded: true, agent: "agent.darwin" }));
     s = tel(s, env("episodic.recorded", { recorded: true, agent: "agent.edith" }));
     expect(s.memory.timeline).toHaveLength(2);
     expect(s.memory.timeline[0].agent).toBe("agent.edith"); // newest first
-    expect(s.memory.timeline[1].agent).toBe("agent.jarvis");
+    expect(s.memory.timeline[1].agent).toBe("agent.darwin");
     expect(s.memory.timeline[0].recorded).toBe(true);
     expect(s.memory.recordedCount).toBe(2);
     expect(s.memory.gatedCount).toBe(0);
@@ -143,8 +143,8 @@ describe("memory reducer — episodic timeline", () => {
 
   it("surfaces a gated-out turn honestly (kept vs gated counts)", () => {
     let s = initialState();
-    s = tel(s, env("episodic.recorded", { recorded: false, agent: "agent.jarvis" }));
-    s = tel(s, env("episodic.recorded", { recorded: true, agent: "agent.jarvis" }));
+    s = tel(s, env("episodic.recorded", { recorded: false, agent: "agent.darwin" }));
+    s = tel(s, env("episodic.recorded", { recorded: true, agent: "agent.darwin" }));
     expect(s.memory.recordedCount).toBe(1);
     expect(s.memory.gatedCount).toBe(1);
     expect(s.memory.timeline[1].recorded).toBe(false); // the gated turn is still shown
@@ -163,7 +163,7 @@ describe("memory reducer — episodic timeline", () => {
 
   it("drops a malformed episodic.recorded without churning state", () => {
     const s = initialState();
-    const next = tel(s, env("episodic.recorded", { agent: "agent.jarvis" }));
+    const next = tel(s, env("episodic.recorded", { agent: "agent.darwin" }));
     expect(next).toBe(s); // same reference — no fabricated row
   });
 });

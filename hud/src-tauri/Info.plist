@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  TCC USAGE STRINGS for the JARVIS HUD (.app).
+  TCC USAGE STRINGS for the DARWIN HUD (.app).
 
   Tauri 2 MERGES this file into the generated Info.plist of the bundled .app at
   `tauri build` time (any key here is added to / overrides the generated plist).
   These are the human-readable REASONS macOS shows the user in the system
-  permission (TCC) prompt the FIRST time JARVIS touches each protected resource.
+  permission (TCC) prompt the FIRST time DARWIN touches each protected resource.
   macOS REFUSES to show some prompts (and on recent macOS will terminate the app)
   when the matching usage string is absent, so these are required for the voice
   path and ui_actuate to work in a signed, distributed build:
@@ -15,7 +15,7 @@
       mic (wake word / dictation / voice-id enrolment). Paired with the
       `com.apple.security.device.audio-input` hardened-runtime entitlement.
 
-    * NSAppleEventsUsageDescription — shown the first time JARVIS sends an Apple
+    * NSAppleEventsUsageDescription — shown the first time DARWIN sends an Apple
       event to another app (ui_actuate / the desktop takeover, the uninstall
       command that opens Terminal.app, the osascript folder picker). Paired with
       the `com.apple.security.automation.apple-events` entitlement; macOS prompts
@@ -25,7 +25,7 @@
   screen_context loop) is governed PURELY by the Screen Recording TCC pane in
   System Settings > Privacy & Security — there is NO Info.plist usage string and
   NO entitlement for it. The OS shows its own prompt + requires the user to tick
-  JARVIS in that pane before any frame is captured; the feature ships OFF, so
+  DARWIN in that pane before any frame is captured; the feature ships OFF, so
   nothing is captured until the user both enables [screen_context] and grants the
   Screen Recording permission. We document it here so the requirement is not a
   surprise, but there is no plist key to set for it.
@@ -33,22 +33,22 @@
 <plist version="1.0">
 <dict>
   <!-- USER-VISIBLE APP NAME: the Dock label, Finder name, and the menu-bar app
-       menu all show "J.A.R.V.I.S.". The bundle FILE stays JARVIS.app (from
+       menu all show "D.A.R.W.I.N.". The bundle FILE stays DARWIN.app (from
        tauri.conf.json productName) so the updater + release assets are unaffected;
        only the displayed name changes. CFBundleDisplayName drives the Dock/Finder;
        CFBundleName drives the menu bar. -->
   <key>CFBundleDisplayName</key>
-  <string>J.A.R.V.I.S.</string>
+  <string>D.A.R.W.I.N.</string>
   <key>CFBundleName</key>
-  <string>J.A.R.V.I.S.</string>
+  <string>D.A.R.W.I.N.</string>
 
   <key>NSMicrophoneUsageDescription</key>
-  <string>JARVIS uses the microphone for the voice assistant: the wake word, dictation, and one-time voice-id enrolment. Audio is processed on-device by default; nothing is recorded or uploaded unless you turn on a cloud voice tier.</string>
+  <string>DARWIN uses the microphone for the voice assistant: the wake word, dictation, and one-time voice-id enrolment. Audio is processed on-device by default; nothing is recorded or uploaded unless you turn on a cloud voice tier.</string>
 
   <key>NSCameraUsageDescription</key>
-  <string>JARVIS uses the camera only when you explicitly ask it to watch the camera (on-device vision). It stays off until you ask; frames are processed on-device and are not recorded or uploaded.</string>
+  <string>DARWIN uses the camera only when you explicitly ask it to watch the camera (on-device vision). It stays off until you ask; frames are processed on-device and are not recorded or uploaded.</string>
 
   <key>NSAppleEventsUsageDescription</key>
-  <string>JARVIS sends Apple events to control apps you ask it to act on (the "ui actuate" / desktop takeover features) and to open Terminal for the uninstaller. macOS will ask you to approve each app it controls.</string>
+  <string>DARWIN sends Apple events to control apps you ask it to act on (the "ui actuate" / desktop takeover features) and to open Terminal for the uninstaller. macOS will ask you to approve each app it controls.</string>
 </dict>
 </plist>

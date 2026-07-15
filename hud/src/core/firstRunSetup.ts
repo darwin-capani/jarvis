@@ -1,7 +1,7 @@
 /* ======================================================================== *
  * FIRST-RUN SETUP — the pure, DOM-free gate decision + the setup copy.       *
  *                                                                            *
- * THE PROBLEM: a freshly-downloaded JARVIS .app has the HUD but NOT the       *
+ * THE PROBLEM: a freshly-downloaded DARWIN .app has the HUD but NOT the       *
  * backend (the daemon binary, the Python venv, the on-device models). On that *
  * first run we want to offer to run the REAL installer. But a FALSE setup     *
  * prompt on a HEALTHY install is the worst outcome — so the gate is           *
@@ -17,7 +17,7 @@
  *        venv python); AND                                                    *
  *     3. the command channel is NOT connected (the daemon is not reachable —  *
  *        `state.connected` is false). A RUNNING daemon means the telemetry/   *
- *        command channel connects, so a healthy + running JARVIS NEVER shows  *
+ *        command channel connects, so a healthy + running DARWIN NEVER shows  *
  *        this screen even for an instant.                                     *
  *                                                                            *
  *   CONSERVATIVE BY CONSTRUCTION: if the backend IS installed, OR the channel *
@@ -66,7 +66,7 @@ export function decideShowSetup(input: SetupGateInput): boolean {
 
 /** The phase of the setup screen's own flow (NOT the gate — the gate decides
  *  whether the screen mounts at all; this tracks what the mounted screen shows):
- *   - "intro"   : the honest pre-install copy + the "Install JARVIS" button.
+ *   - "intro"   : the honest pre-install copy + the "Install DARWIN" button.
  *   - "opening" : open_setup_install() is in flight (briefly).
  *   - "waiting" : Terminal was launched; we are polling for the daemon to come
  *                 online (the connection). Auto-dismisses when it connects.
@@ -108,7 +108,7 @@ export function setupScreenReduce(
           phase: "waiting",
           detail:
             event.detail ||
-            "Installing in Terminal. This takes a while; JARVIS will connect when it finishes.",
+            "Installing in Terminal. This takes a while; DARWIN will connect when it finishes.",
         };
       }
       return {
@@ -126,22 +126,22 @@ export function setupScreenReduce(
  *  It states plainly: it installs the FULL system (deps if missing, the daemon
  *  built fresh, the Python venv, the on-device models — SEVERAL GB), it takes a
  *  while, macOS asks ONCE for your password (Homebrew), and it opens Terminal to
- *  run the real installer; when it finishes, JARVIS connects (or relaunch). */
+ *  run the real installer; when it finishes, DARWIN connects (or relaunch). */
 export const SETUP_COPY = {
-  title: "Finish setting up JARVIS",
+  title: "Finish setting up DARWIN",
   /** The one-line summary shown under the title. */
-  lede: "This Mac has the JARVIS app but not the engine yet. Install it to bring JARVIS online.",
+  lede: "This Mac has the DARWIN app but not the engine yet. Install it to bring DARWIN online.",
   /** Body paragraphs (rendered as separate lines). HONEST about scope + cost. */
   body: [
-    "The installer sets up the full system: it installs any missing dependencies (Homebrew, Python, Rust, Node), builds the JARVIS daemon fresh, creates the Python environment, and downloads the on-device models — several gigabytes in total.",
+    "The installer sets up the full system: it installs any missing dependencies (Homebrew, Python, Rust, Node), builds the DARWIN daemon fresh, creates the Python environment, and downloads the on-device models — several gigabytes in total.",
     "It takes a while. macOS will ask once for your password (Homebrew needs it). It runs in Terminal so you can watch the progress — that is also why the password prompt works.",
-    "When the installer finishes, JARVIS connects automatically. If it does not, relaunch the app.",
+    "When the installer finishes, DARWIN connects automatically. If it does not, relaunch the app.",
   ],
   /** The primary action button label. */
-  action: "Install JARVIS",
+  action: "Install DARWIN",
   /** The waiting-state heading shown after Terminal is launched. */
-  waitingTitle: "Waiting for JARVIS to come online…",
+  waitingTitle: "Waiting for DARWIN to come online…",
   /** The waiting-state body — honest that it is still installing and what to do. */
   waitingBody:
-    "The installer is running in Terminal. This screen clears itself the moment JARVIS connects. If the installer has finished and JARVIS still has not connected, relaunch the app.",
+    "The installer is running in Terminal. This screen clears itself the moment DARWIN connects. If the installer has finished and DARWIN still has not connected, relaunch the app.",
 } as const;

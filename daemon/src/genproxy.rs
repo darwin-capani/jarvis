@@ -5,7 +5,7 @@
 //! could reach the inference server's ONE multiplexed socket, which routes ALL
 //! ops (`transcribe`/`classify`/`generate`/`extract_facts`/`speak`/`converse`/
 //! `consolidate`) with NO caller authorization. The seatbelt grant was socket
-//! *reachability*, not op *scope*: a compromised app could make JARVIS talk
+//! *reachability*, not op *scope*: a compromised app could make DARWIN talk
 //! (`op=speak`), write the user's memory DB by proxy (`extract_facts`/
 //! `consolidate`), or spam the local LLM to exhaustion.
 //!

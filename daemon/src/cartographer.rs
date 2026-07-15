@@ -421,8 +421,8 @@ mod tests {
         let trace = "thread 'main' panicked at 'index out of bounds', src/router.rs:142:9\n\
                      note: run with `RUST_BACKTRACE=1`\n\
                      stack backtrace:\n\
-                        0: jarvis_core::route   at src/router.rs:142:9\n\
-                        1: jarvis_core::main    at src/main.rs:88";
+                        0: darwin_core::route   at src/router.rs:142:9\n\
+                        1: darwin_core::main    at src/main.rs:88";
         let frames = parse_frames(trace);
         // src/router.rs:142 (deduped across the two occurrences) + src/main.rs:88.
         assert_eq!(frames.len(), 2);

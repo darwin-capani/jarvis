@@ -69,7 +69,7 @@ impl UpdateCheck {
         }
     }
     fn up_to_date() -> Self {
-        Self { status: "up_to_date".into(), detail: "JARVIS is on the latest version.".into(), version: None }
+        Self { status: "up_to_date".into(), detail: "DARWIN is on the latest version.".into(), version: None }
     }
     fn error(detail: impl Into<String>) -> Self {
         Self { status: "error".into(), detail: detail.into(), version: None }
@@ -140,7 +140,7 @@ pub async fn check_for_updates(app: AppHandle, install: bool) -> Result<UpdateCh
                 Ok(()) => Ok(UpdateCheck {
                     status: "installed".into(),
                     detail: format!(
-                        "Version {version} was downloaded, verified, and installed — relaunch JARVIS to finish."
+                        "Version {version} was downloaded, verified, and installed — relaunch DARWIN to finish."
                     ),
                     version: Some(version),
                 }),

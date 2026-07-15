@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⟁ Project JARVIS
+# ⟁ Project DARWIN
 
 ### An on-device-first autonomous AI desktop OS for Apple Silicon.
 
@@ -11,7 +11,7 @@
 
 ---
 
-JARVIS turns an Apple Silicon Mac into a voice-driven, always-on AI environment that **owns the machine end to end** — it can act consequentially by default, but never **without a fresh per-action confirmation** (plus voice-id, per-action policy, and lockdown, all still enforced). A Rust daemon (`jarvisd`) runs the always-on audio/intent loop; MLX serves local inference on the Apple GPU; the Anthropic API handles what the local models can't; and a fullscreen HUD (Tauri 2 + React-Three-Fiber) renders the machine's live state as a dark-glass, cyan-holographic heads-up display. macOS stays underneath as an invisible host kernel.
+DARWIN turns an Apple Silicon Mac into a voice-driven, always-on AI environment that **owns the machine end to end** — it can act consequentially by default, but never **without a fresh per-action confirmation** (plus voice-id, per-action policy, and lockdown, all still enforced). A Rust daemon (`darwind`) runs the always-on audio/intent loop; MLX serves local inference on the Apple GPU; the Anthropic API handles what the local models can't; and a fullscreen HUD (Tauri 2 + React-Three-Fiber) renders the machine's live state as a dark-glass, cyan-holographic heads-up display. macOS stays underneath as an invisible host kernel.
 
 It is built **honestly**: the headline features below are real and tested, the device-gated ones are labeled, and nothing here is a fabricated benchmark.
 
@@ -20,23 +20,23 @@ It is built **honestly**: the headline features below are real and tested, the d
 ## Install in one command
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/darwin-capani/jarvis/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/darwin-capani/darwin/main/install.sh | bash
 ```
 
 The installer presents a **futuristic, full-screen progress UI** and does the "every bit" install per-user, with **no sudo**:
 
-- creates the install home at `~/Library/Application Support/JARVIS`,
+- creates the install home at `~/Library/Application Support/DARWIN`,
 - provisions the Python 3.11 venv and installs `inference/requirements.txt`,
-- **builds every release artifact fresh** (`jarvisd` + the HUD + the Swift/Rust micro-apps — it never ships a prebuilt binary),
-- downloads the MLX LLM + Whisper STT weights into the **install-home** HuggingFace cache (`HF_HOME` → `~/Library/Application Support/JARVIS/models`, never the shared per-machine HF cache),
-- leaves the SQLite memory store to be created by `jarvisd` on first start (the installer never seeds it),
-- and (optionally) installs the two LaunchAgents so JARVIS comes up on login.
+- **builds every release artifact fresh** (`darwind` + the HUD + the Swift/Rust micro-apps — it never ships a prebuilt binary),
+- downloads the MLX LLM + Whisper STT weights into the **install-home** HuggingFace cache (`HF_HOME` → `~/Library/Application Support/DARWIN/models`, never the shared per-machine HF cache),
+- leaves the SQLite memory store to be created by `darwind` on first start (the installer never seeds it),
+- and (optionally) installs the two LaunchAgents so DARWIN comes up on login.
 
 Prefer to read before you run? Clone and use the local entrypoint — same steps, same UI:
 
 ```sh
-git clone https://github.com/darwin-capani/jarvis.git
-cd jarvis
+git clone https://github.com/darwin-capani/darwin.git
+cd darwin
 ./install.sh                # interactive install with the progress UI
 ./install.sh --dry-run      # print every action, change nothing
 ./install.sh --help         # all flags
@@ -53,20 +53,20 @@ To enable it:
 1. Accept the licence (free, one click) at <https://huggingface.co/black-forest-labs/FLUX.1-schnell>.
 2. Authenticate with Hugging Face — either log in with a token, or export one before re-running:
    ```bash
-   "$HOME/Library/Application Support/JARVIS/.venv/bin/hf" auth login   # paste an HF token
+   "$HOME/Library/Application Support/DARWIN/.venv/bin/hf" auth login   # paste an HF token
    # …or:
    export HF_TOKEN=hf_xxxxxxxx
    ```
 3. Re-run the installer — it resumes from cache and pulls FLUX with your token:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/darwin-capani/jarvis/main/install.sh | bash -s -- -y
+   curl -fsSL https://raw.githubusercontent.com/darwin-capani/darwin/main/install.sh | bash -s -- -y
    ```
 
 ### Enable kernel-level security monitoring (optional — Endpoint Security)
 
-The micro-app introspection subsystem (`docs/INTROSPECT.md`) ships with a **live Endpoint Security (ES) NOTIFY client** behind a **default-off Cargo feature**, `endpoint-security`. With it on, `jarvisd` observes real kernel events about its OWN sandboxed micro-apps — a page made executable (`mprotect`/`MAP_JIT`) by an app that declared `jit=false` (a W^X violation), or another process acquiring an app's task port (`get_task` — the "a debugger/injector is attaching" signal) — and reports them through the introspection HUD/`aegis_report`. **READ-ONLY (NOTIFY-only): it observes and reports, it never blocks or kills anything.** The stock build never links ES, so it adds **zero** attack surface by default; the rest of JARVIS is unaffected either way.
+The micro-app introspection subsystem (`docs/INTROSPECT.md`) ships with a **live Endpoint Security (ES) NOTIFY client** behind a **default-off Cargo feature**, `endpoint-security`. With it on, `darwind` observes real kernel events about its OWN sandboxed micro-apps — a page made executable (`mprotect`/`MAP_JIT`) by an app that declared `jit=false` (a W^X violation), or another process acquiring an app's task port (`get_task` — the "a debugger/injector is attaching" signal) — and reports them through the introspection HUD/`aegis_report`. **READ-ONLY (NOTIFY-only): it observes and reports, it never blocks or kills anything.** The stock build never links ES, so it adds **zero** attack surface by default; the rest of DARWIN is unaffected either way.
 
-This is **not** installed by the one-command installer because ES is a **restricted Apple capability**: it needs a code-signing entitlement Apple must approve for your Developer Team ID, plus root and Full Disk Access. Without those, `jarvisd` logs an honest "endpoint-security unavailable" and keeps running on the light introspection path.
+This is **not** installed by the one-command installer because ES is a **restricted Apple capability**: it needs a code-signing entitlement Apple must approve for your Developer Team ID, plus root and Full Disk Access. Without those, `darwind` logs an honest "endpoint-security unavailable" and keeps running on the light introspection path.
 
 To enable it (Apple Developer account required):
 
@@ -80,24 +80,24 @@ To enable it (Apple Developer account required):
    codesign --force --options runtime --timestamp \
      --entitlements entitlements.plist \
      --sign "Developer ID Application: <Your Name> (<TEAMID>)" \
-     daemon/target/release/jarvisd
+     daemon/target/release/darwind
    ```
    Then grant the signed binary **Full Disk Access** (System Settings → Privacy & Security → Full Disk Access) and run it as **root**.
-3. On success, `jarvisd` emits `introspect.es {active:true}` and the HUD's introspection surfaces begin showing kernel security findings. (See `docs/INTROSPECT.md` for the full flow and the honest device-gating caveats — the client is compile/link-verified in CI, but only *runs* with the entitlement present.)
+3. On success, `darwind` emits `introspect.es {active:true}` and the HUD's introspection surfaces begin showing kernel security findings. (See `docs/INTROSPECT.md` for the full flow and the honest device-gating caveats — the client is compile/link-verified in CI, but only *runs* with the entitlement present.)
 
 ### Uninstall — one command, two confirmations
 
 ```bash
-~/Library/Application\ Support/JARVIS/uninstall.sh
+~/Library/Application\ Support/DARWIN/uninstall.sh
 ```
 
-Completely removes JARVIS from the machine, behind a **two-step typed confirmation** — it asks *"Delete JARVIS completely? (yes/no)"*, and only if you answer `yes` does it ask *"Are you ABSOLUTELY sure? (yes/no)"*. Either `no` (or any unrecognized input) cancels and deletes nothing. It removes **only** JARVIS's own footprint — the install home, the two LaunchAgents, the JARVIS Keychain items (`com.jarvis.daemon` only), and the logs — each a specific, guarded path (never a broad `rm`). Run it with `--dry-run` first to see exactly what it would remove without touching anything.
+Completely removes DARWIN from the machine, behind a **two-step typed confirmation** — it asks *"Delete DARWIN completely? (yes/no)"*, and only if you answer `yes` does it ask *"Are you ABSOLUTELY sure? (yes/no)"*. Either `no` (or any unrecognized input) cancels and deletes nothing. It removes **only** DARWIN's own footprint — the install home, the two LaunchAgents, the DARWIN Keychain items (`com.darwin.daemon` only), and the logs — each a specific, guarded path (never a broad `rm`). Run it with `--dry-run` first to see exactly what it would remove without touching anything.
 
 ---
 
 ## What it can do
 
-JARVIS **acts on the machine, not just talks about it.** The built-in actuator (`daemon/src/actions.rs`) is **benign-only by hard contract** — no shell passthrough, no deleting/moving/writing your files, no keystroke synthesis — and backs both the local intent router and the cloud tool loop, so any phrasing gets things done.
+DARWIN **acts on the machine, not just talks about it.** The built-in actuator (`daemon/src/actions.rs`) is **benign-only by hard contract** — no shell passthrough, no deleting/moving/writing your files, no keystroke synthesis — and backs both the local intent router and the cloud tool loop, so any phrasing gets things done.
 
 | Capability | Phrasing | Notes |
 |---|---|---|
@@ -108,22 +108,22 @@ JARVIS **acts on the machine, not just talks about it.** The built-in actuator (
 | **Remember & recall facts** | "my name is Dar", "what are my projects?" | durable facts in SQLite, folded into every later reply; corrections overwrite |
 | **Search your own docs, on-device** | "index my documents", "search my files for the lease clause" | **ON by default but inert until you allowlist a folder** (never a whole-disk scan); embeddings never leave the device; honest BM25 fallback that reports which method ran |
 | **Full security check** | "am I secure?", "run a security check" | one READ-ONLY readout combining machine posture (FileVault/firewall/SIP/updates) + app privacy grants (TCC) + micro-app introspection; it reports where you stand and **changes nothing** — turning a protection on is yours to do |
-| **Micro-app integrity check** | "are my apps healthy?", "any tampering?" | the read-only introspection sentinel over JARVIS's OWN sandboxed apps: seatbelt profile-drift, runaway CPU/RSS, and unexpected loaded modules (dyld injection) — it observes and reports, never kills or unloads (see [docs/INTROSPECT.md](docs/INTROSPECT.md)) |
+| **Micro-app integrity check** | "are my apps healthy?", "any tampering?" | the read-only introspection sentinel over DARWIN's OWN sandboxed apps: seatbelt profile-drift, runaway CPU/RSS, and unexpected loaded modules (dyld injection) — it observes and reports, never kills or unloads (see [docs/INTROSPECT.md](docs/INTROSPECT.md)) |
 
 Heavy or low-confidence requests route to the cloud and run the **same** actions through an Anthropic Messages-API tool loop (bounded: ≤ 6 model calls, 400 s), so *"could you possibly get that browser thing going"* works as well as *"open Safari."* Every executed action emits an `action.executed` telemetry event.
 
 ### The 27-agent constellation
 
-A single local engine + per-agent profiles (not 27 separate models) gives JARVIS a routed "council" — the prime orchestrator (`jarvis`) hears every request and delegates to the right specialist: `friday` (daily intel), `vision` (research/OSINT), `ultron` (defensive security/automation), `steve` (CTO/builds), `gecko` (markets), `pepper` (personal EA/reflection), `hulk` (offline survival mode), and 19 more. Profiles live in `config/agents.toml`; isolation between them is the real security win, not the count.
+A single local engine + per-agent profiles (not 27 separate models) gives DARWIN a routed "council" — the prime orchestrator (`darwin`) hears every request and delegates to the right specialist: `friday` (daily intel), `vision` (research/OSINT), `ultron` (defensive security/automation), `steve` (CTO/builds), `gecko` (markets), `pepper` (personal EA/reflection), `hulk` (offline survival mode), and 19 more. Profiles live in `config/agents.toml`; isolation between them is the real security win, not the count.
 
 ### The voice & persona
 
-JARVIS answers out loud in the register of the Iron Man films' JARVIS: a composed British butler-AI that addresses you as "sir," with dry understatement, kept to a few sentences. The persona (`inference/prompts/persona.txt`) is the single source of truth; there are no canned replies — every response is phrased live by the LLM from real handler data, and the persona greets and answers naturally from its first word (the old canned "Right away, sir." task-ack now ships **OFF** — set `[speech].instant_opener = true` to bring it back).
+DARWIN answers out loud in the register of the Iron Man films' butler-AI: a composed British voice that addresses you as "sir," with dry understatement, kept to a few sentences. The persona (`inference/prompts/persona.txt`) is the single source of truth; there are no canned replies — every response is phrased live by the LLM from real handler data, and the persona greets and answers naturally from its first word (the old canned "Right away, sir." task-ack now ships **OFF** — set `[speech].instant_opener = true` to bring it back).
 
 Two voice engines back this, consistent with the rest of the system — **armed by default, inert without their dependency:**
 
 - **On-device Kokoro TTS** on the Metal GPU via `mlx-audio` (`bm_george`, British male) is the **private/offline default** and the **fallback on any cloud error or timeout**. It needs nothing — no key, no network — and is what you hear with no ElevenLabs key, offline, or in Local ("work offline" / Hulk) mode.
-- An **ElevenLabs cloud-voice tier** is an *added* premium-TTS layer that ships **ON** (`[voice].cloud_tier = true`) but stays **inert until you add an `elevenlabs_api_key` to the Keychain** (and the active tier is non-Local). Jarvis-Prime now ships pre-mapped to the ElevenLabs premade **"George"** voice (a stable, shared British male voice on any account), so the cloud voice engages with **just a key — no manual voice-id step**; other agents stay on Kokoro until mapped in `[voice.voices]`. When this tier is active the text JARVIS is about to speak leaves the device for a cloud round trip to synthesize the audio.
+- An **ElevenLabs cloud-voice tier** is an *added* premium-TTS layer that ships **ON** (`[voice].cloud_tier = true`) but stays **inert until you add an `elevenlabs_api_key` to the Keychain** (and the active tier is non-Local). Darwin-Prime now ships pre-mapped to the ElevenLabs premade **"George"** voice (a stable, shared British male voice on any account), so the cloud voice engages with **just a key — no manual voice-id step**; other agents stay on Kokoro until mapped in `[voice.voices]`. When this tier is active the text DARWIN is about to speak leaves the device for a cloud round trip to synthesize the audio.
 
 ### The HUD
 
@@ -137,7 +137,7 @@ Two voice engines back this, consistent with the rest of the system — **armed 
                             voice in ─┐
                                       ▼
   ┌───────────────────────────────────────────────────────────────┐
-  │  jarvisd  (Rust, LaunchAgent, always-on)                       │
+  │  darwind  (Rust, LaunchAgent, always-on)                       │
   │  audio capture → VAD → STT → intent router → actuator          │
   │  telemetry server (ws://127.0.0.1:7177) · micro-app supervisor │
   │  gates: master switch · confirm · voice-id · lockdown · policy │
@@ -158,16 +158,16 @@ Two voice engines back this, consistent with the rest of the system — **armed 
 
 | Component | Path | Language | Role |
 |---|---|---|---|
-| `jarvisd` | `daemon/` | Rust | Audio capture, VAD, routing, actuation, telemetry server, micro-app supervisor |
+| `darwind` | `daemon/` | Rust | Audio capture, VAD, routing, actuation, telemetry server, micro-app supervisor |
 | Inference server | `inference/` | Python 3.11 + MLX | STT, intent classification, local generation, fact extraction, TTS over a Unix socket |
 | HUD | `hud/` | Tauri 2 + React + TS + R3F | Fullscreen telemetry visualization + settings (API key → Keychain) |
 | Micro-apps | `apps/` | mixed (Rust, Swift) | Sandboxed apps per `docs/SANDBOX.md`; specs in `apps/<name>/SPEC.md` |
-| Config | `config/` | TOML | `jarvis.toml` (runtime) + `agents.toml` (constellation) |
+| Config | `config/` | TOML | `darwin.toml` (runtime) + `agents.toml` (constellation) |
 | Runtime state | `state/` | — | Sockets, logs, tmp, SQLite DBs. **Never committed.** |
 
 ### Hardware reality (read before contributing)
 
-JARVIS was developed on an M4 Mac Mini, but the whole stack (arm64 + Metal/MLX + Core ML/ANE + macOS) is present on **every** Apple Silicon chip — local performance simply scales with the chip and unified memory.
+DARWIN was developed on an M4 Mac Mini, but the whole stack (arm64 + Metal/MLX + Core ML/ANE + macOS) is present on **every** Apple Silicon chip — local performance simply scales with the chip and unified memory.
 
 - **macOS is the host, not Linux.** MLX (the Apple-GPU Metal backend) and Core ML/ANE access exist **only** on macOS. Asahi Linux is a non-starter on M4-generation silicon, and even where Asahi boots, MLX/Core ML need macOS — so macOS is the host regardless of chip.
 - **MLX runs on the Apple GPU via Metal, not the Neural Engine.** LLM decode is memory-bandwidth-bound and the GPU sees full unified-memory bandwidth, so the model stays on the GPU. The ANE — reachable only through Core ML — is reserved for Phase-3 auxiliary models (wake-word, VAD, embeddings).
@@ -193,17 +193,17 @@ Secrets live in the macOS Keychain (resolved once at startup, never logged, neve
 
 ## Layout
 
-Per-user install home — **no sudo, relocatable** (the daemon is `JARVIS_ROOT`-relative):
+Per-user install home — **no sudo, relocatable** (the daemon is `DARWIN_ROOT`-relative):
 
 ```
-~/Library/Application Support/JARVIS/
-├── daemon/           # jarvisd (Rust) — built fresh at install
+~/Library/Application Support/DARWIN/
+├── daemon/           # darwind (Rust) — built fresh at install
 ├── inference/        # MLX inference server (Python 3.11)
 ├── hud/              # fullscreen HUD (Tauri 2 + React + R3F)
 ├── apps/             # sandboxed micro-apps
-├── boot/             # boot wrappers + LaunchAgent plist TEMPLATES (__JARVIS_ROOT__)
+├── boot/             # boot wrappers + LaunchAgent plist TEMPLATES (__DARWIN_ROOT__)
 ├── scripts/          # install_boot.sh, init_memory.py, ane_probe.py, …
-├── config/           # jarvis.toml (runtime) + agents.toml (constellation)
+├── config/           # darwin.toml (runtime) + agents.toml (constellation)
 ├── docs/             # ARCHITECTURE · ROADMAP · HUD · SANDBOX · …
 ├── .venv/            # Python 3.11 environment (not committed)
 └── state/            # runtime only, NEVER committed:
@@ -223,8 +223,8 @@ The git repo tracks **source only**. The entire `state/` tree, all secrets, ever
 Some things only **you** can grant — a config flag cannot substitute:
 
 - **macOS consent (TCC).** The features ship enabled, but several stay **inert until the OS grants you the permission**: the always-on **Microphone** loop (wake word, live interpret, sound monitor), **Screen Recording** (screen context), and **Accessibility/Automation** (UI automation). The flag cannot grant these — they are yours to approve or deny in System Settings.
-- **API keys in Keychain.** Paste your `ANTHROPIC_API_KEY` (and optional `elevenlabs_api_key`) once in the HUD's Settings — masked, stored in the Keychain (service `com.jarvis.daemon`), never plaintext on disk. The cloud LLM fallback, the ElevenLabs voice/STT tier, and self-heal/forge drafting are enabled but stay inert until the key is present. Restart JARVIS after changing a key.
-- **Auto-login (optional).** For true boot-to-JARVIS, enable "Automatically log in as" in System Settings → Users & Groups (requires FileVault off). The LaunchAgents do the rest.
+- **API keys in Keychain.** Paste your `ANTHROPIC_API_KEY` (and optional `elevenlabs_api_key`) once in the HUD's Settings — masked, stored in the Keychain (service `com.darwin.daemon`), never plaintext on disk. The cloud LLM fallback, the ElevenLabs voice/STT tier, and self-heal/forge drafting are enabled but stay inert until the key is present. Restart DARWIN after changing a key.
+- **Auto-login (optional).** For true boot-to-DARWIN, enable "Automatically log in as" in System Settings → Users & Groups (requires FileVault off). The LaunchAgents do the rest.
 - **Confirming consequential actions.** The features are enabled by default; nothing side-effecting runs until you **confirm each action** (and, where applicable, supply the key / grant the permission / allowlist the folder).
 
 ---

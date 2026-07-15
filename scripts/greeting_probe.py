@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Greeting-variation probe — prove JARVIS varies on repeated identical input.
+"""Greeting-variation probe — prove DARWIN varies on repeated identical input.
 
 This is a STANDALONE diagnostic, not the daemon. It faithfully mirrors the
 cloud-conversation path the Rust daemon builds for a bare greeting:
 
   - system  = inference/prompts/persona.txt  (the real persona, trimmed)
-  - messages = prior "Hi JARVIS" turns + this turn, as real chat turns
-  - avoid    = JARVIS's last replies, freshest-first, capped at 4, folded into
+  - messages = prior "Hi DARWIN" turns + this turn, as real chat turns
+  - avoid    = DARWIN's last replies, freshest-first, capped at 4, folded into
                the system prompt as the anti-repeat note (anthropic.rs::avoid_instruction)
   - model    = claude-opus-4-8   max_tokens = 200
   - NO temperature / top_p / top_k (Opus 4.8 400s on them — the prompt is the
     only variation lever), NO thinking, NO tools.
 
 Key resolution matches the daemon: ANTHROPIC_API_KEY env first, else the macOS
-Keychain (service com.jarvis.daemon, account anthropic_api_key). No key is ever
+Keychain (service com.darwin.daemon, account anthropic_api_key). No key is ever
 printed or logged.
 
 Usage:
-    .venv/bin/python scripts/greeting_probe.py                 # 5x "Hi JARVIS"
-    .venv/bin/python scripts/greeting_probe.py "Hey Jarvis"    # custom phrase
+    .venv/bin/python scripts/greeting_probe.py                 # 5x "Hi DARWIN"
+    .venv/bin/python scripts/greeting_probe.py "Hey Darwin"    # custom phrase
     .venv/bin/python scripts/greeting_probe.py "Hi" 8          # phrase + count
 """
 import json
@@ -34,7 +34,7 @@ MODEL = "claude-opus-4-8"
 MAX_TOKENS = 200
 AVOID_CAP = 4  # router.rs::AVOID_RECENT_REPLIES
 
-KEYCHAIN_SERVICE = "com.jarvis.daemon"
+KEYCHAIN_SERVICE = "com.darwin.daemon"
 KEYCHAIN_ACCOUNT = "anthropic_api_key"
 
 
@@ -78,10 +78,10 @@ def call(key, persona, history, utterance, avoid):
     if note:
         system = (system + "\n\n" + note) if system else note
     messages = []
-    for user, jarvis in history:
-        if user.strip() and jarvis.strip():
+    for user, darwin in history:
+        if user.strip() and darwin.strip():
             messages.append({"role": "user", "content": user})
-            messages.append({"role": "assistant", "content": jarvis})
+            messages.append({"role": "assistant", "content": darwin})
     messages.append({"role": "user", "content": utterance})
     body = {"model": MODEL, "max_tokens": MAX_TOKENS, "messages": messages}
     if system:
@@ -104,14 +104,14 @@ def call(key, persona, history, utterance, avoid):
 
 
 def main():
-    phrase = sys.argv[1] if len(sys.argv) > 1 else "Hi JARVIS"
+    phrase = sys.argv[1] if len(sys.argv) > 1 else "Hi DARWIN"
     rounds = int(sys.argv[2]) if len(sys.argv) > 2 else 5
     key = resolve_key()
     persona = PERSONA_PATH.read_text().strip() if PERSONA_PATH.exists() else ""
     if not persona:
         print("warning: persona.txt empty/missing — replies will be ungrounded\n")
 
-    history = []          # (user, jarvis) pairs, oldest-first (real chat turns)
+    history = []          # (user, darwin) pairs, oldest-first (real chat turns)
     replies = []          # all replies, for the freshest-first avoid list
     print(f'Probing {rounds}x  "{phrase}"  through {MODEL} '
           f'(no temperature; avoid-list cap {AVOID_CAP})\n')

@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn classifier_probe_validates_the_model_not_just_its_existence() {
-        let dir = std::env::temp_dir().join(format!("jarvis-scene-probe-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("darwin-scene-probe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let model = dir.join("models").join("acoustic_scene.json");
         assert!(!classifier_available(&dir), "no model bundled -> inert");
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn load_classifier_is_none_without_a_model_and_run_identify_stays_inert() {
-        let dir = std::env::temp_dir().join(format!("jarvis-scene-load-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("darwin-scene-load-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(load_classifier(&dir).is_none(), "no model file -> no classifier");
         // Even a bundled model yields no live events without the (unwired) tap.

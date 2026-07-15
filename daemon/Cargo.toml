@@ -1,19 +1,19 @@
 [package]
-name = "jarvis-core"
+name = "darwin-core"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "jarvisd"
+name = "darwind"
 path = "src/main.rs"
 
-# The MEMORY-JAILED PDF text-extraction helper. A short-lived child jarvisd spawns
+# The MEMORY-JAILED PDF text-extraction helper. A short-lived child darwind spawns
 # per PDF: it arms RLIMIT_AS (address-space cap) BEFORE handing bytes to
 # pdf-extract, reads the PDF on stdin, writes extracted text on stdout, and exits
 # non-zero on any error/panic. A decompression bomb of ANY shape (single-Flate,
 # filter-chain-armored, or a parse-time XRef/ObjStm structural bomb) makes an
 # allocation in THIS child fail -> the child aborts -> the parent honest-skips,
-# never OOMing jarvisd. Filter- and structure-agnostic: it closes the residuals
+# never OOMing darwind. Filter- and structure-agnostic: it closes the residuals
 # the in-process guard in docsearch.rs cannot. See src/bin/pdfjail.rs.
 [[bin]]
 name = "pdfjail"

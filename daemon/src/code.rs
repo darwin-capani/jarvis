@@ -398,7 +398,7 @@ mod tests {
     impl TempTree {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir()
-                .join(format!("jarvis-code-test-{}-{}", std::process::id(), tag));
+                .join(format!("darwin-code-test-{}-{}", std::process::id(), tag));
             let _ = fs::remove_dir_all(&path);
             fs::create_dir_all(&path).unwrap();
             TempTree(path)

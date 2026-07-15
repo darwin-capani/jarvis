@@ -1,4 +1,4 @@
-//! EDITH's anticipation engine: the FIRST time JARVIS surfaces something
+//! EDITH's anticipation engine: the FIRST time DARWIN surfaces something
 //! UNPROMPTED. Because nothing else in the system speaks on its own, this
 //! module ships conservative and echo-safe on purpose.
 //!

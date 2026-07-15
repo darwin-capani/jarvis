@@ -111,7 +111,7 @@ export function musicGateCopy(reason: MusicDisabledReason | null): string {
         "never fabricates a track."
       );
     case "no_shell":
-      return "Composing music requires the JARVIS desktop app.";
+      return "Composing music requires the DARWIN desktop app.";
     case "music_off":
       return "Cloud music is off. Turn on cloud music ([voice].cloud_music) to compose a track.";
     case "no_key":
@@ -278,6 +278,6 @@ export function composeMusicOutcomeCopy(outcome: MusicOutcome, prompt: string): 
     case "failed":
       return `Couldn't compose the track from “${p}” — the cloud request didn't go through. Nothing was created.`;
     case "no_shell":
-      return "Composing music requires the JARVIS desktop app.";
+      return "Composing music requires the DARWIN desktop app.";
   }
 }

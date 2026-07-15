@@ -1,19 +1,19 @@
 //! First-run INSTALLER affordance — the backend side of the FIRST-RUN SETUP gate.
 //!
-//! WHAT THIS IS: two Tauri commands that make a freshly-downloaded JARVIS .app a
+//! WHAT THIS IS: two Tauri commands that make a freshly-downloaded DARWIN .app a
 //! complete first-run installer.
 //!
 //!   * `backend_installed()` -> bool: an HONEST presence check of the installed
-//!     JARVIS backend in the per-user install home
-//!     (`~/Library/Application Support/JARVIS`). It is true ONLY when BOTH the
-//!     built daemon binary (`daemon/target/release/jarvisd`) AND the Python venv
+//!     DARWIN backend in the per-user install home
+//!     (`~/Library/Application Support/DARWIN`). It is true ONLY when BOTH the
+//!     built daemon binary (`daemon/target/release/darwind`) AND the Python venv
 //!     interpreter (`.venv/bin/python`) exist under that home — the two artifacts
 //!     install.sh produces that prove a real install. It never guesses: a missing
 //!     either-one reads false.
 //!
 //!   * `open_setup_install()` -> opens Terminal.app running the PUBLIC install
 //!     one-liner
-//!     curl -fsSL https://raw.githubusercontent.com/darwin-capani/jarvis/main/install.sh | bash -s -- -y
+//!     curl -fsSL https://raw.githubusercontent.com/darwin-capani/darwin/main/install.sh | bash -s -- -y
 //!     This MIRRORS uninstall.rs's `open_uninstall` osascript/Terminal pattern.
 //!
 //! WHY TERMINAL (do NOT change to a GUI-spawned child): the installer provisions
@@ -33,14 +33,14 @@ use std::process::Stdio;
 use serde::Serialize;
 use tokio::process::Command;
 
-/// The PUBLIC install one-liner the Terminal runs. `-y` answers the JARVIS
+/// The PUBLIC install one-liner the Terminal runs. `-y` answers the DARWIN
 /// actuation consent prompts; Homebrew's own `sudo` prompt still asks once (which
 /// is exactly why we need the Terminal tty). This is a fixed constant — there is
 /// no caller-supplied component, so nothing can be injected through it.
 pub const INSTALL_ONE_LINER: &str =
-    "curl -fsSL https://raw.githubusercontent.com/darwin-capani/jarvis/main/install.sh | bash -s -- -y";
+    "curl -fsSL https://raw.githubusercontent.com/darwin-capani/darwin/main/install.sh | bash -s -- -y";
 
-/// The per-user JARVIS install home: `~/Library/Application Support/JARVIS`. We
+/// The per-user DARWIN install home: `~/Library/Application Support/DARWIN`. We
 /// resolve `~` from `$HOME` (always set for a GUI/login session on macOS); when it
 /// is somehow unset we return None and `backend_installed` reads false (we never
 /// guess a home).
@@ -53,7 +53,7 @@ fn install_home() -> Option<PathBuf> {
         PathBuf::from(home)
             .join("Library")
             .join("Application Support")
-            .join("JARVIS"),
+            .join("DARWIN"),
     )
 }
 
@@ -62,15 +62,15 @@ fn install_home() -> Option<PathBuf> {
 /// venv python interpreter exist under it. Split out from the filesystem so the
 /// AND logic is unit-testable without touching disk. The two relative paths are
 /// exactly the artifacts install.sh produces:
-///   * `daemon/target/release/jarvisd` — the release daemon binary (BUILD stage)
+///   * `daemon/target/release/darwind` — the release daemon binary (BUILD stage)
 ///   * `.venv/bin/python`              — the Python venv interpreter (PYTHON ENV stage)
 fn is_installed_at(home: &std::path::Path, exists: impl Fn(&std::path::Path) -> bool) -> bool {
-    let daemon = home.join("daemon").join("target").join("release").join("jarvisd");
+    let daemon = home.join("daemon").join("target").join("release").join("darwind");
     let venv_python = home.join(".venv").join("bin").join("python");
     exists(&daemon) && exists(&venv_python)
 }
 
-/// HONEST presence check of the installed JARVIS backend. True ONLY when the
+/// HONEST presence check of the installed DARWIN backend. True ONLY when the
 /// per-user install home has BOTH the built daemon binary and the venv python —
 /// the two artifacts that prove a real install. A missing `$HOME`, a missing
 /// home directory, or either artifact absent all read false.
@@ -78,7 +78,7 @@ fn is_installed_at(home: &std::path::Path, exists: impl Fn(&std::path::Path) -> 
 /// NOTE the gate is deliberately CONSERVATIVE in the HUD: even when this returns
 /// false, the FIRST-RUN SETUP screen only shows if the command channel ALSO is
 /// not connected (a running daemon means the channel connects). So a quirky
-/// false-negative here can never nag a user whose JARVIS is actually running.
+/// false-negative here can never nag a user whose DARWIN is actually running.
 #[tauri::command]
 pub async fn backend_installed() -> Result<bool, String> {
     let Some(home) = install_home() else {
@@ -145,9 +145,9 @@ pub async fn open_setup_install() -> Result<SetupOpen, String> {
         Ok(SetupOpen {
             opened: true,
             detail:
-                "Opened Terminal running the JARVIS installer. It installs the dependencies, builds \
+                "Opened Terminal running the DARWIN installer. It installs the dependencies, builds \
                  the daemon, creates the Python environment, and downloads the on-device models \
-                 (several GB) — macOS will ask once for your password. When it finishes, JARVIS \
+                 (several GB) — macOS will ask once for your password. When it finishes, DARWIN \
                  connects automatically (or relaunch the app)."
                     .into(),
         })
@@ -174,12 +174,12 @@ mod tests {
         // the -y auto-confirm. This is the REAL working installer one-liner.
         assert_eq!(
             INSTALL_ONE_LINER,
-            "curl -fsSL https://raw.githubusercontent.com/darwin-capani/jarvis/main/install.sh | bash -s -- -y"
+            "curl -fsSL https://raw.githubusercontent.com/darwin-capani/darwin/main/install.sh | bash -s -- -y"
         );
         // The load-bearing pieces, asserted individually so a typo can't slip by.
         assert!(INSTALL_ONE_LINER.starts_with("curl -fsSL "));
         assert!(INSTALL_ONE_LINER
-            .contains("https://raw.githubusercontent.com/darwin-capani/jarvis/main/install.sh"));
+            .contains("https://raw.githubusercontent.com/darwin-capani/darwin/main/install.sh"));
         assert!(INSTALL_ONE_LINER.contains("| bash -s -- -y"));
     }
 
@@ -215,8 +215,8 @@ mod tests {
 
     #[test]
     fn is_installed_requires_both_the_daemon_binary_and_the_venv_python() {
-        let home = Path::new("/Users/x/Library/Application Support/JARVIS");
-        let daemon = home.join("daemon").join("target").join("release").join("jarvisd");
+        let home = Path::new("/Users/x/Library/Application Support/DARWIN");
+        let daemon = home.join("daemon").join("target").join("release").join("darwind");
         let venv = home.join(".venv").join("bin").join("python");
 
         // BOTH present -> installed.
@@ -241,7 +241,7 @@ mod tests {
             true
         });
         let probed = probed.into_inner();
-        assert!(probed.iter().any(|p| p.ends_with("/H/daemon/target/release/jarvisd")));
+        assert!(probed.iter().any(|p| p.ends_with("/H/daemon/target/release/darwind")));
         assert!(probed.iter().any(|p| p.ends_with("/H/.venv/bin/python")));
     }
 

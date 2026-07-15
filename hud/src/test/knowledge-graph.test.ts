@@ -51,15 +51,15 @@ const builtRich: Record<string, unknown> = {
     entities: [
       {
         type: "project",
-        id: "project_jarvis",
-        name: "Project JARVIS",
-        source: "/Users/me/notes/jarvis.md:0 (chars 12-25)",
+        id: "project_darwin",
+        name: "Project DARWIN",
+        source: "/Users/me/notes/darwin.md:0 (chars 12-25)",
       },
       {
         type: "person",
         id: "darwin_capani",
         name: "Darwin Capani",
-        source: "/Users/me/notes/jarvis.md:0 (chars 40-53)",
+        source: "/Users/me/notes/darwin.md:0 (chars 40-53)",
       },
       {
         type: "deadline",
@@ -71,21 +71,21 @@ const builtRich: Record<string, unknown> = {
         type: "topic",
         id: "knowledge_graph",
         name: "Knowledge Graph",
-        source: "/Users/me/notes/jarvis.md:1024 (chars 8-23)",
+        source: "/Users/me/notes/darwin.md:1024 (chars 8-23)",
       },
     ],
     relationships: [
       {
         from: "darwin_capani",
         relation: "mentions",
-        to: "project_jarvis",
-        source: "source /Users/me/notes/jarvis.md:0",
+        to: "project_darwin",
+        source: "source /Users/me/notes/darwin.md:0",
       },
       {
-        from: "project_jarvis",
+        from: "project_darwin",
         relation: "mentions",
         to: "knowledge_graph",
-        source: "source /Users/me/notes/jarvis.md:1024",
+        source: "source /Users/me/notes/darwin.md:1024",
       },
     ],
   },
@@ -144,9 +144,9 @@ describe("parseKnowledgeGraphResult (defensive, grounded-only)", () => {
     expect(r.entities.length).toBe(4);
     expect(r.relationships.length).toBe(2);
     // Provenance is carried verbatim from the daemon.
-    const proj = r.entities.find((e) => e.id === "project_jarvis");
-    expect(proj?.source).toBe("/Users/me/notes/jarvis.md:0 (chars 12-25)");
-    expect(r.relationships[0].source).toBe("source /Users/me/notes/jarvis.md:0");
+    const proj = r.entities.find((e) => e.id === "project_darwin");
+    expect(proj?.source).toBe("/Users/me/notes/darwin.md:0 (chars 12-25)");
+    expect(r.relationships[0].source).toBe("source /Users/me/notes/darwin.md:0");
   });
 
   it("an entity-less build is the honest empty graph (never fabricates)", () => {
@@ -258,8 +258,8 @@ describe("KnowledgeGraphPanel (grouped, provenance-tagged, honest, review-only)"
 
   it("renders each entity's name + its REAL source provenance citation", () => {
     const html = render(parseKnowledgeGraphResult(builtRich));
-    expect(html).toContain("Project JARVIS");
-    expect(html).toContain("/Users/me/notes/jarvis.md:0 (chars 12-25)");
+    expect(html).toContain("Project DARWIN");
+    expect(html).toContain("/Users/me/notes/darwin.md:0 (chars 12-25)");
     expect(html).toContain("Darwin Capani");
     expect(html).toContain("2026-06-30");
   });
@@ -268,8 +268,8 @@ describe("KnowledgeGraphPanel (grouped, provenance-tagged, honest, review-only)"
     const html = render(parseKnowledgeGraphResult(builtRich));
     expect(html).toContain("darwin_capani");
     expect(html).toContain("mentions");
-    expect(html).toContain("project_jarvis");
-    expect(html).toContain("source /Users/me/notes/jarvis.md:0");
+    expect(html).toContain("project_darwin");
+    expect(html).toContain("source /Users/me/notes/darwin.md:0");
   });
 
   it("surfaces the build stats + the honest extractor method token", () => {

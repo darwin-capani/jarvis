@@ -191,10 +191,10 @@ pub fn bound_plan(raw: Vec<PlannedTask>) -> (Vec<PlannedTask>, usize) {
 /// Route a bounded plan to owners via [`AgentRegistry::select`]. Each task's
 /// OWNER is resolved from (intent, instruction) — the planner's hint does not get
 /// the final say, `select` does — so a sub-task always lands on the specialist
-/// that actually holds the relevant tools (or jarvis as the fallback). FURY never
+/// that actually holds the relevant tools (or darwin as the fallback). FURY never
 /// dispatches a sub-task to ITSELF: a mission that resolved back to fury would be
 /// a recursive mission, which depth=1 forbids; such a task is re-pointed at the
-/// orchestrator (jarvis) instead. `cloud_reachable` is passed through so routing
+/// orchestrator (darwin) instead. `cloud_reachable` is passed through so routing
 /// matches what a direct request would do. Pure over the registry — unit-testable
 /// without a dispatcher.
 pub fn route_plan(
@@ -724,7 +724,7 @@ mod tests {
         let registry = reg();
         let plan = vec![PlannedTask::say("orchestrate the whole campaign end to end")];
         let routed = route_plan(&registry, &plan, true);
-        assert_eq!(routed[0].agent, "jarvis", "a fury-resolved sub-task is re-pointed at the orchestrator");
+        assert_eq!(routed[0].agent, "darwin", "a fury-resolved sub-task is re-pointed at the orchestrator");
         assert_ne!(routed[0].agent, "fury", "a sub-task must never be dispatched to fury (no recursion)");
     }
 

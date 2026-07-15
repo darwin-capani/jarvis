@@ -1,5 +1,5 @@
 //! GATED UI AUTOMATION (#44) — the CAPSTONE, and the SINGLE MOST DANGEROUS
-//! capability JARVIS has: actually ACTUATING the macOS UI (posting a synthetic
+//! capability DARWIN has: actually ACTUATING the macOS UI (posting a synthetic
 //! mouse click, typing keystrokes, sending a key combo) on the user's behalf. It
 //! is built to the same honesty-first, maximally-gated, deny-default contract as
 //! the sandboxed shell (#43) — but stricter still, because an actuation is an
@@ -312,10 +312,10 @@ pub enum ActuateError {
     #[allow(dead_code)] // constructed only on the non-macOS post arm + asserted in tests
     BackendUnavailable,
     /// (OPT-IN via-app mode only) The actuation was routed to the HUD app
-    /// (JARVIS.app) over `state/ipc/actuate.sock` but the HUD could not be reached,
+    /// (DARWIN.app) over `state/ipc/actuate.sock` but the HUD could not be reached,
     /// or returned a malformed / failed reply. Carries an HONEST detail (the
     /// connect error, the unparsable line, or the HUD's own `ok=false` detail — e.g.
-    /// "Accessibility not granted to JARVIS.app"). NEVER a fabricated success: a
+    /// "Accessibility not granted to DARWIN.app"). NEVER a fabricated success: a
     /// connect failure or a bad reply is reported faithfully as "nothing changed".
     /// Constructed only on the via_app path (default-off); the local post path is
     /// completely unchanged.
@@ -340,8 +340,8 @@ impl ActuateError {
                     .to_string()
             }
             ActuateError::AppActuatorUnavailable(d) => format!(
-                "the actuation was routed to the JARVIS app to post (so macOS attributes the \
-                 Accessibility grant to JARVIS.app), but it did not land: {d}"
+                "the actuation was routed to the DARWIN app to post (so macOS attributes the \
+                 Accessibility grant to DARWIN.app), but it did not land: {d}"
             ),
         }
     }
@@ -352,9 +352,9 @@ impl ActuateError {
 //
 // When `[ui_automation].actuate_via_app = true`, the daemon does NOT post the
 // CGEvent locally. Instead it connects (as a CLIENT) to the Unix stream socket
-// `<root>/state/ipc/actuate.sock` — which the HUD app (JARVIS.app) binds + listens
+// `<root>/state/ipc/actuate.sock` — which the HUD app (DARWIN.app) binds + listens
 // on as the SERVER, because the HUD is the process that must hold the Accessibility
-// TCC grant and post the CGEvent (so macOS shows the clean "JARVIS would like to
+// TCC grant and post the CGEvent (so macOS shows the clean "DARWIN would like to
 // control this computer using accessibility" prompt and attributes the grant to the
 // user-facing app). One request = one actuation = one connection (open, send one
 // '\n'-terminated JSON request line, read one '\n'-terminated JSON reply line,
@@ -423,7 +423,7 @@ struct ActuateReply {
 ///
 ///   * a well-formed `{"ok":true,...}` => `Ok(())` (the HUD posted the one CGEvent);
 ///   * a well-formed `{"ok":false,"detail":...}` => `Err(AppActuatorUnavailable(detail))`
-///     (the honest reason — e.g. Accessibility not granted to JARVIS.app);
+///     (the honest reason — e.g. Accessibility not granted to DARWIN.app);
 ///   * an UNPARSABLE / empty line => `Err(AppActuatorUnavailable(...))` (a
 ///     malformed reply is NEVER treated as success).
 ///
@@ -434,7 +434,7 @@ fn parse_actuate_reply(line: &str) -> Result<(), ActuateError> {
         Ok(r) => r,
         Err(e) => {
             return Err(ActuateError::AppActuatorUnavailable(format!(
-                "the JARVIS app sent a reply I couldn't parse ({e}); I will not assume it acted"
+                "the DARWIN app sent a reply I couldn't parse ({e}); I will not assume it acted"
             )));
         }
     };
@@ -442,7 +442,7 @@ fn parse_actuate_reply(line: &str) -> Result<(), ActuateError> {
         Ok(())
     } else {
         let detail = if reply.detail.trim().is_empty() {
-            "the JARVIS app declined to actuate (no reason given)".to_string()
+            "the DARWIN app declined to actuate (no reason given)".to_string()
         } else {
             reply.detail
         };
@@ -469,9 +469,9 @@ async fn actuate_via_hud(plan: &ActuationPlan) -> Result<ActuateResult, ActuateE
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
 
-    // Resolve the JARVIS root (JARVIS_ROOT, else cwd) — the socket + token both live
+    // Resolve the DARWIN root (DARWIN_ROOT, else cwd) — the socket + token both live
     // under <root>/state/ipc, mirroring how the daemon resolves its state dir.
-    let root = std::env::var("JARVIS_ROOT")
+    let root = std::env::var("DARWIN_ROOT")
         .ok()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
@@ -483,13 +483,13 @@ async fn actuate_via_hud(plan: &ActuationPlan) -> Result<ActuateResult, ActuateE
         Ok(t) => t.trim().to_string(),
         Err(e) => {
             return Err(ActuateError::AppActuatorUnavailable(format!(
-                "I couldn't read the capability token to authorize the JARVIS app actuation ({e})"
+                "I couldn't read the capability token to authorize the DARWIN app actuation ({e})"
             )));
         }
     };
     if token.is_empty() {
         return Err(ActuateError::AppActuatorUnavailable(
-            "the capability token for the JARVIS app actuation was empty".to_string(),
+            "the capability token for the DARWIN app actuation was empty".to_string(),
         ));
     }
 
@@ -501,7 +501,7 @@ async fn actuate_via_hud(plan: &ActuationPlan) -> Result<ActuateResult, ActuateE
         Ok(s) => s,
         Err(e) => {
             return Err(ActuateError::AppActuatorUnavailable(format!(
-                "I couldn't reach the JARVIS app to post the action ({e}); is JARVIS.app running?"
+                "I couldn't reach the DARWIN app to post the action ({e}); is DARWIN.app running?"
             )));
         }
     };
@@ -511,12 +511,12 @@ async fn actuate_via_hud(plan: &ActuationPlan) -> Result<ActuateResult, ActuateE
 
     if let Err(e) = write_half.write_all(request.as_bytes()).await {
         return Err(ActuateError::AppActuatorUnavailable(format!(
-            "I couldn't send the action to the JARVIS app ({e})"
+            "I couldn't send the action to the DARWIN app ({e})"
         )));
     }
     if let Err(e) = write_half.flush().await {
         return Err(ActuateError::AppActuatorUnavailable(format!(
-            "I couldn't flush the action to the JARVIS app ({e})"
+            "I couldn't flush the action to the DARWIN app ({e})"
         )));
     }
 
@@ -526,14 +526,14 @@ async fn actuate_via_hud(plan: &ActuationPlan) -> Result<ActuateResult, ActuateE
     match reader.read_line(&mut line).await {
         Ok(0) => {
             return Err(ActuateError::AppActuatorUnavailable(
-                "the JARVIS app closed the connection without replying; I will not assume it acted"
+                "the DARWIN app closed the connection without replying; I will not assume it acted"
                     .to_string(),
             ));
         }
         Ok(_) => {}
         Err(e) => {
             return Err(ActuateError::AppActuatorUnavailable(format!(
-                "I couldn't read the JARVIS app's reply ({e}); I will not assume it acted"
+                "I couldn't read the DARWIN app's reply ({e}); I will not assume it acted"
             )));
         }
     }
@@ -550,7 +550,7 @@ async fn actuate_via_hud(plan: &ActuationPlan) -> Result<ActuateResult, ActuateE
 /// process? On macOS the answer comes from `AXIsProcessTrusted()` (exported by the
 /// ApplicationServices framework). It is runtime USER consent (the user toggles it
 /// in System Settings › Privacy & Security › Accessibility) — it is NOT
-/// SBPL-grantable and JARVIS can never self-grant it. Without it, macOS silently
+/// SBPL-grantable and DARWIN can never self-grant it. Without it, macOS silently
 /// drops synthetic CGEvents and rejects AX actions, so the seam MUST refuse
 /// honestly when it is absent rather than fabricate a click.
 ///
@@ -633,7 +633,7 @@ pub async fn do_actuate(
     actuate_via_app: bool,
 ) -> Result<ActuateResult, ActuateError> {
     // (OPT-IN) VIA-APP MODE: post the approved single action THROUGH the HUD app so
-    // macOS attributes the Accessibility grant to JARVIS.app. The HUD holds the
+    // macOS attributes the Accessibility grant to DARWIN.app. The HUD holds the
     // grant, so the daemon's OWN Accessibility check is SKIPPED here — but EVERY
     // other gate already ran before this seam, unchanged. The HUD reports an honest
     // failure (ok=false) when it is not trusted, which we surface faithfully and
@@ -1332,12 +1332,12 @@ mod tests {
     #[test]
     fn parse_actuate_reply_ok_false_is_honest_error_with_detail() {
         let err = parse_actuate_reply(
-            "{\"ok\":false,\"detail\":\"Accessibility not granted to JARVIS.app\"}\n",
+            "{\"ok\":false,\"detail\":\"Accessibility not granted to DARWIN.app\"}\n",
         )
         .unwrap_err();
         match err {
             ActuateError::AppActuatorUnavailable(d) => {
-                assert!(d.contains("Accessibility not granted to JARVIS.app"));
+                assert!(d.contains("Accessibility not granted to DARWIN.app"));
             }
             other => panic!("expected AppActuatorUnavailable, got {other:?}"),
         }

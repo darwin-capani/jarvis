@@ -25,10 +25,10 @@ import os
 import socket
 import sys
 
-TOKEN = os.environ.get("JARVIS_APP_TOKEN", "")
-SOCKET_PATH = os.environ.get("JARVIS_APP_SOCKET", "")
+TOKEN = os.environ.get("DARWIN_APP_TOKEN", "")
+SOCKET_PATH = os.environ.get("DARWIN_APP_SOCKET", "")
 
-# Optional, READ-ONLY dyld module self-report (docs/INTROSPECT.md). jarvisd runs
+# Optional, READ-ONLY dyld module self-report (docs/INTROSPECT.md). darwind runs
 # the app with the project root as CWD, and the manifest grants fs_read of
 # apps/_sdk, so the shared reference stub is importable. Bytecode writes are
 # disabled (no fs_write there) and every step is guarded — if the stub is absent
@@ -93,7 +93,7 @@ def drain_lines(buf, max_frame=MAX_FRAME_BYTES):
 
 def main():
     if not TOKEN or not SOCKET_PATH:
-        print("missing JARVIS_APP_TOKEN / JARVIS_APP_SOCKET; not launched by jarvisd", file=sys.stderr)
+        print("missing DARWIN_APP_TOKEN / DARWIN_APP_SOCKET; not launched by darwind", file=sys.stderr)
         return 1
     conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     conn.connect(SOCKET_PATH)

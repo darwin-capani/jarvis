@@ -40,8 +40,8 @@ function connected(at = 0): HudState {
  *  habit_offer_telemetry_carries_the_feed_card_fields asserts. */
 function habitCard(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    id: "habit:agent.jarvis:budget.review",
-    agent: "agent.jarvis",
+    id: "habit:agent.darwin:budget.review",
+    agent: "agent.darwin",
     text: "You review the budget every weekday morning — want me to make that a standing mission?",
     kind: "habit_automation",
     topic: "budget.review",
@@ -58,8 +58,8 @@ function habitCard(over: Record<string, unknown> = {}): Record<string, unknown> 
  *  (a prediction has no action to accept). */
 function predictiveCard(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    id: "pred:agent.jarvis:news.brief:morning",
-    agent: "agent.jarvis",
+    id: "pred:agent.darwin:news.brief:morning",
+    agent: "agent.darwin",
     text: "You usually catch the news brief around morning.",
     kind: "predictive",
     topic: "news.brief",
@@ -80,8 +80,8 @@ describe("parseSuggestion (defensive, never-fabricate)", () => {
     const sg = parseSuggestion(habitCard());
     expect(sg).not.toBeNull();
     expect(sg!.kind).toBe("habit_automation");
-    expect(sg!.id).toBe("habit:agent.jarvis:budget.review");
-    expect(sg!.agent).toBe("agent.jarvis");
+    expect(sg!.id).toBe("habit:agent.darwin:budget.review");
+    expect(sg!.agent).toBe("agent.darwin");
     expect(sg!.topic).toBe("budget.review");
     expect(sg!.occurrences).toBe(3);
     expect(sg!.proposedGoal).toBe("review the budget.review");
@@ -249,7 +249,7 @@ describe("proactive.suggestion reducer", () => {
   it("two distinct ids (same topic, different agents) are two cards", () => {
     let s = tel(
       connected(),
-      env("proactive.suggestion", habitCard({ id: "habit:agent.jarvis:t", agent: "agent.jarvis" })),
+      env("proactive.suggestion", habitCard({ id: "habit:agent.darwin:t", agent: "agent.darwin" })),
     );
     s = tel(
       s,
@@ -257,7 +257,7 @@ describe("proactive.suggestion reducer", () => {
     );
     expect(s.suggestions.length).toBe(2);
     const agents = s.suggestions.map((x) => x.agent).sort();
-    expect(agents).toEqual(["agent.edith", "agent.jarvis"]);
+    expect(agents).toEqual(["agent.darwin", "agent.edith"]);
   });
 
   it("bounds the feed at SUGGESTION_CAP", () => {

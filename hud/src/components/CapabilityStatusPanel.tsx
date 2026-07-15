@@ -3,7 +3,7 @@ import Frame from "./Frame";
 
 /**
  * CAPABILITIES // ARMED · GATED — the live honest capability map (daemon
- * capability.rs -> `capability.map`). It makes JARVIS's "armed by default, gated
+ * capability.rs -> `capability.map`). It makes DARWIN's "armed by default, gated
  * per action" posture visible: one row per notable subsystem, each honestly
  * labelled ready / needs-a-dependency / off.
  *

@@ -111,14 +111,14 @@ describe("offline tool-loop folding helpers (events.ts)", () => {
     let lt = applyLocalToolsEngaged(localToolsInitial(), { tools_used: 0, tools: [] });
     lt = applyLocalToolsExecuted(lt, {
       tool: "recall_facts",
-      agent: "jarvis",
+      agent: "darwin",
       is_error: false,
       outcome: "found 3 facts",
     });
     expect(lt.recent).toHaveLength(1);
     expect(lt.recent[0]).toEqual({
       tool: "recall_facts",
-      agent: "jarvis",
+      agent: "darwin",
       isError: false,
       outcome: "found 3 facts",
       outOfSubset: false,
@@ -127,7 +127,7 @@ describe("offline tool-loop folding helpers (events.ts)", () => {
 
   it("executed with no tool name is a no-op (nothing to trace)", () => {
     const seeded = applyLocalToolsEngaged(localToolsInitial(), { tools_used: 0, tools: [] });
-    const lt = applyLocalToolsExecuted(seeded, { agent: "jarvis", is_error: false });
+    const lt = applyLocalToolsExecuted(seeded, { agent: "darwin", is_error: false });
     expect(lt).toBe(seeded);
   });
 
@@ -147,7 +147,7 @@ describe("offline tool-loop folding helpers (events.ts)", () => {
   it("local_tools.out_of_subset raises refusedOutOfSubset and traces the refusal", () => {
     const lt = applyLocalToolsOutOfSubset(localToolsInitial(), {
       tool: "send_email",
-      agent: "jarvis",
+      agent: "darwin",
     });
     expect(lt.refusedOutOfSubset).toBe(true);
     const last = lt.recent[lt.recent.length - 1];
@@ -316,7 +316,7 @@ describe("reducer local_tools.* events", () => {
       s,
       env("local_tools.executed", {
         tool: "doc_search",
-        agent: "jarvis",
+        agent: "darwin",
         is_error: false,
         outcome: "3 hits",
       }),
@@ -328,7 +328,7 @@ describe("reducer local_tools.* events", () => {
   it("threads local_tools.out_of_subset (a refused hallucinated tool)", () => {
     const s = tel(
       connected(),
-      env("local_tools.out_of_subset", { tool: "open_url", agent: "jarvis" }),
+      env("local_tools.out_of_subset", { tool: "open_url", agent: "darwin" }),
     );
     expect(s.localTools.refusedOutOfSubset).toBe(true);
     expect(s.localTools.recent[0].outOfSubset).toBe(true);

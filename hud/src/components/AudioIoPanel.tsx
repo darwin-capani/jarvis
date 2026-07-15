@@ -66,7 +66,7 @@ import Frame from "./Frame";
  *       has no diarization model — a single honest stream, never a fabricated
  *       speaker), SINGLE STREAM (EL Scribe, one speaker), or MULTI-SPEAKER (EL
  *       Scribe reported >1 distinct speaker — the backend's labels, never invented).
- *   #32 WAKE WORD — the ACTIVE configured wake phrase (default "jarvis"). The copy
+ *   #32 WAKE WORD — the ACTIVE configured wake phrase (default "darwin"). The copy
  *       is honest that the always-listening loop that consults the matcher is
  *       DEVICE-GATED (mic); the matcher itself is conservative + pure.
  *
@@ -79,7 +79,7 @@ import Frame from "./Frame";
  *     backend's own `backend_can_diarize`, a translation count is only the real
  *     translated:true frames, and the wake phrase is the configured one.
  *   - SHIPS OFF / NEUTRAL. All three flags ship OFF; before any telemetry the
- *     surface rests in the honest INTERPRET OFF / NOT SEEN / default-"jarvis"
+ *     surface rests in the honest INTERPRET OFF / NOT SEEN / default-"darwin"
  *     state and the panel still renders that resting posture (it is informative —
  *     it names the configured wake word and the diarization posture).
  *   - SECRET-FREE. Only languages / booleans / counts / the wake phrase — never
@@ -155,8 +155,8 @@ export default function AudioIoPanel({
             <span
               className="verify-pill audioio-good"
               title={
-                'The configured wake phrase that gates "is this for JARVIS" (#32). ' +
-                'Defaults to "jarvis", preserving today\'s behavior. The matcher is ' +
+                'The configured wake phrase that gates "is this for DARWIN" (#32). ' +
+                'Defaults to "darwin", preserving today\'s behavior. The matcher is ' +
                 "conservative + pure; the always-listening loop that consults it is " +
                 "DEVICE-GATED (mic). Ships OFF ([wake].enabled)."
               }
@@ -716,7 +716,7 @@ function AddPronunciationForm({
             value={word}
             onChange={(e) => setWord(e.target.value)}
             disabled={!gateOpen || busy}
-            placeholder="e.g. JARVIS"
+            placeholder="e.g. DARWIN"
             title={gateOpen ? undefined : voiceLabGateCopy(reason)}
           />
         </label>

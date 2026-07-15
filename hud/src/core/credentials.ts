@@ -10,7 +10,7 @@
  * headlessly under vitest (node env).
  *
  * NB: the Anthropic account string is EXACTLY "anthropic_api_key" because
- * jarvisd reads that item at startup. Do not rename it.
+ * darwind reads that item at startup. Do not rename it.
  */
 
 /** "bearer": paste a token + verify over HTTP. "oauth": a connection-STATUS row
@@ -23,7 +23,7 @@ export interface Credential {
   id: string;
   /** Human label shown in the panel. */
   label: string;
-  /** macOS Keychain account string under service com.jarvis.daemon. */
+  /** macOS Keychain account string under service com.darwin.daemon. */
   keychain_account: string;
   kind: CredentialKind;
 }
@@ -278,15 +278,15 @@ export const CRED_HINTS: Readonly<Record<string, string>> = {
   x_client_id:
     "X Developer Portal → Projects & Apps → your OAuth 2.0 app → Client ID. The app needs User authentication set up with the tweet.write scope (posting requires a paid API tier).",
   x_client_secret:
-    "From the same X OAuth 2.0 app (Client Secret). Stored only — the browser consent runs in jarvisd via 'connect X'.",
+    "From the same X OAuth 2.0 app (Client Secret). Stored only — the browser consent runs in darwind via 'connect X'.",
   linkedin_client_id:
     "LinkedIn Developer Portal → your app → Auth → Client ID. Add the posting product (Share on LinkedIn / w_member_social) — it must be approved before posting works.",
   linkedin_client_secret:
-    "From the same LinkedIn app (Client Secret). Stored only — the browser consent runs in jarvisd via 'connect LinkedIn'.",
+    "From the same LinkedIn app (Client Secret). Stored only — the browser consent runs in darwind via 'connect LinkedIn'.",
   google_ads_client_id:
     "Google Cloud Console OAuth client ID (Desktop app), enabled for the Google Ads API (adwords scope). Separate from the Workspace client. Ends in .apps.googleusercontent.com",
   google_ads_client_secret:
-    "From the same Google Ads OAuth client (Client Secret). Stored only — the browser consent runs in jarvisd via 'connect Google Ads'.",
+    "From the same Google Ads OAuth client (Client Secret). Stored only — the browser consent runs in darwind via 'connect Google Ads'.",
   google_ads_developer_token:
     "Google Ads API Center → Developer token. Sent on every Ads call (developer-token header) — not used for the connect step.",
   google_ads_customer_id:
@@ -296,15 +296,15 @@ export const CRED_HINTS: Readonly<Record<string, string>> = {
   meta_app_id:
     "Meta for Developers → your app → App ID. The app needs the Marketing API with ads_read + ads_management.",
   meta_app_secret:
-    "From the same Meta app (App Secret). Stored only — the browser consent runs in jarvisd via 'connect Meta'; it exchanges the code for a long-lived token.",
+    "From the same Meta app (App Secret). Stored only — the browser consent runs in darwind via 'connect Meta'; it exchanges the code for a long-lived token.",
   meta_ad_account_id:
     "The Meta ad account id including the act_ prefix, e.g. act_1234567890.",
   whoop_client_id:
     "WHOOP Developer Dashboard → your app → Client ID. The app needs the read scopes (recovery, cycles, sleep, workout, profile) and offline access. Reads only — Vitalis never writes WHOOP data.",
   whoop_client_secret:
-    "From the same WHOOP app (Client Secret). Stored only — the browser consent runs in jarvisd via 'connect WHOOP'.",
+    "From the same WHOOP app (Client Secret). Stored only — the browser consent runs in darwind via 'connect WHOOP'.",
   homeassistant_url:
-    "Your Home Assistant base URL, e.g. http://homeassistant.local:8123 or https://your-hub.example.com. DUM-E controls devices through THIS hub — JARVIS does not talk HomeKit directly.",
+    "Your Home Assistant base URL, e.g. http://homeassistant.local:8123 or https://your-hub.example.com. DUM-E controls devices through THIS hub — DARWIN does not talk HomeKit directly.",
   homeassistant_token:
     "Home Assistant → your profile → Long-Lived Access Tokens → Create Token. Reads device states and, only when you confirm, calls services to control them.",
   plaid_client_id:
@@ -312,13 +312,13 @@ export const CRED_HINTS: Readonly<Record<string, string>> = {
   plaid_secret:
     "Plaid Dashboard → Team Settings → Keys → secret (sandbox or production). From the same Plaid app. Stored only; MIDAS reads — it cannot transfer, pay, or trade.",
   plaid_access_token:
-    "A linked-institution access token from Plaid Link (access-…). Plaid Link runs in your own frontend/sandbox — JARVIS does not perform it; paste the resulting token here. Read-only.",
+    "A linked-institution access token from Plaid Link (access-…). Plaid Link runs in your own frontend/sandbox — DARWIN does not perform it; paste the resulting token here. Read-only.",
   maps_api_key:
     "Google Maps Platform → Credentials → API key, with Directions, Places, and Distance Matrix enabled. VOYAGER reads routes, places, and travel times only — it never books or pays. The key rides the request header, never a logged URL.",
   hibp_api_key:
     "haveibeenpwned.com → API key (a paid subscription). AEGIS checks your OWN email's breach exposure only — it never scans anyone else, cracks anything, or fetches leaked passwords. The key rides the request header, never a logged URL.",
   elevenlabs_api_key:
-    "elevenlabs.io → Profile → API key. OPTIONAL premium CLOUD voices. OFF by default: the cloud voice tier ships disabled, and on-device Kokoro stays the private/offline default + fallback. With the tier on + this key + online, JARVIS's spoken text is sent to ElevenLabs to synthesize (it leaves the device). The key rides the xi-api-key header, never a logged URL. Voice-only — JARVIS keeps its own brain/turn-taking.",
+    "elevenlabs.io → Profile → API key. OPTIONAL premium CLOUD voices. OFF by default: the cloud voice tier ships disabled, and on-device Kokoro stays the private/offline default + fallback. With the tier on + this key + online, DARWIN's spoken text is sent to ElevenLabs to synthesize (it leaves the device). The key rides the xi-api-key header, never a logged URL. Voice-only — DARWIN keeps its own brain/turn-taking.",
 } as const;
 
 /** The scope hint for a credential id, or null when there is none. */

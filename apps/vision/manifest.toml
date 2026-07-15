@@ -45,7 +45,7 @@ fs_write  = ["state/tmp/vision"]        # scratch: decoded-frame cache, run arti
 # by themselves (TCC consent is the real gate and is requested on-device):
 #   camera = true   # AVFoundation capture from the user's OWN camera (TCC: Camera)
 #   screen = true   # ScreenCaptureKit capture of the user's OWN screen (TCC: Screen Recording)
-# Until then, AppEnv also reads JARVIS_VISION_CAMERA / JARVIS_VISION_SCREEN
+# Until then, AppEnv also reads DARWIN_VISION_CAMERA / DARWIN_VISION_SCREEN
 # from the launch env as an interim declaration channel (default: false).
 
 [ui]

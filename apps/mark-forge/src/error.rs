@@ -38,10 +38,10 @@ pub enum MarkForgeError {
     #[error("invalid spawn parameters: {0}")]
     InvalidSpawn(String),
 
-    /// The capability token / launch env was missing (`JARVIS_APP_SOCKET` or
-    /// `JARVIS_APP_TOKEN` absent) — the app only runs under the daemon. The
+    /// The capability token / launch env was missing (`DARWIN_APP_SOCKET` or
+    /// `DARWIN_APP_TOKEN` absent) — the app only runs under the daemon. The
     /// binary's `main` maps this to exit code 2.
-    #[error("unauthorized: JARVIS_APP_SOCKET and JARVIS_APP_TOKEN must be set (this app runs under jarvisd, not standalone)")]
+    #[error("unauthorized: DARWIN_APP_SOCKET and DARWIN_APP_TOKEN must be set (this app runs under darwind, not standalone)")]
     Unauthorized,
 }
 
@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn unauthorized_message_mentions_env_vars() {
         let e = MarkForgeError::Unauthorized;
-        assert!(e.to_string().contains("JARVIS_APP_SOCKET"));
-        assert!(e.to_string().contains("JARVIS_APP_TOKEN"));
+        assert!(e.to_string().contains("DARWIN_APP_SOCKET"));
+        assert!(e.to_string().contains("DARWIN_APP_TOKEN"));
     }
 }

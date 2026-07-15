@@ -1,11 +1,11 @@
-//! WS4a — the "Uninstall JARVIS" affordance (the SETTINGS / System tab).
+//! WS4a — the "Uninstall DARWIN" affordance (the SETTINGS / System tab).
 //!
 //! WHAT THIS IS: one Tauri command (`uninstall_open`) that OPENS Terminal.app
 //! running the installed `uninstall.sh` so the user completes the script's TWO
 //! typed confirmations IN A REAL TERMINAL.
 //!
 //! WHY THIS SHAPE (the safety invariant — do NOT weaken it): `uninstall.sh` is a
-//! deliberately destructive, two-step typed-confirmation flow ("Delete JARVIS
+//! deliberately destructive, two-step typed-confirmation flow ("Delete DARWIN
 //! completely? (yes/no)" then "Are you ABSOLUTELY sure? (yes/no)", failing safe
 //! to NO on anything else). A button must NEVER auto-run that from a single
 //! click. So this command does NOT execute the uninstaller and does NOT pass any
@@ -15,12 +15,12 @@
 //! terminal pointed at it. (We pass NO arguments at all, so the script runs in its
 //! normal interactive two-step mode.)
 //!
-//! PATH SAFETY: the script path is resolved from the SAME JARVIS root the command
+//! PATH SAFETY: the script path is resolved from the SAME DARWIN root the command
 //! channel + self-heal use (`heal::resolve_root_for_command`) — never a path from
 //! the frontend (the command takes NO argument). We verify the file exists and
 //! pass it to Terminal as a quoted POSIX path with embedded quotes escaped, so a
 //! root containing spaces (the installed home is
-//! `~/Library/Application Support/JARVIS`) is handled correctly and nothing can be
+//! `~/Library/Application Support/DARWIN`) is handled correctly and nothing can be
 //! injected via the path.
 
 use std::path::PathBuf;
@@ -38,11 +38,11 @@ pub struct UninstallOpen {
     pub detail: String,
 }
 
-/// Resolve the installed `uninstall.sh` under the JARVIS root. Reuses the shared
-/// resolver (JARVIS_ROOT env / the exe-cwd upward walk to the
-/// scripts/apply_heal.sh + config/jarvis.toml markers) so we land on the SAME
+/// Resolve the installed `uninstall.sh` under the DARWIN root. Reuses the shared
+/// resolver (DARWIN_ROOT env / the exe-cwd upward walk to the
+/// scripts/apply_heal.sh + config/darwin.toml markers) so we land on the SAME
 /// root the rest of the shell uses; the installed root is
-/// `~/Library/Application Support/JARVIS`. We never accept a path from the caller.
+/// `~/Library/Application Support/DARWIN`. We never accept a path from the caller.
 fn uninstall_script_path() -> Result<PathBuf, String> {
     let root = crate::heal::resolve_root_for_command()?;
     Ok(root.join("uninstall.sh"))
@@ -74,7 +74,7 @@ pub async fn uninstall_open() -> Result<UninstallOpen, String> {
         return Ok(UninstallOpen {
             opened: false,
             detail: format!(
-                "uninstall.sh not found at {} — this looks like a dev/source tree, not an install. Run it from the installed JARVIS home.",
+                "uninstall.sh not found at {} — this looks like a dev/source tree, not an install. Run it from the installed DARWIN home.",
                 script.display()
             ),
         });
@@ -155,19 +155,19 @@ mod tests {
     fn shell_single_quoting_keeps_a_spaced_path_as_one_arg() {
         // The installed home has a space; single-quoting must preserve it whole and
         // there is no auto-confirm flag appended (the script stays interactive).
-        let path = "/Users/x/Library/Application Support/JARVIS/uninstall.sh";
+        let path = "/Users/x/Library/Application Support/DARWIN/uninstall.sh";
         let quoted = format!("'{}'", path.replace('\'', "'\\''"));
-        assert_eq!(quoted, "'/Users/x/Library/Application Support/JARVIS/uninstall.sh'");
+        assert_eq!(quoted, "'/Users/x/Library/Application Support/DARWIN/uninstall.sh'");
         assert!(!quoted.contains("--yes"));
         assert!(!quoted.contains("yes"));
     }
 
     #[test]
     fn shell_single_quoting_escapes_an_embedded_single_quote() {
-        let path = "/Users/o'brien/JARVIS/uninstall.sh";
+        let path = "/Users/o'brien/DARWIN/uninstall.sh";
         let quoted = format!("'{}'", path.replace('\'', "'\\''"));
         // The embedded ' is closed, escaped, and reopened — a valid shell literal.
-        assert_eq!(quoted, "'/Users/o'\\''brien/JARVIS/uninstall.sh'");
+        assert_eq!(quoted, "'/Users/o'\\''brien/DARWIN/uninstall.sh'");
     }
 
     #[test]

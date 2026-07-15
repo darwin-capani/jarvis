@@ -139,7 +139,7 @@ fn sender() -> Option<&'static mpsc::UnboundedSender<PlayCmd>> {
 /// drops them instead of playing, then stops whatever is currently sounding. The
 /// NEXT Session (a higher generation) is unaffected, so the reply after the
 /// interruption plays normally. Callable from any thread — the audio capture
-/// thread invokes it the instant it detects the user talking over JARVIS.
+/// thread invokes it the instant it detects the user talking over DARWIN.
 pub fn cancel_all() {
     // RC-7: discard everything up to and INCLUDING the generation that is
     // actually sounding, never up to NEXT_GENERATION. A post-barge reply whose
@@ -792,7 +792,7 @@ mod tests {
         use std::io::Write;
         // A real, non-empty file resolves to its exact bytes.
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("jarvis-music-test-{}.wav", std::process::id()));
+        let path = dir.join(format!("darwin-music-test-{}.wav", std::process::id()));
         {
             let mut f = std::fs::File::create(&path).unwrap();
             f.write_all(b"RIFFxxxxWAVE").unwrap();
@@ -801,12 +801,12 @@ mod tests {
         assert_eq!(bytes, b"RIFFxxxxWAVE");
 
         // An empty file is an honest error (nothing to play), not empty bytes.
-        let empty = dir.join(format!("jarvis-music-empty-{}.wav", std::process::id()));
+        let empty = dir.join(format!("darwin-music-empty-{}.wav", std::process::id()));
         std::fs::File::create(&empty).unwrap();
         assert!(super::resolve_track_bytes(&empty).is_err(), "empty file -> error");
 
         // A missing path is an honest error.
-        let missing = dir.join("jarvis-music-does-not-exist-zzz.wav");
+        let missing = dir.join("darwin-music-does-not-exist-zzz.wav");
         assert!(super::resolve_track_bytes(&missing).is_err(), "missing path -> error");
 
         let _ = std::fs::remove_file(&path);

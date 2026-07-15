@@ -154,7 +154,7 @@ export function cueGateCopy(reason: CueDisabledReason | null): string {
         "(Local tier) nothing plays; it never fabricates a cue."
       );
     case "no_shell":
-      return "Playing cues requires the JARVIS desktop app.";
+      return "Playing cues requires the DARWIN desktop app.";
     case "switch_off":
       return "Cues are off. Turn on cloud SFX ([voice].cloud_sfx) to play them.";
     case "no_key":
@@ -222,6 +222,6 @@ export function cueOutcomeCopy(outcome: CuePlayOutcome, cue: string): string {
     case "failed":
       return `Couldn't play “${c}” — the cloud sound didn't go through. Nothing was produced.`;
     case "no_shell":
-      return "Playing cues requires the JARVIS desktop app.";
+      return "Playing cues requires the DARWIN desktop app.";
   }
 }

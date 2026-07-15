@@ -363,7 +363,7 @@ impl Telemetry {
 /// drop and nests `{topic, payload}` under `data` so the host routes it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutboundLine {
-    /// The capability token from `JARVIS_APP_TOKEN`, stamped on every line.
+    /// The capability token from `DARWIN_APP_TOKEN`, stamped on every line.
     pub token: String,
     /// Always `"items"` for a telemetry drop (the host relays items/status as
     /// app.data; `"log"` is used only for log lines).

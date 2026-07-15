@@ -1,9 +1,9 @@
-# JARVIS agent constellation — the company of 27 agents.
+# DARWIN agent constellation — the company of 27 agents.
 #
 # Each agent is a PROFILE on the one local engine (one 4B LLM + Kokoro TTS),
 # NOT a separate model. What differs per agent is its persona prefix, its
 # Kokoro voice, the HUD core hue, its tool allowlist, and its memory
-# namespace. Jarvis-Prime hears every request and delegates to the right
+# namespace. Darwin-Prime hears every request and delegates to the right
 # agent (daemon/src/router.rs); the selected agent runs the EXISTING
 # converse/cloud pipeline with its own persona, voice, namespace, and
 # allowlist.
@@ -20,7 +20,7 @@
 #                deep-orange 15 for identity, never a literal alert red.
 #   persona_file persona prompt + INTRO line (read by the daemon, passed to
 #                the converse op as the per-agent persona; owned by part B).
-#   tools        action/intent allowlist this agent may invoke. jarvis = all
+#   tools        action/intent allowlist this agent may invoke. darwin = all
 #                (the orchestrator). An agent attempting a tool outside its
 #                list is refused and the request is routed to the owning
 #                agent — isolation is enforced in router.rs and tested.
@@ -29,14 +29,14 @@
 #                namespace plus shared (non-namespaced) facts.
 
 [[agent]]
-name = "jarvis"
+name = "darwin"
 role = "Prime Orchestrator: hears every request, delegates to the right agent, keeps you updated, ensures nothing falls through"
 voice = "bm_george"
 hue = 190
-persona_file = "inference/personas/jarvis.txt"
+persona_file = "inference/personas/darwin.txt"
 # The orchestrator alone may invoke any tool/intent in the system.
 tools = ["*"]
-namespace = "agent.jarvis"
+namespace = "agent.darwin"
 
 [[agent]]
 name = "friday"
@@ -179,7 +179,7 @@ role = "Proactive Sentinel: watches your signals and surfaces what matters befor
 # Kokoro-82M set), distinct from every other roster voice.
 voice = "af_sky"
 # Teal 170: distinct, calm, on the cyan-navy FUI palette; never the reserved
-# alert red. Sits between gecko (120) and jarvis (190).
+# alert red. Sits between gecko (120) and darwin (190).
 hue = 170
 persona_file = "inference/personas/edith.txt"
 # Read-only / no-consequential surface. EDITH READS the signals it watches
@@ -201,7 +201,7 @@ voice = "am_eric"
 # the reserved alert red. Sits between stark (205) and vision (265).
 hue = 235
 persona_file = "inference/personas/fury.txt"
-# FURY is NOT an orchestrator-wildcard like jarvis. It holds an EXPLICIT mission
+# FURY is NOT an orchestrator-wildcard like darwin. It holds an EXPLICIT mission
 # tool (fury_mission) plus the read tools it needs to plan and ground a mission —
 # the actual ACTING happens inside each sub-task as the OWNING specialist, under
 # that specialist's own allowlist (the mission engine re-runs the cloud tool loop
@@ -230,7 +230,7 @@ namespace = "agent.cassandra"
 
 [[agent]]
 name = "mnemosyne"
-role = "Semantic Memory: recalls what you've told JARVIS and surfaces the relevant past"
+role = "Semantic Memory: recalls what you've told DARWIN and surfaces the relevant past"
 # af_kore: a real American-English female Kokoro voice from the Kokoro-82M set
 # (Kore, the maiden — like Mnemosyne, a Greek-myth figure used only as a NAME,
 # not a claim), distinct from every other roster voice — fitting the precise,
@@ -268,7 +268,7 @@ persona_file = "inference/personas/sage.txt"
 # needs the web + the cloud and spends tokens, but it fetches and CITES — it
 # never acts, and a citation always maps to a source it actually fetched (never
 # an invented URL). recall_facts lets it ground a question against what the user
-# already told JARVIS.
+# already told DARWIN.
 tools = ["conversation", "web.search", "web.open", "memory.recall", "web_search", "open_url", "recall_facts", "sage_research", "world_query", "skill_list", "skill_invoke"]
 namespace = "agent.sage"
 
@@ -302,7 +302,7 @@ role = "Comms Autopilot: triages your inbox and channels, drafts replies, sends 
 # voice; fitting a sharp, unflappable chief-of-staff.
 voice = "af_sarah"
 # Cyan 200: distinct, calm and businesslike, on the cyan-navy FUI palette; never
-# the reserved alert red. Sits between jarvis (190) and stark (205).
+# the reserved alert red. Sits between darwin (190) and stark (205).
 hue = 200
 persona_file = "inference/personas/karen.txt"
 # Comms autopilot over the EXISTING Gmail/Slack/X tools — no new integration of her
@@ -335,7 +335,7 @@ persona_file = "inference/personas/dume.txt"
 # dume_control is CONSEQUENTIAL: it routes through the foundation gate, so it
 # previews the exact service call unless allow_consequential is ON and
 # confirm=true — no device moves otherwise. HONESTY: control goes through the
-# user's OWN Home Assistant hub; JARVIS does not talk HomeKit directly (raw
+# user's OWN Home Assistant hub; DARWIN does not talk HomeKit directly (raw
 # HomeKit is not cleanly reachable from a macOS daemon).
 tools = ["conversation", "memory.recall", "recall_facts", "dume_devices", "dume_control", "world_query"]
 namespace = "agent.dume"
@@ -357,7 +357,7 @@ persona_file = "inference/personas/midas.txt"
 # HARD RULE: MIDAS NEVER MOVES MONEY — there is no transfer/payment/trade tool,
 # not even a gated one, because no money action exists to gate. HONESTY: Plaid needs
 # the user's own app (client id + secret) AND a linked-institution access token from
-# Plaid Link (a frontend step JARVIS does not perform); until configured Midas says
+# Plaid Link (a frontend step DARWIN does not perform); until configured Midas says
 # "no linked accounts — connect via Plaid in Settings". Midas watches the books;
 # it never touches the money.
 tools = ["conversation", "memory.recall", "recall_facts", "midas_balances", "midas_transactions", "midas_spending", "world_query"]
@@ -371,7 +371,7 @@ role = "Travel & Logistics: routes, places, and travel times — gets you there"
 # a seasoned navigator/concierge ("Tell me where; I'll find the way").
 voice = "bf_lily"
 # Cyan 180: distinct, calm and wayfinding, on the cyan-navy FUI palette; never the
-# reserved alert red. Sits between edith (170) and jarvis (190), 10 degrees off each.
+# reserved alert red. Sits between edith (170) and darwin (190), 10 degrees off each.
 hue = 180
 persona_file = "inference/personas/voyager.txt"
 # Maps READ client. The three voyager_* tools are READ-ONLY over a maps provider
@@ -408,7 +408,7 @@ persona_file = "inference/personas/aegis.txt"
 # pending updates) with the same read-only system-command pattern the daemon already
 # uses — it REPORTS; turning a protection on is the user's own action in System
 # Settings. aegis_introspect reports the READ-ONLY introspection sentinel's view of
-# jarvisd's OWN sandboxed micro-apps (SBPL profile-drift, RSS/CPU anomalies, unexpected
+# darwind's OWN sandboxed micro-apps (SBPL profile-drift, RSS/CPU anomalies, unexpected
 # dyld modules); it REPORTS only, never kills/unloads/changes a profile. NO offensive
 # capability: the user's own email + own machine only. Aegis holds NO consequential/
 # remediation tool, not even a gated one.

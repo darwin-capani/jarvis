@@ -20,11 +20,11 @@ use crate::telemetry;
 
 /// Exchange pairs sent as chat history with every LLM-voiced reply.
 const HISTORY_EXCHANGES: usize = 6;
-/// Recent JARVIS replies passed as the anti-repeat `avoid` list on the cloud
+/// Recent DARWIN replies passed as the anti-repeat `avoid` list on the cloud
 /// conversation path. Opus 4.8 takes no temperature/top_p/top_k, so the only
 /// lever against a greeting collapsing to one fixed reply is changing the
 /// prompt per call — and the most recent few replies are what a repeated bare
-/// "Hi JARVIS" would otherwise echo, so they are exactly what to dodge.
+/// "Hi DARWIN" would otherwise echo, so they are exactly what to dodge.
 const AVOID_RECENT_REPLIES: usize = 4;
 /// Most-recent facts injected into every LLM-voiced reply.
 const FACTS_LIMIT: usize = 12;
@@ -37,7 +37,7 @@ const CLOUD_DEGRADE_NOTE: &str = "Cloud uplink unavailable - answer fully and di
 pub struct RouteOutcome {
     pub routed_to: &'static str,
     pub response: String,
-    /// The agent that handled this request (Jarvis-Prime delegation). Owns
+    /// The agent that handled this request (Darwin-Prime delegation). Owns
     /// the persona/voice the reply was spoken in and the memory namespace the
     /// exchange is recorded under; main uses it for namespaced bookkeeping and
     /// the HUD already saw it via the agent.active telemetry route() emitted.
@@ -614,7 +614,7 @@ pub async fn route(
         }
     }
 
-    // COMPOSE-MUSIC VOICE COMMAND (Phase-2 flagship "JARVIS, compose an 8-bit happy
+    // COMPOSE-MUSIC VOICE COMMAND (Phase-2 flagship "DARWIN, compose an 8-bit happy
     // birthday"). CONSERVATIVELY anchored (classify_music_intent requires an explicit
     // music-CREATION verb + a musical anchor, so "play some jazz" and "what's the
     // time" never trip it). MIRRORS the chart arm's shape: gated, handled BEFORE
@@ -818,7 +818,7 @@ pub async fn route(
     // acting on the classification. The classifier has been observed to misroute
     // these to the local model, where — with no roster in its context — it
     // HALLUCINATES agents that do not exist and leaks unrelated facts. Here the
-    // answer always comes from the real registry: cloud-reachable, JARVIS phrases
+    // answer always comes from the real registry: cloud-reachable, DARWIN phrases
     // the true roster in persona (grounded — persona.txt forbids inventing agents
     // not in it); offline / on a cloud error, a plain spoken list (still the real
     // team). The constellation is named accurately or not at all, never invented.
@@ -903,7 +903,7 @@ pub async fn route(
     // talk but never act. Confident heavy ACTION intents are unaffected.
     let actuating_cloud = to_cloud && !is_uncertain_fallback(class, cfg);
 
-    // Jarvis-Prime delegation: pick the handling agent BEFORE acting, then
+    // Darwin-Prime delegation: pick the handling agent BEFORE acting, then
     // resolve the tool this turn will actually invoke and enforce the agent's
     // allowlist — an out-of-domain match is handed to the tool's real owner so
     // isolation holds (no agent acts through another agent's exclusive tool).
@@ -924,7 +924,7 @@ pub async fn route(
                 "deep_reasoning": needs_deep_reasoning,
             }),
         );
-        // Bookkeeping must never kill a response (a busy jarvis.db would
+        // Bookkeeping must never kill a response (a busy darwin.db would
         // otherwise leave the user with dead air).
         if let Err(e) = memory.record_event("cloud", "route.cloud", text).await {
             warn!(error = %e, "failed to record cloud route event");
@@ -1081,14 +1081,14 @@ pub async fn route(
             // private notes. Rides the same uncached tail as the world context.
             let personalization = anthropic::grounded_personalization_live(memory).await;
             let history = fetch_history(memory).await;
-            // Anti-repeat (CONTRACT B): the last few JARVIS replies, passed so
+            // Anti-repeat (CONTRACT B): the last few DARWIN replies, passed so
             // complete_persona can tell Opus not to reuse their wording. This is
             // the load-bearing variation mechanism — Opus 4.8 takes no
             // temperature, so changing the prompt per call is the only way a
-            // repeated bare "Hi JARVIS" varies instead of collapsing to one line.
+            // repeated bare "Hi DARWIN" varies instead of collapsing to one line.
             let avoid = recent_replies(&history, AVOID_RECENT_REPLIES);
             // The live constellation roster, so the cloud brain can name/list/
-            // describe JARVIS's agents when asked instead of denying the team
+            // describe DARWIN's agents when asked instead of denying the team
             // exists (the cloud persona carries no static roster). Grounded —
             // the persona prompt forbids inventing agents not in this list.
             let roster = agents.roster_brief();
@@ -1677,7 +1677,7 @@ async fn answer_agent_roster(
             "route.cloud",
             json!({"intent": "agent_query", "model": &model, "conversation": true}),
         );
-        // The roster query is answered by the orchestrator (jarvis), which voices
+        // The roster query is answered by the orchestrator (darwin), which voices
         // the global persona — so no per-agent persona block (None), matching
         // the namespaced facts seeded from the orchestrator above.
         let agent_persona = anthropic::agent_persona_text(&prime.name, prime.is_orchestrator());
@@ -1913,7 +1913,7 @@ async fn route_capability(
     use crate::selector::Mode;
     // The shared World Model is namespace-independent, and the selector's
     // capabilities are orchestrator-level dispatch, so they are voiced by the
-    // orchestrator (JARVIS-Prime). WorldUpdate re-homes to the tool's owner below.
+    // orchestrator (DARWIN-Prime). WorldUpdate re-homes to the tool's owner below.
     let prime = agents.orchestrator();
     match mode {
         Mode::OneShot => None, // never routed here; the caller handles it.
@@ -2056,7 +2056,7 @@ fn cloud_model_for_world_update() -> &'static str {
     "claude-haiku-4-5"
 }
 
-/// Jarvis-Prime delegation wrapper: pick the agent for this turn. Cloud
+/// Darwin-Prime delegation wrapper: pick the agent for this turn. Cloud
 /// reachability gates the offline-survival route (hulk owns conversational
 /// turns when the cloud is unreachable). `to_cloud` is whether THIS turn is
 /// already heading to the cloud — if it is, the cloud is by definition
@@ -2071,7 +2071,7 @@ fn cloud_model_for_world_update() -> &'static str {
 /// scorer is PURE (no inference/network call — honest keyword-semantic, the same
 /// fallback recall uses when the on-device embedder is down) and degrades to the
 /// orchestrator on a weak/tied/absent signal, so an ambiguous fitness question
-/// reaches hercules while a blank or low-confidence turn stays with jarvis —
+/// reaches hercules while a blank or low-confidence turn stays with darwin —
 /// never a worse outcome than the deterministic pass alone. This changes only
 /// DELEGATION: the caller still enforces the chosen agent's tool allowlist
 /// (`enforce_tool`) and the confirmation gate, so isolation/safety are untouched.
@@ -2311,9 +2311,9 @@ pub fn classify_music_intent(text: &str) -> Option<String> {
 fn extract_music_prompt(lower: &str) -> String {
     let mut s = lower.to_string();
 
-    // Drop a leading polite/address preamble so "jarvis, compose ..." reduces to
+    // Drop a leading polite/address preamble so "darwin, compose ..." reduces to
     // the request before we strip the verb.
-    for prefix in ["jarvis", "hey jarvis", "ok jarvis", "please"] {
+    for prefix in ["darwin", "hey darwin", "ok darwin", "please"] {
         let p = format!("{prefix},");
         if let Some(rest) = s.strip_prefix(&p) {
             s = rest.trim().to_string();
@@ -2518,8 +2518,8 @@ async fn fetch_history(memory: &Memory) -> Vec<(String, String)> {
         })
 }
 
-/// The most recent up-to-`n` JARVIS replies from oldest-first history, for the
-/// cloud conversation anti-repeat `avoid` list. Pulls the JARVIS side of each
+/// The most recent up-to-`n` DARWIN replies from oldest-first history, for the
+/// cloud conversation anti-repeat `avoid` list. Pulls the DARWIN side of each
 /// exchange, drops blanks, and keeps the last `n` (the freshest) — exactly the
 /// wording a repeated greeting would otherwise echo. Pure, so the selection is
 /// unit-testable. Empty history yields an empty list (the prompt is then left
@@ -2527,8 +2527,8 @@ async fn fetch_history(memory: &Memory) -> Vec<(String, String)> {
 fn recent_replies(history: &[(String, String)], n: usize) -> Vec<String> {
     history
         .iter()
-        .filter_map(|(_, jarvis)| {
-            let r = jarvis.trim();
+        .filter_map(|(_, darwin)| {
+            let r = darwin.trim();
             (!r.is_empty()).then(|| r.to_string())
         })
         .rev()
@@ -3062,10 +3062,10 @@ fn finish_web_action(tool: &str, result: Result<String>) -> String {
 /// list is the converse data. If exactly one strong match comes back and the
 /// utterance says to open it, open it too.
 /// Resolve the daemon's project root the same way the rest of the daemon does
-/// (`JARVIS_ROOT` env, else the cwd) — used to locate config/jarvis.toml and
+/// (`DARWIN_ROOT` env, else the cwd) — used to locate config/darwin.toml and
 /// state/docsearch.db for the on-device file-RAG index trigger.
 fn project_root() -> std::path::PathBuf {
-    std::env::var("JARVIS_ROOT")
+    std::env::var("DARWIN_ROOT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")))
 }
@@ -3081,7 +3081,7 @@ fn project_root() -> std::path::PathBuf {
 async fn handle_docsearch_index() -> String {
     use crate::docsearch::index_documents;
     let root = project_root();
-    let (cfg, _issues) = Config::load(&root.join("config").join("jarvis.toml"));
+    let (cfg, _issues) = Config::load(&root.join("config").join("darwin.toml"));
     // Honest, actionable copy when the feature isn't set up — never a silent scan.
     if !crate::docsearch::indexing_permitted(cfg.docsearch.enabled, &cfg.docsearch.roots) {
         if !cfg.docsearch.enabled {
@@ -3231,7 +3231,7 @@ fn world_snapshot_json(state: &crate::world_model::WorldState) -> serde_json::Va
 async fn handle_build_knowledge_graph(memory: &Memory) -> String {
     use crate::knowledge_graph::{self, DeterministicExtractor, Extractor};
     let root = project_root();
-    let (cfg, _issues) = Config::load(&root.join("config").join("jarvis.toml"));
+    let (cfg, _issues) = Config::load(&root.join("config").join("darwin.toml"));
     if !knowledge_graph::build_permitted(cfg.docsearch.enabled, cfg.docsearch.build_graph) {
         if !cfg.docsearch.enabled {
             return "Building a knowledge graph needs on-device file search, which is off. \
@@ -3365,7 +3365,7 @@ async fn handle_file_intent(text: &str) -> String {
 /// Words the matchers should never see — command verbs, fillers, articles.
 const STOPWORDS: &[&str] = &[
     "a", "an", "and", "any", "app", "application", "can", "close", "could", "do", "exit",
-    "find", "for", "go", "hey", "in", "is", "it", "jarvis", "kill", "launch", "look",
+    "find", "for", "go", "hey", "in", "is", "it", "darwin", "kill", "launch", "look",
     "looking", "me", "my", "now", "of", "on", "open", "please", "quit", "search", "show",
     "some", "start", "that", "the", "then", "this", "to", "up", "where", "with", "would",
     "you",
@@ -5905,19 +5905,19 @@ mod tests {
         assert!(!is_uncertain_fallback(&classification("conversation", "light", 0.6), &cfg));
     }
 
-    /// Jarvis-Prime delegation via the router wrapper: the offline-survival
+    /// Darwin-Prime delegation via the router wrapper: the offline-survival
     /// route only fires when the cloud is truly unreachable for this turn
     /// (cloud_reachable=false AND the turn is not already heading to cloud).
     #[test]
     fn select_agent_gates_offline_route_on_effective_cloud() {
         let reg = AgentRegistry::canonical();
         // Cloud up: conversational turn is the orchestrator's.
-        assert_eq!(select_agent(&reg, "conversation", "tell me about mars", true, false).name, "jarvis");
+        assert_eq!(select_agent(&reg, "conversation", "tell me about mars", true, false).name, "darwin");
         // Cloud down AND not routing to cloud this turn: hulk survives.
         assert_eq!(select_agent(&reg, "conversation", "tell me about mars", false, false).name, "hulk");
         // Cloud down but THIS turn goes to cloud anyway (to_cloud=true): the
         // cloud is reachable for it, so no offline fallback.
-        assert_eq!(select_agent(&reg, "conversation", "tell me about mars", false, true).name, "jarvis");
+        assert_eq!(select_agent(&reg, "conversation", "tell me about mars", false, true).name, "darwin");
         // Local action intents are unaffected by cloud state.
         assert_eq!(select_agent(&reg, "app.launch", "open safari", false, false).name, "oracle");
     }
@@ -5937,9 +5937,9 @@ mod tests {
         assert_eq!(enforce_tool(&reg, oracle, "app.launch").name, "oracle");
         // friday owns system.query -> kept.
         assert_eq!(enforce_tool(&reg, friday, "system.query").name, "friday");
-        // jarvis (wildcard) keeps anything.
-        let jarvis = reg.get("jarvis").unwrap();
-        assert_eq!(enforce_tool(&reg, jarvis, "web.open").name, "jarvis");
+        // darwin (wildcard) keeps anything.
+        let darwin = reg.get("darwin").unwrap();
+        assert_eq!(enforce_tool(&reg, darwin, "web.open").name, "darwin");
     }
 
     /// Roll-call interrupt mechanics: the cancel flag toggles cleanly and a
@@ -5970,7 +5970,7 @@ mod tests {
 
     #[test]
     fn app_name_extraction_takes_words_after_the_trigger_verb() {
-        assert_eq!(extract_app_name("jarvis please open up google chrome"), "google chrome");
+        assert_eq!(extract_app_name("darwin please open up google chrome"), "google chrome");
         assert_eq!(extract_app_name("launch the calculator app for me"), "calculator");
         assert_eq!(extract_app_name("quit safari"), "safari");
         assert_eq!(extract_app_name("close safari"), "safari");
@@ -5996,7 +5996,7 @@ mod tests {
             );
         }
         assert!(!wants_quit("open safari"));
-        assert!(!wants_quit("jarvis please open up google chrome"));
+        assert!(!wants_quit("darwin please open up google chrome"));
     }
 
     /// Belt-and-suspenders reroute: an app.launch whose remainder smells of
@@ -6100,13 +6100,13 @@ mod tests {
         assert!(!utterance_wants_open("find the budget file"));
     }
 
-    /// CONTRACT B: the router passes JARVIS's most-recent replies as the cloud
+    /// CONTRACT B: the router passes DARWIN's most-recent replies as the cloud
     /// conversation anti-repeat `avoid` list. History is oldest-first; the
     /// freshest replies come back first, blanks are dropped, and the list is
     /// capped at n (the prompt-level lever Opus needs since it has no
     /// temperature). Empty history -> empty list (a first turn dodges nothing).
     #[test]
-    fn recent_replies_takes_the_freshest_jarvis_replies() {
+    fn recent_replies_takes_the_freshest_darwin_replies() {
         let history = vec![
             ("hi".to_string(), "Hello, sir. Good to have you back.".to_string()),
             ("hi".to_string(), "Welcome back, sir.".to_string()),
@@ -6155,7 +6155,7 @@ mod tests {
             "open silicon canvas",
             "launch silicon canvas",
             "bring up silicon canvas",
-            "jarvis, show me silicon canvas",
+            "darwin, show me silicon canvas",
             "open the schematic",
             "bring up the board view",
         ] {
@@ -6223,7 +6223,7 @@ mod tests {
     fn silicon_canvas_command_ignores_unrelated_utterances() {
         for text in [
             "open safari",
-            "hello jarvis how are you",
+            "hello darwin how are you",
             "what's the weather",
             "find my budget spreadsheet",
             "open apple.com",
@@ -6277,7 +6277,7 @@ mod tests {
             "open vision",
             "launch vision",
             "start vision",
-            "jarvis, bring up vision",
+            "darwin, bring up vision",
             "fire up the camera feed",
         ] {
             assert_eq!(
@@ -6299,7 +6299,7 @@ mod tests {
     fn vision_presence_queries_map_to_status_not_identity() {
         let status = r#"{"type":"op","op":"status"}"#;
         assert_vision_op("what do you see", status);
-        assert_vision_op("jarvis, what can you see right now", status);
+        assert_vision_op("darwin, what can you see right now", status);
         assert_vision_op("who is there", status);
         assert_vision_op("who's there", status);
         assert_vision_op("is anyone there", status);
@@ -6417,7 +6417,7 @@ mod tests {
             "read my screen",
             "read the screen",
             "read what's on my screen",
-            "jarvis, read this",
+            "darwin, read this",
             "read that for me",
         ] {
             assert_vision_op(text, read);
@@ -6763,7 +6763,7 @@ mod tests {
     /// before infer is ever touched. Mirrors the docsearch::confine red-team pin.
     #[tokio::test]
     async fn describe_path_confinement_rejects_escapes_before_any_op() {
-        let root = std::env::temp_dir().join(format!("jarvis-vlm-confine-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("darwin-vlm-confine-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         // A real allowed root with one real image inside it.
         let inside = root.join("ok.png");
@@ -7020,7 +7020,7 @@ mod tests {
     /// honestly — it does not fall through to a generic answer or open the mic.
     #[test]
     fn identify_sound_uses_the_already_captured_clip_never_opens_the_mic() {
-        let clip = std::path::Path::new("/tmp/jarvis/state/tmp/sound-clip.wav");
+        let clip = std::path::Path::new("/tmp/darwin/state/tmp/sound-clip.wav");
         // Intent + a captured clip available -> route with that exact clip.
         let req = identify_sound_clip_or_request("what was that sound", Some(clip))
             .expect("a sound-identify with a clip routes");
@@ -7059,8 +7059,8 @@ mod tests {
     /// capture writes its utterance WAVs — so no new microphone is opened.
     #[test]
     fn sound_clip_path_is_under_the_state_tmp_dir() {
-        let p = sound_clip_path(std::path::Path::new("/srv/jarvis"));
-        assert_eq!(p, std::path::Path::new("/srv/jarvis/state/tmp/sound-clip.wav"));
+        let p = sound_clip_path(std::path::Path::new("/srv/darwin"));
+        assert_eq!(p, std::path::Path::new("/srv/darwin/state/tmp/sound-clip.wav"));
     }
 
     /// HERMETIC ROUTING: the identify-sound handler over a CONFINED, real clip
@@ -7076,7 +7076,7 @@ mod tests {
         use crate::apps::AppRegistry;
 
         let root = std::env::temp_dir().join(format!(
-            "jarvis-idsound-{}-{}",
+            "darwin-idsound-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -7166,7 +7166,7 @@ mod tests {
     /// thing. Hermetic: no running app (the reject precedes the op call).
     #[tokio::test]
     async fn identify_sound_rejects_a_clip_outside_the_allowed_root() {
-        let root = std::env::temp_dir().join(format!("jarvis-idsound-confine-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("darwin-idsound-confine-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let registry = crate::apps::AppRegistry::discover(std::path::Path::new("/nonexistent"));
         // An absolute-elsewhere clip (outside the root) -> REJECTED, never sent.
@@ -7299,7 +7299,7 @@ mod tests {
             "open nexus",
             "launch nexus",
             "start nexus",
-            "jarvis, bring up nexus",
+            "darwin, bring up nexus",
             "bring up the routing matrix",
             "open the mixer",
         ] {
@@ -7524,7 +7524,7 @@ mod tests {
             "open the physics sandbox",
             "launch the physics sandbox",
             "start mark forge",
-            "jarvis, bring up the physics sandbox",
+            "darwin, bring up the physics sandbox",
             "open mark-forge",
             "fire up the physics engine",
             "show me the sandbox",
@@ -7551,7 +7551,7 @@ mod tests {
         assert_mark_forge_op("drop a cube", want);
         assert_mark_forge_op("spawn a box", want);
         assert_mark_forge_op("add a crate", want);
-        assert_mark_forge_op("jarvis, drop a box in the sandbox", want);
+        assert_mark_forge_op("darwin, drop a box in the sandbox", want);
         // The spawned body carries a POSITIVE mass so it is dynamic and actually
         // falls (a None/<=0 mass would be a static body that never moves).
         if let Some(MarkForgeCommand::Op(line)) = mark_forge_command("drop a box") {
@@ -7771,7 +7771,7 @@ mod tests {
             "what's the weather",
             "play some jazz",
             "set a timer for ten minutes",
-            "hi jarvis",
+            "hi darwin",
         ] {
             assert_eq!(
                 classify_mode(q, &LexicalAgentScorer),
@@ -7826,7 +7826,7 @@ mod tests {
     impl TempDb {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir()
-                .join(format!("jarvis-router-dispatch-{}-{}.db", std::process::id(), tag));
+                .join(format!("darwin-router-dispatch-{}-{}.db", std::process::id(), tag));
             let _ = std::fs::remove_file(&path);
             TempDb(path)
         }
@@ -7889,7 +7889,7 @@ mod tests {
     async fn router_notebook_utterance_saves_then_revisits_the_real_run() {
         let db = TempDb::new("notebook");
         let mem = Memory::open(&db.0).unwrap();
-        let ns = "agent.jarvis";
+        let ns = "agent.darwin";
 
         // A real SAGE run just completed (the live path records exactly this).
         let _g = crate::notebook::LastRunGuard::stage(Some(crate::notebook::LastResearchRun {
@@ -7924,7 +7924,7 @@ mod tests {
         // ONLY their real grounded sources. Hermetic: temp Db + a synthetic run.
         let db = TempDb::new("report");
         let mem = Memory::open(&db.0).unwrap();
-        let ns = "agent.jarvis";
+        let ns = "agent.darwin";
         // A real cited run is already saved on the topic (the notebook path enforces
         // that only the grounded source #1 persists — never the phantom 999).
         crate::notebook::save_run(&mem, ns, "the JWST", &synthetic_report(), "On the JWST [1]")
@@ -7951,7 +7951,7 @@ mod tests {
         // is ON) dispatch declines honestly and reads nothing.
         let db = TempDb::new("report-off");
         let mem = Memory::open(&db.0).unwrap();
-        let ns = "agent.jarvis";
+        let ns = "agent.darwin";
         let intent = crate::report::classify_report_intent("generate a report on anything")
             .expect("classifies");
         let off = crate::report::ReportConfig { enabled: false };
@@ -7966,7 +7966,7 @@ mod tests {
     async fn router_report_unknown_topic_is_honest_empty() {
         let db = TempDb::new("report-empty");
         let mem = Memory::open(&db.0).unwrap();
-        let ns = "agent.jarvis";
+        let ns = "agent.darwin";
         let intent = crate::report::classify_report_intent("write a report on a topic never researched")
             .expect("classifies");
         let on = crate::report::ReportConfig { enabled: true };
@@ -7981,7 +7981,7 @@ mod tests {
         // The flagship: "compose" anchors alone (no "song" noun). The verb +
         // leading article are stripped, leaving the cleaned prompt.
         assert_eq!(
-            c("JARVIS, compose an 8-bit happy birthday").as_deref(),
+            c("DARWIN, compose an 8-bit happy birthday").as_deref(),
             Some("8-bit happy birthday")
         );
         assert_eq!(c("compose an 8-bit happy birthday").as_deref(), Some("8-bit happy birthday"));
@@ -8062,7 +8062,7 @@ mod tests {
     async fn router_lifelog_utterance_builds_the_real_digest() {
         let db = TempDb::new("lifelog");
         let mem = Memory::open(&db.0).unwrap();
-        let ns = "agent.jarvis";
+        let ns = "agent.darwin";
         crate::episodic::record_episode(
             &Config::default(),
             &mem,

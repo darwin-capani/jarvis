@@ -43,7 +43,7 @@ describe("system-access permission allowlist", () => {
 });
 
 /* ======================================================================== *
- * HONESTY — the copy must say macOS won't let JARVIS grant itself access     *
+ * HONESTY — the copy must say macOS won't let DARWIN grant itself access     *
  * (the user flips the switch), and must NOT claim it auto-grants anything.   *
  * ======================================================================== */
 describe("system-access copy honesty", () => {
@@ -60,9 +60,9 @@ describe("system-access copy honesty", () => {
     // It directs the user to System Settings.
     expect(blob).toContain("system settings");
     // It is honest that the user does the toggling.
-    expect(blob).toMatch(/turn jarvis on|flip|switch/);
-    // It must NOT pretend JARVIS grants/enables the permission itself.
-    expect(blob).not.toMatch(/jarvis (grants|enables|turns on) (the )?(permission|access|full disk)/);
+    expect(blob).toMatch(/turn darwin on|flip|switch/);
+    // It must NOT pretend DARWIN grants/enables the permission itself.
+    expect(blob).not.toMatch(/darwin (grants|enables|turns on) (the )?(permission|access|full disk)/);
   });
 
   it("the re-request label matches the user-facing action", () => {
@@ -104,7 +104,7 @@ describe("SystemAccessPanel render", () => {
     }
   });
 
-  it("outside the JARVIS shell the buttons are disabled (honest — nothing to open)", () => {
+  it("outside the DARWIN shell the buttons are disabled (honest — nothing to open)", () => {
     const out = html();
     // vitest is not the Tauri shell, so every action button renders disabled.
     expect(out).toContain("disabled");

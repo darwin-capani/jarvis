@@ -1,11 +1,11 @@
-# JARVIS — Apple Silicon Bring-Up Checklist
+# DARWIN — Apple Silicon Bring-Up Checklist
 
 Everything in the repo is logic-verified and hermetically tested. The credential- and
 device-gated layers (live OAuth, mic/audio, MLX inference, outward actions) can only be
 *proven* on the real machine. This is the safe order to bring it up and prove one gated
 action end to end.
 
-Project root assumed at `~/Downloads/jarvis`. Use absolute paths — a bare `$J`/relative
+Project root assumed at `~/Downloads/darwin`. Use absolute paths — a bare `$J`/relative
 path in a fresh terminal is the #1 "file not found" gotcha.
 
 ---
@@ -22,13 +22,13 @@ path in a fresh terminal is the #1 "file not found" gotcha.
 ## 1. One-time setup
 
 ```sh
-cd ~/Downloads/jarvis
+cd ~/Downloads/darwin
 
 # Python env (MLX needs 3.11)
 /opt/homebrew/bin/python3.11 -m venv .venv
 .venv/bin/pip install -r inference/requirements.txt
 
-# Memory DB (creates state/ and state/jarvis.db)
+# Memory DB (creates state/ and state/darwin.db)
 .venv/bin/python scripts/init_memory.py
 
 # Download the on-device models (MLX LLM + Whisper STT + Kokoro TTS)
@@ -47,24 +47,24 @@ daemon first you'll see `transcription failed; is the inference server up?` — 
 
 ```sh
 # Terminal 1 — inference server (stays in foreground; listens on state/ipc/inference.sock)
-cd ~/Downloads/jarvis && .venv/bin/python inference/server.py
+cd ~/Downloads/darwin && .venv/bin/python inference/server.py
 
 # Terminal 2 — daemon (telemetry on 127.0.0.1:7177)
-cd ~/Downloads/jarvis && ./daemon/target/release/jarvisd
+cd ~/Downloads/darwin && ./daemon/target/release/darwind
 
 # Terminal 3 (optional) — HUD
-cd ~/Downloads/jarvis/hud && npm install && npm run tauri dev
+cd ~/Downloads/darwin/hud && npm install && npm run tauri dev
 ```
 
 **Confirm a fresh binary:** the daemon logs a build marker at startup, e.g.
-`INFO jarvisd: ... build="..."`. If you rebuilt, make sure the marker matches — a stale
+`INFO darwind: ... build="..."`. If you rebuilt, make sure the marker matches — a stale
 binary is the second-most-common surprise.
 
 ---
 
 ## 3. Credentials — paste order (safest → most setup)
 
-All secrets live in the macOS Keychain (service `com.jarvis.daemon`), entered once in the
+All secrets live in the macOS Keychain (service `com.darwin.daemon`), entered once in the
 **HUD → gear → Settings → Credentials** panel (masked, paste + Enter → verified → stored;
 never logged, never on disk). The daemon reads keys **once at startup** — **restart the
 daemon after adding/changing any credential.**
@@ -75,7 +75,7 @@ daemon after adding/changing any credential.**
 2. **GitHub (PAT)** and **Slack (bot token)** — these are *paste-and-go*: they verify over
    HTTP and store immediately, no developer-app dance. Best first integrations to prove.
 3. **OAuth services** (Google Workspace, X, LinkedIn, Google Ads, Meta Ads, WHOOP) — paste
-   the **client ID + secret** in Settings, then **say "connect &lt;service&gt;"** to JARVIS
+   the **client ID + secret** in Settings, then **say "connect &lt;service&gt;"** to DARWIN
    (e.g. *"connect Google"*, *"connect WHOOP"*). The daemon opens the browser, you approve,
    and the refresh token lands in the Keychain. Each needs its one-time developer-app setup
    first (see the per-service go-live notes from the integration rounds).
@@ -92,10 +92,10 @@ still requires a fresh per-action confirmation, so read-only lookups are the saf
 smoke test. (To run the daemon disarmed during bring-up, set `allow_consequential = false`,
 which reverts every consequential action to a dry-run preview.) Verify the basics:
 
-- Ask **"list my agents"** → JARVIS names the 27-agent roster (deterministic, grounded).
+- Ask **"list my agents"** → DARWIN names the 27-agent roster (deterministic, grounded).
 - A pure read: **"what's on my calendar"** (Friday/Pepper, needs Google connected) or
   **"list my open PRs on &lt;owner/repo&gt;"** (Steve, needs GitHub).
-- A consequential request → because the switch ships armed, JARVIS **parks the exact action**
+- A consequential request → because the switch ships armed, DARWIN **parks the exact action**
   and speaks a faithful preview ("I would post … to #channel"), firing nothing until you say
   **"confirm"**. (If you disarmed with `allow_consequential = false`, the same request returns
   a dry-run preview that can't fire even if confirmed.) Either way, confirm the preview names
@@ -113,22 +113,22 @@ the per-action confirm gate. Do this only once reads work and the previews look 
    test repo**. **Do not** make ad-spend, email-send, or a public post your first live test.
 2. **Confirm the master switch is armed.** It ships `allow_consequential = true`, so no edit is
    needed — unless you disarmed it during the smoke test, in which case set it back in
-   `config/jarvis.toml`:
+   `config/darwin.toml`:
    ```toml
    [integrations]
    allow_consequential = true
    ```
    and **restart the daemon** (config is read at startup).
 3. **Run the end-to-end gated flow:**
-   - You: *"Post 'JARVIS online' to #jarvis-test on Slack."*
-   - JARVIS **parks the exact action**, speaks the faithful preview, and asks:
+   - You: *"Post 'DARWIN online' to #darwin-test on Slack."*
+   - DARWIN **parks the exact action**, speaks the faithful preview, and asks:
      *"…— say 'confirm' to proceed or 'cancel' to drop it."*
    - You: **"confirm"** → it replays that exact parked action and posts → verify it landed
      in Slack.
    - Try the negatives too: say **"cancel"** (drops it), or say something **unrelated**
      after a park (also drops it — a stray command can never confirm a stale action), or let
      it sit **>120 s** (expires).
-4. **Decide.** Leave `allow_consequential = true` only if you want JARVIS able to act after a
+4. **Decide.** Leave `allow_consequential = true` only if you want DARWIN able to act after a
    spoken confirm. The three independent factors are now all in your hands: service connected
    → master switch on → spoken confirm of the specific action.
 
@@ -136,7 +136,7 @@ the per-action confirm gate. Do this only once reads work and the previews look 
 
 ## 6. Optional gates (leave OFF until comfortable)
 
-- **Proactive speech** — `config/jarvis.toml [proactive] speak = true` lets Edith *voice*
+- **Proactive speech** — `config/darwin.toml [proactive] speak = true` lets Edith *voice*
   briefs (set false for a HUD card only). Ships ON. (`enabled = true` is the non-spoken
   first-contact brief and is fine to leave on.)
 - **Self-heal** — `[self_heal] enabled = true`, `mode = "propose"`. Ships ON but
@@ -151,7 +151,7 @@ Once it's proven by hand, install the boot agents so inference + daemon start on
 restart on crash:
 
 ```sh
-cd ~/Downloads/jarvis && scripts/install_boot.sh --install   # builds the binary + installs both plists
+cd ~/Downloads/darwin && scripts/install_boot.sh --install   # builds the binary + installs both plists
 # logs: state/logs/launchd-inference.log, state/logs/launchd-daemon.log
 # uninstall: scripts/uninstall_boot.sh
 ```
@@ -165,7 +165,7 @@ paths or keys.
 ## Automated bring-up + doctor (one command each)
 
 The manual order above is the source of truth, but two scripts automate the check legs.
-Both resolve the JARVIS root exactly like the daemon (honor `JARVIS_ROOT`, else their own
+Both resolve the DARWIN root exactly like the daemon (honor `DARWIN_ROOT`, else their own
 parent dir) and are **honest**: a check that cannot run is reported `SKIP`/`UNKNOWN` with the
 reason — never a faked pass.
 
@@ -187,7 +187,7 @@ scripts/bringup.sh
 scripts/bringup.sh --no-start
 ```
 
-Also: `jarvisd --selftest` (alias `--health`) validates the installed environment WITHOUT
+Also: `darwind --selftest` (alias `--health`) validates the installed environment WITHOUT
 starting the daemon (root/config/venv/binary/state dirs/0700 ipc perms/inference
 reachability/telemetry-port bindability/cloud-key) and exits non-zero on a hard failure.
 
@@ -204,7 +204,7 @@ exponential backoff + jitter instead of failing the first op after a server rest
 - **`transcription failed; is the inference server up?`** → start the inference server first
   (step 2).
 - **`No such file or directory` on a run script** → you're in the wrong dir / used a relative
-  path; use the absolute `~/Downloads/jarvis/...` paths.
+  path; use the absolute `~/Downloads/darwin/...` paths.
 - **Behaviour didn't change after editing config or a credential** → the daemon reads both
   **once at startup**; restart it.
 - **Code change didn't take** → stale binary; `cargo build --release --manifest-path

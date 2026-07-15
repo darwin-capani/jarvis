@@ -92,7 +92,7 @@ pub struct ProviderConfig {
     /// Keychain account holding the user's OAuth client secret (pasted in
     /// Settings). Confidential clients (X, LinkedIn) have one.
     pub account_client_secret: &'static str,
-    /// Keychain account holding the long-lived refresh token — WRITTEN by JARVIS
+    /// Keychain account holding the long-lived refresh token — WRITTEN by DARWIN
     /// after consent, read back on every connect. Lives ONLY in the Keychain.
     pub account_refresh_token: &'static str,
 }
@@ -213,7 +213,7 @@ pub const GOOGLE_ADS: ProviderConfig = ProviderConfig {
 /// Keychain account names for WHOOP's OAuth credentials (mirrored on the
 /// foundation allowlist in `mod.rs`). The client id/secret are pasted by the user
 /// in Settings (from their own WHOOP developer app); the refresh token is WRITTEN
-/// by JARVIS after consent and read back on every connect — it lives ONLY in the
+/// by DARWIN after consent and read back on every connect — it lives ONLY in the
 /// Keychain (access tokens are NEVER persisted, so there is deliberately no
 /// access-token account).
 pub const WHOOP_ACCOUNT_CLIENT_ID: &str = "whoop_oauth_client_id";
@@ -657,7 +657,7 @@ fn percent_decode(s: &str) -> String {
 fn close_tab_page(provider: &str) -> String {
     format!(
         "<!doctype html><html><body style=\"font-family:system-ui;text-align:center;padding:3rem\">\
-         <h2>JARVIS is connected to {provider}.</h2><p>You can close this tab.</p></body></html>"
+         <h2>DARWIN is connected to {provider}.</h2><p>You can close this tab.</p></body></html>"
     )
 }
 

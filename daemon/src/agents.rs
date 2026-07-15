@@ -2,7 +2,7 @@
 //!
 //! Each [`Agent`] is a PROFILE — a persona prefix, a Kokoro voice, a HUD core
 //! hue, a tool allowlist, and a memory namespace — NOT a separate model.
-//! Jarvis-Prime (`select`) hears every request and delegates to the right
+//! Darwin-Prime (`select`) hears every request and delegates to the right
 //! agent via a deterministic rule map (intent + keywords -> agent); the
 //! selected agent then runs the EXISTING converse/cloud pipeline with its own
 //! persona, voice, namespace, and allowlist (router.rs). Honesty is the
@@ -25,7 +25,7 @@ use std::path::Path;
 use serde::Deserialize;
 use tracing::warn;
 
-/// The wildcard tools entry that marks the orchestrator: jarvis alone may
+/// The wildcard tools entry that marks the orchestrator: darwin alone may
 /// invoke any tool/intent in the system.
 const TOOLS_WILDCARD: &str = "*";
 
@@ -46,7 +46,7 @@ pub struct Agent {
     pub hue: u16,
     /// Persona prompt file (read by the daemon; owned by part B).
     pub persona_file: String,
-    /// Action/intent allowlist this agent may invoke. `["*"]` = all (jarvis).
+    /// Action/intent allowlist this agent may invoke. `["*"]` = all (darwin).
     pub tools: Vec<String>,
     /// Memory namespace, "agent.<name>".
     pub namespace: String,
@@ -54,7 +54,7 @@ pub struct Agent {
 
 impl Agent {
     /// True when this agent may invoke `tool` — either it holds the wildcard
-    /// (jarvis, the orchestrator) or `tool` is in its allowlist. The check is
+    /// (darwin, the orchestrator) or `tool` is in its allowlist. The check is
     /// what enforces isolation: an agent attempting a tool outside its list is
     /// refused and the request routed to the owning agent (router.rs).
     pub fn may_use(&self, tool: &str) -> bool {
@@ -153,7 +153,7 @@ const AGENT_QUERY_CUES: &[&str] = &[
     "list my team", "name my team", "who are my team",
 ];
 
-/// Whether `text` asks JARVIS to LIST/NAME its agents (the roster), as opposed
+/// Whether `text` asks DARWIN to LIST/NAME its agents (the roster), as opposed
 /// to running the spoken roll-call ([`is_roll_call`], checked first). Routed
 /// DETERMINISTICALLY by the daemon so the answer always comes from the live
 /// registry — never the classifier+local model, which (lacking the roster)
@@ -163,7 +163,7 @@ pub fn is_agent_query(text: &str) -> bool {
     AGENT_QUERY_CUES.iter().any(|cue| lower.contains(cue))
 }
 
-/// EDITH (Proactive Sentinel) delegation cues: phrases that ask JARVIS to
+/// EDITH (Proactive Sentinel) delegation cues: phrases that ask DARWIN to
 /// ANTICIPATE — to surface what is coming or what the user should know — as
 /// opposed to friday's intel cues (brief/morning/news/schedule), which EDITH
 /// must NOT steal. High-precision multi-word phrases so a plain mention of
@@ -191,7 +191,7 @@ fn is_anticipation_query(lower: &str) -> bool {
     EDITH_CUES.iter().any(|cue| lower.contains(cue))
 }
 
-/// FURY (Mission Orchestrator) delegation cues: phrases that ask JARVIS to run a
+/// FURY (Mission Orchestrator) delegation cues: phrases that ask DARWIN to run a
 /// MULTI-STEP MISSION — decompose a goal, assemble the right specialists, drive
 /// it to done — as opposed to a single delegated task. These are HIGH-PRECISION
 /// multi-word phrases (plain substring is enough; each phrase is already
@@ -230,7 +230,7 @@ fn is_mission_query(lower: &str) -> bool {
     FURY_CUES.iter().any(|cue| lower.contains(cue))
 }
 
-/// CASSANDRA (Forecast & Simulation) delegation cues: phrases that ask JARVIS to
+/// CASSANDRA (Forecast & Simulation) delegation cues: phrases that ask DARWIN to
 /// MODEL what could happen — run a simulation, forecast a distribution, weigh the
 /// odds of a what-if — as opposed to gecko's MARKET watch (market/trade/stock/
 /// crypto/portfolio/ticker), which Cassandra must NOT steal. These are precise:
@@ -275,7 +275,7 @@ fn is_forecast_query(lower: &str) -> bool {
         || CASSANDRA_WORD_CUES.iter().any(|cue| contains_word(lower, cue))
 }
 
-/// MNEMOSYNE (Semantic Memory) delegation cues: phrases that ask JARVIS to
+/// MNEMOSYNE (Semantic Memory) delegation cues: phrases that ask DARWIN to
 /// RETRIEVE the stored past — "what did I say about X", "what do you remember
 /// about Y", "dig up that note", "recall everything", "when did I", "have we
 /// discussed". This is the RECALL half of memory, deliberately distinct from
@@ -326,7 +326,7 @@ fn is_recall_query(lower: &str) -> bool {
     MNEMOSYNE_CUES.iter().any(|cue| lower.contains(cue))
 }
 
-/// SAGE (Deep Research) delegation cues: phrases that ask JARVIS for a
+/// SAGE (Deep Research) delegation cues: phrases that ask DARWIN for a
 /// THOROUGH, CITED, multi-source investigation — "deep dive", "deep research",
 /// "research report", "look into X thoroughly", "cite your sources", "with
 /// citations", "comprehensive write-up" — as opposed to vision's QUICK lookup
@@ -406,7 +406,7 @@ fn is_deep_research_query(lower: &str) -> bool {
     has_depth_adverb && has_context
 }
 
-/// VITALIS (Health & Biometrics) delegation cues: phrases that ask JARVIS to read
+/// VITALIS (Health & Biometrics) delegation cues: phrases that ask DARWIN to read
 /// the BODY's signals off WHOOP — recovery, strain, HRV, sleep score, readiness,
 /// resting heart rate, "how recovered am I", "how did I sleep", "how's my body".
 /// These are BIOMETRICS, deliberately distinct from hercules' COACHING vocabulary
@@ -455,7 +455,7 @@ fn is_biometric_query(lower: &str) -> bool {
         || VITALIS_WORD_CUES.iter().any(|cue| contains_word(lower, cue))
 }
 
-/// KAREN (Comms Autopilot) delegation cues: phrases that ask JARVIS to TRIAGE the
+/// KAREN (Comms Autopilot) delegation cues: phrases that ask DARWIN to TRIAGE the
 /// inbox and channels — "triage / inbox / catch me up on messages / what needs a
 /// reply / clear my inbox / who needs me / my email / my messages / draft a
 /// reply". This is the COMMS-TRIAGE half of communications, deliberately distinct
@@ -504,7 +504,7 @@ fn is_triage_query(lower: &str) -> bool {
         || KAREN_WORD_CUES.iter().any(|cue| contains_word(lower, cue))
 }
 
-/// DUM-E (Home & Environment) delegation cues: phrases that ask JARVIS to read or
+/// DUM-E (Home & Environment) delegation cues: phrases that ask DARWIN to read or
 /// control the smart home through the user's hub — "lights / thermostat / lock /
 /// unlock / smart home / set the / scene / living room / bedroom / home
 /// assistant", plus "turn on/off" SCOPED to a home-device context. This is the
@@ -574,7 +574,7 @@ fn is_home_query(lower: &str) -> bool {
     has_broad_verb && has_device
 }
 
-/// MIDAS (Personal Treasury) delegation cues: phrases that ask JARVIS to read the
+/// MIDAS (Personal Treasury) delegation cues: phrases that ask DARWIN to read the
 /// user's OWN money — balances, spending, transactions, cash flow, net worth,
 /// "where's my money", "how much did I spend", "my accounts", "my budget". This is
 /// PERSONAL FINANCE, deliberately distinct from gecko's MARKET watch
@@ -630,7 +630,7 @@ fn is_personal_finance_query(lower: &str) -> bool {
         || MIDAS_WORD_CUES.iter().any(|cue| contains_word(lower, cue))
 }
 
-/// VOYAGER (Travel & Logistics) delegation cues: phrases that ask JARVIS to find
+/// VOYAGER (Travel & Logistics) delegation cues: phrases that ask DARWIN to find
 /// the WAY — driving/walking directions, a route, how long a trip takes (ETA /
 /// travel time), how far somewhere is, where the nearest thing is ("coffee near
 /// me", "restaurant near the office", "find a pharmacy nearby"). This is the
@@ -679,7 +679,7 @@ fn is_travel_query(lower: &str) -> bool {
         || VOYAGER_WORD_CUES.iter().any(|cue| contains_word(lower, cue))
 }
 
-/// AEGIS (Defense & Privacy) delegation cues: phrases that ask JARVIS whether the
+/// AEGIS (Defense & Privacy) delegation cues: phrases that ask DARWIN whether the
 /// user is EXPOSED — "have I been pwned", "breach"/"breached", "am I exposed",
 /// "data leak", "my passwords leaked", "security posture", "am I protected",
 /// "privacy check", "filevault". This is the DEFENSIVE EXPOSURE/PRIVACY domain —
@@ -736,7 +736,7 @@ fn is_exposure_query(lower: &str) -> bool {
         || AEGIS_WORD_CUES.iter().any(|cue| contains_word(lower, cue))
 }
 
-/// BABEL (Translation & Interpretation) delegation cues: phrases that ask JARVIS
+/// BABEL (Translation & Interpretation) delegation cues: phrases that ask DARWIN
 /// to RENDER text between languages — "translate this", "in spanish"/"in french"/
 /// "in <language>", "how do you say", "what does X mean in", "say this in",
 /// "interpret". This is the TRANSLATION domain — turning words from one tongue
@@ -836,13 +836,13 @@ fn is_translation_query(lower: &str) -> bool {
 }
 
 /// The parsed registry: the 27 agents plus the index of the orchestrator
-/// (jarvis), which is the fallback for any unmatched request and the owner of
+/// (darwin), which is the fallback for any unmatched request and the owner of
 /// every tool. Construction guarantees the orchestrator exists and that the
 /// roster is internally consistent (validated by [`AgentRegistry::validate`]).
 #[derive(Debug, Clone)]
 pub struct AgentRegistry {
     agents: Vec<Agent>,
-    /// Index into `agents` of the orchestrator (jarvis). Always valid.
+    /// Index into `agents` of the orchestrator (darwin). Always valid.
     orchestrator: usize,
 }
 
@@ -952,13 +952,13 @@ impl AgentRegistry {
         Ok(())
     }
 
-    /// All agents, in declaration order — which is roll-call order (jarvis
+    /// All agents, in declaration order — which is roll-call order (darwin
     /// first, then the team) by contract.
     pub fn all(&self) -> &[Agent] {
         &self.agents
     }
 
-    /// The orchestrator (jarvis): the delegation fallback and tool owner.
+    /// The orchestrator (darwin): the delegation fallback and tool owner.
     pub fn orchestrator(&self) -> &Agent {
         &self.agents[self.orchestrator]
     }
@@ -967,7 +967,7 @@ impl AgentRegistry {
     /// its role, the orchestrator marked "(you)" — for the cloud conversation
     /// prompt. The cloud persona has no static roster, so without this the cloud
     /// brain (correctly, per its no-fabrication grounding) DENIES having a team
-    /// when asked. Feeding it the REAL roster lets JARVIS accurately name/list/
+    /// when asked. Feeding it the REAL roster lets DARWIN accurately name/list/
     /// describe the constellation it orchestrates. Profiles on one engine — the
     /// persona prompt frames the "not separate minds" honesty.
     pub fn roster_brief(&self) -> String {
@@ -991,7 +991,7 @@ impl AgentRegistry {
     }
 
     /// A plain, GROUNDED spoken roster for the offline fallback: when the cloud
-    /// brain is unreachable, JARVIS still names the real team (every agent + its
+    /// brain is unreachable, DARWIN still names the real team (every agent + its
     /// short role) deterministically — accurate, never hallucinated. The cloud
     /// path phrases the same roster with more wit; this is the safety floor so an
     /// agent-roster query is NEVER answered by the local model guessing.
@@ -1033,10 +1033,10 @@ impl AgentRegistry {
             .find(|a| !a.is_orchestrator() && a.tools.iter().any(|t| t == tool))
     }
 
-    /// Jarvis-Prime delegation: pick the agent that should handle this
+    /// Darwin-Prime delegation: pick the agent that should handle this
     /// request. Deterministic and unit-testable — the classifier intent plus
     /// keyword cues map to a specialist; anything unmatched falls to the
-    /// orchestrator (jarvis). The rule map is intentionally ordered: the first
+    /// orchestrator (darwin). The rule map is intentionally ordered: the first
     /// matching specialist wins, so more specific cues (code/bug -> steve)
     /// are checked before broader ones.
     ///
@@ -1045,7 +1045,7 @@ impl AgentRegistry {
     ///   2. Intent-driven: app/web/file/system/memory intents map to the
     ///      specialist that owns those tools.
     ///   3. Keyword-driven: domain cues in the utterance pick a specialist.
-    ///   4. Fallback: the orchestrator (jarvis).
+    ///   4. Fallback: the orchestrator (darwin).
     ///      The chosen agent must still hold the tool it will invoke; the router
     ///      enforces that and re-routes on a violation (isolation).
     pub fn select(&self, intent: &str, text: &str, cloud_reachable: bool) -> &Agent {
@@ -1331,7 +1331,7 @@ impl AgentRegistry {
             }
         }
 
-        // 4. Anything unmatched is the orchestrator's: jarvis handles it.
+        // 4. Anything unmatched is the orchestrator's: darwin handles it.
         self.orchestrator()
     }
 
@@ -1512,7 +1512,7 @@ impl AgentRegistry {
 #[allow(clippy::type_complexity)]
 const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
     (
-        "jarvis",
+        "darwin",
         "Prime Orchestrator: hears every request, delegates to the right agent, keeps you updated, ensures nothing falls through",
         "bm_george",
         190,
@@ -1534,7 +1534,7 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
             // user-knowledge, not a consequential action — no gate.
             "world_query", "world_update",
             // SKILL LIBRARY: the meta-tools that DISCOVER (skill_list) and RUN
-            // (skill_invoke) JARVIS's hand-written in-tree skills. Friday is a
+            // (skill_invoke) DARWIN's hand-written in-tree skills. Friday is a
             // general utility/knowledge agent, so it holds them; a consequential
             // skill still parks behind the confirmation gate when invoked.
             "skill_list", "skill_invoke",
@@ -1741,7 +1741,7 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
         // original Kokoro-82M set), distinct from every other roster voice.
         "af_sky",
         // Teal 170: distinct, calm, on the cyan-navy FUI palette; never the
-        // reserved alert red. Sits between gecko (120) and jarvis (190).
+        // reserved alert red. Sits between gecko (120) and darwin (190).
         170,
         // Read-only / no-consequential surface. EDITH READS the signals it
         // watches (calendar, mail metadata, system health, stored facts) and
@@ -1766,7 +1766,7 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
         // palette; never the reserved alert red. Sits between stark (205) and
         // vision (265).
         235,
-        // FURY is NOT an orchestrator-wildcard like jarvis. It holds an EXPLICIT
+        // FURY is NOT an orchestrator-wildcard like darwin. It holds an EXPLICIT
         // mission tool (fury_mission) plus the read tools it needs to plan and
         // ground a mission — the actual ACTING happens inside each sub-task as
         // the OWNING specialist, under that specialist's own allowlist (the
@@ -1818,7 +1818,7 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
     ),
     (
         "mnemosyne",
-        "Semantic Memory: recalls what you've told JARVIS and surfaces the relevant past",
+        "Semantic Memory: recalls what you've told DARWIN and surfaces the relevant past",
         // af_kore: a real American-English female Kokoro voice from the
         // Kokoro-82M set (Kore, the maiden — like Mnemosyne, a figure of Greek
         // myth used here only as a NAME, not a claim), distinct from every other
@@ -1857,7 +1857,7 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
             // tagged + observed-counted). user_model_query READS the profile WITH
             // provenance ("what do you know about me"); user_model_correct and
             // user_model_forget are the CORRECTABLE + FORGETTABLE controls — they
-            // edit JARVIS's BELIEF about the user only (no external action, no
+            // edit DARWIN's BELIEF about the user only (no external action, no
             // gate), writing only the shared user.model.* tier and never inventing
             // an entry. Squarely her recollective, knowledge-keeping remit.
             "user_model_query", "user_model_correct", "user_model_forget",
@@ -1929,7 +1929,7 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
         // (web.search/web_search to find sources, web.open/open_url to surface
         // one). All READ surface: a real run needs the web + the cloud and spends
         // tokens, but it fetches and cites — it never ACTS. recall_facts lets it
-        // ground a question against what the user already told JARVIS.
+        // ground a question against what the user already told DARWIN.
         &[
             "conversation", "web.search", "web.open", "memory.recall",
             "web_search", "open_url", "recall_facts",
@@ -1976,7 +1976,7 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
         // roster voice; fitting a sharp, unflappable chief-of-staff.
         "af_sarah",
         // Cyan 200: distinct, calm and businesslike, on the cyan-navy FUI palette;
-        // never the reserved alert red. Sits between jarvis (190) and stark (205).
+        // never the reserved alert red. Sits between darwin (190) and stark (205).
         200,
         // Comms autopilot over the EXISTING Gmail/Slack/X tools — no new
         // integration of her own. The TWO karen_* tools are READ-ONLY: karen_triage
@@ -2023,7 +2023,7 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
         // integrations::gate(confirm), so it previews the exact service call
         // unless allow_consequential is ON and confirm=true — no device moves
         // otherwise. HONESTY: control goes through the user's OWN Home Assistant
-        // hub; JARVIS does not talk HomeKit directly (raw HomeKit is not cleanly
+        // hub; DARWIN does not talk HomeKit directly (raw HomeKit is not cleanly
         // reachable from a macOS daemon).
         &[
             "conversation", "memory.recall", "recall_facts",
@@ -2047,7 +2047,7 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
         // MIDAS NEVER MOVES MONEY. There is deliberately NO transfer/payment/trade
         // tool here — not even a gated one — because no money action exists to gate.
         // HONESTY: Plaid needs the user's own app (client id + secret) AND a linked-
-        // institution access token from Plaid Link (a frontend step JARVIS does not
+        // institution access token from Plaid Link (a frontend step DARWIN does not
         // perform); until configured, midas says "no linked accounts — connect via
         // Plaid in Settings". Midas watches the books; it never touches the money.
         &[
@@ -2064,7 +2064,7 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
         // find the way").
         "bf_lily",
         // Cyan 180: distinct, calm and wayfinding, on the cyan-navy FUI palette;
-        // never the reserved alert red. Sits between edith (170) and jarvis (190),
+        // never the reserved alert red. Sits between edith (170) and darwin (190),
         // 10 degrees off each.
         180,
         // READ-ONLY maps surface. The three voyager_* tools are READ-ONLY over a
@@ -2235,7 +2235,7 @@ fn cue_text(agent: &Agent) -> String {
 
 /// The minimum top score the semantic fallback will act on. Below this floor
 /// the signal is too weak to override the safe orchestrator default, so the
-/// turn stays with jarvis. With the shipped BM25 scorer (`LexicalAgentScorer`)
+/// turn stays with darwin. With the shipped BM25 scorer (`LexicalAgentScorer`)
 /// a score arises only when an utterance term overlaps an agent's role text, so
 /// any strictly-positive top is already meaningful; the floor is a small
 /// positive epsilon that rejects only the degenerate near-zero case while
@@ -2306,16 +2306,16 @@ mod tests {
     fn canonical_roster_is_valid() {
         let reg = AgentRegistry::canonical();
         assert_eq!(reg.all().len(), 27, "the roster is 27 agents");
-        assert_eq!(reg.orchestrator().name, "jarvis");
+        assert_eq!(reg.orchestrator().name, "darwin");
     }
 
     #[test]
     fn roster_brief_names_every_agent_marks_the_orchestrator_and_states_the_honesty() {
         let reg = AgentRegistry::canonical();
         let brief = reg.roster_brief();
-        // The orchestrator is marked "(you, ...)" so the cloud brain knows it IS jarvis.
+        // The orchestrator is marked "(you, ...)" so the cloud brain knows it IS darwin.
         assert!(
-            brief.contains("jarvis (you, Prime Orchestrator)"),
+            brief.contains("darwin (you, Prime Orchestrator)"),
             "orchestrator unmarked: {brief}"
         );
         // Every agent in the live roster appears (grounded — the brain lists only these).
@@ -2338,7 +2338,7 @@ mod tests {
         // Roster / list questions -> true (these are what got misrouted + hallucinated).
         for q in [
             "give me a list of my agents",
-            "Jarvis, give me a list of my agents.",
+            "Darwin, give me a list of my agents.",
             "list my agents",
             "who are my agents",
             "what agents do I have",
@@ -2351,7 +2351,7 @@ mod tests {
         }
         // Ordinary chat / unrelated -> false (must not hijack normal conversation).
         for q in [
-            "hi jarvis",
+            "hi darwin",
             "what's the weather",
             "open silicon canvas",
             "remember that I like jazz",
@@ -2391,28 +2391,28 @@ mod tests {
         assert!(spoken.contains("babel for Translation & Interpretation"), "babel role missing: {spoken}");
         // The orchestrator is referred to as "myself", never listed as a teammate.
         assert!(spoken.contains("myself"), "orchestrator framing missing: {spoken}");
-        assert!(!spoken.contains("jarvis for"), "orchestrator must not be in the listed team: {spoken}");
+        assert!(!spoken.contains("darwin for"), "orchestrator must not be in the listed team: {spoken}");
         // Grounded: a name that is NOT a real agent must never appear.
         assert!(!spoken.to_lowercase().contains("chorvis"), "hallucinated agent must never appear");
     }
 
-    /// Roll-call order is declaration order: jarvis first, then the team
+    /// Roll-call order is declaration order: darwin first, then the team
     /// exactly as the reel maps them.
     #[test]
-    fn roll_call_order_is_declaration_order_jarvis_first() {
+    fn roll_call_order_is_declaration_order_darwin_first() {
         let reg = AgentRegistry::canonical();
         let names: Vec<&str> = reg.all().iter().map(|a| a.name.as_str()).collect();
         assert_eq!(
             names,
             vec![
-                "jarvis", "friday", "veronica", "vision", "ultron", "athena", "stark",
+                "darwin", "friday", "veronica", "vision", "ultron", "athena", "stark",
                 "steve", "oracle", "gecko", "hercules", "pepper", "hulk", "herald", "jerome",
                 "edith", "fury", "cassandra", "mnemosyne", "sage", "vitalis", "karen", "dume",
                 "midas", "voyager", "aegis", "babel",
             ]
         );
         // The orchestrator leads the roll call.
-        assert_eq!(names[0], "jarvis");
+        assert_eq!(names[0], "darwin");
     }
 
     /// Every voice is a verified Kokoro id (first letter is a valid language
@@ -2505,13 +2505,13 @@ mod tests {
     fn unknown_key_rejects_and_falls_back() {
         let raw = r#"
             [[agent]]
-            name = "jarvis"
+            name = "darwin"
             role = "Prime Orchestrator"
             voice = "bm_george"
             hue = 190
-            persona_file = "inference/personas/jarvis.txt"
+            persona_file = "inference/personas/darwin.txt"
             tools = ["*"]
-            namespace = "agent.jarvis"
+            namespace = "agent.darwin"
             color = "cyan"   # not a known field
         "#;
         let (reg, issues) = AgentRegistry::parse(raw);
@@ -2538,7 +2538,7 @@ mod tests {
         let (reg, issues) = AgentRegistry::parse(raw);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("validation"), "{issues:?}");
-        assert_eq!(reg.orchestrator().name, "jarvis");
+        assert_eq!(reg.orchestrator().name, "darwin");
     }
 
     /// A mismatched namespace is a validation failure (lockstep guard).
@@ -2546,13 +2546,13 @@ mod tests {
     fn namespace_must_be_agent_dot_name() {
         let raw = r#"
             [[agent]]
-            name = "jarvis"
+            name = "darwin"
             role = "Prime Orchestrator"
             voice = "bm_george"
             hue = 190
-            persona_file = "inference/personas/jarvis.txt"
+            persona_file = "inference/personas/darwin.txt"
             tools = ["*"]
-            namespace = "agent.jarvis"
+            namespace = "agent.darwin"
 
             [[agent]]
             name = "friday"
@@ -2568,10 +2568,10 @@ mod tests {
         assert!(issues[0].contains("namespace"), "{issues:?}");
     }
 
-    // ---- Jarvis-Prime delegation (the rule map) ----
+    // ---- Darwin-Prime delegation (the rule map) ----
 
     /// Each canonical example utterance routes to the right agent; an
-    /// unmatched one falls to jarvis.
+    /// unmatched one falls to darwin.
     #[test]
     fn selection_routes_examples_to_the_right_agent() {
         let reg = AgentRegistry::canonical();
@@ -2729,11 +2729,11 @@ mod tests {
             ("conversation", "interpret what she just said", "babel"),
             ("conversation", "can you translate the menu", "babel"),
             // unmatched -> orchestrator
-            ("conversation", "hello, how are you today", "jarvis"),
-            ("conversation", "tell me a story about the sea", "jarvis"),
+            ("conversation", "hello, how are you today", "darwin"),
+            ("conversation", "tell me a story about the sea", "darwin"),
             // A bare "what is" + language name is a general-knowledge question,
             // NOT a render request — it stays with the orchestrator.
-            ("conversation", "what is the french revolution", "jarvis"),
+            ("conversation", "what is the french revolution", "darwin"),
         ];
         for (intent, text, expected) in cases {
             let chosen = reg.select(intent, text, true);
@@ -2808,7 +2808,7 @@ mod tests {
     /// cue but is clearly a fitness question routes to hercules via the semantic
     /// fallback — instead of falling to the orchestrator. hercules' role text is
     /// "Fitness + Nutrition: ...", so the mock scores the candidate whose role
-    /// mentions "fitness". `select` alone would land on jarvis (no cue matched);
+    /// mentions "fitness". `select` alone would land on darwin (no cue matched);
     /// `select_with_fallback` recovers the right specialist.
     #[test]
     fn semantic_fallback_routes_ambiguous_fitness_question_to_hercules() {
@@ -2818,7 +2818,7 @@ mod tests {
         let utterance = "i want to get back into shape and feel stronger";
         assert_eq!(
             reg.select("conversation", utterance, true).name,
-            "jarvis",
+            "darwin",
             "precondition: this ambiguous phrasing matches no cue -> orchestrator"
         );
         // With the semantic fallback (mock scores hercules' "fitness" role top),
@@ -2881,14 +2881,14 @@ mod tests {
         let scorer = MockScorer::single("fitness", 5.0);
         assert_eq!(
             reg.select_with_fallback("conversation", "   ", true, &scorer).name,
-            "jarvis",
+            "darwin",
             "a blank utterance must stay with the orchestrator"
         );
         // No-signal scorer (backend unavailable shape) on a real utterance.
         let utterance = "i want to get back into shape and feel stronger";
         assert_eq!(
             reg.select_with_fallback("conversation", utterance, true, &NoSignalScorer).name,
-            "jarvis",
+            "darwin",
             "an all-zero (no signal / backend down) scorer must degrade to the orchestrator"
         );
     }
@@ -2911,7 +2911,7 @@ mod tests {
         let utterance = "i want to get back into shape and feel stronger";
         assert_eq!(
             reg.select_with_fallback("conversation", utterance, true, &scorer).name,
-            "jarvis",
+            "darwin",
             "a tie at the top must degrade to the orchestrator (safe default)"
         );
     }
@@ -2985,7 +2985,7 @@ mod tests {
             "the fitness role must out-score the markets role: {scores:?}"
         );
         assert!(scores[0] > 0.0, "a real overlap must be positive: {scores:?}");
-        // No overlap at all -> all-zero (no signal), which degrades to jarvis.
+        // No overlap at all -> all-zero (no signal), which degrades to darwin.
         let none = scorer.score("zzz qqq vvv", &roles);
         assert!(
             none.iter().all(|&s| s == 0.0),
@@ -3009,7 +3009,7 @@ mod tests {
         let fitness = "i could really use some coaching";
         assert_eq!(
             reg.select("conversation", fitness, true).name,
-            "jarvis",
+            "darwin",
             "precondition: no deterministic cue matched"
         );
         assert_eq!(
@@ -3020,7 +3020,7 @@ mod tests {
         // Generic chit-chat with no role overlap stays on the orchestrator.
         assert_eq!(
             reg.select_with_fallback("conversation", "hello there, lovely day", true, &scorer).name,
-            "jarvis",
+            "darwin",
             "generic chit-chat with no role overlap stays with the orchestrator"
         );
     }
@@ -3096,7 +3096,7 @@ mod tests {
         // FURY cue, so it falls through to the orchestrator, not fury.
         assert_eq!(
             reg.select("conversation", "meet the team", true).name,
-            "jarvis",
+            "darwin",
             "a roll-call greeting must not be treated as a mission"
         );
         // Ordinary SINGLE-task requests still reach their domain specialist, not
@@ -3170,7 +3170,7 @@ mod tests {
         // substring of "projector" (no cue) — falls through to the orchestrator.
         assert_eq!(
             reg.select("conversation", "turn on the projector", true).name,
-            "jarvis",
+            "darwin",
             "a substring of a cue word must not misroute"
         );
     }
@@ -3355,7 +3355,7 @@ mod tests {
         // fire (e.g. "clean it thoroughly" is not research) — falls through.
         assert_eq!(
             reg.select("conversation", "clean the kitchen thoroughly", true).name,
-            "jarvis",
+            "darwin",
             "a depth adverb alone (no investigation context) must not route to sage"
         );
     }
@@ -3466,10 +3466,10 @@ mod tests {
             );
         }
         // Whole-word safety: "inbox" the cue fires as a token, but a near-miss with
-        // no triage framing ("turn on the projector") still falls through to jarvis.
+        // no triage framing ("turn on the projector") still falls through to darwin.
         assert_eq!(
             reg.select("conversation", "turn on the projector", true).name,
-            "jarvis",
+            "darwin",
             "a non-cue must not misroute to karen"
         );
     }
@@ -3528,7 +3528,7 @@ mod tests {
         // framing) — those fall through to the orchestrator.
         assert_eq!(
             reg.select("conversation", "the team feels unbalanced", true).name,
-            "jarvis",
+            "darwin",
             "a substring of a cue word must not misroute to midas"
         );
     }
@@ -3615,7 +3615,7 @@ mod tests {
         ] {
             assert_eq!(
                 reg.select("conversation", q, true).name,
-                "jarvis",
+                "darwin",
                 "a booking/payment request must NOT be claimed by voyager: {q:?}"
             );
         }
@@ -3623,7 +3623,7 @@ mod tests {
         // "mapped"/"mapping" with no travel framing.
         assert_eq!(
             reg.select("conversation", "we mapped out the quarterly plan", true).name,
-            "jarvis",
+            "darwin",
             "a substring of a cue word must not misroute to voyager"
         );
     }
@@ -3714,7 +3714,7 @@ mod tests {
         // with no exposure framing falls through to the orchestrator.
         assert_eq!(
             reg.select("conversation", "we mapped out the quarterly plan", true).name,
-            "jarvis",
+            "darwin",
             "a non-cue must not misroute to aegis"
         );
     }
@@ -3813,14 +3813,14 @@ mod tests {
         // through to the orchestrator rather than misrouting.
         assert_eq!(
             reg.select("conversation", "i lived in spain and learned spanish", true).name,
-            "jarvis",
+            "darwin",
             "a bare language mention (no render verb) must not route to babel"
         );
         // Whole-word safety: "interpret" fires as a token, but a non-cue with no
         // translation framing falls through to the orchestrator.
         assert_eq!(
             reg.select("conversation", "what is the weather today", true).name,
-            "jarvis",
+            "darwin",
             "a non-cue must not misroute to babel"
         );
     }
@@ -3874,7 +3874,7 @@ mod tests {
         assert_eq!(reg.select("app.launch", "open safari", false).name, "oracle");
         assert_eq!(reg.select("system.query", "system status", false).name, "ultron");
         // With the cloud up, the same conversational turn is the orchestrator's.
-        assert_eq!(reg.select("conversation", "tell me about mars", true).name, "jarvis");
+        assert_eq!(reg.select("conversation", "tell me about mars", true).name, "darwin");
     }
 
     /// Keyword matching is whole-word: a cue must not fire as a substring of a
@@ -3883,9 +3883,9 @@ mod tests {
     fn keyword_matching_is_whole_word_only() {
         let reg = AgentRegistry::canonical();
         // 'ad' is a vision cue but must not fire on "already" / "read".
-        assert_eq!(reg.select("conversation", "i already read that", true).name, "jarvis");
+        assert_eq!(reg.select("conversation", "i already read that", true).name, "darwin");
         // 'pr' is a steve cue but must not fire on "spring" / "appreciate".
-        assert_eq!(reg.select("conversation", "i appreciate the spring weather", true).name, "jarvis");
+        assert_eq!(reg.select("conversation", "i appreciate the spring weather", true).name, "darwin");
         // The bare cue words DO fire as whole tokens.
         assert_eq!(reg.select("conversation", "open a pr for this", true).name, "steve");
         assert_eq!(reg.select("conversation", "run the ad analysis", true).name, "vision");
@@ -3893,21 +3893,21 @@ mod tests {
 
     // ---- Tool-allowlist isolation ----
 
-    /// jarvis may use any tool; a specialist may use only its own. An agent
+    /// darwin may use any tool; a specialist may use only its own. An agent
     /// attempting another agent's exclusive tool is refused, and owner_of
     /// names where that tool belongs so the router can re-route.
     #[test]
     fn tool_allowlist_isolation_holds() {
         let reg = AgentRegistry::canonical();
-        let jarvis = reg.get("jarvis").unwrap();
+        let darwin = reg.get("darwin").unwrap();
         let friday = reg.get("friday").unwrap();
         let jerome = reg.get("jerome").unwrap();
         let vision = reg.get("vision").unwrap();
 
         // Orchestrator: everything.
-        assert!(jarvis.may_use("open_app"));
-        assert!(jarvis.may_use("web_search"));
-        assert!(jarvis.may_use("anything_at_all"));
+        assert!(darwin.may_use("open_app"));
+        assert!(darwin.may_use("web_search"));
+        assert!(darwin.may_use("anything_at_all"));
 
         // friday (intel, read-only) cannot open apps or search the web —
         // those are jerome/oracle and vision/stark territory.
@@ -3954,7 +3954,7 @@ mod tests {
         }
 
         // The orchestrator (wildcard) + the knowledge agents may WRITE it.
-        let writers = ["jarvis", "friday", "pepper", "mnemosyne"];
+        let writers = ["darwin", "friday", "pepper", "mnemosyne"];
         for name in writers {
             let a = reg.get(name).unwrap();
             assert!(
@@ -3974,10 +3974,10 @@ mod tests {
         }
     }
 
-    /// Only jarvis holds the wildcard; no specialist is secretly an
+    /// Only darwin holds the wildcard; no specialist is secretly an
     /// orchestrator.
     #[test]
-    fn only_jarvis_is_the_orchestrator() {
+    fn only_darwin_is_the_orchestrator() {
         let reg = AgentRegistry::canonical();
         let orchestrators: Vec<&str> = reg
             .all()
@@ -3985,7 +3985,7 @@ mod tests {
             .filter(|a| a.is_orchestrator())
             .map(|a| a.name.as_str())
             .collect();
-        assert_eq!(orchestrators, vec!["jarvis"]);
+        assert_eq!(orchestrators, vec!["darwin"]);
     }
 
     // ---- Roll-call (item 3) ----
@@ -3996,7 +3996,7 @@ mod tests {
         use super::is_roll_call;
         for yes in [
             "roll call",
-            "Jarvis, roll call",
+            "Darwin, roll call",
             "introduce the team",
             "introduce yourselves please",
             "assemble",
@@ -4031,7 +4031,7 @@ mod tests {
         // Case-insensitive prefix, leading whitespace tolerated.
         assert_eq!(parse_intro("  intro:   hello there  "), Some("hello there".to_string()));
         // No INTRO line, or a blank one.
-        assert_eq!(parse_intro("You are JARVIS, with no intro marker."), None);
+        assert_eq!(parse_intro("You are DARWIN, with no intro marker."), None);
         assert_eq!(parse_intro("INTRO:   "), None);
     }
 
@@ -4043,7 +4043,7 @@ mod tests {
         let jerome = reg.get("jerome").unwrap();
         // A directory with no persona files: every intro is the fallback.
         let empty = std::env::temp_dir().join(format!(
-            "jarvis-no-personas-{}-{}",
+            "darwin-no-personas-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

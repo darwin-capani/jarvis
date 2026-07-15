@@ -1,23 +1,23 @@
 #!/bin/bash
-# uninstall.sh — completely remove J.A.R.V.I.S. from this machine.
+# uninstall.sh — completely remove D.A.R.W.I.N. from this machine.
 #
 # TWO-STEP TYPED CONFIRMATION (deliberate, for a destructive action):
-#   1. "Delete JARVIS completely? (yes/no)"            -> no cancels.
+#   1. "Delete DARWIN completely? (yes/no)"            -> no cancels.
 #   2. "Are you ABSOLUTELY sure? (yes/no)"             -> no cancels; only yes deletes.
 # Any unrecognized / empty / EOF input is treated as NO — it never deletes on doubt.
 #
-# It removes ONLY JARVIS's own footprint. Every target is a SPECIFIC, guarded path
+# It removes ONLY DARWIN's own footprint. Every target is a SPECIFIC, guarded path
 # (never a broad or globbed rm):
-#   - the install home  ~/Library/Application Support/JARVIS  (code, .venv, models, all state)
-#   - the 2 LaunchAgents (com.jarvis.daemon / com.jarvis.inference) — unloaded + removed
-#   - the installed HUD app  /Applications/JARVIS.app  and  ~/Applications/JARVIS.app —
-#     each removed ONLY after its Info.plist verifies bundle id com.jarvis.hud
-#   - the JARVIS Keychain items (ONLY the service "com.jarvis.daemon") — your stored keys/tokens
-#   - the logs  ~/Library/Logs/JARVIS
+#   - the install home  ~/Library/Application Support/DARWIN  (code, .venv, models, all state)
+#   - the 2 LaunchAgents (com.darwin.daemon / com.darwin.inference) — unloaded + removed
+#   - the installed HUD app  /Applications/DARWIN.app  and  ~/Applications/DARWIN.app —
+#     each removed ONLY after its Info.plist verifies bundle id com.darwin.hud
+#   - the DARWIN Keychain items (ONLY the service "com.darwin.daemon") — your stored keys/tokens
+#   - the logs  ~/Library/Logs/DARWIN
 # It removes the INSTALLED OS. A source clone you may have elsewhere is left untouched.
 #
 # Usage:
-#   ~/Library/Application\ Support/JARVIS/uninstall.sh   # interactive, two-step confirm
+#   ~/Library/Application\ Support/DARWIN/uninstall.sh   # interactive, two-step confirm
 #   ./uninstall.sh --dry-run                             # show what WOULD be removed; delete nothing
 #   ./uninstall.sh --help
 set -euo pipefail
@@ -35,7 +35,7 @@ for _ui in "$SCRIPT_DIR/scripts/ui.sh" "$SCRIPT_DIR/ui.sh"; do
 done
 if ! command -v ui_init >/dev/null 2>&1; then
     ui_init() { :; }
-    jarvis_banner() { printf '\n  J.A.R.V.I.S. — uninstall\n\n'; }
+    darwin_banner() { printf '\n  D.A.R.W.I.N. — uninstall\n\n'; }
     ui_hr() { printf -- '  ------------------------------------------------------------\n'; }
     ui_ok()   { printf '  [ok]  %s\n' "$1"; }
     ui_warn() { printf '  [!]   %s\n' "$1"; }
@@ -46,18 +46,18 @@ if ! command -v ui_init >/dev/null 2>&1; then
 fi
 ui_init
 
-# --- the JARVIS footprint (specific, hard-coded paths) ---------------------------
-JARVIS_HOME="$HOME/Library/Application Support/JARVIS"
-LOG_DIR="$HOME/Library/Logs/JARVIS"
+# --- the DARWIN footprint (specific, hard-coded paths) ---------------------------
+DARWIN_HOME="$HOME/Library/Application Support/DARWIN"
+LOG_DIR="$HOME/Library/Logs/DARWIN"
 AGENT_DIR="$HOME/Library/LaunchAgents"
-KEYCHAIN_SERVICE="com.jarvis.daemon"
-LABELS=("com.jarvis.daemon" "com.jarvis.inference")
+KEYCHAIN_SERVICE="com.darwin.daemon"
+LABELS=("com.darwin.daemon" "com.darwin.inference")
 GUI_DOMAIN="gui/$(id -u)"
 # The HUD app install.sh places via place_hud_app (/Applications first, then
 # ~/Applications). Each is a SPECIFIC path, and is removed ONLY if its bundle
-# identifier verifies as the JARVIS HUD (hud/src-tauri/tauri.conf.json).
-HUD_BUNDLE_ID="com.jarvis.hud"
-APP_PATHS=("/Applications/JARVIS.app" "$HOME/Applications/JARVIS.app")
+# identifier verifies as the DARWIN HUD (hud/src-tauri/tauri.conf.json).
+HUD_BUNDLE_ID="com.darwin.hud"
+APP_PATHS=("/Applications/DARWIN.app" "$HOME/Applications/DARWIN.app")
 
 DRY_RUN=0
 case "${1:-}" in
@@ -69,17 +69,17 @@ esac
 
 # --- SAFETY GUARD: refuse to act unless the home is EXACTLY the expected path. ----
 # Makes a broad/accidental delete impossible even if $HOME were malformed: the only
-# directory this script will ever rm -rf is literally ~/Library/Application Support/JARVIS.
+# directory this script will ever rm -rf is literally ~/Library/Application Support/DARWIN.
 guard_home() {
-    local base="$HOME/Library/Application Support/JARVIS"
-    case "$JARVIS_HOME" in
+    local base="$HOME/Library/Application Support/DARWIN"
+    case "$DARWIN_HOME" in
         "" | "/" | "$HOME" | "$HOME/" | "$HOME/Library" | "$HOME/Library/" \
             | "$HOME/Library/Application Support" | "$HOME/Library/Application Support/")
             ui_err "Refusing to run: the install path resolves to a protected directory."
             exit 1 ;;
     esac
-    if [ "$JARVIS_HOME" != "$base" ]; then
-        ui_err "Refusing to run: install path is not the expected ~/Library/Application Support/JARVIS."
+    if [ "$DARWIN_HOME" != "$base" ]; then
+        ui_err "Refusing to run: install path is not the expected ~/Library/Application Support/DARWIN."
         exit 1
     fi
 }
@@ -108,15 +108,15 @@ ask_yes_no() {
 # --- the "confirmation window": exactly what will be removed ----------------------
 present_targets() {
     ui_hr
-    ui_warn "This will COMPLETELY and PERMANENTLY remove J.A.R.V.I.S. from this Mac."
+    ui_warn "This will COMPLETELY and PERMANENTLY remove D.A.R.W.I.N. from this Mac."
     ui_hr
     ui_info "The following will be deleted:"
-    if [ -d "$JARVIS_HOME" ]; then
-        local size; size="$(du -sh "$JARVIS_HOME" 2>/dev/null | cut -f1 || true)"
-        ui_note "$JARVIS_HOME"
+    if [ -d "$DARWIN_HOME" ]; then
+        local size; size="$(du -sh "$DARWIN_HOME" 2>/dev/null | cut -f1 || true)"
+        ui_note "$DARWIN_HOME"
         ui_note "    └ the OS, code, .venv, all models, and all state${size:+  (~$size)}"
     else
-        ui_note "$JARVIS_HOME  (not installed — nothing to remove there)"
+        ui_note "$DARWIN_HOME  (not installed — nothing to remove there)"
     fi
     ui_note "LaunchAgents: ${LABELS[*]}  (autostart unloaded + removed)"
     local app
@@ -147,16 +147,16 @@ stop_and_remove_agents() {
         done
     fi
     # Best-effort: reap any still-running processes (never fatal).
-    pkill -f "JARVIS/daemon/target/release/jarvisd" 2>/dev/null || true
-    pkill -f "JARVIS/inference/server.py" 2>/dev/null || true
+    pkill -f "DARWIN/daemon/target/release/darwind" 2>/dev/null || true
+    pkill -f "DARWIN/inference/server.py" 2>/dev/null || true
     ui_ok "Autostart unloaded and LaunchAgents removed."
 }
 
-# Is $1 the JARVIS HUD app bundle? TRUE only when it is a directory whose
-# Info.plist carries the JARVIS bundle identifier — we never rm -rf a path that
+# Is $1 the DARWIN HUD app bundle? TRUE only when it is a directory whose
+# Info.plist carries the DARWIN bundle identifier — we never rm -rf a path that
 # does not verify, even at the expected location (e.g. some unrelated folder a
-# user parked there under the name JARVIS.app).
-is_jarvis_hud_app() {
+# user parked there under the name DARWIN.app).
+is_darwin_hud_app() {
     local app="$1"
     [ -d "$app" ] && [ -f "$app/Contents/Info.plist" ] || return 1
     local bid=""
@@ -169,8 +169,8 @@ remove_hud_app() {
     for app in "${APP_PATHS[@]}"; do
         [ -e "$app" ] || continue
         found=1
-        if ! is_jarvis_hud_app "$app"; then
-            ui_warn "left in place: $app (did not verify as the JARVIS HUD bundle $HUD_BUNDLE_ID — refusing to delete an unverified path)"
+        if ! is_darwin_hud_app "$app"; then
+            ui_warn "left in place: $app (did not verify as the DARWIN HUD bundle $HUD_BUNDLE_ID — refusing to delete an unverified path)"
             continue
         fi
         if [ "$DRY_RUN" -eq 1 ]; then
@@ -178,29 +178,29 @@ remove_hud_app() {
             continue
         fi
         # Best-effort: quit a running HUD first (never fatal) — scoped to an
-        # executable INSIDE a JARVIS.app bundle, like the daemon reaps above.
-        pkill -f "/JARVIS.app/Contents/MacOS/" 2>/dev/null || true
+        # executable INSIDE a DARWIN.app bundle, like the daemon reaps above.
+        pkill -f "/DARWIN.app/Contents/MacOS/" 2>/dev/null || true
         rm -rf "$app"
         ui_ok "Removed the HUD app: $app"
     done
     if [ "$found" -eq 0 ]; then
         if [ "$DRY_RUN" -eq 1 ]; then
-            ui_note "[dry run] no JARVIS.app present in /Applications or ~/Applications"
+            ui_note "[dry run] no DARWIN.app present in /Applications or ~/Applications"
         else
-            ui_info "No installed JARVIS.app was present."
+            ui_info "No installed DARWIN.app was present."
         fi
     fi
 }
 
 remove_home() {
     if [ "$DRY_RUN" -eq 1 ]; then
-        ui_note "[dry run] would: rm -rf \"$JARVIS_HOME\""
+        ui_note "[dry run] would: rm -rf \"$DARWIN_HOME\""
         return 0
     fi
     guard_home   # re-assert the guard immediately before the only rm -rf
     cd "$HOME"   # never rm -rf the directory we are standing in
-    if [ -d "$JARVIS_HOME" ]; then
-        rm -rf "$JARVIS_HOME"
+    if [ -d "$DARWIN_HOME" ]; then
+        rm -rf "$DARWIN_HOME"
         ui_ok "Removed the install home."
     else
         ui_info "Install home was not present."
@@ -213,16 +213,16 @@ remove_keychain_items() {
         return 0
     fi
     # Delete one matching generic-password per call; loop until none remain. Scoped
-    # STRICTLY to the JARVIS service, so no other Keychain item is ever touched.
+    # STRICTLY to the DARWIN service, so no other Keychain item is ever touched.
     local removed=0
     while security delete-generic-password -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1; do
         removed=$((removed + 1))
-        [ "$removed" -ge 64 ] && break   # safety stop; JARVIS never stores this many
+        [ "$removed" -ge 64 ] && break   # safety stop; DARWIN never stores this many
     done
     if [ "$removed" -gt 0 ]; then
-        ui_ok "Removed $removed JARVIS Keychain item(s) (service $KEYCHAIN_SERVICE)."
+        ui_ok "Removed $removed DARWIN Keychain item(s) (service $KEYCHAIN_SERVICE)."
     else
-        ui_info "No JARVIS Keychain items were present."
+        ui_info "No DARWIN Keychain items were present."
     fi
 }
 
@@ -239,7 +239,7 @@ remove_logs() {
 
 # --- main ------------------------------------------------------------------------
 clear 2>/dev/null || true
-jarvis_banner
+darwin_banner
 present_targets
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -247,7 +247,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 # STEP 1
-if ! ask_yes_no "Delete JARVIS completely? (yes/no)"; then
+if ! ask_yes_no "Delete DARWIN completely? (yes/no)"; then
     ui_ok "Cancelled. Nothing was deleted."
     exit 0
 fi
@@ -260,7 +260,7 @@ fi
 
 # Both confirmations were an explicit yes — proceed.
 ui_hr
-ui_info "Removing J.A.R.V.I.S. ..."
+ui_info "Removing D.A.R.W.I.N. ..."
 stop_and_remove_agents
 remove_hud_app
 remove_home
@@ -270,7 +270,7 @@ ui_hr
 if [ "$DRY_RUN" -eq 1 ]; then
     ui_ok "Dry run complete — the above is exactly what a real run would remove. Nothing was deleted."
 else
-    ui_ok "J.A.R.V.I.S. has been completely removed from this machine."
+    ui_ok "D.A.R.W.I.N. has been completely removed from this machine."
     ui_note "Thank you."
 fi
 exit 0

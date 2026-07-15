@@ -9,9 +9,9 @@
 //! a `Debug` field — only its presence (a bool) is ever recorded.
 //!
 //! HONESTY: control goes through the user's OWN Home Assistant (or compatible)
-//! hub over its local REST API. JARVIS does NOT talk HomeKit directly — raw
+//! hub over its local REST API. DARWIN does NOT talk HomeKit directly — raw
 //! HomeKit is not cleanly reachable from a macOS daemon — so the persona and copy
-//! say so plainly. The bridge is the user's hub; JARVIS only relays to it.
+//! say so plainly. The bridge is the user's hub; DARWIN only relays to it.
 //!
 //! Two tiers of methods, mirroring the foundation's safety model:
 //!   * READ (safe): [`SmartHomeClient::list_devices`] (GET /api/states ->

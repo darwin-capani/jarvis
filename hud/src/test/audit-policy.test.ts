@@ -79,7 +79,7 @@ const mockAudit: Record<string, unknown> = {
     {
       seq: 1,
       ts: "2026-06-16T12:00:01Z",
-      agent: "jarvis",
+      agent: "darwin",
       tool: "slack_post_message",
       target_redacted: "#ops",
       decision: "ask",
@@ -323,7 +323,7 @@ describe("audit.snapshot / policy.snapshot reducer", () => {
     let s = connected();
     s = tel(s, env("policy.blocked", { tool: "x_post", agent: "agent.friday" }));
     s = tel(s, env("confirm.parked", { tool: "gmail_send", agent: "agent.pepper" }));
-    s = tel(s, env("policy.auto_approved", { tool: "slack_post_message", agent: "jarvis" }));
+    s = tel(s, env("policy.auto_approved", { tool: "slack_post_message", agent: "darwin" }));
     expect(s.liveGate.length).toBe(3);
     // newest-first
     expect(s.liveGate[0].kind).toBe("auto_approved");

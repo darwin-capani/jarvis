@@ -720,7 +720,7 @@ mod tests {
             "how is the weather today",
             "set a 5 minute timer",
             "who won the world cup in 2018",
-            "hi jarvis",
+            "hi darwin",
         ] {
             assert_eq!(
                 classify_mode(q, &no_signal()),

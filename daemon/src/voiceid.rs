@@ -1056,7 +1056,7 @@ mod tests {
     #[test]
     fn profile_round_trips_through_disk_with_restrictive_perms() {
         // A hermetic temp dir under the OS temp — no daemon, no network.
-        let dir = std::env::temp_dir().join(format!("jarvis-voiceid-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("darwin-voiceid-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let sr = 16_000;
         let owner = embed(&owner_samples(sr), sr).expect("owner embeds");
@@ -1096,7 +1096,7 @@ mod tests {
     #[test]
     fn profile_round_trips_through_the_encrypted_vault_with_a_test_key() {
         // Hermetic: a temp root, an EXPLICIT in-test key (no Keychain), no network.
-        let dir = std::env::temp_dir().join(format!("jarvis-voiceid-enc-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("darwin-voiceid-enc-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let key = crate::crypto::SecretKey::from_bytes([5u8; crate::crypto::KEY_BYTES]);
         let sr = 16_000;
@@ -1149,7 +1149,7 @@ mod tests {
         // ENCRYPTED vault (never a fresh plaintext owner.json), and the boot read
         // loads through the vault — so the enrolled owner survives and is never
         // written in the clear at rest.
-        let dir = std::env::temp_dir().join(format!("jarvis-voiceid-wire-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("darwin-voiceid-wire-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let key = crate::crypto::SecretKey::from_bytes([8u8; crate::crypto::KEY_BYTES]);
         let sr = 16_000;
@@ -1197,7 +1197,7 @@ mod tests {
 
     #[test]
     fn migration_moves_plaintext_profile_into_the_encrypted_vault() {
-        let dir = std::env::temp_dir().join(format!("jarvis-voiceid-mig-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("darwin-voiceid-mig-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let key = crate::crypto::SecretKey::from_bytes([3u8; crate::crypto::KEY_BYTES]);
         let sr = 16_000;
@@ -1229,7 +1229,7 @@ mod tests {
         // Enroll phrasings.
         for u in [
             "enroll my voice",
-            "JARVIS, learn my voice",
+            "DARWIN, learn my voice",
             "remember my voice please",
             "register my voiceprint",
             "set up my voice profile",

@@ -1,4 +1,4 @@
-//! The EPISODIC STORE — JARVIS's redacted, agent-scoped, bounded memory of
+//! The EPISODIC STORE — DARWIN's redacted, agent-scoped, bounded memory of
 //! completed interactions, and the recall over it.
 //!
 //! An EPISODE is a single durable record of one completed turn: { id, ts,
@@ -55,11 +55,11 @@ pub const EPISODIC_DEFAULT_K: usize = 5;
 pub const EPISODIC_MAX_K: usize = 20;
 
 /// The shared/orchestrator episodic namespace — the scope conversational turns
-/// record under by default (the "agent.jarvis" tier; see the namespace docs at
+/// record under by default (the "agent.darwin" tier; see the namespace docs at
 /// the top of this module). The proactive-intelligence live pass mines THIS
 /// scope. A specialist's private episodes live under their own namespace and are
 /// never mixed in here.
-pub const DEFAULT_NAMESPACE: &str = "agent.jarvis";
+pub const DEFAULT_NAMESPACE: &str = "agent.darwin";
 
 /// The generous agent-scoped window the topical ranker scores over. Recall ranks
 /// the recent past, not the entire (capped) store — bounded twice over (window
@@ -489,7 +489,7 @@ mod tests {
     impl TempDb {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "jarvis-episodic-test-{}-{}.db",
+                "darwin-episodic-test-{}-{}.db",
                 std::process::id(),
                 tag
             ));
@@ -594,7 +594,7 @@ mod tests {
         let recorded = record_episode(
             &cfg_on(),
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             "my api key is sk-ABCDEF0123456789ABCD and email me at darwin@example.com",
             "Noted, I won't repeat it.",
             "conversation",
@@ -605,7 +605,7 @@ mod tests {
         .unwrap();
         assert!(recorded, "an ordinary owner turn must be recorded");
 
-        let eps = mem.episodes_recent("agent.jarvis", 10).await.unwrap();
+        let eps = mem.episodes_recent("agent.darwin", 10).await.unwrap();
         assert_eq!(eps.len(), 1);
         let ep = &eps[0];
         // The secret + the email are GONE from every stored free-text field.
@@ -635,7 +635,7 @@ mod tests {
         let mem = Memory::open(&db.0).unwrap();
         // transient -> not recorded.
         let r = record_episode(
-            &cfg_on(), &mem, "agent.jarvis", "what's on my screen", "a form", "conversation",
+            &cfg_on(), &mem, "agent.darwin", "what's on my screen", "a form", "conversation",
             true, voice_off(),
         )
         .await
@@ -663,11 +663,11 @@ mod tests {
         let mem = Memory::open(&db.0).unwrap();
         // id is monotonic with insert order, and episodes_recent orders by id
         // DESC, so the LAST inserted is first regardless of same-second ts.
-        seed(&mem, "agent.jarvis", "first about the boat", "conversation").await;
-        seed(&mem, "agent.jarvis", "second about the plane", "conversation").await;
-        seed(&mem, "agent.jarvis", "third about the train", "conversation").await;
+        seed(&mem, "agent.darwin", "first about the boat", "conversation").await;
+        seed(&mem, "agent.darwin", "second about the plane", "conversation").await;
+        seed(&mem, "agent.darwin", "third about the train", "conversation").await;
 
-        let out = episodic_recall(&mem, "agent.jarvis", "", None, 5, &LexicalOnlyEmbedder).await;
+        let out = episodic_recall(&mem, "agent.darwin", "", None, 5, &LexicalOnlyEmbedder).await;
         assert_eq!(out.method, RecallMethod::Temporal);
         let utterances: Vec<&str> =
             out.episodes.iter().map(|e| e.utterance_redacted.as_str()).collect();
@@ -682,15 +682,15 @@ mod tests {
     async fn since_and_around_narrow_the_temporal_window() {
         let db = TempDb::new("since");
         let mem = Memory::open(&db.0).unwrap();
-        seed(&mem, "agent.jarvis", "old episode about gardens", "conversation").await;
+        seed(&mem, "agent.darwin", "old episode about gardens", "conversation").await;
         tokio::time::sleep(std::time::Duration::from_millis(8)).await;
         let cutoff = chrono::Utc::now().to_rfc3339();
         tokio::time::sleep(std::time::Duration::from_millis(8)).await;
-        seed(&mem, "agent.jarvis", "new episode about rockets", "conversation").await;
+        seed(&mem, "agent.darwin", "new episode about rockets", "conversation").await;
 
         // since(cutoff): only the new episode.
         let out = episodic_recall(
-            &mem, "agent.jarvis", "", Some(&When::Since(cutoff.clone())), 5, &LexicalOnlyEmbedder,
+            &mem, "agent.darwin", "", Some(&When::Since(cutoff.clone())), 5, &LexicalOnlyEmbedder,
         )
         .await;
         assert_eq!(out.episodes.len(), 1, "only the post-cutoff episode: {:?}", out.episodes);
@@ -699,7 +699,7 @@ mod tests {
         // around [epoch, cutoff]: only the old episode.
         let out = episodic_recall(
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             "",
             Some(&When::Around {
                 from: "1970-01-01T00:00:00+00:00".to_string(),
@@ -741,12 +741,12 @@ mod tests {
     async fn since_and_around_bounds_normalize_non_utc_offsets() {
         let db = TempDb::new("offset-bounds");
         let mem = Memory::open(&db.0).unwrap();
-        seed(&mem, "agent.jarvis", "old episode about gardens", "conversation").await;
+        seed(&mem, "agent.darwin", "old episode about gardens", "conversation").await;
         tokio::time::sleep(std::time::Duration::from_millis(8)).await;
         // A single UTC instant strictly between the two seeds.
         let cutoff_utc = chrono::Utc::now();
         tokio::time::sleep(std::time::Duration::from_millis(8)).await;
-        seed(&mem, "agent.jarvis", "new episode about rockets", "conversation").await;
+        seed(&mem, "agent.darwin", "new episode about rockets", "conversation").await;
 
         // The SAME instant, re-expressed in two non-UTC offsets. A naive lexical
         // compare against the UTC-stored ts would mis-window these; normalization
@@ -764,7 +764,7 @@ mod tests {
         for bound in [&cutoff_plus2, &cutoff_minus5] {
             let out = episodic_recall(
                 &mem,
-                "agent.jarvis",
+                "agent.darwin",
                 "",
                 Some(&When::Since(bound.to_string())),
                 5,
@@ -782,7 +782,7 @@ mod tests {
         // Around [epoch, +02:00 cutoff]: only the pre-cutoff episode (gardens).
         let out = episodic_recall(
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             "",
             Some(&When::Around {
                 from: "1970-01-01T00:00:00-05:00".to_string(), // non-UTC low bound too
@@ -798,7 +798,7 @@ mod tests {
         // An UNPARSEABLE bound must not panic — it degrades safely (pass-through).
         let out = episodic_recall(
             &mem,
-            "agent.jarvis",
+            "agent.darwin",
             "",
             Some(&When::Since("garbage-bound".to_string())),
             5,
@@ -818,12 +818,12 @@ mod tests {
     async fn topical_recall_ranks_the_relevant_episode_first() {
         let db = TempDb::new("topical");
         let mem = Memory::open(&db.0).unwrap();
-        seed(&mem, "agent.jarvis", "I drive a blue Subaru Outback", "conversation").await;
-        seed(&mem, "agent.jarvis", "my corgi is named Watson", "conversation").await;
-        seed(&mem, "agent.jarvis", "I prefer neovim over vscode", "conversation").await;
+        seed(&mem, "agent.darwin", "I drive a blue Subaru Outback", "conversation").await;
+        seed(&mem, "agent.darwin", "my corgi is named Watson", "conversation").await;
+        seed(&mem, "agent.darwin", "I prefer neovim over vscode", "conversation").await;
 
         let out =
-            episodic_recall(&mem, "agent.jarvis", "what did I say about my car subaru", None, 3, &LexicalOnlyEmbedder)
+            episodic_recall(&mem, "agent.darwin", "what did I say about my car subaru", None, 3, &LexicalOnlyEmbedder)
                 .await;
         assert_eq!(out.method, RecallMethod::Lexical, "BM25 fallback in tests");
         assert!(!out.episodes.is_empty(), "the car episode must be retrieved");
@@ -838,9 +838,9 @@ mod tests {
     async fn topical_recall_no_match_returns_nothing_never_fabricates() {
         let db = TempDb::new("nomatch");
         let mem = Memory::open(&db.0).unwrap();
-        seed(&mem, "agent.jarvis", "I drive a blue Subaru", "conversation").await;
+        seed(&mem, "agent.darwin", "I drive a blue Subaru", "conversation").await;
         let out = episodic_recall(
-            &mem, "agent.jarvis", "quantum chromodynamics lecture", None, 5, &LexicalOnlyEmbedder,
+            &mem, "agent.darwin", "quantum chromodynamics lecture", None, 5, &LexicalOnlyEmbedder,
         )
         .await;
         assert!(
@@ -858,10 +858,10 @@ mod tests {
     async fn recall_is_agent_scoped_own_plus_shared_never_cross_agent() {
         let db = TempDb::new("scope");
         let mem = Memory::open(&db.0).unwrap();
-        // friday's private episode, jerome's private episode, a shared (jarvis) one.
+        // friday's private episode, jerome's private episode, a shared (darwin) one.
         seed(&mem, "agent.friday", "friday noted the market is up", "conversation").await;
         seed(&mem, "agent.jerome", "jerome queued a song about rain", "conversation").await;
-        seed(&mem, "agent.jarvis", "shared note about the weather", "conversation").await;
+        seed(&mem, "agent.darwin", "shared note about the weather", "conversation").await;
 
         // friday sees its OWN + the SHARED orchestrator episode, never jerome's.
         let friday = episodic_recall(&mem, "agent.friday", "", None, 10, &LexicalOnlyEmbedder).await;
@@ -899,13 +899,13 @@ mod tests {
         let db = TempDb::new("retain");
         let mem = Memory::open(&db.0).unwrap();
         for i in 0..5 {
-            seed(&mem, "agent.jarvis", &format!("episode number {i} about topic"), "conversation").await;
+            seed(&mem, "agent.darwin", &format!("episode number {i} about topic"), "conversation").await;
         }
         assert_eq!(mem.episodes_count().await.unwrap(), 5);
         // Keep the newest 2 episodes (events 30d, transcripts 100, episodes 2).
         let (_e, _t, episodes_deleted) = mem.retention_pass(30, 100, 2).await.unwrap();
         assert_eq!(episodes_deleted, 3, "the 3 oldest episodes were evicted");
-        let kept = mem.episodes_recent("agent.jarvis", 10).await.unwrap();
+        let kept = mem.episodes_recent("agent.darwin", 10).await.unwrap();
         assert_eq!(kept.len(), 2);
         // The SURVIVORS are the NEWEST (episodes 3 and 4).
         assert!(kept[0].utterance_redacted.contains("number 4"));

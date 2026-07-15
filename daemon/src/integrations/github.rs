@@ -38,7 +38,7 @@ const API_BASE: &str = "https://api.github.com";
 const ACCEPT: &str = "application/vnd.github+json";
 /// GitHub REJECTS requests with no User-Agent, so we always send one. It names
 /// the daemon, not the operator — no PII, no secret.
-const USER_AGENT: &str = "jarvis";
+const USER_AGENT: &str = "darwin";
 /// The Keychain account the foundation's allowlisted resolver reads for us.
 const SECRET_ACCOUNT: &str = "github_pat";
 

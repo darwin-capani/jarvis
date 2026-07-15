@@ -1,6 +1,6 @@
 //! Micro-app introspection — DEFENSIVE, READ-ONLY self-observation.
 //!
-//! jarvisd already OWNS the processes it wants to watch: `apps.rs` spawns each
+//! darwind already OWNS the processes it wants to watch: `apps.rs` spawns each
 //! micro-app as a same-UID child under `sandbox-exec` and holds its `Child`. So
 //! this subsystem needs NONE of the heavy macOS observation machinery — no
 //! Endpoint Security (which needs root, the restricted
@@ -53,7 +53,7 @@ pub fn sbpl_fingerprint(profile: &str) -> String {
     hex::encode(h.finalize())
 }
 
-/// A detected mismatch between the profile jarvisd wrote and what is on disk now.
+/// A detected mismatch between the profile darwind wrote and what is on disk now.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileDrift {
     pub app: String,
@@ -62,7 +62,7 @@ pub struct ProfileDrift {
 }
 
 /// Compare the recorded expected fingerprint against the current on-disk profile
-/// contents. `Some` iff they differ — i.e. the profile was edited after jarvisd
+/// contents. `Some` iff they differ — i.e. the profile was edited after darwind
 /// wrote it (a same-UID tamper of `state/apps/<name>/<name>.sb`). Pure.
 pub fn detect_profile_drift(app: &str, expected_fp: &str, on_disk: &str) -> Option<ProfileDrift> {
     let actual_fp = sbpl_fingerprint(on_disk);
@@ -222,7 +222,7 @@ fn resource_decision(
 // deeper compromise is bounded by the sandbox + token model, and the tamper-
 // resistant out-of-process path (task_for_pid → dyld_all_image_infos) is deferred
 // because it needs com.apple.security.cs.debugger, which does not even yield ports
-// for jarvisd's own hardened processes. See docs/INTROSPECT.md.
+// for darwind's own hardened processes. See docs/INTROSPECT.md.
 
 /// Cap on modules parsed from one report (bounds a hostile/oversized payload).
 const MAX_MODULES: usize = 8192;
@@ -371,7 +371,7 @@ pub fn reset_module_baseline(name: &str) {
 // memory executable but declared `jit=false` is a violation), and the arm64
 // "someone acquired my task port" attach/inject signal.
 
-/// A semantic security event about one of jarvisd's tracked apps. Produced by the
+/// A semantic security event about one of darwind's tracked apps. Produced by the
 /// (deferred, device-gated) ES NOTIFY client — or, today, by tests.
 // ES SEAM: intentionally has no LIVE caller yet — the ES NOTIFY front-end that
 // produces these is deferred (needs the restricted entitlement + FDA + notarized
@@ -540,7 +540,7 @@ pub fn ev_security(app: &str, kind: &str, high: bool, detail: &str) -> (&'static
 // Process-global registries (populated by apps.rs; read by the sentinel)
 // ===========================================================================
 
-/// name -> SHA-256 fingerprint of the profile jarvisd last WROTE for the app.
+/// name -> SHA-256 fingerprint of the profile darwind last WROTE for the app.
 fn expected_profiles() -> &'static Mutex<HashMap<String, String>> {
     static M: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     M.get_or_init(|| Mutex::new(HashMap::new()))
@@ -630,7 +630,7 @@ pub fn record_app_jit(name: &str, jit: bool) {
 }
 
 /// Reverse-lookup: the `(app name, jit_declared)` for a tracked child pid, or
-/// `None` if the pid is not one of jarvisd's own micro-apps. The ES front-end
+/// `None` if the pid is not one of darwind's own micro-apps. The ES front-end
 /// uses this to key a kernel event to one of OUR apps (and ignore everything
 /// else). Only the feature-gated ES client + tests call it.
 #[allow(dead_code)]

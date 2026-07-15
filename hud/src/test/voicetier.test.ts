@@ -52,9 +52,9 @@ describe("voice-tier folding helpers (events.ts)", () => {
   it("folds a kokoro (on-device) verdict", () => {
     const v = applyVoiceTier(voiceTierInitial(), {
       backend: "kokoro",
-      agent: "jarvis",
+      agent: "darwin",
     });
-    expect(v).toEqual({ backend: "kokoro", agent: "jarvis" });
+    expect(v).toEqual({ backend: "kokoro", agent: "darwin" });
   });
 
   it("folds an elevenlabs (cloud) verdict", () => {
@@ -66,7 +66,7 @@ describe("voice-tier folding helpers (events.ts)", () => {
   });
 
   it("ignores an unknown backend (keeps the prior value)", () => {
-    const seeded: VoiceTierStatus = { backend: "kokoro", agent: "jarvis" };
+    const seeded: VoiceTierStatus = { backend: "kokoro", agent: "darwin" };
     const v = applyVoiceTier(seeded, { backend: "totally-bogus" });
     expect(v.backend).toBe("kokoro"); // unchanged, not blanked
   });
@@ -76,11 +76,11 @@ describe("voice-tier folding helpers (events.ts)", () => {
     // neither a key nor a voice id field — they have no effect on the surface.
     const v = applyVoiceTier(voiceTierInitial(), {
       backend: "elevenlabs",
-      agent: "jarvis",
+      agent: "darwin",
       el_key: "sk-should-be-ignored",
       voice_id: "EL_SECRET_VOICE",
     });
-    expect(v).toEqual({ backend: "elevenlabs", agent: "jarvis" });
+    expect(v).toEqual({ backend: "elevenlabs", agent: "darwin" });
     expect(JSON.stringify(v)).not.toContain("sk-should-be-ignored");
     expect(JSON.stringify(v)).not.toContain("EL_SECRET_VOICE");
   });
@@ -110,9 +110,9 @@ describe("voice.tier in the HUD reducer", () => {
 
   it("folds a voice.tier telemetry frame", () => {
     let s = connected();
-    s = tel(s, env("voice.tier", { backend: "elevenlabs", agent: "jarvis" }));
+    s = tel(s, env("voice.tier", { backend: "elevenlabs", agent: "darwin" }));
     expect(s.voiceTier.backend).toBe("elevenlabs");
-    expect(s.voiceTier.agent).toBe("jarvis");
+    expect(s.voiceTier.agent).toBe("darwin");
     // A later on-device reply flips it back honestly.
     s = tel(s, env("voice.tier", { backend: "kokoro", agent: "vision" }));
     expect(s.voiceTier.backend).toBe("kokoro");
@@ -121,7 +121,7 @@ describe("voice.tier in the HUD reducer", () => {
 
   it("a garbled frame never blanks the indicator", () => {
     let s = connected();
-    s = tel(s, env("voice.tier", { backend: "kokoro", agent: "jarvis" }));
+    s = tel(s, env("voice.tier", { backend: "kokoro", agent: "darwin" }));
     s = tel(s, env("voice.tier", { backend: "noise" }));
     expect(s.voiceTier.backend).toBe("kokoro"); // kept
   });
@@ -159,7 +159,7 @@ describe("StatusBar voice-tier chip", () => {
   });
 
   it("renders ON-DEVICE in the calm tone for Kokoro", () => {
-    const html = renderStatusBar({ backend: "kokoro", agent: "jarvis" });
+    const html = renderStatusBar({ backend: "kokoro", agent: "darwin" });
     expect(html).toContain("TTS ON-DEVICE");
     expect(html).toContain("good");
   });
@@ -173,7 +173,7 @@ describe("StatusBar voice-tier chip", () => {
   });
 
   it("never renders a key/voice id in the chip", () => {
-    const html = renderStatusBar({ backend: "elevenlabs", agent: "jarvis" });
+    const html = renderStatusBar({ backend: "elevenlabs", agent: "darwin" });
     expect(html).not.toContain("xi-api-key");
     expect(html).not.toContain("sk-");
   });

@@ -332,7 +332,7 @@ mod tests {
     /// A unique temp root per test so the cache dirs don't collide.
     fn tmp_root(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "jarvis-sfx-cue-{tag}-{}-{:?}",
+            "darwin-sfx-cue-{tag}-{}-{:?}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

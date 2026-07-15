@@ -54,11 +54,11 @@ export const VOICE_ID_PHRASES = {
 } as const;
 
 /**
- * SYSTEM SETTINGS — the dedicated config surface for config/jarvis.toml. On open
+ * SYSTEM SETTINGS — the dedicated config surface for config/darwin.toml. On open
  * it reads every whitelisted setting (config_get) and renders the catalog
  * GROUPED, one control per setting bound to its live value. Edits are BATCHED
  * locally (marked "pending") — nothing is written until the explicit
- * "Apply changes — restarts JARVIS" action, which confirms, writes the batch
+ * "Apply changes — restarts DARWIN" action, which confirms, writes the batch
  * (config_set), then restarts the daemon (daemon_restart) so the new config
  * takes effect. There is no hot-reload; this is the honest model.
  *
@@ -208,7 +208,7 @@ export default function SystemSettingsPanel({
       // what we wrote.
       const nextLive: Record<string, SettingValue> = { ...state.live };
       for (const c of changes) nextLive[c.id] = c.value;
-      const wrote = `Wrote ${nLines} line${nLines === 1 ? "" : "s"} to config/jarvis.toml.`;
+      const wrote = `Wrote ${nLines} line${nLines === 1 ? "" : "s"} to config/darwin.toml.`;
       dispatch({
         type: "applyDone",
         live: nextLive,
@@ -233,15 +233,15 @@ export default function SystemSettingsPanel({
   }, [state.confirm, state.live]);
 
   if (state.phase === "loading") {
-    return <div className="syscfg-note">Reading config/jarvis.toml…</div>;
+    return <div className="syscfg-note">Reading config/darwin.toml…</div>;
   }
   if (state.phase === "error") {
     return (
       <div className="syscfg-note err">
         {state.error}
         <div className="kv-note" style={{ marginTop: 6 }}>
-          System Settings edit config/jarvis.toml at the resolved JARVIS root and require the
-          JARVIS desktop app. The values shown here load from that file.
+          System Settings edit config/darwin.toml at the resolved DARWIN root and require the
+          DARWIN desktop app. The values shown here load from that file.
         </div>
       </div>
     );
@@ -254,7 +254,7 @@ export default function SystemSettingsPanel({
   return (
     <div className="syscfg">
       <div className="kv-note syscfg-intro">
-        These edit <strong>config/jarvis.toml</strong> only. JARVIS caches its config at startup —
+        These edit <strong>config/darwin.toml</strong> only. DARWIN caches its config at startup —
         there is no hot-reload, so edits are <strong>batched</strong> and take effect when you
         <strong> Apply</strong>, which writes the file and <strong>restarts the daemon</strong>.
         The runtime gates (master switch, per-action confirm, voice-id, lockdown, policy) are
@@ -275,7 +275,7 @@ export default function SystemSettingsPanel({
 
       {/* WS4a — maintenance lives OUTSIDE the batched config-edit flow: these are
           immediate actions (check for updates / open the uninstaller), not
-          jarvis.toml edits, so they are not part of the pending/Apply batch. */}
+          darwin.toml edits, so they are not part of the pending/Apply batch. */}
       <UpdatesSection />
       <UninstallSection />
 
@@ -307,7 +307,7 @@ export default function SystemSettingsPanel({
             disabled={changes.length === 0 || state.busy}
             onClick={() => dispatch({ type: "openConfirm" })}
           >
-            Apply changes — restarts JARVIS
+            Apply changes — restarts DARWIN
           </button>
         </div>
       </div>
@@ -348,7 +348,7 @@ export function UpdatesSection() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<UpdateCheck | null>(null);
   // The persisted "auto-install on launch" preference. Initialised lazily from
-  // the SAME localStorage flag the launch path reads (jarvis.autoUpdate), so
+  // the SAME localStorage flag the launch path reads (darwin.autoUpdate), so
   // this toggle reflects the real value and turning it OFF here is the
   // reversible undo of the dialog's "Update & don't ask again". Default OFF.
   const [autoUpdate, setAutoUpdate] = useState(() => isAutoUpdateOn());
@@ -379,7 +379,7 @@ export function UpdatesSection() {
   const available = result?.status === "available";
   const note =
     result?.detail ??
-    "Checks GitHub Releases for a newer signed JARVIS and verifies its signature before installing.";
+    "Checks GitHub Releases for a newer signed DARWIN and verifies its signature before installing.";
 
   return (
     <section className="syscfg-group" aria-label="Updates">
@@ -393,7 +393,7 @@ export function UpdatesSection() {
               className="icon-btn"
               onClick={() => void check(false)}
               disabled={!shell || busy}
-              title="Check GitHub Releases for a newer signed JARVIS"
+              title="Check GitHub Releases for a newer signed DARWIN"
             >
               {busy && !available ? "Checking…" : "Check for updates"}
             </button>
@@ -412,13 +412,13 @@ export function UpdatesSection() {
         </div>
         <div className="syscfg-hint" role="status">
           {!shell
-            ? "Updates are checked from the JARVIS desktop app."
+            ? "Updates are checked from the DARWIN desktop app."
             : note}
         </div>
       </div>
 
       {/* REVERSIBLE auto-update preference. Reflects the persisted
-          jarvis.autoUpdate flag and lets the user turn "don't ask again" back
+          darwin.autoUpdate flag and lets the user turn "don't ask again" back
           OFF. HONEST: when ON, the next launch SILENTLY installs an available,
           SIGNATURE-VERIFIED update (with a brief notice) instead of showing the
           dialog. It changes nothing when the updater is not armed — there is
@@ -443,7 +443,7 @@ export function UpdatesSection() {
           </span>
         </div>
         <div className="syscfg-hint">
-          When on, JARVIS installs signature-verified updates automatically at launch (with a brief
+          When on, DARWIN installs signature-verified updates automatically at launch (with a brief
           notice) instead of asking. Turn off to be asked each time. Off by default.
         </div>
       </div>
@@ -454,13 +454,13 @@ export function UpdatesSection() {
 /* --------------------------------------------------------- uninstall (WS4a) */
 
 /** UNINSTALL — a clearly-marked DESTRUCTIVE control. HONESTY + SAFETY CONTRACT
- *  (do not regress): clicking "Uninstall JARVIS" does NOT delete anything. It
+ *  (do not regress): clicking "Uninstall DARWIN" does NOT delete anything. It
  *  takes a two-stage path: a HUD-local PRE-CONFIRM (the first click arms a warning
  *  + a second explicit "Open uninstaller" button), and only that second click
  *  calls the backend, which merely OPENS Terminal.app running uninstall.sh. The
  *  actual deletion still requires the user to type the script's OWN two
  *  confirmations ("yes" twice) in that terminal. So no single click — and no two
- *  clicks here — can remove JARVIS; the destructive decision stays in the
+ *  clicks here — can remove DARWIN; the destructive decision stays in the
  *  terminal, behind the script's typed confirmations. */
 export function UninstallSection() {
   const shell = inTauri();
@@ -487,7 +487,7 @@ export function UninstallSection() {
       <div className="cred-section-title danger">DANGER ZONE // UNINSTALL</div>
       <div className="syscfg-row danger">
         <div className="syscfg-row-head">
-          <span className="syscfg-label">Uninstall JARVIS</span>
+          <span className="syscfg-label">Uninstall DARWIN</span>
           <span className="syscfg-control">
             {!armed ? (
               <button
@@ -500,7 +500,7 @@ export function UninstallSection() {
                 disabled={!shell || busy}
                 title="Begin uninstall — opens Terminal where you type two confirmations; nothing is removed yet"
               >
-                Uninstall JARVIS…
+                Uninstall DARWIN…
               </button>
             ) : (
               <>
@@ -509,7 +509,7 @@ export function UninstallSection() {
                   className="icon-btn cred-remove"
                   onClick={() => void open()}
                   disabled={!shell || busy}
-                  title="Open Terminal running uninstall.sh — you then type 'yes' twice there to actually remove JARVIS"
+                  title="Open Terminal running uninstall.sh — you then type 'yes' twice there to actually remove DARWIN"
                 >
                   {busy ? "Opening Terminal…" : "Open uninstaller in Terminal"}
                 </button>
@@ -532,10 +532,10 @@ export function UninstallSection() {
         <div className="syscfg-warn" role="status">
           {note ||
             (!shell
-              ? "Uninstall runs from the JARVIS desktop app (it opens Terminal on uninstall.sh)."
+              ? "Uninstall runs from the DARWIN desktop app (it opens Terminal on uninstall.sh)."
               : armed
-                ? "This will OPEN Terminal running uninstall.sh. Nothing is removed until you type 'yes' to BOTH prompts there. The uninstaller removes only JARVIS's own footprint (install home, the two LaunchAgents, the com.jarvis.daemon Keychain items, and the logs)."
-                : "Completely removes JARVIS via its two-step typed-confirmation uninstaller. This button only OPENS the uninstaller in Terminal — it never deletes anything by itself; you type the confirmations there.")}
+                ? "This will OPEN Terminal running uninstall.sh. Nothing is removed until you type 'yes' to BOTH prompts there. The uninstaller removes only DARWIN's own footprint (install home, the two LaunchAgents, the com.darwin.daemon Keychain items, and the logs)."
+                : "Completely removes DARWIN via its two-step typed-confirmation uninstaller. This button only OPENS the uninstaller in Terminal — it never deletes anything by itself; you type the confirmations there.")}
         </div>
       </div>
     </section>
@@ -733,7 +733,7 @@ export function VoiceIdEnrollControls({
       if (!enabledDraft) onEdit("voice_id.enabled", true);
       setNote(
         "Voice-id is off, so enrollment can't run yet. I've turned it On as a pending " +
-          "change — Apply (which restarts JARVIS), then click Enroll again and speak the " +
+          "change — Apply (which restarts DARWIN), then click Enroll again and speak the " +
           "prompts when asked. Needs Microphone access + the daemon running.",
       );
       return;
@@ -820,7 +820,7 @@ export function VoiceIdEnrollControls({
       <div className="syscfg-vid-enroll-note" role="status">
         {note ||
           (!shell
-            ? "Enrollment runs in the JARVIS desktop app (it needs the daemon + Microphone access)."
+            ? "Enrollment runs in the DARWIN desktop app (it needs the daemon + Microphone access)."
             : display === "off" && !enabledDraft
               ? "Voice-id is off. Enrolling will turn it On (pending) — then Apply, speak the prompts when asked."
               : "Enrollment captures live mic audio prompt-by-prompt: needs Microphone access + the daemon running; speak the prompts when asked. The badge only shows ENROLLED when telemetry confirms it.")}
@@ -1183,10 +1183,10 @@ function ApplyConfirm({
   return (
     <div className="syscfg-confirm-backdrop" onClick={busy ? undefined : onCancel}>
       <div className="syscfg-confirm" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Confirm apply">
-        <div className="syscfg-confirm-title">APPLY {confirm.changes.length} CHANGE{confirm.changes.length === 1 ? "" : "S"} // RESTART JARVIS</div>
+        <div className="syscfg-confirm-title">APPLY {confirm.changes.length} CHANGE{confirm.changes.length === 1 ? "" : "S"} // RESTART DARWIN</div>
         <div className="kv-note">
-          This writes config/jarvis.toml in place (comments + structure preserved) and then runs
-          <strong> launchctl kickstart com.jarvis.daemon</strong> so the new config takes effect.
+          This writes config/darwin.toml in place (comments + structure preserved) and then runs
+          <strong> launchctl kickstart com.darwin.daemon</strong> so the new config takes effect.
           If the daemon is not loaded, the write still lands and the restart reports honestly.
         </div>
 

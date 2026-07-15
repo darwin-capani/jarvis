@@ -1,8 +1,8 @@
-//! JARVIS HUD shell — Tauri 2 commands for the multi-credential settings panel.
+//! DARWIN HUD shell — Tauri 2 commands for the multi-credential settings panel.
 //!
 //! Keychain access is IN-PROCESS via the Security.framework bindings
 //! (`security-framework` crate) — secret material never appears on any process
-//! command line. The service string is `com.jarvis.daemon`; each credential
+//! command line. The service string is `com.darwin.daemon`; each credential
 //! has a fixed account string drawn from the registry in `credentials.rs`.
 //! Every account argument is validated against that registry allowlist BEFORE
 //! any Keychain operation, so the frontend cannot write arbitrary items.
@@ -38,7 +38,7 @@ use serde::Serialize;
 
 use credentials::{account_for_id, credential_by_id, is_known_account, Kind};
 
-const SERVICE: &str = "com.jarvis.daemon";
+const SERVICE: &str = "com.darwin.daemon";
 const API_TIMEOUT: Duration = Duration::from_secs(10);
 /// Security.framework OSStatus for errSecItemNotFound.
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
@@ -396,7 +396,7 @@ async fn verify_dispatch(id: &str, secret: &str) -> Result<VerifyResult, String>
         // credentials. The client_id/secret are opaque strings (plausible-length
         // check via classify_oauth_client); the access_token is shape-checked for the
         // Plaid Link `access-…` prefix (Plaid Link runs in the user's own frontend,
-        // not JARVIS). The real proof is midas's first balance read at runtime.
+        // not DARWIN). The real proof is midas's first balance read at runtime.
         // MIDAS reads only — none of these enables any money movement.
         "plaid_client_id" => return Ok(classify_oauth_client("Plaid", "client id", secret)),
         "plaid_secret" => return Ok(classify_oauth_client("Plaid", "secret", secret)),
@@ -453,7 +453,7 @@ async fn verify_dispatch(id: &str, secret: &str) -> Result<VerifyResult, String>
             let resp = client
                 .get("https://api.github.com/user")
                 .header("Authorization", format!("Bearer {secret}"))
-                .header("User-Agent", "jarvis-hud")
+                .header("User-Agent", "darwin-hud")
                 .header("Accept", "application/vnd.github+json")
                 .send()
                 .await;
@@ -560,7 +560,7 @@ struct ConnectResult {
 #[tauri::command]
 async fn begin_google_auth() -> Result<ConnectResult, String> {
     // The runtime consent flow lives in the daemon's `connect_google` tool:
-    // saying "connect Google" to jarvisd opens the browser consent page, runs
+    // saying "connect Google" to darwind opens the browser consent page, runs
     // the loopback, and stores the refresh token.
     begin_oauth_connect(
         "Google",
@@ -577,7 +577,7 @@ async fn begin_google_auth() -> Result<ConnectResult, String> {
 /// client halves are on file and whether a refresh token is genuinely present,
 /// and returns guidance pointing at the daemon's own consent flow. `provider`
 /// is the public platform name; `connect_phrase` is the exact thing the user
-/// says to jarvisd (e.g. "connect X"). No secret material is ever read or
+/// says to darwind (e.g. "connect X"). No secret material is ever read or
 /// logged — only presence bools.
 async fn begin_oauth_connect(
     provider: &str,
@@ -594,7 +594,7 @@ async fn begin_oauth_connect(
         format!("{provider} is connected (refresh token on file).")
     } else if has_id && has_secret {
         format!(
-            "Client id and secret are on file. Start jarvisd and say '{connect_phrase}' — it opens the browser to finish."
+            "Client id and secret are on file. Start darwind and say '{connect_phrase}' — it opens the browser to finish."
         )
     } else {
         "Paste the OAuth client id and secret first, then Connect.".to_string()
@@ -815,26 +815,26 @@ async fn exit_takeover(
     }
 }
 
-/// The id of the custom "About J.A.R.V.I.S." menu item, shared by the menu
+/// The id of the custom "About D.A.R.W.I.N." menu item, shared by the menu
 /// construction and the menu-event handler so they can never drift.
-const ABOUT_MENU_ID: &str = "about_jarvis";
+const ABOUT_MENU_ID: &str = "about_darwin";
 /// The event the About menu item emits to the webview (payload = app version).
 /// Must match `ABOUT_MENU_EVENT` in `hud/src/tauri/bridge.ts`.
 const ABOUT_MENU_EVENT: &str = "menu://about";
 
 /// Build the macOS app menu. We REPLACE Tauri's default menu so the
-/// "About J.A.R.V.I.S." item opens our CUSTOM About panel (which carries a
+/// "About D.A.R.W.I.N." item opens our CUSTOM About panel (which carries a
 /// working "Check for Updates" button + the credit) instead of the system about
 /// panel. Everything else is reconstructed from PREDEFINED items so the standard
 /// behavior is preserved — in particular the Edit menu keeps Cut/Copy/Paste/
 /// Select-All working (the credential paste-boxes depend on it), and Hide/
 /// Services/Quit/Window keep their conventional shortcuts.
 fn build_app_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
-    let about = MenuItem::with_id(handle, ABOUT_MENU_ID, "About J.A.R.V.I.S.", true, None::<&str>)?;
+    let about = MenuItem::with_id(handle, ABOUT_MENU_ID, "About D.A.R.W.I.N.", true, None::<&str>)?;
 
     let app_menu = Submenu::with_items(
         handle,
-        "J.A.R.V.I.S.",
+        "D.A.R.W.I.N.",
         true,
         &[
             &about,
@@ -883,7 +883,7 @@ fn build_app_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Res
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
-        // Custom macOS menu: the "About J.A.R.V.I.S." item opens our custom About
+        // Custom macOS menu: the "About D.A.R.W.I.N." item opens our custom About
         // panel (emits ABOUT_MENU_EVENT to the webview) instead of the system
         // about panel; everything else is the standard predefined menu.
         .menu(build_app_menu)
@@ -925,7 +925,7 @@ pub fn run() {
             // START the UI ACTUATOR listener (actuator.rs) on its own background
             // thread. It binds <root>/state/ipc/actuate.sock and serves ONE
             // token-authenticated actuation request per connection, posting the
-            // CGEvent IN THIS app process so macOS shows a clean "JARVIS would like
+            // CGEvent IN THIS app process so macOS shows a clean "DARWIN would like
             // to control this computer" Accessibility prompt. NON-BLOCKING and a
             // clean no-op when the daemon hasn't created state/ipc/ yet; it NEVER
             // actuates on its own — only on a token-verified daemon request. Kept
@@ -987,7 +987,7 @@ pub fn run() {
             exit_takeover
         ])
         .build(tauri::generate_context!())
-        .expect("error while building the JARVIS HUD");
+        .expect("error while building the DARWIN HUD");
 
     // RESET-ON-EXIT safety net (app side): on the event loop exiting (Cmd+Q /
     // quit), restore the default macOS presentation options. macOS ALSO
@@ -1010,7 +1010,7 @@ mod tests {
         // These two strings are the contract with hud/src/tauri/bridge.ts: the
         // menu item id the handler matches on, and the event the webview listens
         // for. If either drifts, the About menu click stops opening the panel.
-        assert_eq!(ABOUT_MENU_ID, "about_jarvis");
+        assert_eq!(ABOUT_MENU_ID, "about_darwin");
         assert_eq!(ABOUT_MENU_EVENT, "menu://about");
     }
 

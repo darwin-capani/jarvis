@@ -409,10 +409,10 @@ fn parse_pending(v: &Value) -> PendingSnapshot {
 
 /* ------------------------------------------------------------- token + I/O */
 
-/// Resolve the JARVIS repo root, reusing the self-heal resolver (JARVIS_ROOT env,
-/// else the exe/cwd upward walk to the scripts/apply_heal.sh + config/jarvis.toml
+/// Resolve the DARWIN repo root, reusing the self-heal resolver (DARWIN_ROOT env,
+/// else the exe/cwd upward walk to the scripts/apply_heal.sh + config/darwin.toml
 /// markers). The command socket + token file both live under `<root>/state/ipc/`.
-fn jarvis_root() -> Result<PathBuf, String> {
+fn darwin_root() -> Result<PathBuf, String> {
     crate::heal::resolve_root_for_command()
 }
 
@@ -424,7 +424,7 @@ fn jarvis_root() -> Result<PathBuf, String> {
 pub(crate) fn read_token(root: &Path) -> Result<String, String> {
     let path = root.join("state").join("ipc").join("command.token");
     let token = std::fs::read_to_string(&path)
-        .map_err(|_| "command channel unavailable (is jarvisd running?)".to_string())?;
+        .map_err(|_| "command channel unavailable (is darwind running?)".to_string())?;
     let token = token.trim().to_string();
     if token.is_empty() {
         return Err("command channel token is empty".to_string());
@@ -446,7 +446,7 @@ fn round_trip(sock: &Path, line: &str) -> Result<String, String> {
         return Err("oversized".to_string());
     }
     let mut stream = UnixStream::connect(sock)
-        .map_err(|_| "command channel unavailable (is jarvisd running?)".to_string())?;
+        .map_err(|_| "command channel unavailable (is darwind running?)".to_string())?;
     stream
         .set_read_timeout(Some(SOCKET_TIMEOUT))
         .and_then(|_| stream.set_write_timeout(Some(SOCKET_TIMEOUT)))
@@ -504,7 +504,7 @@ pub async fn send_command(request: CommandRequest) -> Result<CommandReply, Strin
 
     // Run the token read + blocking socket round-trip off the async runtime.
     tauri::async_runtime::spawn_blocking(move || {
-        let root = match jarvis_root() {
+        let root = match darwin_root() {
             Ok(r) => r,
             Err(e) => return Ok(CommandReply::err(e)),
         };
@@ -821,7 +821,7 @@ mod tests {
             },
             {
                 let mut r = req("create_pronunciation");
-                r.word = Some("JARVIS".into());
+                r.word = Some("DARWIN".into());
                 r.say = Some("jar viss".into());
                 r
             },
@@ -879,13 +879,13 @@ mod tests {
         // Voice Lab — create_pronunciation needs BOTH word and say.
         assert!(build_request(&req("create_pronunciation"), "T").is_err()); // neither
         let mut no_say = req("create_pronunciation");
-        no_say.word = Some("JARVIS".into());
+        no_say.word = Some("DARWIN".into());
         assert!(build_request(&no_say, "T").is_err()); // no say
         let mut no_word = req("create_pronunciation");
         no_word.say = Some("jar viss".into());
         assert!(build_request(&no_word, "T").is_err()); // no word
         let mut blank_say = req("create_pronunciation");
-        blank_say.word = Some("JARVIS".into());
+        blank_say.word = Some("DARWIN".into());
         blank_say.say = Some("   ".into());
         assert!(build_request(&blank_say, "T").is_err()); // whitespace say
 
@@ -925,12 +925,12 @@ mod tests {
     #[test]
     fn build_request_create_pronunciation_carries_only_the_text_rule() {
         let mut r = req("create_pronunciation");
-        r.word = Some("  JARVIS  ".into());
+        r.word = Some("  DARWIN  ".into());
         r.say = Some("  jar viss  ".into());
         r.name = Some("My dictionary".into());
         let v = build_request(&r, "TOK").unwrap();
         assert_eq!(v["cmd"], "create_pronunciation");
-        assert_eq!(v["word"], "JARVIS");
+        assert_eq!(v["word"], "DARWIN");
         assert_eq!(v["say"], "jar viss");
         assert_eq!(v["name"], "My dictionary");
         assert_eq!(v["token"], "TOK", "token injected by the backend");
@@ -939,7 +939,7 @@ mod tests {
 
         // A blank name is OMITTED (the daemon defaults it to a fixed label).
         let mut no_name = req("create_pronunciation");
-        no_name.word = Some("JARVIS".into());
+        no_name.word = Some("DARWIN".into());
         no_name.say = Some("jar viss".into());
         let v = build_request(&no_name, "T").unwrap();
         assert!(v.get("name").is_none(), "blank name omitted");
@@ -951,7 +951,7 @@ mod tests {
         // A successful creation → created (the agent now speaks with it).
         let designed = parse_reply(r#"{"ok":true,"reply":"Designed and saved the Concierge voice for friday."}"#);
         assert_eq!(voice_lab_outcome(&designed).outcome, "created");
-        let pron = parse_reply(r#"{"ok":true,"reply":"Created the pronunciation rule: say \"JARVIS\" as \"jar viss\"."}"#);
+        let pron = parse_reply(r#"{"ok":true,"reply":"Created the pronunciation rule: say \"DARWIN\" as \"jar viss\"."}"#);
         assert_eq!(voice_lab_outcome(&pron).outcome, "created");
         // A gate-closed rejection NEVER reads as created — it is an honest no-op.
         let offline = parse_reply(

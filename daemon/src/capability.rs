@@ -1,6 +1,6 @@
 //! The LIVE HONEST CAPABILITY MAP (`capability.map` telemetry).
 //!
-//! JARVIS ships **armed by default, gated per action**: consequential subsystems
+//! DARWIN ships **armed by default, gated per action**: consequential subsystems
 //! are ON but INERT until their dependency is supplied (a key, a model, a TCC
 //! grant, an allowlisted folder). That honesty model is easy to misstate in prose
 //! and invisible at runtime. This module turns it into a first-class, queryable

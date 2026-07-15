@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Fake jarvisd telemetry feed for HUD development.
+"""Fake darwind telemetry feed for HUD development.
 
 Serves ws://127.0.0.1:7177 (the daemon's telemetry port — do NOT run this
-while jarvisd is running) and streams a realistic event loop: system.load,
+while darwind is running) and streams a realistic event loop: system.load,
 audio.level at ~15Hz, and a full spoken-exchange sequence every ~12s. Lets
 the HUD be developed and visually verified without the daemon, mic, or
 models.
@@ -21,13 +21,13 @@ import websockets
 PORT = 7177
 START = time.time()
 
-# Optional headless-verification freeze: when JARVIS_DEMO_HOLD=<agent> is set,
+# Optional headless-verification freeze: when DARWIN_DEMO_HOLD=<agent> is set,
 # the feed runs the roll-call once, then holds that ONE agent active (and stops
 # the per-exchange delegation rotation) so a screenshot deterministically shows
 # the CONSTELLATION // AGENTS panel highlighting it and the core in its hue.
 # Unset (the default) -> the normal cycling demo loop. No behavior change to the
 # shipped demo; this is a verification convenience only.
-HOLD_AGENT = (os.environ.get("JARVIS_DEMO_HOLD") or "").strip().lower() or None
+HOLD_AGENT = (os.environ.get("DARWIN_DEMO_HOLD") or "").strip().lower() or None
 
 
 def env(source, event, data):
@@ -90,7 +90,7 @@ GLOBAL_SCAN_ITEMS = [
 # hue lerps per agent. NOTE: ultron's identity hue is deep-orange 15 — NOT the
 # reserved alert-red — so the roll-call never lights the core red.
 ROLL_CALL = [
-    ("jarvis", "Prime Orchestrator", 190),
+    ("darwin", "Prime Orchestrator", 190),
     ("friday", "Daily Intel", 35),
     ("veronica", "Content + Comms", 320),
     ("vision", "Research + OSINT", 265),
@@ -107,7 +107,7 @@ ROLL_CALL = [
 # so the active agent — and thus the core hue + ACTIVE chip — varies turn to
 # turn after the opening roll-call. (name, role, hue) drawn from ROLL_CALL.
 DELEGATIONS = [
-    ("jarvis", "Prime Orchestrator", 190),
+    ("darwin", "Prime Orchestrator", 190),
     ("vision", "Research + OSINT", 265),
     ("steve", "CTO + Builds", 150),
     ("friday", "Daily Intel", 35),
@@ -280,7 +280,7 @@ async def feed(ws):
                         {"intent": "system.query", "confidence": 0.97, "complexity": "light"},
                     )
                 )
-                # Jarvis-Prime delegates this turn to the next agent in the
+                # Darwin-Prime delegates this turn to the next agent in the
                 # rotation; the HUD lights it in the constellation, recolors the
                 # ACTIVE chip, and lerps the core to its hue. Released back to
                 # cyan by pipeline.completed at the end of the exchange.

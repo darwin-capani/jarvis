@@ -135,7 +135,7 @@ export const POLICY_PHRASES = {
 /**
  * Settings panel — multi-credential registry (docs/HUD.md §5.1, CONTRACT
  * part C). Each bearer credential is stored as a macOS Keychain generic
- * password (service com.jarvis.daemon, account from the registry), never
+ * password (service com.darwin.daemon, account from the registry), never
  * plaintext, never logged. The panel renders presence only — secrets are never
  * rendered back. Pressing ENTER in a row verifies the token live and, only on
  * success, stores it.
@@ -193,7 +193,7 @@ export default function SettingsModal({
   const shell = inTauri();
   // Which top-level Settings surface is showing. "credentials" is the existing
   // keys/gates/policy view; "system" is the dedicated SYSTEM SETTINGS panel that
-  // edits config/jarvis.toml (batched, applied on a daemon restart).
+  // edits config/darwin.toml (batched, applied on a daemon restart).
   const [tab, setTab] = useState<"credentials" | "system" | "access">(initialTab);
   // The configured MCP servers that declare a token (mcp.status carries only the
   // usesToken bool — never a secret), so a server's token can be stored under its
@@ -219,7 +219,7 @@ export default function SettingsModal({
                 ? "SETTINGS // SYSTEM ACCESS"
                 : "SETTINGS // CREDENTIALS"
           }
-          tag="com.jarvis.daemon"
+          tag="com.darwin.daemon"
         >
           <div className="settings-tabs" role="tablist" aria-label="Settings sections">
             <button
@@ -298,12 +298,12 @@ export default function SettingsModal({
                 ))}
                 <div className="kv-note">
                   These are the tokens for the MCP servers configured in
-                  jarvis.toml that declare one. The token is stored under the
+                  darwin.toml that declare one. The token is stored under the
                   server&apos;s own Keychain account and is never shown, logged,
                   on argv, or in a URL. There is no live verify for an MCP token
                   (it is server-specific), so storing it saves it directly. To
-                  add or remove a server itself, edit jarvis.toml and restart
-                  jarvisd — the HUD does not spawn servers.
+                  add or remove a server itself, edit darwin.toml and restart
+                  darwind — the HUD does not spawn servers.
                 </div>
               </>
             )}
@@ -338,10 +338,10 @@ export default function SettingsModal({
 
             <div className="kv-note">
               Storing a token verifies and saves it; the agent that uses it
-              (e.g. GitHub PRs) is a separate build. Restart jarvisd after
+              (e.g. GitHub PRs) is a separate build. Restart darwind after
               changing the Anthropic key. Google Workspace, X, and LinkedIn each
               need your own developer OAuth app (client id + secret) plus a
-              one-time browser consent that runs in jarvisd — they are not
+              one-time browser consent that runs in darwind — they are not
               paste-only like GitHub or Slack.
             </div>
 
@@ -532,7 +532,7 @@ function OAuthConnectRow({
       </button>
       <div className="cred-hint">
         {note ||
-          "Paste the client id + secret above, then Connect. The browser consent runs in jarvisd."}
+          "Paste the client id + secret above, then Connect. The browser consent runs in darwind."}
       </div>
       <div className={`cred-pill ${pillClass(pill)}`}>{pillText}</div>
     </div>
@@ -649,7 +649,7 @@ function McpTokenRow({ server, shell }: { server: string; shell: boolean }) {
  *  [0,1], never a probability of identity and never a security guarantee.
  *
  *  Like MCP servers and the [skills] master switch, voice-id is configured in
- *  jarvis.toml (the HUD never writes daemon config), and enrolment is by an
+ *  darwin.toml (the HUD never writes daemon config), and enrolment is by an
  *  EXPLICIT spoken intent ("enroll my voice") — never automatic. So this section
  *  REFLECTS the live state from telemetry and documents the exact lockstep keys
  *  + the spoken controls, rather than offering a toggle that would silently do
@@ -689,7 +689,7 @@ function VoiceIdSection({ voiceId }: { voiceId: VoiceIdStatus }) {
       </div>
 
       <div className="kv-note">
-        Voice-id is configured in <code>jarvis.toml</code> under{" "}
+        Voice-id is configured in <code>darwin.toml</code> under{" "}
         <code>[voice_id]</code> (the HUD does not write daemon config) and ships
         OFF — with it off, or with no enrolled profile, behavior is unchanged.
         Keys:
@@ -712,7 +712,7 @@ function VoiceIdSection({ voiceId }: { voiceId: VoiceIdStatus }) {
             <code>gate_scope</code> — <code>&quot;consequential&quot;</code>{" "}
             (default: gate only outward/consequential actions + confirmation
             replay) or <code>&quot;all&quot;</code> (also gate ordinary
-            commands). Restart jarvisd after editing.
+            commands). Restart darwind after editing.
           </li>
         </ul>
         Enrolment is an EXPLICIT spoken intent, never automatic: say{" "}
@@ -731,7 +731,7 @@ function VoiceIdSection({ voiceId }: { voiceId: VoiceIdStatus }) {
  *  owner's voice with ElevenLabs (daemon/src/voiceclone.rs). HONESTY CONTRACT (do
  *  not regress): cloning UPLOADS an audio SAMPLE — it LEAVES this device for
  *  ElevenLabs. It is therefore CONSENT-GATED + AUTHORIZATION-BOUND: never automatic,
- *  only on a sample confined to the JARVIS root (your own voice — no impersonating
+ *  only on a sample confined to the DARWIN root (your own voice — no impersonating
  *  others), and it takes TWO explicit steps. Step 1 (PROPOSE) sends the spoken
  *  "clone my voice" intent; the daemon PARKS a pending consent and asks you to
  *  confirm — NOTHING leaves the device yet. Step 2 (CONFIRM) is a SEPARATE explicit
@@ -767,7 +767,7 @@ function VoiceCloneSection({ shell }: { shell: boolean }) {
       setProposed(true);
       setNote(
         reply ||
-          "JARVIS is asking you to confirm. Nothing has left the device yet — press CONFIRM CLONE to upload the sample, or CANCEL.",
+          "DARWIN is asking you to confirm. Nothing has left the device yet — press CONFIRM CLONE to upload the sample, or CANCEL.",
       );
     } catch {
       setNote("shell error");
@@ -881,7 +881,7 @@ function VoiceCloneSection({ shell }: { shell: boolean }) {
         Cloning is CONSENT-GATED + AUTHORIZATION-BOUND, never automatic. The owner
         sample is chosen by the daemon from a CONFINED in-tree location (your
         voice-id enrolment audio under <code>state/voiceid/</code>, else a
-        <code>state/voice-samples/</code> wav) — a path that escapes the JARVIS root
+        <code>state/voice-samples/</code> wav) — a path that escapes the DARWIN root
         is rejected, so a clone can never be pointed at someone else&apos;s
         recording. You can also say <b>&quot;clone my voice&quot;</b> by voice for the
         same two-step flow, and <b>&quot;forget my voice clone&quot;</b> to drop it.
@@ -889,7 +889,7 @@ function VoiceCloneSection({ shell }: { shell: boolean }) {
         confirm; with no key nothing is uploaded and your on-device voice stays. The
         ElevenLabs key is Keychain-only and is never shown, logged, or sent here.
         Live clone quality is device/credential-gated — it is not measured in this
-        panel. ElevenLabs is a VOICE layer only — JARVIS keeps its own brain.
+        panel. ElevenLabs is a VOICE layer only — DARWIN keeps its own brain.
       </div>
     </>
   );
@@ -901,7 +901,7 @@ function VoiceCloneSection({ shell }: { shell: boolean }) {
  *  tier is on, the user's VOICE AUDIO (their actual recording) LEAVES the device to
  *  be transcribed by ElevenLabs Scribe. On-device whisper (mlx_whisper) is the
  *  private/offline DEFAULT and the FALLBACK on any cloud error. Like the other
- *  daemon-owned subsystems it is configured in jarvis.toml under [voice].cloud_stt
+ *  daemon-owned subsystems it is configured in darwin.toml under [voice].cloud_stt
  *  (the HUD never writes daemon config) and ships OFF, so this section REFLECTS the
  *  live stt.tier verdict + documents the exact pinned key rather than offering a
  *  toggle that would silently do nothing. Live transcription quality is
@@ -925,7 +925,7 @@ function SttTierSection({ sttTier }: { sttTier: SttTierStatus }) {
       </div>
 
       <div className="kv-note">
-        Cloud STT is configured in <code>jarvis.toml</code> under{" "}
+        Cloud STT is configured in <code>darwin.toml</code> under{" "}
         <code>[voice]</code> (the HUD does not write daemon config) and ships OFF.
         Key:
         <ul className="voiceid-keys">
@@ -965,7 +965,7 @@ function SttTierSection({ sttTier }: { sttTier: SttTierStatus }) {
  *  model-control command the voice path uses (an `ask` over the command channel,
  *  which the daemon's conservative classify_model_swap interprets), so the HUD adds
  *  no new authority and the override + telemetry flow are identical to voice. The
- *  DURABLE default lives in jarvis.toml under [router].conversation_route (the HUD
+ *  DURABLE default lives in darwin.toml under [router].conversation_route (the HUD
  *  never writes daemon config); the runtime override resets to that default on
  *  restart. "Auto" clears the override back to that default. */
 function ModelTierSection({
@@ -1076,7 +1076,7 @@ function ModelTierSection({
       </div>
 
       <div className="kv-note">
-        The DURABLE default lives in <code>jarvis.toml</code> under{" "}
+        The DURABLE default lives in <code>darwin.toml</code> under{" "}
         <code>[router]</code> (the HUD does not write daemon config). Keys:
         <ul className="voiceid-keys">
           <li>
@@ -1108,10 +1108,10 @@ function ModelTierSection({
 }
 
 /** MEMORY // EPISODES + USER MODEL — the retention + clear-memory documentation
- *  surface. HONESTY CONTRACT (do not regress): JARVIS's episodic store + user
+ *  surface. HONESTY CONTRACT (do not regress): DARWIN's episodic store + user
  *  model are built ONLY from observed interactions, are REDACTED + LOCAL +
  *  AGENT-SCOPED, and are BOUNDED (evict-oldest at the cap) — NOT "remembers
- *  everything". Like voice-id + MCP, the store is configured in jarvis.toml under
+ *  everything". Like voice-id + MCP, the store is configured in darwin.toml under
  *  [episodic] (the HUD never writes daemon config), so this section REFLECTS the
  *  exact config keys + the spoken/HUD clear controls rather than offering a
  *  toggle that would silently do nothing. The key names below are byte-for-byte
@@ -1133,7 +1133,7 @@ function MemorySection() {
       </div>
 
       <div className="kv-note">
-        Episodic memory is configured in <code>jarvis.toml</code> under{" "}
+        Episodic memory is configured in <code>darwin.toml</code> under{" "}
         <code>[episodic]</code> (the HUD does not write daemon config). Keys:
         <ul className="voiceid-keys">
           <li>
@@ -1143,7 +1143,7 @@ function MemorySection() {
           <li>
             <code>retention</code> — the bounded evict-oldest cap on stored
             episodes. The newest fit within the cap; older ones are evicted on the
-            retention pass. This is a real bound, never unbounded. Restart jarvisd
+            retention pass. This is a real bound, never unbounded. Restart darwind
             after editing.
           </li>
         </ul>
@@ -1197,7 +1197,7 @@ function MemorySection() {
  *      plaintext->encrypted migration on the next start).
  *
  *  Like every other daemon-owned subsystem (voice-id / MCP / memory / docsearch /
- *  cloud-STT), encryption is configured in jarvis.toml under [security] — the HUD
+ *  cloud-STT), encryption is configured in darwin.toml under [security] — the HUD
  *  NEVER writes daemon config and NEVER holds the key, so this section REFLECTS the
  *  live security.status posture and documents the EXACT config key + the enable
  *  steps, rather than offering a toggle that would silently do nothing (or, worse,
@@ -1395,9 +1395,9 @@ function EncryptionSection({ security }: { security: SecurityStatus | null }) {
     security !== null && security.notEncrypted.length > 0
       ? security.notEncrypted
       : [
-          "the config TOML (jarvis.toml)",
+          "the config TOML (darwin.toml)",
           "the macOS Keychain item itself (already OS-protected)",
-          "the in-RAM working set + decrypted pages + the key while jarvisd runs",
+          "the in-RAM working set + decrypted pages + the key while darwind runs",
         ];
 
   return (
@@ -1408,7 +1408,7 @@ function EncryptionSection({ security }: { security: SecurityStatus | null }) {
           Encrypts the sensitive on-disk stores with transparent whole-file
           SQLCipher AES-256 (page-level). HONEST: this protects your data{" "}
           <b>at rest on disk only</b> — it does NOT defend against a
-          live-process or root attacker, because while jarvisd runs the key and
+          live-process or root attacker, because while darwind runs the key and
           the decrypted pages are in RAM. Scope is partial (below): the config
           TOML and the in-RAM working set are NOT encrypted. Ships OFF; enabling
           changes the on-disk format (a one-time migration).
@@ -1436,7 +1436,7 @@ function EncryptionSection({ security }: { security: SecurityStatus | null }) {
       </div>
 
       <div className="kv-note">
-        Encryption is configured in <code>jarvis.toml</code> under{" "}
+        Encryption is configured in <code>darwin.toml</code> under{" "}
         <code>[security]</code> (the HUD never writes daemon config and never
         holds the key). Key:
         <ul className="voiceid-keys">
@@ -1449,7 +1449,7 @@ function EncryptionSection({ security }: { security: SecurityStatus | null }) {
           </li>
         </ul>
         TO ENABLE: set <code>encrypt_memory = true</code> under{" "}
-        <code>[security]</code> and restart jarvisd. On that next start the daemon
+        <code>[security]</code> and restart darwind. On that next start the daemon
         generates a fresh 256-bit master key, stores it in the macOS Keychain
         (account <code>memory_encryption_key</code>), and RE-KEYS the existing
         plaintext stores to encrypted (a one-time read-plaintext -&gt;
@@ -1495,7 +1495,7 @@ function DocSearchSection({ docIndex }: { docIndex: DocIndexStatus | null }) {
       </div>
 
       <div className="kv-note">
-        File search is configured in <code>jarvis.toml</code> under{" "}
+        File search is configured in <code>darwin.toml</code> under{" "}
         <code>[docsearch]</code> (the HUD does not write daemon config). Keys:
         <ul className="voiceid-keys">
           <li>
@@ -1514,7 +1514,7 @@ function DocSearchSection({ docIndex }: { docIndex: DocIndexStatus | null }) {
             <code>max_file_bytes</code> / <code>max_depth</code> /{" "}
             <code>chunk_chars</code> / <code>chunk_overlap</code> — the bounds
             that keep the on-disk index finite. Hidden + binary +
-            non-text-like-extension files are skipped regardless. Restart jarvisd
+            non-text-like-extension files are skipped regardless. Restart darwind
             after editing.
           </li>
         </ul>
@@ -1630,7 +1630,7 @@ function PolicySection({
       <div className="cred-row">
         <div className="cred-label">Per-action policy</div>
         <div className="cred-hint">
-          Set what JARVIS does when a CONSEQUENTIAL tool wants to act: <b>ALWAYS</b>{" "}
+          Set what DARWIN does when a CONSEQUENTIAL tool wants to act: <b>ALWAYS</b>{" "}
           (auto-approve — a deliberate loosening that STILL needs the master switch
           ON and your voice; it is inert when the master switch is off and can never
           override it), <b>NEVER</b> (a hard block that always wins, even with the

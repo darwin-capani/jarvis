@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JARVIS ANE probe — proves the Core ML -> Apple Neural Engine dispatch path.
+"""DARWIN ANE probe — proves the Core ML -> Apple Neural Engine dispatch path.
 
 Builds a small, ANE-friendly Core ML model PROGRAMMATICALLY (no torch) using
 coremltools' MIL builder: fixed-shape fp16 mlprogram, conv/relu stack — the

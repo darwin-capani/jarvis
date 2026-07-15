@@ -1,4 +1,4 @@
-//! Benign macOS actuators — what lets JARVIS actually DO things.
+//! Benign macOS actuators — what lets DARWIN actually DO things.
 //!
 //! Safety boundary (hard contract): every action here is benign-only.
 //! - NO shell passthrough: commands are spawned with explicit args via
@@ -96,7 +96,7 @@ fn tokens(s: &str) -> Vec<String> {
 /// Exact wins outright. Prefix and substring hits form one "close match"
 /// pool (prefix-ranked first) for the ambiguity decision — a unique prefix
 /// hit must NOT shadow a substring competitor ("chrome" is Google Chrome OR
-/// Chrome Remote Desktop; guessing would open the wrong app, so JARVIS asks).
+/// Chrome Remote Desktop; guessing would open the wrong app, so DARWIN asks).
 /// The token-subset tier matches when every token of a stem appears among
 /// the query's tokens — which is what makes passing a whole utterance
 /// ("could you open google chrome for me") work as a fallback.

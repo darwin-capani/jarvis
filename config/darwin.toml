@@ -1,12 +1,12 @@
-# JARVIS canonical configuration.
-# Read by jarvisd and the inference server; both fall back to these exact
+# DARWIN canonical configuration.
+# Read by darwind and the inference server; both fall back to these exact
 # values as hardcoded defaults if this file is missing.
 
 [audio]
 rms_threshold = 0.015   # RMS gate: below this is treated as silence
 silence_ms = 350        # trailing silence that ends an utterance
 min_speech_ms = 250     # discard blips shorter than this
-barge_in = true         # let you interrupt JARVIS by talking over him
+barge_in = true         # let you interrupt DARWIN by talking over him
 barge_in_rms = 0.06     # how loud you must be to cut him off — above his own echo
                         #   through the speakers. RAISE if he cuts himself off;
                         #   LOWER if barge-in won't trigger. The daemon LOGS your
@@ -39,7 +39,7 @@ local_budget_gib = 0.0                              # RAM budget (GiB) the warm-
 [speech]
 engine = "kokoro"       # TTS engine: "kokoro" | "csm" (Sesame) | "orpheus". Adoption gate: warm RTF (synth_s/audio_s) <= 0.5 + clean load + survives silence trim. 2026-06-12 eval (M1 Pro 16GB, GPU idle, same audition line, WAVs in state/voice-samples/): kokoro/bm_george 0.069 PASS; csm-1b-8bit/conversational_b 0.931 FAIL; orpheus-3b-0.1-ft-4bit/leo 1.28 FAIL — both candidates also share the GPU with the 4B LLM in real use, so kokoro stays
 model = ""              # explicit HF repo for the engine; "" = engine default (kokoro: mlx-community/Kokoro-82M-bf16, csm: mlx-community/csm-1b-8bit, orpheus: mlx-community/orpheus-3b-0.1-ft-4bit)
-voice = "bm_george"     # British English male (JARVIS register); Kokoro voice ids encode the language in the first letter (bm_* = British male). csm voices: conversational_a/b (b = male); orpheus voices: leo/dan/zac male, none British
+voice = "bm_george"     # British English male (DARWIN register); Kokoro voice ids encode the language in the first letter (bm_* = British male). csm voices: conversational_a/b (b = male); orpheus voices: leo/dan/zac male, none British
 speed = 1.2             # kokoro only (csm/orpheus have no speed control); clipped, brisk delivery; 1.05 read as too slow in live use
 sentence_pause_ms = 250 # pure silence the daemon inserts between consecutive clips in a reply (after the opener and between content sentences, never after the last); 120ms gapless playback read as rushed
 opener_delay_ms = 300   # natural beat between end-of-utterance and the opener WAV; the daemon sleeps this inside the ReplySession while STT runs CONCURRENTLY (never serialized in front of transcription); first_audio_ms includes it. Only consulted when instant_opener = true
@@ -81,16 +81,16 @@ speak = false           # render-only by default — voicing the translation sta
 source_lang = ""        # SOURCE language to interpret FROM. Empty => auto-detect (the translator is told the source is unknown — never claims a source it only guessed).
 target_lang = "English" # TARGET language to interpret INTO.
 
-[wake]                   # #32 CUSTOM WAKE-WORD. The configured phrase that gates "is this utterance for JARVIS".
-enabled = true          # master gate. SHIPS ON (full-power default) — since `phrase` defaults to "jarvis", behavior is identical to today unless you change the phrase. The always-listening loop that consults the matcher is DEVICE-GATED (mic/TCC). Set false to disable wake-word gating.
-phrase = "jarvis"       # the wake phrase (case/punct/whitespace-insensitive + small edit-distance tolerance; an empty/blank phrase NEVER matches — fail-safe).
+[wake]                   # #32 CUSTOM WAKE-WORD. The configured phrase that gates "is this utterance for DARWIN".
+enabled = true          # master gate. SHIPS ON (full-power default) — since `phrase` defaults to "darwin", behavior is identical to today unless you change the phrase. The always-listening loop that consults the matcher is DEVICE-GATED (mic/TCC). Set false to disable wake-word gating.
+phrase = "darwin"       # the wake phrase (case/punct/whitespace-insensitive + small edit-distance tolerance; an empty/blank phrase NEVER matches — fail-safe).
 
 [shell]                  # #43 SANDBOXED SHELL / TERMINAL — the HIGHEST-RISK capability (arbitrary command execution).
 enabled = true          # master gate. SHIPS ON (full-power default). Even ON it NEVER auto-runs: shell_run is in CONSEQUENTIAL_TOOLS + NEVER_AUTO_APPROVE_TOOLS (parks per-action even under an "Always" policy), clears a destructive denylist pre-exec, and execs only under allow_consequential + confirm + voice-id + !lockdown in a deny-default sandbox-exec profile. INERT WITHOUT DEVICE SUPPORT: exec needs /usr/bin/sandbox-exec + /bin/sh. Set false to disable.
 
 [ui_automation]          # #44 GATED UI AUTOMATION (the CAPSTONE) — the SINGLE MOST DANGEROUS capability (physically actuating the macOS UI).
 enabled = true          # master gate. SHIPS ON (full-power default). Even ON it NEVER auto-runs: ui_actuate is in CONSEQUENTIAL_TOOLS + NEVER_AUTO_APPROVE_TOOLS (parks PER ACTION — one confirm = one actuation; a second re-parks — even under "Always"), fires only under allow_consequential + confirm + voice-id + !lockdown, never batched. INERT WITHOUT TCC: the CGEvent/AX post needs Accessibility consent (runtime, not SBPL-grantable) + a real display. Set false to disable.
-actuate_via_app = false # OPT-IN (SHIPS OFF). false => the daemon posts the approved single CGEvent LOCALLY (existing behavior, byte-for-byte unchanged). true => the approved action is sent to the HUD app (JARVIS.app) over state/ipc/actuate.sock and the HUD posts the CGEvent, so macOS attributes the Accessibility grant to JARVIS.app and shows the clean prompt. EVERY gate (planner, confirm, master switch, voice-id, lockdown, dry-run) runs first, unchanged; only WHERE the approved post lands differs. In via_app mode the daemon's own Accessibility check is skipped (the HUD holds the grant); the HUD reports an honest failure when not trusted.
+actuate_via_app = false # OPT-IN (SHIPS OFF). false => the daemon posts the approved single CGEvent LOCALLY (existing behavior, byte-for-byte unchanged). true => the approved action is sent to the HUD app (DARWIN.app) over state/ipc/actuate.sock and the HUD posts the CGEvent, so macOS attributes the Accessibility grant to DARWIN.app and shows the clean prompt. EVERY gate (planner, confirm, master switch, voice-id, lockdown, dry-run) runs first, unchanged; only WHERE the approved post lands differs. In via_app mode the daemon's own Accessibility check is skipped (the HUD holds the grant); the HUD reports an honest failure when not trusted.
 
 [webhooks]               # #35 INBOUND WEBHOOK TRIGGERS — the most security-sensitive inbound surface.
 enabled = true          # master gate. SHIPS ON (full-power default) — INERT WITHOUT MAPPINGS + SECRET: `mappings` ships EMPTY (an unmapped event is rejected, never guessed) and the HMAC secret resolves from the Keychain (account webhook_hmac_secret, NEVER this file). The bind stays loopback (a non-loopback bind is refused). A mapped CONSEQUENTIAL intent still PARKS for a spoken confirm — a webhook can never auto-execute. Add mappings + set the Keychain secret to use. Set false to disable.
@@ -99,8 +99,8 @@ port = 8723             # loopback receiver port.
 max_body_bytes = 65536  # hard cap on a received request body (a larger body is rejected, never buffered).
 # mappings ship EMPTY (an unmapped event is rejected). Example (commented):
 # [[webhooks.mappings]]
-# event = "ci.failed"          # the external X-Jarvis-Event / event name this entry maps
-# intent = "system.query"      # the JARVIS intent it routes to (a consequential intent still PARKS for a spoken confirm)
+# event = "ci.failed"          # the external X-Darwin-Event / event name this entry maps
+# intent = "system.query"      # the DARWIN intent it routes to (a consequential intent still PARKS for a spoken confirm)
 
 [plugin_sdk]             # #36 PLUGIN SDK — the micro-app capability-module contract validator + register-on-launch handshake.
 enabled = true          # master gate. SHIPS ON (full-power default): the live handshake scopes a plugin's declared intents/tools. A plugin still can't request a capability outside the allowed set (the validator rejects over-privileged manifests), can't escape the default-deny SBPL profile, and any consequential tool it exposes still rides the gate. The validator is pure and always available regardless. Set false to disable the live handshake.
@@ -124,13 +124,13 @@ enabled = true      # first-contact brief: after an away gap the next reply open
 idle_gap_hours = 4  # away gap (vs meta.last_interaction, unix-secs) that triggers the brief
 # EDITH anticipation (anticipate.rs): the daemon surfaces what matters UNPROMPTED.
 speak = true        # master gate for SPOKEN proactivity, SHIPS ON (full-power default): EDITH ALSO voices the brief — strictly through the existing echo-safe speech path (is_speaking/MUTE_TAIL/barge cover it) and never while already speaking — in addition to the HUD proactive card. Set false for HUD-card-only.
-suggest = true      # proactive-intelligence suggester (habit detector #13 + predictive suggester #14, proactive_intel.rs) master gate, SHIPS ON (full-power default) — its OWN switch, NOT piggybacked on `enabled` above. When on it SURFACES observed-pattern suggestion cards — accepting a habit offer still routes through the gated standing_create confirmation; JARVIS never auto-acts. Set false to silence the suggestions feed.
+suggest = true      # proactive-intelligence suggester (habit detector #13 + predictive suggester #14, proactive_intel.rs) master gate, SHIPS ON (full-power default) — its OWN switch, NOT piggybacked on `enabled` above. When on it SURFACES observed-pattern suggestion cards — accepting a habit offer still routes through the gated standing_create confirmation; DARWIN never auto-acts. Set false to silence the suggestions feed.
 lead_minutes = 15   # surface a calendar event this many minutes away (or nearer)
 unread_floor = 3    # surface important-unread mail at or above this count
 quiet_start = 22    # quiet-hours band start (local hour, 0-23); within [start,end) EDITH stays fully silent — no card either. Wraps midnight when start > end.
 quiet_end = 7       # quiet-hours band end (local hour, exclusive); quiet_start == quiet_end disables quiet hours
 
-[focus]                  # #24 FOCUS PROFILES (focus.rs). A PERMISSION-NEUTRAL lens over the proactive surfaces: it only narrows WHICH non-consequential intel surfaces (signal categories, brief verbosity, whether suggestions are quieted) and can ONLY make JARVIS quieter — never loosen the master switch / confirm gate / voice-id / lockdown / policy, never enable a consequential action, never raise autonomy.
+[focus]                  # #24 FOCUS PROFILES (focus.rs). A PERMISSION-NEUTRAL lens over the proactive surfaces: it only narrows WHICH non-consequential intel surfaces (signal categories, brief verbosity, whether suggestions are quieted) and can ONLY make DARWIN quieter — never loosen the master switch / confirm gate / voice-id / lockdown / policy, never enable a consequential action, never raise autonomy.
 profile = "default"      # SHIPS NEUTRAL: "default" is the IDENTITY — today's proactive behavior byte-for-byte. Other values: "work" (silences news/routine/market, keeps calendar/mail/health), "sleep" (only CRITICAL surfaces, suggestions quieted), "deep_focus" (only critical, no digest, suggestions quieted), or any other string = a NAMED CUSTOM profile (itself restrict-only). An unknown value degrades to "default" (fail safe to today's behavior). Critical signals (imminent calendar / low disk) survive even deep_focus — the floor a profile can never silence.
 
 [self_heal]
@@ -138,14 +138,14 @@ enabled = true    # master gate, SHIPS ON (full-power default) — INERT WITHOUT
 mode = "propose"  # "propose" (default): write the validated patch + report to state/heal/proposals/<ts>/, stamp meta.heal_pending, and wait for a human to run scripts/apply_heal.sh <ts>. "auto" is DANGEROUS and additionally requires enabled = true: the daemon applies the validated patch to daemon/ itself, rebuilds --release, and EXITS cleanly so its supervisor restarts it (under launchd KeepAlive that is a restart; under `cargo run` it is a stop). Unknown values behave as "propose".
 
 [forge]
-# Self-Forge (forge.rs): JARVIS AUTHORS A NEW sandboxed micro-app from a goal —
+# Self-Forge (forge.rs): DARWIN AUTHORS A NEW sandboxed micro-app from a goal —
 # the self-heal gated-codegen pattern generalized from "patch the daemon" to
 # "build an app". Same propose-only contract as [self_heal] (now armed by default).
 enabled = true    # master gate, SHIPS ON (full-power default) — INERT WITHOUT A CLOUD KEY: forge_draft requires the cloud key (emits forge.blocked{reason:"no_api_key"} otherwise). When active: forge_draft(goal) asks the heavy cloud model to author a complete micro-app (manifest with MINIMAL permissions + source file(s) + tests) -> stage to state/forge/staging-<ts>/ (NEVER apps/) -> validate the manifest (safe name, permissions on the allowed minimal set, default-deny SBPL generates) + build/test the app under a timeout cap -> on pass, PROPOSE to state/forge/proposals/<ts>/ + stamp meta.forge_pending and STOP; on fail, quarantine to state/forge/rejected/<ts>/. The proposed app is NOT in apps/, NOT registered, NOT running. Set false to disable.
 mode = "propose"  # "propose" (default): write the validated app + report to state/forge/proposals/<ts>/, stamp meta.forge_pending, and wait for a human to run scripts/apply_forge.sh <ts>. "auto" (additionally requires enabled = true) ONLY governs the forge's own staged artifact — IT NEVER DEPLOYS. DEPLOYING a forged app into apps/ (where AppRegistry::discover would pick it up and run it on next start) is ALWAYS a separate human step: there is no auto-deploy path in the daemon, period. Unknown values behave as "propose".
 
 [optimize]
-# Optimization-from-usage loop (optimize.rs): JARVIS records a local, PII-redacted
+# Optimization-from-usage loop (optimize.rs): DARWIN records a local, PII-redacted
 # trace of each interaction + its outcome (did the user correct/redirect on the
 # next turn, or complete cleanly?), and a later Optimizer phase PROPOSES a measured
 # tuning (start with routing/selection — agent-pick + mode + cue weights) that is
@@ -162,7 +162,7 @@ mode = "propose"  # "propose" (default): the downstream Optimizer reuses the sel
 # on the standing-missions scheduler tick (a dedicated runtime loop, separate from
 # EDITH's anticipation tick) and reason over the shared World Model — the
 # self-heal/forge gated-autonomy pattern applied to "a recurring goal".
-enabled = true    # subsystem MASTER switch, SHIPS ON (full-power default). Even on: ESTABLISHING a standing mission is itself a cross-turn confirmation-gated action (standing_create is in CONSEQUENTIAL_TOOLS; JARVIS never silently spawns recurring autonomy), and every CONSEQUENTIAL step a running mission proposes (post/send/spend/control) STILL parks behind the confirmation gate + the [integrations] master switch — a standing mission can never auto-send/post/spend. Bounded: at most 8 active missions; each run is bounded by FURY's per-mission caps. Set false to disable.
+enabled = true    # subsystem MASTER switch, SHIPS ON (full-power default). Even on: ESTABLISHING a standing mission is itself a cross-turn confirmation-gated action (standing_create is in CONSEQUENTIAL_TOOLS; DARWIN never silently spawns recurring autonomy), and every CONSEQUENTIAL step a running mission proposes (post/send/spend/control) STILL parks behind the confirmation gate + the [integrations] master switch — a standing mission can never auto-send/post/spend. Bounded: at most 8 active missions; each run is bounded by FURY's per-mission caps. Set false to disable.
 
 [drafts]
 # AUTO-DRAFT (#25, drafts.rs): compose a REVIEWABLE pending draft (an email reply /
@@ -187,11 +187,11 @@ max_steps = 12   # max commands one macro may hold (a bounded sequence)
 retention = 100   # evict-oldest cap on stored macros (bounded store)
 
 [telemetry]
-port = 7177   # WebSocket server hosted by jarvisd on 127.0.0.1
+port = 7177   # WebSocket server hosted by darwind on 127.0.0.1
 
 [apps]
 # Micro-app runtime substrate (docs/SANDBOX.md). autostart lists micro-app
-# names jarvisd launches under their seatbelt profiles at startup. Ships EMPTY
+# names darwind launches under their seatbelt profiles at startup. Ships EMPTY
 # — nothing is autostarted; apps start on voice ("open global scan") or by
 # adding their name here. Names with no matching manifest are skipped with a
 # startup telemetry warning. Example: autostart = ["global-scan"]
@@ -199,7 +199,7 @@ autostart = []
 
 [introspect]
 # Micro-app introspection sentinel (introspect.rs, docs/INTROSPECT.md). A slow,
-# READ-ONLY watch over jarvisd's OWN sandboxed children: SBPL profile-drift
+# READ-ONLY watch over darwind's OWN sandboxed children: SBPL profile-drift
 # (fingerprint the profile we wrote vs. what's on disk) + per-app RSS/CPU
 # anomaly surfacing via sysinfo (same-UID children, no entitlement, no
 # EndpointSecurity/ptrace/task_for_pid). It emits introspect.snapshot /
@@ -231,8 +231,8 @@ allow_consequential = true
 [mcp]
 # Model Context Protocol client (mcp.rs) — connect to external MCP tool servers
 # (local subprocesses speaking JSON-RPC over stdio, or remote HTTP endpoints) and
-# offer their tools to JARVIS agents. This is the MOST DANGEROUS external surface
-# in JARVIS: an MCP server runs code on YOUR machine and exposes tools an agent
+# offer their tools to DARWIN agents. This is the MOST DANGEROUS external surface
+# in DARWIN: an MCP server runs code on YOUR machine and exposes tools an agent
 # can call. Treat it like [self_heal].enabled — turn on deliberately.
 #
 # enabled SHIPS ON (true, full-power default) — INERT WITHOUT SERVERS: the
@@ -277,7 +277,7 @@ max_output_bytes = 262144  # reject any single server response larger than this 
 # net_hosts = []                       # outbound TCP host-names allowed; [] = NO network
 
 [skills]
-# The SKILL LIBRARY (daemon/src/skills/): JARVIS's hand-written, in-tree set of
+# The SKILL LIBRARY (daemon/src/skills/): DARWIN's hand-written, in-tree set of
 # small, PURE, deterministic capabilities (encoders, counters, converters,
 # deterministic helpers), discovered via the `skill_list` meta-tool and run via
 # `skill_invoke`. It is a genuine in-tree library + an open standard you can
@@ -315,7 +315,7 @@ min_enroll_samples = 3       # how many owner utterances the explicit "enroll my
 gate_scope = "consequential" # "consequential" (default): gate only outward/consequential actions + the confirmation replay. "all": ALSO block non-consequential commands from an unrecognized speaker (a stricter posture). Unknown values fall back to "consequential" (never silently to "all").
 
 [episodic]
-# The EPISODIC STORE (daemon/src/episodic.rs): JARVIS's durable, redacted,
+# The EPISODIC STORE (daemon/src/episodic.rs): DARWIN's durable, redacted,
 # agent-scoped, BOUNDED memory of completed interactions, plus the recall over it
 # (temporal recent/since/around + topical BM25, combined; the Mnemosyne
 # `episodic_recall` read-only tool). An EPISODE is one completed turn reduced to a
@@ -349,12 +349,12 @@ retention = 5000
 # is NEVER a replacement. SHIPS ON (full-power default) but INERT WITHOUT a key —
 # add an elevenlabs_api_key (Keychain); without it, on-device Kokoro is used.
 #
-# HONESTY: when this tier is ON, the text JARVIS is about to speak LEAVES the
+# HONESTY: when this tier is ON, the text DARWIN is about to speak LEAVES the
 # device — a cloud round trip to api.elevenlabs.io to synthesize the audio. The
 # on-device Kokoro engine stays the PRIVATE/OFFLINE default and the FALLBACK on any
 # ElevenLabs error/timeout, so a turn is never failed by the cloud leg. Live voice
 # quality is DEVICE + CREDENTIAL gated (a real key + network on the real machine)
-# and is NOT claimed measured here. VOICE-ONLY: this is a TTS voice layer; JARVIS
+# and is NOT claimed measured here. VOICE-ONLY: this is a TTS voice layer; DARWIN
 # owns its own brain/router/turn-taking (it does NOT use a hosted agents platform).
 #
 # The ElevenLabs path is reached ONLY when ALL of these hold:
@@ -571,10 +571,10 @@ encrypt_memory = false         # SHIPS OFF (enabling changes the on-disk format 
 
 [voice.voices]
 # Per-agent ElevenLabs voice ids: agent name -> EL voice id. An UNMAPPED agent
-# falls back to that agent's on-device Kokoro voice. JARVIS ships mapped to the
+# falls back to that agent's on-device Kokoro voice. DARWIN ships mapped to the
 # ElevenLabs PREMADE "George" (a stable, shared British male voice available to
 # ANY account) so the cloud voice tier engages with JUST an ElevenLabs key in the
 # Keychain — no manual voice-id step. Change this id to any voice from your EL
 # account's Voices page, and add lines for other agents the same way, e.g.:
 #   friday = "21m00Tcm4TlvDq8ikWAM"
-jarvis = "JBFqnCBsd6RMkjVDRZzb"
+darwin = "JBFqnCBsd6RMkjVDRZzb"

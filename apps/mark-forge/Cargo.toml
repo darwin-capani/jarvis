@@ -1,7 +1,7 @@
-# Mark-Forge — deterministic 3D rigid-body physics sandbox micro-app for JARVIS.
+# Mark-Forge — deterministic 3D rigid-body physics sandbox micro-app for DARWIN.
 #
 # Standalone binary crate (NOT part of the daemon workspace). The manifest
-# declares runtime = "binary", entry = "mark-forge"; jarvisd execs the prebuilt
+# declares runtime = "binary", entry = "mark-forge"; darwind execs the prebuilt
 # binary directly under sandbox-exec (apps.rs Runtime::Binary), exactly like
 # silicon-canvas.
 #

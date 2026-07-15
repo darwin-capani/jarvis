@@ -32,7 +32,7 @@ def _make_engine():
 
 
 _RULES = [
-    {"string_to_replace": "JARVIS", "type": "alias", "alias": "Jarvis"},
+    {"string_to_replace": "DARWIN", "type": "alias", "alias": "Darwin"},
     {"string_to_replace": "tomato", "type": "phoneme", "phoneme": "təˈmɑːtoʊ", "alphabet": "ipa"},
 ]
 

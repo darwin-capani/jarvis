@@ -67,7 +67,7 @@ mod egress;
 mod episodic;
 // LIVE ENDPOINT SECURITY NOTIFY client (feature `endpoint-security`, DEVICE-GATED).
 // OFF by default — the normal build never compiles it. When on, it feeds kernel
-// security events (mprotect-exec / MAP_JIT / get-task / signal on jarvisd's own
+// security events (mprotect-exec / MAP_JIT / get-task / signal on darwind's own
 // apps) into the tested introspect classifier. NOTIFY-only; needs root + the
 // restricted entitlement + notarization to actually run. See docs/INTROSPECT.md.
 #[cfg(feature = "endpoint-security")]
@@ -90,7 +90,7 @@ mod integrations;
 // headlessly (hermetic tests in interpret.rs).
 mod interpret;
 // MICRO-APP INTROSPECTION (introspect.rs): a DEFENSIVE, READ-ONLY sentinel over
-// jarvisd's OWN sandboxed children — SBPL profile-drift detection (fingerprint
+// darwind's OWN sandboxed children — SBPL profile-drift detection (fingerprint
 // vs on-disk) + per-app RSS/CPU anomaly classification via sysinfo. No ES, no
 // task_for_pid, no ptrace, no entitlement (it watches same-UID children it
 // spawned). It relays through the telemetry bus; it observes, it never acts.
@@ -245,14 +245,14 @@ mod voiceclone;
 mod voice_tier;
 // CUSTOM WAKE-WORD (#32): the PURE, conservative wake-phrase matcher (wake_match) +
 // the activation gate (wake_gate) that folds in the [wake].enabled switch. ON by
-// default; the default phrase ("jarvis") preserves today's activation behavior. The
+// default; the default phrase ("darwin") preserves today's activation behavior. The
 // matcher is case/punct/whitespace-insensitive with a small edit-distance tolerance,
 // never matches an empty/blank phrase, and never triggers on a substring of a larger
 // unrelated word. Wired into the activation path (router.rs); the always-listening loop
 // that produces the transcript is DEVICE-GATED. Hermetically tested in wake.rs.
 mod wake;
 // #35 WEBHOOK TRIGGERS — an inbound, HMAC-authenticated, loopback-default surface
-// that maps a signed event to a JARVIS intent and PARKS a consequential mapping
+// that maps a signed event to a DARWIN intent and PARKS a consequential mapping
 // (never auto-executes). Ships ON but INERT WITHOUT MAPPINGS + A KEYCHAIN HMAC
 // SECRET; the pure handle_webhook is tested, the live loopback bind is RUNTIME-gated
 // (the mic-loop / vision-capture precedent).
@@ -366,10 +366,10 @@ fn echo_tokens(s: &str) -> Vec<String> {
 /// transcript be DROPPED before classify+route, even though STT produced text?
 ///
 /// A transcript is rejected when it is implausibly short (a single token — an
-/// echo shard like "apple"), OR when its words are wholly contained in JARVIS's
+/// echo shard like "apple"), OR when its words are wholly contained in DARWIN's
 /// just-spoken reply (he heard himself). This breaks the echo-feedback loop even
-/// if some gate window leaks: a fragment of JARVIS's own reply can never
-/// actuate. Pure, so the policy is unit-testable. `last_reply` is JARVIS's
+/// if some gate window leaks: a fragment of DARWIN's own reply can never
+/// actuate. Pure, so the policy is unit-testable. `last_reply` is DARWIN's
 /// previous spoken response (None on the first turn).
 ///
 /// Conservative by construction: a genuine multi-word user command whose words
@@ -382,7 +382,7 @@ fn is_self_echo(transcript: &str, last_reply: Option<&str>) -> bool {
         return true;
     }
     // Substring-of-the-last-reply (token containment): every word of the
-    // transcript appears in JARVIS's previous reply -> he re-heard himself.
+    // transcript appears in DARWIN's previous reply -> he re-heard himself.
     match last_reply {
         Some(reply) if !reply.trim().is_empty() => {
             let reply_words: std::collections::HashSet<String> =
@@ -402,17 +402,17 @@ fn fmt_ms(ms: u64) -> String {
     }
 }
 
-/// JARVIS_ROOT wins; otherwise walk up from the executable (which normally
-/// lives at <root>/daemon/target/<profile>/jarvisd) looking for a directory
-/// that contains config/jarvis.toml or state/, falling back to the
+/// DARWIN_ROOT wins; otherwise walk up from the executable (which normally
+/// lives at <root>/daemon/target/<profile>/darwind) looking for a directory
+/// that contains config/darwin.toml or state/, falling back to the
 /// executable's grandparent, then the current directory.
 fn resolve_root() -> PathBuf {
-    if let Ok(root) = std::env::var("JARVIS_ROOT") {
+    if let Ok(root) = std::env::var("DARWIN_ROOT") {
         return PathBuf::from(root);
     }
     if let Ok(exe) = std::env::current_exe() {
         for ancestor in exe.ancestors().skip(1) {
-            if ancestor.join("config").join("jarvis.toml").exists()
+            if ancestor.join("config").join("darwin.toml").exists()
                 || ancestor.join("state").is_dir()
             {
                 return ancestor.to_path_buf();
@@ -433,7 +433,7 @@ fn resolve_root() -> PathBuf {
 /// as paths under `state/`. The migration on enable re-keys each existing one.
 fn sensitive_db_paths(state_dir: &Path) -> [PathBuf; 4] {
     [
-        state_dir.join("jarvis.db"),            // memory.rs main Db
+        state_dir.join("darwin.db"),            // memory.rs main Db
         state_dir.join("docsearch.db"),         // docsearch.rs
         state_dir.join("audit.db"),             // audit.rs
         state_dir.join("optimize").join("optimize.db"), // optimize.rs trace store
@@ -593,7 +593,7 @@ fn init_tracing(root: &Path) -> Result<()> {
     // Without a filter the registry defaults to TRACE and instrumented deps
     // (hyper-util connection pools etc.) spam daemon.log; RUST_LOG overrides.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,jarvis_core=debug"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,darwin_core=debug"));
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
@@ -679,7 +679,7 @@ fn spawn_learning_task(sock: PathBuf, memory: Arc<Memory>, utterance: String, re
     });
 }
 
-/// Retention cadence and limits for the jarvis.db pruning pass (audit fix:
+/// Retention cadence and limits for the darwin.db pruning pass (audit fix:
 /// events/transcripts otherwise grow without bound on the always-on
 /// appliance). 30 days of events and 2000 transcripts comfortably exceed
 /// everything any reader consumes (reflection reads 40 exchanges, prompts
@@ -689,7 +689,7 @@ const RETENTION_INTERVAL: Duration = Duration::from_secs(6 * 3600);
 const RETENTION_EVENTS_MAX_AGE_DAYS: i64 = 30;
 const RETENTION_TRANSCRIPTS_KEEP: usize = 2000;
 
-/// Periodic jarvis.db retention. Warn-and-continue like every housekeeping
+/// Periodic darwin.db retention. Warn-and-continue like every housekeeping
 /// task: a failed pass must never wedge the daemon.
 ///
 /// `notebook_entries_keep` is the [notebooks].retention evict-oldest cap (the
@@ -895,7 +895,7 @@ async fn audit_snapshot_task(cfg: Arc<Config>, memory: Arc<Memory>, root: PathBu
     // reads only per-section switches, never [voice].)
     let mut live = (*cfg).clone();
     loop {
-        if let Some(fresh) = Config::load_live(&root.join("config").join("jarvis.toml")) {
+        if let Some(fresh) = Config::load_live(&root.join("config").join("darwin.toml")) {
             live = fresh;
         }
         audit::emit_snapshot().await;
@@ -1101,7 +1101,7 @@ async fn anticipation_task(root: PathBuf, cfg: Arc<Config>, memory: Arc<Memory>,
         // as a `proactive.suggestion` card — a SUGGESTION only: it never acts,
         // never speaks, never creates a mission. Accepting a habit offer is a
         // separate HUD action that routes through the gated standing_create path.
-        // Mined under the shared/orchestrator episodic scope (agent.jarvis), the
+        // Mined under the shared/orchestrator episodic scope (agent.darwin), the
         // same namespace the conversational turns record under; agent-scoping is
         // enforced at the Db recall + in each suggestion's id.
         let pass =
@@ -1224,7 +1224,7 @@ async fn overnight_task(root: PathBuf, memory: Arc<Memory>) {
         // Re-read the master switch each tick so flipping [overnight] takes
         // without a restart; lockdown FORCES it off (no unattended autonomy fires
         // while the emergency stop is engaged).
-        let (live, _issues) = Config::load(&root.join("config").join("jarvis.toml"));
+        let (live, _issues) = Config::load(&root.join("config").join("darwin.toml"));
         if !live.overnight.enabled || lockdown::is_locked_down() {
             continue;
         }
@@ -1298,7 +1298,7 @@ async fn standing_task(root: PathBuf, cfg: Arc<Config>, memory: Arc<Memory>, soc
         // configured `[standing].enabled`.
         let enabled = {
             let (live, _issues) =
-                Config::load(&root.join("config").join("jarvis.toml"));
+                Config::load(&root.join("config").join("darwin.toml"));
             live.standing.enabled && !lockdown::is_locked_down()
         };
 
@@ -1377,14 +1377,14 @@ async fn standing_task(root: PathBuf, cfg: Arc<Config>, memory: Arc<Memory>, soc
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Non-production entrypoint: `jarvisd --heal-drill` runs the FULL real
+    // Non-production entrypoint: `darwind --heal-drill` runs the FULL real
     // self-heal v2 pipeline (diagnose -> Opus draft -> stage -> validate ->
     // review -> propose) against a PLANTED FAULT in a throwaway temp crate,
     // battle-testing the loop end to end through the real cloud drafter. It
     // requires the API key, writes a proposal artifact under a temp sandbox,
     // and NEVER touches the live daemon/ sources. This is the one sanctioned
     // cloud-spending verification path; it does not start the daemon.
-    // Operator entrypoint: `jarvisd --selftest` (alias `--health`) validates the
+    // Operator entrypoint: `darwind --selftest` (alias `--health`) validates the
     // installed environment WITHOUT starting the full daemon (no audio, no MCP
     // connect, no model, no mic). It resolves the root EXACTLY like a normal
     // start, runs the honest PASS/SKIP/FAIL board (root/config/venv/binary/state
@@ -1396,10 +1396,10 @@ async fn main() -> Result<()> {
     // whether a key EXISTS (bool only; the key never leaves the resolver).
     if std::env::args().any(|a| a == "--selftest" || a == "--health") {
         let root = selfcheck::resolve_root_like_daemon();
-        let (cfg, _issues) = Config::load(&root.join("config").join("jarvis.toml"));
+        let (cfg, _issues) = Config::load(&root.join("config").join("darwin.toml"));
         let cloud_key_present = anthropic::resolve_api_key().await.is_some();
         let checks = selfcheck::run_selftest(&root, cfg.telemetry.port, cloud_key_present).await;
-        selfcheck::print_board("JARVIS daemon selftest", &checks);
+        selfcheck::print_board("DARWIN daemon selftest", &checks);
         if selfcheck::any_failed(&checks) {
             std::process::exit(1);
         }
@@ -1411,14 +1411,14 @@ async fn main() -> Result<()> {
             .with_max_level(tracing::Level::INFO)
             .with_writer(std::io::stderr)
             .init();
-        let (cfg, _issues) = Config::load(&resolve_root().join("config").join("jarvis.toml"));
+        let (cfg, _issues) = Config::load(&resolve_root().join("config").join("darwin.toml"));
         anthropic::resolve_api_key().await; // resolve once (logs nothing)
         let dir = heal::run_heal_drill(&cfg.cloud.heavy_model).await?;
         println!("heal drill PASSED — proposal written to {}", dir.display());
         return Ok(());
     }
 
-    // Non-production entrypoint: `jarvisd --forge-drill` runs the FULL real
+    // Non-production entrypoint: `darwind --forge-drill` runs the FULL real
     // Self-Forge pipeline (draft -> stage -> validate -> propose) against a
     // FIXED benign goal in a throwaway temp root, battle-testing the loop end to
     // end through the real cloud author. It requires the API key, writes a
@@ -1429,14 +1429,14 @@ async fn main() -> Result<()> {
             .with_max_level(tracing::Level::INFO)
             .with_writer(std::io::stderr)
             .init();
-        let (cfg, _issues) = Config::load(&resolve_root().join("config").join("jarvis.toml"));
+        let (cfg, _issues) = Config::load(&resolve_root().join("config").join("darwin.toml"));
         anthropic::resolve_api_key().await; // resolve once (logs nothing)
         let dir = forge::run_forge_drill(&cfg.cloud.heavy_model).await?;
         println!("forge drill PASSED — proposal written to {}", dir.display());
         return Ok(());
     }
 
-    // Deploy-time gate entrypoint: `jarvisd --validate-forge-manifest <manifest_path> <app_name>`
+    // Deploy-time gate entrypoint: `darwind --validate-forge-manifest <manifest_path> <app_name>`
     // parses the manifest with the daemon's OWN toml crate + runs the SAME
     // forge permission-minimization + default-deny-SBPL gate the draft path
     // runs (forge::validate_manifest_file -> validate_manifest), exiting 0 on a
@@ -1451,7 +1451,7 @@ async fn main() -> Result<()> {
         let app_name = std::env::args().nth(pos + 2).unwrap_or_default();
         if manifest_path.trim().is_empty() || app_name.trim().is_empty() {
             eprintln!(
-                "usage: jarvisd --validate-forge-manifest <manifest_path> <app_name>"
+                "usage: darwind --validate-forge-manifest <manifest_path> <app_name>"
             );
             std::process::exit(2);
         }
@@ -1474,7 +1474,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Operator entrypoint: `jarvisd --forge-goal "<goal>"` runs the GATED,
+    // Operator entrypoint: `darwind --forge-goal "<goal>"` runs the GATED,
     // PROPOSE-ONLY Self-Forge production path (forge::forge_app) against the live
     // project root + config + Memory. It respects [forge].enabled (does nothing
     // when OFF), requires the cloud key, and on success writes a proposal under
@@ -1493,11 +1493,11 @@ async fn main() -> Result<()> {
             .with_writer(std::io::stderr)
             .init();
         let root = resolve_root();
-        let (cfg, _issues) = Config::load(&root.join("config").join("jarvis.toml"));
+        let (cfg, _issues) = Config::load(&root.join("config").join("darwin.toml"));
         // Honor [security].encrypt_memory on the CLI forge path too: open the main
         // Db encrypted when enabled (reads the same Keychain key), else plaintext.
         let fg_key = resolve_encryption_key(cfg.security.encrypt_memory, &root.join("state")).await;
-        let memory = open_memory(&root.join("state").join("jarvis.db"), fg_key.as_ref())?;
+        let memory = open_memory(&root.join("state").join("darwin.db"), fg_key.as_ref())?;
         anthropic::resolve_api_key().await;
         match forge::forge_app(&root, &cfg, &memory, &goal).await {
             forge::ForgeOutcome::Disabled => {
@@ -1531,8 +1531,8 @@ async fn main() -> Result<()> {
     // Build marker — a visible "which binary am I" line so a stale daemon is
     // obvious at a glance (this has bitten restarts repeatedly). Bump the tag
     // when shipping a behavior change worth confirming live.
-    info!(build = "2026-06-14-echosafe-sweep", "jarvisd starting");
-    info!(root = %root.display(), "jarvisd root resolved");
+    info!(build = "2026-06-14-echosafe-sweep", "darwind starting");
+    info!(root = %root.display(), "darwind root resolved");
 
     // STARTUP SELF-CHECK (WS2): validate the STRUCTURAL preconditions
     // (root/config readable, the three state subdirs exist, state/ipc is 0700)
@@ -1542,7 +1542,7 @@ async fn main() -> Result<()> {
     // NOT blocking (lazy-connect + local-only are resilient by design) — only a
     // genuinely structural fault (e.g. an unwritable/looser-than-0700 confined
     // socket dir, or an unreadable config) stops startup. The same engine backs
-    // `jarvisd --selftest`. Honest: each failing check carries its remediation.
+    // `darwind --selftest`. Honest: each failing check carries its remediation.
     {
         let startup = selfcheck::startup_blocking_checks(&root);
         if selfcheck::any_failed(&startup) {
@@ -1551,9 +1551,9 @@ async fn main() -> Result<()> {
                     error!(check = c.name, detail = %c.detail, "startup self-check FAILED");
                 }
             }
-            selfcheck::print_board("jarvisd startup self-check", &startup);
+            selfcheck::print_board("darwind startup self-check", &startup);
             anyhow::bail!(
-                "jarvisd startup self-check failed — a structural precondition did not hold (see the board above); refusing to start in a broken state"
+                "darwind startup self-check failed — a structural precondition did not hold (see the board above); refusing to start in a broken state"
             );
         }
         let (pass, skip, _fail) = selfcheck::tally(&startup);
@@ -1563,7 +1563,7 @@ async fn main() -> Result<()> {
     sweep_stale_utterances(&root);
     anthropic::init_persona(&root);
 
-    let (mut cfg, config_issues) = Config::load(&root.join("config").join("jarvis.toml"));
+    let (mut cfg, config_issues) = Config::load(&root.join("config").join("darwin.toml"));
     // VOICE CLONING (build 2/2): merge any previously-CONFIRMED cloned voice ids
     // (state/voice/cloned.json) into the effective [voice.voices] map so a cloned
     // voice is usable exactly like a config-mapped EL voice — but WITHOUT clobbering
@@ -1679,7 +1679,7 @@ async fn main() -> Result<()> {
 
     let master_key = resolve_encryption_key(cfg.security.encrypt_memory, &state_dir).await;
 
-    let memory = Arc::new(open_memory(&state_dir.join("jarvis.db"), master_key.as_ref())?);
+    let memory = Arc::new(open_memory(&state_dir.join("darwin.db"), master_key.as_ref())?);
 
     // CONSEQUENTIAL POLICY STORE ([policy], ships EMPTY): load the USER's per-action
     // rules (state/policy.json — written ONLY by Settings / the command channel,
@@ -1723,8 +1723,8 @@ async fn main() -> Result<()> {
     // reach the corpus without threading it through the whole tool-dispatch chain.
     optimize::set_global_trace_store(trace_store.clone());
     // Install the config path so the CONSEQUENTIAL `connector_add` tool can append
-    // a vetted [[mcp.servers]] block to jarvis.toml (same OnceLock pattern).
-    connector::set_config_path(root.join("config").join("jarvis.toml"));
+    // a vetted [[mcp.servers]] block to darwin.toml (same OnceLock pattern).
+    connector::set_config_path(root.join("config").join("darwin.toml"));
     // The ambient TCC sentinel's durable baseline (plaintext/encrypted like audit.db).
     let tcc_baseline = Arc::new(open_tcc_baseline(
         &state_dir.join("tcc_baseline.db"),
@@ -1747,7 +1747,7 @@ async fn main() -> Result<()> {
     // telemetry's global hub (no Arc threaded through every complete_* signature).
     eval::install_usage_sink(eval_state.clone());
 
-    // The agent constellation: 17 profiles on the one engine. Jarvis-Prime
+    // The agent constellation: 17 profiles on the one engine. Darwin-Prime
     // delegates each request to a specialist (router::route). Missing/malformed
     // agents.toml falls back to the canonical roster so the team always loads.
     let (agents, agent_issues) =
@@ -1839,7 +1839,7 @@ async fn main() -> Result<()> {
             "not_encrypted": [
                 "the config TOML",
                 "the macOS Keychain item itself (already OS-protected)",
-                "the in-RAM working set + decrypted pages + the key while jarvisd runs"
+                "the in-RAM working set + decrypted pages + the key while darwind runs"
             ],
             // The honest one-liners the panel surfaces verbatim.
             "honesty": "SQLCipher protects AT REST ON DISK only — not against a live-process/root attacker (key + plaintext are in RAM while running). The master key lives only in the macOS Keychain (account memory_encryption_key); lose it and the encrypted DBs are unrecoverable. Enabling changes the on-disk format (a one-time migration).",
@@ -2036,7 +2036,7 @@ async fn main() -> Result<()> {
         memory.clone(),
         sock_path.clone(),
     ));
-    // jarvis.db retention: prune old events, cap transcripts + episodes (audit
+    // darwin.db retention: prune old events, cap transcripts + episodes (audit
     // fix). The episodes cap is the [episodic].retention bound (bounded memory).
     // The notebook cap is the [notebooks].retention evict-oldest bound (#19), or
     // None when the store is off — the SAME bounded-memory posture as episodic.
@@ -2101,7 +2101,7 @@ async fn main() -> Result<()> {
     // and tcc.anomaly (new grant / denied->allowed escalation) for the HUD. It
     // never mutates TCC; only its own baseline store is written.
     tokio::spawn(tcc::sentinel_task(tcc_baseline));
-    // Ambient micro-app introspection: a slow, READ-ONLY sentinel over jarvisd's
+    // Ambient micro-app introspection: a slow, READ-ONLY sentinel over darwind's
     // OWN sandboxed children — SBPL profile-drift (fingerprint vs on-disk) and
     // per-app RSS/CPU anomaly classification via sysinfo (same-UID, no
     // entitlement). It emits introspect.snapshot/profile_drift/anomaly for the
@@ -2302,7 +2302,7 @@ async fn main() -> Result<()> {
 
     // One utterance at a time, driven to completion (audit fix: see the
     // Event doc comment — no stage of a later utterance may start while an
-    // earlier one's ReplySession is alive). `last_reply` carries JARVIS's most
+    // earlier one's ReplySession is alive). `last_reply` carries DARWIN's most
     // recent spoken response into the next pipeline for the self-echo reject
     // (RC-5): a captured fragment of his own reply is dropped before it can
     // actuate, even if a gate window leaked.
@@ -2453,7 +2453,7 @@ async fn run_pipeline(
     // cloud-round-trip case) used to early-return below WITHOUT clearing,
     // wedging BARGE_IN latched true forever — which held the capture gate's
     // old "barge means capture" path open across all future playback, so
-    // JARVIS permanently re-transcribed himself. clear_barge_in is idempotent
+    // DARWIN permanently re-transcribed himself. clear_barge_in is idempotent
     // and cheap; by the time any utterance is processed the old reply is
     // already cancelled, so clearing first is always correct.
     speech::clear_barge_in();
@@ -2490,7 +2490,7 @@ async fn run_pipeline(
     //      then fires the acknowledgment — BEFORE transcription
     //      finishes, owning guard+sink for everything downstream),
     //   2. STT, which must never wait behind that breath,
-    //   3. event bookkeeping (a busy jarvis.db must not delay
+    //   3. event bookkeeping (a busy darwin.db must not delay
     //      either of the above).
     let (mut reply, (transcribed, stt_ms), ()) = tokio::join!(
         speech::ReplySession::begin(root, cfg),
@@ -2544,7 +2544,7 @@ async fn run_pipeline(
 
     // Self-echo / plausibility reject (RC-5), BEFORE classify+route. A
     // one-word fragment, or a transcript whose words are wholly contained in
-    // JARVIS's just-spoken reply, is dropped here so a leaked echo shard can
+    // DARWIN's just-spoken reply, is dropped here so a leaked echo shard can
     // never reach an actuator — defense-in-depth behind the capture gate.
     //
     // EXCEPTION: while a confirmation is parked, skip this reject. The parked
@@ -2630,7 +2630,7 @@ async fn run_pipeline(
     // interpreted. The always-listening mic loop that drives this is DEVICE-GATED (wired
     // at the audio.rs segment site behind the SAME flag); only the pure core is proven
     // headlessly. NOTE: this is BEFORE the wake gate on purpose — an interpreter session
-    // renders every segment, it is not "addressed to JARVIS" speech.
+    // renders every segment, it is not "addressed to DARWIN" speech.
     if cfg.interpret.live {
         let outcome = interpret::interpret_segment_live(
             &text,
@@ -2654,15 +2654,15 @@ async fn run_pipeline(
     // #32 CUSTOM WAKE-WORD gate (wake.rs), AFTER STT and the self-echo reject. OFF by
     // default ([wake].enabled) — with it off `wake_gate` returns true unconditionally and
     // activation is byte-for-byte today's. When ON, an utterance that does NOT contain the
-    // configured wake phrase (default "jarvis", which preserves today's behavior) is
-    // dropped here as "not for JARVIS" — the conservative PURE matcher never triggers on a
+    // configured wake phrase (default "darwin", which preserves today's behavior) is
+    // dropped here as "not for DARWIN" — the conservative PURE matcher never triggers on a
     // substring of a larger word and never matches an empty/blank phrase. EXCEPTION: while
     // a confirmation is parked we skip the gate, exactly like the self-echo reject above —
     // the invited "confirm"/"cancel" reply need not repeat the wake word. The
     // always-listening loop that produced `text` is DEVICE-GATED; this gate over the
     // already-produced transcript is the PURE wiring.
     if !crate::confirm::is_live(std::time::Instant::now()) && !wake::wake_gate(cfg, &text) {
-        info!(text = %text, phrase = %cfg.wake.phrase, "utterance lacks the wake word; not for JARVIS");
+        info!(text = %text, phrase = %cfg.wake.phrase, "utterance lacks the wake word; not for DARWIN");
         telemetry::emit(
             "audio",
             "utterance.no_wake",
@@ -2795,7 +2795,7 @@ async fn run_pipeline(
     // converse data and the persona phrases it (emits proactive.brief).
     let brief = proactive::first_contact_brief(cfg, memory).await;
 
-    // Cloud reachability for Jarvis-Prime delegation: the API key is the
+    // Cloud reachability for Darwin-Prime delegation: the API key is the
     // honest signal (resolved once, cached). With no key, conversational turns
     // route to hulk's all-local survival profile instead of the cloud.
     let cloud_reachable = anthropic::resolve_api_key().await.is_some();
@@ -3583,8 +3583,8 @@ async fn handle_voice_clone(
         // (2) No clone pending: look for an explicit clone/forget-clone intent.
         match voiceclone::classify_intent(text) {
             Some(voiceclone::CloneIntent::Forget) => {
-                // Default cloned-owner slot is "jarvis"; forgetting drops it.
-                let had = cloned_voices.forget("jarvis");
+                // Default cloned-owner slot is "darwin"; forgetting drops it.
+                let had = cloned_voices.forget("darwin");
                 if had {
                     if let Err(e) = voiceclone::save_clones(root, cloned_voices) {
                         warn!(error = %e, "voice-clone: failed to persist after forget");
@@ -3616,9 +3616,9 @@ async fn handle_voice_clone(
                     .to_string();
                 *clone_state = voiceclone::CloneState::Pending {
                     sample,
-                    agent: "jarvis".to_string(),
+                    agent: "darwin".to_string(),
                 };
-                telemetry::emit("system", "voiceclone.proposed", json!({"agent": "jarvis"}));
+                telemetry::emit("system", "voiceclone.proposed", json!({"agent": "darwin"}));
                 Some(voiceclone::consent_prompt(&display))
             }
             None => None,
@@ -4123,7 +4123,7 @@ mod tests {
     }
 
     /// RC-5 self-echo / plausibility reject. A one-word fragment is dropped; a
-    /// transcript wholly contained in JARVIS's last reply is dropped; a genuine
+    /// transcript wholly contained in DARWIN's last reply is dropped; a genuine
     /// new multi-word command (not contained in the last reply) passes.
     #[test]
     fn self_echo_rejects_fragments_and_echoes_but_passes_real_commands() {
@@ -4131,7 +4131,7 @@ mod tests {
         assert!(is_self_echo("apple", None));
         assert!(is_self_echo("apple", Some("Opened apple.com in Safari.")));
 
-        // Wholly contained in JARVIS's last reply -> he re-heard himself.
+        // Wholly contained in DARWIN's last reply -> he re-heard himself.
         let reply = "Opened apple.com in Safari, the default browser.";
         assert!(is_self_echo("apple com", Some(reply)), "echo of the spoken URL");
         assert!(is_self_echo("opened apple com in safari", Some(reply)));
@@ -4193,7 +4193,7 @@ mod tests {
     #[test]
     fn log_writer_rotates_by_size_and_keeps_one_predecessor() {
         let dir = std::env::temp_dir().join(format!(
-            "jarvis-logrotate-test-{}-{}",
+            "darwin-logrotate-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

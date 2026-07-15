@@ -18,10 +18,10 @@
 //! money action exists. A test (`no_money_moving_method_exists`) pins that the
 //! whole module names no transfer/payment/trade endpoint.
 //!
-//! HONESTY: Plaid needs TWO things from the user, both obtained outside JARVIS.
+//! HONESTY: Plaid needs TWO things from the user, both obtained outside DARWIN.
 //! First, the user's own Plaid app credentials (client_id + secret), pasted in
 //! Settings. Second, a per-institution `access_token`, which is minted by Plaid
-//! LINK — a frontend/sandbox token-exchange step JARVIS does NOT perform. Until
+//! LINK — a frontend/sandbox token-exchange step DARWIN does NOT perform. Until
 //! all three are configured, every method returns the friendly secret-free
 //! "no linked accounts — connect via Plaid in Settings" message; it never
 //! pretends to read an account that was never linked.
@@ -55,7 +55,7 @@ pub const ACCOUNT_CLIENT_ID: &str = "plaid_client_id";
 /// developer app). Pasted in Settings. Rides only the request body at call time.
 pub const ACCOUNT_SECRET: &str = "plaid_secret";
 /// The Keychain account holding a linked institution's Plaid access_token, minted
-/// by Plaid Link (a frontend/sandbox step JARVIS does not perform) and pasted in
+/// by Plaid Link (a frontend/sandbox step DARWIN does not perform) and pasted in
 /// Settings. Rides only the request body at call time.
 pub const ACCOUNT_ACCESS_TOKEN: &str = "plaid_access_token";
 
@@ -397,7 +397,7 @@ impl PlaidClient<ReqwestTransport> {
     /// reqwest transport. Returns the friendly, secret-free "no linked accounts"
     /// error when ANY of the three is missing — midas relays that to the user
     /// without ever surfacing a secret. The access_token in particular is minted by
-    /// Plaid LINK (a frontend step JARVIS does not perform), so its absence is the
+    /// Plaid LINK (a frontend step DARWIN does not perform), so its absence is the
     /// common "not linked yet" case.
     pub async fn connect() -> IntegrationResult<Self> {
         let client_id = resolve_secret(ACCOUNT_CLIENT_ID).await.ok_or_else(not_configured)?;
@@ -419,7 +419,7 @@ impl PlaidClient<ReqwestTransport> {
 
 /// The friendly, secret-free "not configured / not linked" error every missing-
 /// secret path returns — points the user at Settings + Plaid Link, names that
-/// JARVIS reads only, and never surfaces a token.
+/// DARWIN reads only, and never surfaces a token.
 fn not_configured() -> anyhow::Error {
     anyhow::anyhow!(
         "no linked accounts — connect via Plaid in Settings (your Plaid client id and secret, plus a linked-institution access token from Plaid Link)"

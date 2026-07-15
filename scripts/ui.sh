@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# ui.sh — J.A.R.V.I.S. install terminal UI library (PURE BASH, no deps).
+# ui.sh — D.A.R.W.I.N. install terminal UI library (PURE BASH, no deps).
 #
 #   THE ARC REACTOR  ::  a cinematic, Iron-Man / Stark-HUD install experience.
 # ----------------------------------------------------------------------------
@@ -9,7 +9,7 @@
 # reactor as it spins up at the center (a sweeping highlight + a core that
 # charges deep-blue -> cyan -> white); a brief "system diagnostic" reveals
 # self-check readouts; the wordmark decodes from scrambled glyphs into
-# J.A.R.V.I.S.; a short decorative boot readout settles its subsystems; one
+# D.A.R.W.I.N.; a short decorative boot readout settles its subsystems; one
 # clean scan-sweep passes the banner; and a centered "Made by <author>" credit
 # byline signs the build. Each install stage renders as a HUD readout panel with
 # a targeting reticle; the finale runs a final reactor charge to 100%, lights
@@ -29,7 +29,7 @@
 # API COMPATIBILITY (install.sh depends on these — signatures UNCHANGED):
 #   ui_init
 #   ui_fg <r> <g> <b>
-#   jarvis_banner
+#   darwin_banner
 #   ui_hr
 #   ui_stage   <n> <total> <label>
 #   ui_ok / ui_warn / ui_err / ui_info / ui_note   <msg>
@@ -47,10 +47,10 @@
 #   ui_frame_bottom [s]  — bottom HUD frame bar that seals the display
 #   ui_bg <r> <g> <b>    — truecolor background (silent below truecolor)
 #
-# Operator name: JARVIS_OPERATOR (defaults to the auto-detected machine name —
+# Operator name: DARWIN_OPERATOR (defaults to the auto-detected machine name —
 # scutil ComputerName -> hostname -s -> hostname -> $HOSTNAME -> "operator")
 # tags the HUD frame; an explicit env value always wins. Author name:
-# JARVIS_AUTHOR (default "Darwin Capani") signs the byline, rendered UPPERCASE.
+# DARWIN_AUTHOR (default "Darwin Capani") signs the byline, rendered UPPERCASE.
 # Both are sanitised of control chars so they can never inject escape sequences.
 #
 # Design rules (honoured):
@@ -59,19 +59,19 @@
 #     errexit. Runs under bash 3.2 (the macOS system bash).
 #   - Degrades cleanly on a dumb/non-tty terminal and honours NO_COLOR.
 #   - ALL motion auto-skips on non-tty / NO_COLOR / dumb-TERM (and via the
-#     JARVIS_NO_ANIM escape hatch) so a piped/CI run stays clean and a real
+#     DARWIN_NO_ANIM escape hatch) so a piped/CI run stays clean and a real
 #     install gains only a fraction of a second of wall-clock.
 #   - All drawing goes to stdout; the caller decides where that points.
 #
 # This file is meant to be *sourced*; it defines functions and sets UI_* and
-# JARVIS_* globals. It does not enable errexit itself (that is the installer's
+# DARWIN_* globals. It does not enable errexit itself (that is the installer's
 # job).
 
 # --- guard against double-sourcing ------------------------------------------
-if [ -n "${__JARVIS_UI_SH_LOADED:-}" ]; then
+if [ -n "${__DARWIN_UI_SH_LOADED:-}" ]; then
     return 0 2>/dev/null || true
 fi
-__JARVIS_UI_SH_LOADED=1
+__DARWIN_UI_SH_LOADED=1
 
 # --- capability + state globals ----------------------------------------------
 # UI_COLOR_MODE is one of: truecolor | 256 | 16 | none
@@ -81,22 +81,22 @@ UI_UTF8=0
 UI_ANIM=0   # 1 only on a real interactive, colored, non-dumb tty
 
 # Operator the HUD frame tags ("OPERATOR // ..."). Overridable: an explicit
-# JARVIS_OPERATOR in the environment always wins. Otherwise it defaults to the
+# DARWIN_OPERATOR in the environment always wins. Otherwise it defaults to the
 # auto-detected machine name (see _ui_detect_operator), e.g. macOS's friendly
 # ComputerName ("Darwin's MacBook Pro"), which may carry a multibyte glyph (a
 # curly apostrophe) — the top-frame border measures DISPLAY width, not bytes, so
 # it stays aligned. Set lazily in ui_init so the detection runs set -e safe.
-JARVIS_OPERATOR="${JARVIS_OPERATOR:-}"
+DARWIN_OPERATOR="${DARWIN_OPERATOR:-}"
 
 # Author credited in the intro byline ("MADE BY <AUTHOR>"). Overridable; the
 # name carries the single warm gold signature (the operator tag is cool/ice).
-JARVIS_AUTHOR="${JARVIS_AUTHOR:-Darwin Capani}"
+DARWIN_AUTHOR="${DARWIN_AUTHOR:-Darwin Capani}"
 
 # A UTF-8 locale name we can lean on for character-accurate measuring even when
 # the runtime locale is C/POSIX (where `wc -m` counts bytes). Resolved lazily.
 _UI_UTF8_LOCALE=""
 
-# Resolve the operator name (machine name) when JARVIS_OPERATOR is not already
+# Resolve the operator name (machine name) when DARWIN_OPERATOR is not already
 # set in the environment. Tries, in order, the first that yields a non-empty
 # value: macOS friendly ComputerName, short hostname, full hostname, $HOSTNAME,
 # then the literal "operator". Every probe is guarded (command -v + 2>/dev/null
@@ -165,7 +165,7 @@ _ui_display_width() {
 }
 
 # Detect once. Safe to call repeatedly. Honours an explicit override via
-# JARVIS_UI_COLOR (truecolor|256|16|none) for testing/rendering.
+# DARWIN_UI_COLOR (truecolor|256|16|none) for testing/rendering.
 ui_init() {
     # Width: prefer COLUMNS, then tput, then a sane default. Never fail.
     local cols=""
@@ -188,22 +188,22 @@ ui_init() {
         *) UI_UTF8=0 ;;
     esac
 
-    # Operator name: an explicit JARVIS_OPERATOR from the environment wins; if it
+    # Operator name: an explicit DARWIN_OPERATOR from the environment wins; if it
     # is empty, default to the auto-detected machine name. Detection is guarded so
     # `set -e` never aborts here.
-    [ -z "$JARVIS_OPERATOR" ] && JARVIS_OPERATOR="$(_ui_detect_operator)"
+    [ -z "$DARWIN_OPERATOR" ] && DARWIN_OPERATOR="$(_ui_detect_operator)"
     # Sanitise the operator name: strip CR/LF/ESC so it can never inject an
     # escape sequence or break the centered layout.
-    JARVIS_OPERATOR="$(printf '%s' "$JARVIS_OPERATOR" | tr -d '\r\n\033')"
-    [ -z "$JARVIS_OPERATOR" ] && JARVIS_OPERATOR="operator"
+    DARWIN_OPERATOR="$(printf '%s' "$DARWIN_OPERATOR" | tr -d '\r\n\033')"
+    [ -z "$DARWIN_OPERATOR" ] && DARWIN_OPERATOR="operator"
 
     # Sanitise the author name identically (it is rendered in the intro byline).
-    JARVIS_AUTHOR="$(printf '%s' "$JARVIS_AUTHOR" | tr -d '\r\n\033')"
-    [ -z "$JARVIS_AUTHOR" ] && JARVIS_AUTHOR="Darwin Capani"
+    DARWIN_AUTHOR="$(printf '%s' "$DARWIN_AUTHOR" | tr -d '\r\n\033')"
+    [ -z "$DARWIN_AUTHOR" ] && DARWIN_AUTHOR="Darwin Capani"
 
     # Explicit override wins (lets the render harness force a mode).
-    if [ -n "${JARVIS_UI_COLOR:-}" ]; then
-        UI_COLOR_MODE="$JARVIS_UI_COLOR"
+    if [ -n "${DARWIN_UI_COLOR:-}" ]; then
+        UI_COLOR_MODE="$DARWIN_UI_COLOR"
         _ui_finalize
         return 0
     fi
@@ -245,26 +245,26 @@ ui_init() {
 # Settle derived state after a color mode is chosen: decide motion, build the
 # palette. Motion is allowed ONLY on a real interactive colored terminal that is
 # not dumb and not under NO_COLOR; a forced color mode (rendering) never animates
-# unless stdout is also a tty; JARVIS_NO_ANIM forces static for testing/CI.
+# unless stdout is also a tty; DARWIN_NO_ANIM forces static for testing/CI.
 _ui_finalize() {
     UI_ANIM=0
     if [ "$UI_COLOR_MODE" != "none" ] && [ -t 1 ] && [ -z "${NO_COLOR:-}" ] \
-       && [ -z "${JARVIS_NO_ANIM:-}" ]; then
+       && [ -z "${DARWIN_NO_ANIM:-}" ]; then
         case "${TERM:-}" in
             ''|dumb|unknown) UI_ANIM=0 ;;
             *)               UI_ANIM=1 ;;
         esac
     fi
     # A forced color mode used purely for rendering (output piped) must not move.
-    [ -n "${JARVIS_UI_COLOR:-}" ] && [ ! -t 1 ] && UI_ANIM=0
+    [ -n "${DARWIN_UI_COLOR:-}" ] && [ ! -t 1 ] && UI_ANIM=0
     _ui_define_palette
 
     # Cursor safety: when motion is on, guarantee the cursor is shown again on
     # ANY exit path — including Ctrl-C / kill mid-animation — so we never leave a
     # hidden cursor behind. Registered once, only when animating. (install.sh
     # sets no traps of its own, so this is additive, not a clobber.)
-    if [ "$UI_ANIM" -eq 1 ] && [ -z "${__JARVIS_UI_TRAP:-}" ]; then
-        __JARVIS_UI_TRAP=1
+    if [ "$UI_ANIM" -eq 1 ] && [ -z "${__DARWIN_UI_TRAP:-}" ]; then
+        __DARWIN_UI_TRAP=1
         trap '_ui_show_cursor' EXIT
         trap '_ui_show_cursor; trap - INT; kill -INT $$ 2>/dev/null || exit 130' INT
         trap '_ui_show_cursor; trap - TERM; kill -TERM $$ 2>/dev/null || exit 143' TERM
@@ -534,12 +534,12 @@ _ui_wordmark_decode() {
 
 # --- HUD frame bars ----------------------------------------------------------
 
-# Top HUD bar:   ╭── J.A.R.V.I.S. // ARC OS ─────── [ OPERATOR // darwin-capani ] ╮
+# Top HUD bar:   ╭── D.A.R.W.I.N. // ARC OS ─────── [ OPERATOR // darwin-capani ] ╮
 # Carries the operator name + a system tag inside the frame's top edge.
 ui_frame_top() {
     _ui_ensure
-    local tag="${1:-J.A.R.V.I.S. // ARC OS}"
-    local op="OPERATOR // ${JARVIS_OPERATOR}"
+    local tag="${1:-D.A.R.W.I.N. // ARC OS}"
+    local op="OPERATOR // ${DARWIN_OPERATOR}"
     local left="${UI_TL}${UI_HR_CH}${UI_HR_CH} "
     local opcell="[ ${op} ]"
     # DISPLAY-WIDTH-safe measure of the operator cell: the machine name may carry
@@ -772,7 +772,7 @@ ui_spin() {
 
 # --- arc-reactor banner ------------------------------------------------------
 # The centerpiece: a glowing concentric-ring arc reactor with a cyan->white
-# core, framed by a HUD top bar carrying the operator name, plus the J.A.R.V.I.S.
+# core, framed by a HUD top bar carrying the operator name, plus the D.A.R.W.I.N.
 # wordmark. On an interactive tty the reactor is drawn IN PLACE and visibly
 # CHARGES (deep-blue -> cyan -> ice -> white over several frames, redrawing over
 # itself), ending exactly on the settled reactor; the wordmark, expansion line,
@@ -968,7 +968,7 @@ _ui_reactor_scansweep() {
 # BOOT READOUT (flourish B): a short DECORATIVE sequence of right-aligned status
 # lines themed to the installer powering up — each ticks from a dim "....." to a
 # settled cool "[ OK ]" / "[ READY ]" tag. This is intro FLAVOR for the installer
-# only; it does NOT assert that any real JARVIS subsystem is online (honesty-
+# only; it does NOT assert that any real DARWIN subsystem is online (honesty-
 # first). tty-only motion; off-tty it prints the settled lines instantly, right-
 # aligned, in the cool palette. Cursor hidden during motion + always restored.
 _ui_boot_readout() {
@@ -1062,13 +1062,13 @@ _ui_boot_readout() {
     return 0
 }
 
-jarvis_banner() {
+darwin_banner() {
     _ui_ensure
 
     printf '\n'
 
     # Top HUD frame bar (names the operator along the top edge).
-    ui_frame_top "J.A.R.V.I.S. // ARC OS"
+    ui_frame_top "D.A.R.W.I.N. // ARC OS"
 
     # Brief diagnostic pre-roll (motion only; no-op on non-tty).
     _ui_reactor_animate
@@ -1143,12 +1143,12 @@ jarvis_banner() {
 
     # PROGRESSIVE REVEAL — each HUD element comes online in sequence with a beat.
     _ui_nap 0.12
-    # WORDMARK DECODE-IN (flourish A): "J . A . R . V . I . S ." resolves from a
+    # WORDMARK DECODE-IN (flourish A): "D . A . R . W . I . N ." resolves from a
     # few frames of scrambled glyphs, locking in left-to-right (instant +
     # centered off-tty — identical final artifact).
-    _ui_wordmark_decode "J . A . R . V . I . S ." "${UI_BOLD}${UI_BRIGHT}"
+    _ui_wordmark_decode "D . A . R . W . I . N ." "${UI_BOLD}${UI_BRIGHT}"
     _ui_nap 0.10
-    _ui_centerline "Just A Rather Very Intelligent System" "${UI_DIM}${UI_ICE}"
+    _ui_centerline "Digital Assistant Running Wholly In-house, Natively" "${UI_DIM}${UI_ICE}"
     printf '\n'
     _ui_nap 0.10
 
@@ -1371,23 +1371,23 @@ _ui_reactor_build_glint_path() {
 # A centered "MADE BY <AUTHOR>" CREDIT BYLINE — the build's signature, given a
 # slightly elevated treatment with thin bracket caps so it reads as a credit,
 # not a chat line. Rendered FULL UPPERCASE ("MADE BY DARWIN CAPANI") via tr at
-# render time only (the stored JARVIS_AUTHOR keeps its title case). "MADE BY "
+# render time only (the stored DARWIN_AUTHOR keeps its title case). "MADE BY "
 # sits in a cool/dim tone; the author name carries the single warm GOLD
 # signature (consistent with the operator-name gold rule). NO time-of-day, NO
 # butler address.
 #
 # Kept named ui_greet (and accepts an optional name arg) so install.sh's existing
-# call site keeps working unchanged; the optional $1 overrides JARVIS_AUTHOR.
+# call site keeps working unchanged; the optional $1 overrides DARWIN_AUTHOR.
 # On an interactive tty the name DECODES IN from scrambled glyphs into gold,
 # resolving into the UPPERCASE name; off-tty / NO_COLOR / no-color it prints
 # instantly + centered. Static + log-safe. Used by BOTH the opening banner and
 # the ui_online finale restatement, so both render uppercase.
 ui_greet() {
     _ui_ensure
-    local name="${1:-$JARVIS_AUTHOR}"
+    local name="${1:-$DARWIN_AUTHOR}"
     name="$(printf '%s' "$name" | tr -d '\r\n\033')"
     [ -z "$name" ] && name="Darwin Capani"
-    # Render the byline FULL UPPERCASE without mutating the stored JARVIS_AUTHOR:
+    # Render the byline FULL UPPERCASE without mutating the stored DARWIN_AUTHOR:
     # uppercase only the local render copies via tr (bash 3.2 — no ${var^^}). The
     # lead "Made by " and the name both uppercase => "MADE BY DARWIN CAPANI".
     name="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
@@ -1457,7 +1457,7 @@ ui_greet() {
 # A brief, tasteful "system diagnostic" shown only on an interactive tty just
 # before the reactor charges into view: each self-check readout scans on one
 # overwritten line and clears, naming the operator profile. The reactor's actual
-# brightening now happens IN PLACE in jarvis_banner (charge-up), so this is only
+# brightening now happens IN PLACE in darwin_banner (charge-up), so this is only
 # the quick pre-roll. Adds a fraction of a second; a complete no-op when
 # UI_ANIM=0. Cursor hidden during motion and ALWAYS restored on exit.
 _ui_reactor_animate() {
@@ -1471,7 +1471,7 @@ _ui_reactor_animate() {
         "arc reactor ........ core priming"
         "HUD telemetry ...... linking"
         "voice cortex ....... priming"
-        "operator profile ... ${JARVIS_OPERATOR}"
+        "operator profile ... ${DARWIN_OPERATOR}"
     )
     local c
     for c in "${checks[@]}"; do
@@ -1491,7 +1491,7 @@ _ui_reactor_animate() {
 # installer does not require it, but it is a clean cinematic entry point.
 ui_reactor_powerup() {
     _ui_ensure
-    jarvis_banner
+    darwin_banner
     return 0
 }
 
@@ -1511,7 +1511,7 @@ ui_reactor_powerup() {
 #
 # Usage:
 #   ui_status_board "BOOT MANIFEST" \
-#       "CORE DAEMON (jarvisd)|BUILT" \
+#       "CORE DAEMON (darwind)|BUILT" \
 #       "ON-DEVICE MODELS|5 RESIDENT" \
 #       ...
 # Each extra arg is a "LABEL|TAG" pair (the FIRST '|' splits; the label may not
@@ -1715,7 +1715,7 @@ ui_panel() {
 
 # --- ONLINE flourish ---------------------------------------------------------
 # The finale: a final reactor charge to 100%, the wordmark decodes in, a neutral
-# "J.A.R.V.I.S. // ONLINE" status line + a restated "Made by <author>" credit,
+# "D.A.R.W.I.N. // ONLINE" status line + a restated "Made by <author>" credit,
 # and the bottom HUD frame seals the display. NO butler address, NO time-of-day.
 # Static + clean on non-tty/NO_COLOR.
 # Optional arg $1 overrides the bottom-frame status (default ALL SYSTEMS NOMINAL);
@@ -1809,22 +1809,22 @@ ui_online() {
     _ui_nap 0.08
 
     # ONLINE wordmark — decodes in on a tty (instant + centered off-tty).
-    local msg="J . A . R . V . I . S .   I S   O N L I N E"
+    local msg="D . A . R . W . I . N .   I S   O N L I N E"
     if [ "$UI_COLOR_MODE" = "none" ]; then
         _ui_centerline "$msg"
     else
         _ui_wordmark_decode "$msg" "${UI_BOLD}${UI_BRIGHT}"
     fi
 
-    # NEUTRAL STATUS LINE — a clean "J.A.R.V.I.S. // ONLINE" tag in the cool
+    # NEUTRAL STATUS LINE — a clean "D.A.R.W.I.N. // ONLINE" tag in the cool
     # palette. No butler address, no time-of-day; the system does not address the
     # user.
-    local status="J.A.R.V.I.S. // ONLINE"
+    local status="D.A.R.W.I.N. // ONLINE"
     local ssp; ssp="$(_ui_pad "${#status}")"
     if [ "$UI_COLOR_MODE" = "none" ]; then
         printf '%s%s\n' "$ssp" "$status"
     else
-        printf '%s%sJ.A.R.V.I.S.%s %s//%s %s%sONLINE%s\n' \
+        printf '%s%sD.A.R.W.I.N.%s %s//%s %s%sONLINE%s\n' \
             "$ssp" "${UI_BOLD}${UI_CYAN}" "$UI_RESET" \
             "${UI_DIM}${UI_STEEL}" "$UI_RESET" \
             "${UI_BOLD}${UI_GREEN}" "" "$UI_RESET"

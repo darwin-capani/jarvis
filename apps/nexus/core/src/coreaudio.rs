@@ -439,7 +439,7 @@ pub fn create_aggregate_device(
             // Name + UID + private (don't publish to other apps; this is an
             // in-process routing aggregate, SPEC §1).
             let name = track!(cfstr("Nexus Aggregate"));
-            let uid = track!(cfstr("com.jarvis.nexus.aggregate"));
+            let uid = track!(cfstr("com.darwin.nexus.aggregate"));
             let k_name = track!(cfstr_key(sys::kAudioAggregateDeviceNameKey));
             let k_uid = track!(cfstr_key(sys::kAudioAggregateDeviceUIDKey));
             let k_private = track!(cfstr_key(sys::kAudioAggregateDeviceIsPrivateKey));

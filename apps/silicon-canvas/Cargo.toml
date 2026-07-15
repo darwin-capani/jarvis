@@ -1,7 +1,7 @@
-# Silicon Canvas — GPU schematic/PCB renderer micro-app for Project JARVIS.
+# Silicon Canvas — GPU schematic/PCB renderer micro-app for Project DARWIN.
 #
 # Standalone binary crate (NOT part of the daemon workspace). The manifest
-# declares runtime = "binary", entry = "silicon-canvas"; jarvisd execs the
+# declares runtime = "binary", entry = "silicon-canvas"; darwind execs the
 # prebuilt binary directly under sandbox-exec (apps.rs Runtime::Binary).
 #
 # DEPENDENCY POLICY (frozen): every dependency the whole app will ever need is

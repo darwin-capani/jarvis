@@ -109,20 +109,20 @@ pub fn last_stage(output: &str) -> String {
 
 /* ------------------------------------------------------------- root resolve */
 
-/// A directory is the JARVIS root iff it contains BOTH `scripts/apply_heal.sh`
-/// and `config/jarvis.toml`. PURE (filesystem read only). Used by the upward
+/// A directory is the DARWIN root iff it contains BOTH `scripts/apply_heal.sh`
+/// and `config/darwin.toml`. PURE (filesystem read only). Used by the upward
 /// walk and unit-tested with a synthetic tree.
-pub fn is_jarvis_root(dir: &Path) -> bool {
-    dir.join("scripts/apply_heal.sh").is_file() && dir.join("config/jarvis.toml").is_file()
+pub fn is_darwin_root(dir: &Path) -> bool {
+    dir.join("scripts/apply_heal.sh").is_file() && dir.join("config/darwin.toml").is_file()
 }
 
-/// Walk up from `start`, returning the first ancestor that `is_jarvis_root`.
+/// Walk up from `start`, returning the first ancestor that `is_darwin_root`.
 /// PURE-ish (filesystem reads). Unit-tested against a synthetic tree so the
 /// walk logic is verified without depending on where the test binary lives.
 pub fn find_root_from(start: &Path) -> Option<PathBuf> {
     let mut cur = Some(start);
     while let Some(dir) = cur {
-        if is_jarvis_root(dir) {
+        if is_darwin_root(dir) {
             return Some(dir.to_path_buf());
         }
         cur = dir.parent();
@@ -131,22 +131,22 @@ pub fn find_root_from(start: &Path) -> Option<PathBuf> {
 }
 
 /// The canonical install tree, relative to a given home dir:
-/// `<home>/Library/Application Support/JARVIS` — exactly where install.sh places
-/// the repo (`JARVIS_HOME="$HOME/Library/Application Support/JARVIS"`). Returns
-/// it only when it is actually a JARVIS root. Split from `install_root` so the
+/// `<home>/Library/Application Support/DARWIN` — exactly where install.sh places
+/// the repo (`DARWIN_HOME="$HOME/Library/Application Support/DARWIN"`). Returns
+/// it only when it is actually a DARWIN root. Split from `install_root` so the
 /// path logic is unit-testable against a synthetic home WITHOUT mutating the
 /// process-global `$HOME`.
 fn install_root_under(home: &Path) -> Option<PathBuf> {
-    let p = home.join("Library/Application Support/JARVIS");
-    if is_jarvis_root(&p) {
+    let p = home.join("Library/Application Support/DARWIN");
+    if is_darwin_root(&p) {
         Some(p)
     } else {
         None
     }
 }
 
-/// The canonical install location of the JARVIS tree on this machine. An
-/// INSTALLED app is copied to /Applications/JARVIS.app — OUTSIDE the install
+/// The canonical install location of the DARWIN tree on this machine. An
+/// INSTALLED app is copied to /Applications/DARWIN.app — OUTSIDE the install
 /// tree — so the exe/cwd upward walks below cannot reach it; this is the real
 /// production resolution path. GUI apps reliably inherit `$HOME` (launchd/Finder
 /// set it), so it needs no shell environment.
@@ -155,24 +155,24 @@ fn install_root() -> Option<PathBuf> {
     install_root_under(&PathBuf::from(home))
 }
 
-/// Resolve the JARVIS repo root ONCE per call:
-///   1. `JARVIS_ROOT` env var when set AND it looks like the root.
+/// Resolve the DARWIN repo root ONCE per call:
+///   1. `DARWIN_ROOT` env var when set AND it looks like the root.
 ///   2. otherwise walk up from the current exe's directory (dev: exe lives in
 ///      the source tree).
 ///   3. otherwise the canonical install tree `~/Library/Application Support/
-///      JARVIS` (production: the app was copied to /Applications, divorced from
+///      DARWIN` (production: the app was copied to /Applications, divorced from
 ///      the install tree, so the walk above can't find it).
 ///   4. otherwise walk up from the current working directory (dev fallback).
 ///
 /// Returns a structured error string when nothing qualifies.
-fn resolve_jarvis_root() -> Result<PathBuf, String> {
-    if let Ok(env_root) = std::env::var("JARVIS_ROOT") {
+fn resolve_darwin_root() -> Result<PathBuf, String> {
+    if let Ok(env_root) = std::env::var("DARWIN_ROOT") {
         let p = PathBuf::from(&env_root);
-        if is_jarvis_root(&p) {
+        if is_darwin_root(&p) {
             return Ok(p);
         }
         return Err(format!(
-            "JARVIS_ROOT is set ({env_root}) but does not contain scripts/apply_heal.sh + config/jarvis.toml"
+            "DARWIN_ROOT is set ({env_root}) but does not contain scripts/apply_heal.sh + config/darwin.toml"
         ));
     }
 
@@ -194,15 +194,15 @@ fn resolve_jarvis_root() -> Result<PathBuf, String> {
         }
     }
 
-    Err("could not locate the JARVIS root (looked at $JARVIS_ROOT, above the app, ~/Library/Application Support/JARVIS, and the working dir for scripts/apply_heal.sh + config/jarvis.toml)".to_string())
+    Err("could not locate the DARWIN root (looked at $DARWIN_ROOT, above the app, ~/Library/Application Support/DARWIN, and the working dir for scripts/apply_heal.sh + config/darwin.toml)".to_string())
 }
 
 /// Public root resolver for siblings (the command channel) that need the SAME
 /// repo root the heal apply uses — the daemon's confined `state/ipc/` socket +
-/// token live under it. Reuses the identical JARVIS_ROOT env / exe-cwd upward
-/// walk to the scripts/apply_heal.sh + config/jarvis.toml markers.
+/// token live under it. Reuses the identical DARWIN_ROOT env / exe-cwd upward
+/// walk to the scripts/apply_heal.sh + config/darwin.toml markers.
 pub fn resolve_root_for_command() -> Result<PathBuf, String> {
-    resolve_jarvis_root()
+    resolve_darwin_root()
 }
 
 /// Resolve and validate the proposal directory for `ts`. Centralizes the ts
@@ -211,7 +211,7 @@ fn proposal_dir(ts: &str) -> Result<PathBuf, String> {
     if !is_valid_ts(ts) {
         return Err(format!("invalid timestamp '{ts}' (must be digits only)"));
     }
-    let root = resolve_jarvis_root()?;
+    let root = resolve_darwin_root()?;
     Ok(root.join("state/heal/proposals").join(ts))
 }
 
@@ -254,7 +254,7 @@ pub async fn heal_apply(ts: String) -> Result<HealApplyResult, String> {
     if !is_valid_ts(&ts) {
         return Err(format!("invalid timestamp '{ts}' (must be digits only)"));
     }
-    let root = resolve_jarvis_root()?;
+    let root = resolve_darwin_root()?;
     let script = root.join("scripts/apply_heal.sh");
     if !script.is_file() {
         return Err(format!(
@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn is_jarvis_root_requires_both_markers() {
+    fn is_darwin_root_requires_both_markers() {
         let tmp = std::env::temp_dir().join(format!("heal_root_test_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(tmp.join("scripts")).unwrap();
@@ -355,11 +355,11 @@ mod tests {
 
         // only the script -> not a root
         fs::write(tmp.join("scripts/apply_heal.sh"), "#!/bin/bash\n").unwrap();
-        assert!(!is_jarvis_root(&tmp));
+        assert!(!is_darwin_root(&tmp));
 
         // both markers -> a root
-        fs::write(tmp.join("config/jarvis.toml"), "[self_heal]\n").unwrap();
-        assert!(is_jarvis_root(&tmp));
+        fs::write(tmp.join("config/darwin.toml"), "[self_heal]\n").unwrap();
+        assert!(is_darwin_root(&tmp));
 
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -374,7 +374,7 @@ mod tests {
         fs::create_dir_all(base.join("scripts")).unwrap();
         fs::create_dir_all(base.join("config")).unwrap();
         fs::write(base.join("scripts/apply_heal.sh"), "#!/bin/bash\n").unwrap();
-        fs::write(base.join("config/jarvis.toml"), "[self_heal]\n").unwrap();
+        fs::write(base.join("config/darwin.toml"), "[self_heal]\n").unwrap();
 
         let found = find_root_from(&nested).expect("should find the root by walking up");
         // canonicalize both sides: temp_dir may be a symlink (/var -> /private/var)
@@ -386,7 +386,7 @@ mod tests {
         fs::create_dir_all(&orphan).unwrap();
         // not asserting None broadly (temp_dir ancestors are unknown); just ensure
         // the immediate orphan dir is not mistaken for a root.
-        assert!(!is_jarvis_root(&orphan));
+        assert!(!is_darwin_root(&orphan));
 
         let _ = fs::remove_dir_all(&base);
         let _ = fs::remove_dir_all(&orphan);
@@ -399,7 +399,7 @@ mod tests {
         let home =
             std::env::temp_dir().join(format!("heal_install_home_{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
-        let tree = home.join("Library/Application Support/JARVIS");
+        let tree = home.join("Library/Application Support/DARWIN");
         fs::create_dir_all(tree.join("scripts")).unwrap();
         fs::create_dir_all(tree.join("config")).unwrap();
 
@@ -408,7 +408,7 @@ mod tests {
 
         // both markers present -> resolves to the install tree
         fs::write(tree.join("scripts/apply_heal.sh"), "#!/bin/bash\n").unwrap();
-        fs::write(tree.join("config/jarvis.toml"), "[self_heal]\n").unwrap();
+        fs::write(tree.join("config/darwin.toml"), "[self_heal]\n").unwrap();
         let found = install_root_under(&home).expect("install tree should resolve");
         assert_eq!(found.canonicalize().unwrap(), tree.canonicalize().unwrap());
 

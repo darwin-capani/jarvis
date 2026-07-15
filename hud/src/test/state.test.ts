@@ -390,13 +390,13 @@ describe("stale-state decay", () => {
 /* transcript ------------------------------------------------------------------ */
 
 describe("transcript ring buffer", () => {
-  it("records user and jarvis lines in order", () => {
+  it("records user and darwin lines in order", () => {
     let s = connected();
     s = tel(s, env("stt.transcript", { text: "hello" }, "local"));
     s = tel(s, env("route.completed", { routed_to: "cloud", response: "Good evening." }, "cloud"));
     expect(s.transcript.map((l) => [l.who, l.text])).toEqual([
       ["user", "hello"],
-      ["jarvis", "Good evening."],
+      ["darwin", "Good evening."],
     ]);
     expect(s.transcript[1].routedTo).toBe("cloud");
   });
@@ -446,8 +446,8 @@ describe("system gauges and metadata", () => {
 
   it("daemon.started records root and cloud_key_present, resets to idle", () => {
     let s = tel(connected(), env("route.local", { intent: "i", confidence: 1 }, "local"));
-    s = tel(s, env("daemon.started", { root: "/Users/x/jarvis", cloud_key_present: true }));
-    expect(s.daemonRoot).toBe("/Users/x/jarvis");
+    s = tel(s, env("daemon.started", { root: "/Users/x/darwin", cloud_key_present: true }));
+    expect(s.daemonRoot).toBe("/Users/x/darwin");
     expect(s.cloudKeyPresent).toBe(true);
     expect(s.coreState).toBe("idle");
   });
@@ -917,7 +917,7 @@ describe("agent.active delegation + roster highlight", () => {
     // the core color cycles. The reducer simply tracks the latest active one.
     let s = connected();
     const order = [
-      ["jarvis", 190],
+      ["darwin", 190],
       ["friday", 35],
       ["vision", 265],
       ["ultron", 15],

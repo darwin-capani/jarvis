@@ -1,11 +1,11 @@
 //! Silicon Canvas binary entry — the daemon-launched micro-app process.
 //!
-//! Runtime contract (`daemon/src/apps.rs`, runtime = "binary"): jarvisd execs
+//! Runtime contract (`daemon/src/apps.rs`, runtime = "binary"): darwind execs
 //! this binary directly under `sandbox-exec`, handing it the socket + token via
 //! the environment (NEVER argv — argv is world-readable via `ps`):
-//!   - `JARVIS_APP_SOCKET` — abs path of the per-app Unix socket
-//!   - `JARVIS_APP_TOKEN`  — the capability token to stamp on every line
-//!   - `JARVIS_APP_NAME`   — "silicon-canvas"
+//!   - `DARWIN_APP_SOCKET` — abs path of the per-app Unix socket
+//!   - `DARWIN_APP_TOKEN`  — the capability token to stamp on every line
+//!   - `DARWIN_APP_NAME`   — "silicon-canvas"
 //!
 //! Like global-scan's `main()`, it REFUSES to run standalone (no socket/token):
 //! this app only runs under the daemon, so an accidental direct invocation exits
@@ -26,14 +26,14 @@ use silicon_canvas::ipc::{self, AppEnv};
 
 fn main() -> ExitCode {
     // Read the launch env exactly as apps.rs / global-scan establish it. Absent
-    // the socket or token, we are not running under jarvisd — refuse with exit
+    // the socket or token, we are not running under darwind — refuse with exit
     // code 2 (matching global-scan's "must be set" contract), binding nothing.
     let env = match AppEnv::from_env() {
         Ok(env) => env,
         Err(CanvasError::Unauthorized) => {
             eprintln!(
-                "silicon-canvas: JARVIS_APP_SOCKET and JARVIS_APP_TOKEN must be set \
-                 (this app runs under jarvisd, not standalone)"
+                "silicon-canvas: DARWIN_APP_SOCKET and DARWIN_APP_TOKEN must be set \
+                 (this app runs under darwind, not standalone)"
             );
             return ExitCode::from(2);
         }

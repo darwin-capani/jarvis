@@ -22,7 +22,7 @@
 import type { UpdateCheck } from "../tauri/bridge";
 
 /** What the About panel shows after a check:
- *   - "uptodate"  : reassuring "JARVIS is on the latest version." (ok styling)
+ *   - "uptodate"  : reassuring "DARWIN is on the latest version." (ok styling)
  *   - "available" : a real newer version exists — the panel hands `version` to
  *                   the App so the existing signed UpdateDialog opens. (The
  *                   panel does NOT install; it only routes.)
@@ -33,7 +33,7 @@ export type AboutCheckKind = "uptodate" | "available" | "error";
 export interface AboutCheckView {
   kind: AboutCheckKind;
   /** The line to render. For most statuses this is the backend's own honest
-   *  `detail`; for "available" it is a concise "JARVIS X is available." */
+   *  `detail`; for "available" it is a concise "DARWIN X is available." */
   text: string;
   /** The available version (only set for kind "available"); else null. */
   version: string | null;
@@ -43,7 +43,7 @@ export interface AboutCheckView {
  * Map an UpdateCheck result to the About panel's view. Pure + exhaustive.
  *
  * `up_to_date`  -> the reassuring latest-version line (the user's explicit ask:
- *                  "when there is no update, it says JARVIS is on the latest
+ *                  "when there is no update, it says DARWIN is on the latest
  *                  version").
  * `available`   -> kind "available" + the real version, so the panel routes to
  *                  the signed UpdateDialog. Falls back to a generic line if the
@@ -55,17 +55,17 @@ export interface AboutCheckView {
 export function aboutCheckView(result: UpdateCheck): AboutCheckView {
   switch (result.status) {
     case "up_to_date":
-      return { kind: "uptodate", text: "JARVIS is on the latest version.", version: null };
+      return { kind: "uptodate", text: "DARWIN is on the latest version.", version: null };
     case "available": {
       const v = result.version ?? null;
       return v
-        ? { kind: "available", text: `JARVIS ${v} is available.`, version: v }
+        ? { kind: "available", text: `DARWIN ${v} is available.`, version: v }
         // No version string -> do NOT route to install; show an honest line.
         : { kind: "error", text: result.detail || "An update is available.", version: null };
     }
     case "installed":
       // A check(false) never installs, but stay exhaustive + honest.
-      return { kind: "uptodate", text: result.detail || "JARVIS is up to date.", version: null };
+      return { kind: "uptodate", text: result.detail || "DARWIN is up to date.", version: null };
     default:
       // not_configured | error | unavailable -> the backend's honest detail.
       return { kind: "error", text: result.detail || "Could not check for updates.", version: null };

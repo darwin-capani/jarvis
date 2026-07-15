@@ -6,7 +6,7 @@
  * like the reducer/parsers/onboarding flag):                                 *
  *                                                                            *
  *  1. The persisted AUTO-UPDATE preference (localStorage key                 *
- *     "jarvis.autoUpdate") — mirrors onboarding.ts's once-only flag pattern  *
+ *     "darwin.autoUpdate") — mirrors onboarding.ts's once-only flag pattern  *
  *     (versioned key, fixed literal, fail-safe reads/writes).                *
  *                                                                            *
  *  2. `decideLaunchUpdateAction(check, autoOn)` — the LAUNCH BRANCH. THE      *
@@ -38,7 +38,7 @@ import type { UpdateCheck } from "../tauri/bridge";
  *  Versioned so a future change of meaning can ship by bumping the suffix
  *  without colliding with an already-set v1 (same discipline as
  *  ONBOARDING_SEEN_KEY). */
-export const AUTO_UPDATE_KEY = "jarvis.autoUpdate.v1";
+export const AUTO_UPDATE_KEY = "darwin.autoUpdate.v1";
 
 /** The value written when auto-update is ON. A presence-equality check is
  *  enough; the literal is fixed so a test can assert it exactly. Anything else
@@ -202,5 +202,5 @@ export function updateDialogReduce(
 /** The honest, non-blocking launch notice shown when the pref is ON and a
  *  silent install begins — so an auto-install is never a silent surprise. */
 export function silentUpdateNotice(version: string): string {
-  return `Updating JARVIS to ${version}…`;
+  return `Updating DARWIN to ${version}…`;
 }

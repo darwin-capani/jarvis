@@ -26,12 +26,12 @@ export interface AgentProfile {
 }
 
 /**
- * The 27 agents, in roll-call order (jarvis first — the Prime Orchestrator).
+ * The 27 agents, in roll-call order (darwin first — the Prime Orchestrator).
  * Hues are the identity colors; note ultron uses deep-orange 15 rather than
  * 0/red, because RED is reserved exclusively for alerts on this HUD.
  */
 export const ROSTER: readonly AgentProfile[] = [
-  { name: "jarvis", role: "Prime Orchestrator", voice: "bm_george", hue: 190 },
+  { name: "darwin", role: "Prime Orchestrator", voice: "bm_george", hue: 190 },
   { name: "friday", role: "Daily Intel", voice: "bf_emma", hue: 35 },
   { name: "veronica", role: "Content + Comms", voice: "af_bella", hue: 320 },
   { name: "vision", role: "Research + OSINT", voice: "bf_isabella", hue: 265 },
@@ -61,9 +61,9 @@ export const ROSTER: readonly AgentProfile[] = [
 ] as const;
 
 /** The Prime Orchestrator id — the default active agent and idle-core owner. */
-export const PRIME_AGENT = "jarvis";
+export const PRIME_AGENT = "darwin";
 
-/** Default idle core hue (cyan), matching visuals.ts HUE_CYAN and jarvis. */
+/** Default idle core hue (cyan), matching visuals.ts HUE_CYAN and darwin. */
 export const DEFAULT_AGENT_HUE = 190;
 
 /** name -> profile lookup, built once. */

@@ -573,6 +573,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "darwin-hud"
+version = "0.1.0"
+dependencies = [
+ "block2",
+ "core-foundation",
+ "core-graphics",
+ "cpal",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "reqwest",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-updater",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "dasp_sample"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1658,28 +1680,6 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
-
-[[package]]
-name = "jarvis-hud"
-version = "0.1.0"
-dependencies = [
- "block2",
- "core-foundation",
- "core-graphics",
- "cpal",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "reqwest",
- "security-framework",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-updater",
- "time",
- "tokio",
-]
 
 [[package]]
 name = "javascriptcore-rs"

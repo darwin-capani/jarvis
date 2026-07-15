@@ -26,7 +26,7 @@ export async function keychainStatus(account: string): Promise<boolean> {
 
 /** Remove the stored secret for one credential account. */
 export async function keychainDelete(account: string): Promise<void> {
-  if (!inTauri()) throw new Error("settings require the JARVIS shell");
+  if (!inTauri()) throw new Error("settings require the DARWIN shell");
   await invoke("keychain_delete", { account });
 }
 
@@ -40,7 +40,7 @@ export async function keychainDelete(account: string): Promise<void> {
  * passes through here exactly once and is never logged or echoed back.
  */
 export async function keychainSet(account: string, secret: string): Promise<void> {
-  if (!inTauri()) throw new Error("settings require the JARVIS shell");
+  if (!inTauri()) throw new Error("settings require the DARWIN shell");
   await invoke("keychain_set", { account, secret });
 }
 
@@ -253,7 +253,7 @@ export interface UpdateCheck {
   version?: string | null;
 }
 
-/** CHECK for a JARVIS update via the updater plugin. When `install` is true and a
+/** CHECK for a DARWIN update via the updater plugin. When `install` is true and a
  *  newer SIGNED version exists, it is downloaded, signature-verified against the
  *  owner's public key, and installed. In a plain browser (no shell) there is
  *  nothing to update — return an honest unavailable result rather than throwing.
@@ -265,7 +265,7 @@ export async function checkForUpdates(install = false): Promise<UpdateCheck> {
   if (!inTauri()) {
     return {
       status: "unavailable",
-      detail: "Updates are checked from the JARVIS desktop app.",
+      detail: "Updates are checked from the DARWIN desktop app.",
     };
   }
   try {
@@ -299,11 +299,11 @@ export async function relaunchApp(): Promise<boolean> {
 /* ---------------------------------------------------- About menu (native) */
 
 /** The native-menu event the Rust shell emits when the user picks
- *  "About J.A.R.V.I.S." from the macOS app menu. The payload is the app version
+ *  "About D.A.R.W.I.N." from the macOS app menu. The payload is the app version
  *  string (from the bundle), so the panel always shows the real version. */
 export const ABOUT_MENU_EVENT = "menu://about";
 
-/** Subscribe to the native "About J.A.R.V.I.S." menu click. The Rust shell
+/** Subscribe to the native "About D.A.R.W.I.N." menu click. The Rust shell
  *  replaces the system about panel with a custom menu item that emits
  *  `menu://about` carrying the app version; this opens our custom About panel
  *  (which has the working "Check for Updates" button + the credit). Returns an
@@ -335,7 +335,7 @@ export async function uninstallOpen(): Promise<UninstallOpen> {
   if (!inTauri()) {
     return {
       opened: false,
-      detail: "Uninstall runs from the JARVIS desktop app (it opens Terminal on uninstall.sh).",
+      detail: "Uninstall runs from the DARWIN desktop app (it opens Terminal on uninstall.sh).",
     };
   }
   try {
@@ -358,9 +358,9 @@ export interface SetupOpen {
   detail: string;
 }
 
-/** HONEST presence check of the installed JARVIS backend. Drives the FIRST-RUN
+/** HONEST presence check of the installed DARWIN backend. Drives the FIRST-RUN
  *  SETUP gate. Returns true ONLY when the install home
- *  (`~/Library/Application Support/JARVIS`) has BOTH the built daemon binary AND
+ *  (`~/Library/Application Support/DARWIN`) has BOTH the built daemon binary AND
  *  the venv python. In a plain browser there is no shell + no install to check —
  *  return false (the gate then ALSO requires not-connected, so a browser/dev
  *  render never shows the setup screen anyway). A thrown shell error also reads
@@ -383,7 +383,7 @@ export async function openSetupInstall(): Promise<SetupOpen> {
   if (!inTauri()) {
     return {
       opened: false,
-      detail: "Installing JARVIS runs from the desktop app (it opens Terminal on install.sh).",
+      detail: "Installing DARWIN runs from the desktop app (it opens Terminal on install.sh).",
     };
   }
   try {
@@ -430,7 +430,7 @@ export async function playSfxCue(cue: string): Promise<PlayCueReply> {
   if (!inTauri()) {
     return {
       outcome: "no_shell",
-      detail: "Playing cues requires the JARVIS desktop app.",
+      detail: "Playing cues requires the DARWIN desktop app.",
     };
   }
   try {
@@ -476,7 +476,7 @@ export async function designVoice(
   if (!inTauri()) {
     return {
       outcome: "no_shell",
-      detail: "Designing a voice requires the JARVIS desktop app.",
+      detail: "Designing a voice requires the DARWIN desktop app.",
     };
   }
   try {
@@ -509,7 +509,7 @@ export async function createPronunciation(
   if (!inTauri()) {
     return {
       outcome: "no_shell",
-      detail: "Adding a pronunciation requires the JARVIS desktop app.",
+      detail: "Adding a pronunciation requires the DARWIN desktop app.",
     };
   }
   try {
@@ -556,7 +556,7 @@ export async function composeMusic(
   if (!inTauri()) {
     return {
       outcome: "no_shell",
-      detail: "Composing music requires the JARVIS desktop app.",
+      detail: "Composing music requires the DARWIN desktop app.",
     };
   }
   try {
@@ -615,7 +615,7 @@ export async function openPrivacyPane(pane: string): Promise<PaneOpenResult> {
     return {
       opened: false,
       label: pane,
-      detail: "Opening System Settings needs the JARVIS desktop app.",
+      detail: "Opening System Settings needs the DARWIN desktop app.",
     };
   }
   try {
@@ -631,7 +631,7 @@ export async function openPrivacyPane(pane: string): Promise<PaneOpenResult> {
 
 /**
  * REQUEST a permission the right way: fire the NATIVE macOS prompt from the app
- * bundle (a clean "JARVIS" dialog) for permissions that have a request API; the
+ * bundle (a clean "DARWIN" dialog) for permissions that have a request API; the
  * backend falls back to opening the exact Settings pane when macOS won't prompt
  * (already decided, or no API like Full Disk Access). Honest browser fallback.
  */
@@ -640,7 +640,7 @@ export async function requestAccess(pane: string): Promise<PaneOpenResult> {
     return {
       opened: false,
       label: pane,
-      detail: "Requesting permissions needs the JARVIS desktop app.",
+      detail: "Requesting permissions needs the DARWIN desktop app.",
     };
   }
   try {
@@ -664,7 +664,7 @@ export async function requestAllPermissions(): Promise<PaneOpenResult> {
     return {
       opened: false,
       label: "Privacy & Security",
-      detail: "Opening System Settings needs the JARVIS desktop app.",
+      detail: "Opening System Settings needs the DARWIN desktop app.",
     };
   }
   try {

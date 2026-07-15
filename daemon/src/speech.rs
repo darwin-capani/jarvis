@@ -13,7 +13,7 @@ use crate::inference::{InferenceClient, SentenceEvent};
 use crate::playback;
 use crate::telemetry;
 
-/// Nonzero while JARVIS is speaking. The audio capture loop checks this and
+/// Nonzero while DARWIN is speaking. The audio capture loop checks this and
 /// discards mic input for the duration, so the daemon never transcribes its
 /// own voice and feeds back into itself.
 ///
@@ -27,7 +27,7 @@ pub fn is_speaking() -> bool {
     SPEAKING.load(Ordering::Relaxed) > 0
 }
 
-/// Set true when the user BARGES IN — speaks over JARVIS to cut him off. The
+/// Set true when the user BARGES IN — speaks over DARWIN to cut him off. The
 /// audio capture loop sets it (via [`request_barge_in`]) the instant it detects
 /// the user talking over playback; the reply loops below check it and stop
 /// synthesizing further sentences, and it keeps the mic-drop gate OPEN so the
@@ -40,14 +40,14 @@ pub fn barge_in_requested() -> bool {
     BARGE_IN.load(Ordering::Relaxed)
 }
 
-/// Cut JARVIS off NOW: flag the barge-in, stop the audio mid-clip, and halt any
+/// Cut DARWIN off NOW: flag the barge-in, stop the audio mid-clip, and halt any
 /// roll-call in progress. The reply loops see the flag and stop; the capture
 /// loop stops dropping so it can hear the user out. Called from the audio thread.
 pub fn request_barge_in() {
     BARGE_IN.store(true, Ordering::Relaxed);
     playback::cancel_all();
     crate::router::interrupt_roll_call();
-    // A barge-in shares this interrupt lifecycle: cutting JARVIS off mid-reply
+    // A barge-in shares this interrupt lifecycle: cutting DARWIN off mid-reply
     // also DROPS any action awaiting a spoken "yes" (the parked confirmation),
     // so an interrupted turn never leaves a consequential action armed for a
     // later, unrelated affirmation to trigger.
@@ -293,7 +293,7 @@ impl ReplySession {
     /// was segmented into a fresh utterance, transcribed back to "...apple.com",
     /// and re-routed — opening the URL a second and third time (the live
     /// triple-open). The reply's self-echo reject (RC-5) cannot catch this: it
-    /// rejects fragments of JARVIS's *reply*, not a re-capture of the *user's
+    /// rejects fragments of DARWIN's *reply*, not a re-capture of the *user's
     /// command*. Muting here removes the window outright.
     ///
     /// Scoped to the LOCAL actuation path on purpose: it is NOT engaged on the
@@ -361,7 +361,7 @@ impl ReplySession {
         // RC-4: the afplay child is awaited to completion and cancel_all()
         // cannot reach it, so race it against a barge and drop it (reaping the
         // kill_on_drop child) the instant the user interrupts — otherwise
-        // JARVIS keeps talking and the now-open capture gate re-records him.
+        // DARWIN keeps talking and the now-open capture gate re-records him.
         let played = match play_unless_barged(play_wav(wav)).await {
             Delivered::Played(played) => played,
             Delivered::Barged => {
@@ -603,7 +603,7 @@ pub async fn speak(
     pipeline_started: Instant,
     reply: &mut ReplySession,
 ) -> SpeakReport {
-    // The base JARVIS speech path speaks JARVIS's own (English-centric) voice with
+    // The base DARWIN speech path speaks DARWIN's own (English-centric) voice with
     // NO target-language hint — exactly today's behavior. The reply kind defaults to
     // Routine (=> Neutral prosody): the conservative classification for an ordinary
     // spoken reply. The few callers that KNOW the kind (an alert/heal, a wellness
@@ -660,18 +660,18 @@ pub async fn speak_in_lang(
     reply.ensure_guard();
     telemetry::emit("local", "response.speaking", json!({ "text": speakable }));
 
-    // Resolve the TTS backend ONCE for this reply: this is the base JARVIS speech
-    // path (the cloud-LLM / fallback voicing), so it speaks in JARVIS's own voice
+    // Resolve the TTS backend ONCE for this reply: this is the base DARWIN speech
+    // path (the cloud-LLM / fallback voicing), so it speaks in DARWIN's own voice
     // ([speech].voice). With the cloud voice tier OFF (the shipped default) this is
     // on-device Kokoro with exactly today's voice and ZERO Keychain access; the
     // ElevenLabs branch is reached only when the tier is on + a key is present +
-    // the operator is not offline + JARVIS is mapped.
-    let (backend, el_key) = resolve_speak_backend(cfg, "jarvis", &cfg.speech.voice).await;
+    // the operator is not offline + DARWIN is mapped.
+    let (backend, el_key) = resolve_speak_backend(cfg, "darwin", &cfg.speech.voice).await;
     // Only carry a real, non-empty target language onward (Babel non-English path);
     // an English / absent target leaves the wire exactly as today.
     let lang = lang.filter(|l| !l.trim().is_empty());
 
-    // EXPRESSIVENESS (#33 prosody + #34 whisper). This base JARVIS speech path is
+    // EXPRESSIVENESS (#33 prosody + #34 whisper). This base DARWIN speech path is
     // NEVER a required-confirmation utterance — a consequential confirmation is
     // previewed + spoken through the router's confirm gate, not here — so
     // required_confirm is false at this site (conservative + correct). The pure
@@ -702,7 +702,7 @@ pub async fn speak_in_lang(
     let sentences = split_sentences(&speakable);
     let mut played_any = false;
     for sentence in &sentences {
-        // Barge-in: the user spoke over JARVIS — stop here, don't synthesize the
+        // Barge-in: the user spoke over DARWIN — stop here, don't synthesize the
         // rest of the reply (its audio was already cut by request_barge_in).
         if barge_in_requested() {
             warn!("barge-in: halting reply mid-stream");
@@ -807,7 +807,7 @@ pub async fn converse_speak(
                 res = &mut conv => break res,
                 Some(ev) = rx.recv() => {
                     if barge_in_requested() {
-                        // Barge-in: the user cut JARVIS off — stop speaking the
+                        // Barge-in: the user cut DARWIN off — stop speaking the
                         // rest (its audio was already cancelled); let conv drain.
                         // Best-effort delete the dropped sentence WAV so the
                         // not-yet-delivered tts-*.wav files don't leak forever.
@@ -879,7 +879,7 @@ enum Delivered {
 /// Run a play future to completion UNLESS a barge fires first. The fallback
 /// (afplay/say) path is a spawned child awaited to completion, which
 /// `cancel_all()` cannot reach — so when the user barges mid-clip, this drops
-/// the future (reaping the kill_on_drop child) instead of letting JARVIS keep
+/// the future (reaping the kill_on_drop child) instead of letting DARWIN keep
 /// talking (and letting the now-open capture gate re-record him). Returns
 /// `Barged` the instant a barge is observed; otherwise the play result. The
 /// live call passes `barge_in_requested` as the predicate; tests pass their own,
@@ -1325,7 +1325,7 @@ mod tests {
     /// stays silent on every path (constraint: never play audio in tests).
     fn temp_root() -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "jarvis-begin-test-{}-{}",
+            "darwin-begin-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1389,7 +1389,7 @@ mod tests {
     fn opener_files_parses_and_sorts_indices() {
         // A unique temp dir; no audio device or playback thread involved.
         let dir = std::env::temp_dir().join(format!(
-            "jarvis-opener-test-{}-{}",
+            "darwin-opener-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

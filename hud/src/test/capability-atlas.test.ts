@@ -41,7 +41,7 @@ const payload: Record<string, unknown> = {
       armed: false,
       detail: "inert — add in Settings: slack_bot_token",
     },
-    { name: "jarvis", kind: "agent", armed: true, detail: "Prime Orchestrator" },
+    { name: "darwin", kind: "agent", armed: true, detail: "Prime Orchestrator" },
   ],
 };
 

@@ -3,12 +3,12 @@
  * around the three backend commands in src-tauri/src/config_settings.rs:
  *
  *   - config_get()            -> the live values of every whitelisted setting,
- *                                read from config/jarvis.toml at the resolved
- *                                JARVIS root.
+ *                                read from config/darwin.toml at the resolved
+ *                                DARWIN root.
  *   - config_set(changes)     -> a WHITELIST-validated, in-place, atomic batch
  *                                write of edited values (preserves comments +
  *                                structure; rejects anything off the whitelist).
- *   - daemon_restart()        -> launchctl kickstart of com.jarvis.daemon — the
+ *   - daemon_restart()        -> launchctl kickstart of com.darwin.daemon — the
  *                                ONLY path that makes a config edit take effect,
  *                                because every daemon module caches its config in
  *                                a OnceLock at startup (no hot-reload exists).
@@ -66,35 +66,35 @@ export interface RestartResult {
   detail: string;
 }
 
-/** READ every whitelisted setting's live value from config/jarvis.toml. In a
+/** READ every whitelisted setting's live value from config/darwin.toml. In a
  *  plain browser this throws an honest, UI-catchable error rather than a silent
  *  empty list (the panel surfaces "open the desktop app to edit config"). */
 export async function configGet(): Promise<SettingState[]> {
   if (!inTauri()) {
-    throw new Error("system settings require the JARVIS desktop app");
+    throw new Error("system settings require the DARWIN desktop app");
   }
   return invoke<SettingState[]>("config_get");
 }
 
-/** WRITE a batch of whitelisted edits to config/jarvis.toml in place (atomic;
+/** WRITE a batch of whitelisted edits to config/darwin.toml in place (atomic;
  *  comments + structure preserved). Returns the count of changed lines. Throws
  *  the backend's validation message on any rejected change (the whole batch is
  *  aborted — nothing is written). */
 export async function configSet(changes: Change[]): Promise<number> {
   if (!inTauri()) {
-    throw new Error("system settings require the JARVIS desktop app");
+    throw new Error("system settings require the DARWIN desktop app");
   }
   return invoke<number>("config_set", { changes });
 }
 
-/** RESTART jarvisd so the just-written config takes effect (there is no
+/** RESTART darwind so the just-written config takes effect (there is no
  *  hot-reload). Honest about the launchd state — returns `ok=false` with a clear
  *  detail when the agent isn't loaded, rather than pretending. */
 export async function daemonRestart(): Promise<RestartResult> {
   if (!inTauri()) {
     return {
       ok: false,
-      detail: "restart requires the JARVIS desktop app",
+      detail: "restart requires the DARWIN desktop app",
     };
   }
   try {

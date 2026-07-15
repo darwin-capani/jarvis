@@ -186,11 +186,11 @@ pub struct OnDeviceSegmentTranslator {
 
 impl OnDeviceSegmentTranslator {
     /// Resolve the inference socket the same way the rest of the daemon does
-    /// (`<root>/state/ipc/inference.sock`, root from `JARVIS_ROOT` or the cwd) so the
+    /// (`<root>/state/ipc/inference.sock`, root from `DARWIN_ROOT` or the cwd) so the
     /// live arm reaches the same on-device model. NOT test-exercised.
     #[allow(dead_code)] // live-arm primitive; device-gated
     pub fn over_inference_socket() -> Self {
-        let root = std::env::var("JARVIS_ROOT")
+        let root = std::env::var("DARWIN_ROOT")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))

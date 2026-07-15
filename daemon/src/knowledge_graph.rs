@@ -273,7 +273,7 @@ fn classify_phrase(name: &str, cue: Option<&str>) -> Option<EntityType> {
         }
     }
     // A phrase that LOOKS like a code/project (contains an ALL-CAPS word of >=2
-    // letters, e.g. "Project JARVIS", "ACME").
+    // letters, e.g. "Project DARWIN", "ACME").
     if name
         .split_whitespace()
         .any(|w| w.chars().count() >= 2 && w.chars().all(|c| c.is_ascii_uppercase()))
@@ -291,7 +291,7 @@ fn classify_phrase(name: &str, cue: Option<&str>) -> Option<EntityType> {
 
 /// Common capitalized sentence-starters that are NOT part of a proper name. A
 /// phrase beginning with one of these has it stripped so "The Stuff" -> "Stuff"
-/// (then dropped as ambiguous) and "The JARVIS Project" -> "JARVIS Project".
+/// (then dropped as ambiguous) and "The DARWIN Project" -> "DARWIN Project".
 const LEADING_COMMON_WORDS: &[&str] = &[
     "the", "a", "an", "this", "that", "these", "those", "it", "we", "i", "they",
     "he", "she", "our", "my", "his", "her", "their", "its", "then", "and", "but",
@@ -784,7 +784,7 @@ mod tests {
     impl TempDb {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "jarvis-kg-test-{}-{}.db",
+                "darwin-kg-test-{}-{}.db",
                 std::process::id(),
                 tag
             ));
@@ -814,7 +814,7 @@ mod tests {
     #[test]
     fn deterministic_extracts_expected_entities_grounded_in_text() {
         let ex = DeterministicExtractor;
-        let text = "Met with Darwin Capani about Project JARVIS. \
+        let text = "Met with Darwin Capani about Project DARWIN. \
                     The thesis is due 2026-06-30.";
         let out = ex.extract(text);
 
@@ -826,7 +826,7 @@ mod tests {
             "person not extracted: {kinds:?}"
         );
         assert!(
-            kinds.iter().any(|(t, n)| *t == EntityType::Project && n.contains("JARVIS")),
+            kinds.iter().any(|(t, n)| *t == EntityType::Project && n.contains("DARWIN")),
             "project not extracted: {kinds:?}"
         );
         assert!(
@@ -900,7 +900,7 @@ mod tests {
     #[test]
     fn deterministic_co_occurrence_relates_distinct_entities_in_a_chunk() {
         let ex = DeterministicExtractor;
-        let out = ex.extract("Met with Darwin Capani about Project JARVIS.");
+        let out = ex.extract("Met with Darwin Capani about Project DARWIN.");
         // Two distinct entities -> exactly one co-occurrence `mentions` edge.
         assert!(out.entities.len() >= 2, "need >=2 entities: {:?}", out.entities);
         assert!(
@@ -945,7 +945,7 @@ mod tests {
     #[test]
     fn deterministic_never_emits_thread_from_document_prose() {
         let ex = DeterministicExtractor;
-        let out = ex.extract("Met with Darwin Capani about Project JARVIS due 2026-06-30.");
+        let out = ex.extract("Met with Darwin Capani about Project DARWIN due 2026-06-30.");
         assert!(
             out.entities.iter().all(|e| e.entity_type != EntityType::Thread),
             "document prose must not be mined into a Thread: {:?}",
@@ -962,7 +962,7 @@ mod tests {
         let chunks = vec![(
             "/Users/darwincapani/Documents/notes.md".to_string(),
             128i64,
-            "Met with Darwin Capani about Project JARVIS due 2026-06-30.".to_string(),
+            "Met with Darwin Capani about Project DARWIN due 2026-06-30.".to_string(),
         )];
         let stats = build_from_chunks(&mem, &DeterministicExtractor, &chunks)
             .await
@@ -970,7 +970,7 @@ mod tests {
         assert!(stats.entities_written >= 3, "entities written: {stats:?}");
 
         // The world model now holds the grounded entities WITH a provenance source.
-        let state = world_model::query(&mem, "jarvis").await.unwrap();
+        let state = world_model::query(&mem, "darwin").await.unwrap();
         let proj = state
             .entities
             .iter()
@@ -995,7 +995,7 @@ mod tests {
         let chunks = vec![(
             "f.md".to_string(),
             0i64,
-            "Met with Darwin Capani about Project JARVIS.".to_string(),
+            "Met with Darwin Capani about Project DARWIN.".to_string(),
         )];
         build_from_chunks(&mem, &DeterministicExtractor, &chunks)
             .await
@@ -1025,19 +1025,19 @@ mod tests {
             (
                 "first.md".to_string(),
                 10i64,
-                "Project JARVIS kicked off.".to_string(),
+                "Project DARWIN kicked off.".to_string(),
             ),
             (
                 "second.md".to_string(),
                 20i64,
-                "Project JARVIS continues.".to_string(),
+                "Project DARWIN continues.".to_string(),
             ),
         ];
         build_from_chunks(&mem, &DeterministicExtractor, &chunks)
             .await
             .unwrap();
 
-        let state = world_model::query(&mem, "jarvis").await.unwrap();
+        let state = world_model::query(&mem, "darwin").await.unwrap();
         let projects: Vec<_> = state
             .entities
             .iter()
@@ -1067,7 +1067,7 @@ mod tests {
         let chunks = vec![(
             "f.md".to_string(),
             0i64,
-            "Project JARVIS is here.".to_string(),
+            "Project DARWIN is here.".to_string(),
         )];
         let stats = build_from_chunks(&mem, &DeterministicExtractor, &chunks)
             .await
@@ -1075,7 +1075,7 @@ mod tests {
         assert_eq!(stats.entities_written, 0, "no new entity may be written past the cap");
         assert!(stats.skipped_at_cap >= 1, "the over-cap entity must be COUNTED as skipped: {stats:?}");
         // And the model was NOT grown wrong.
-        let state = world_model::query(&mem, "jarvis").await.unwrap();
+        let state = world_model::query(&mem, "darwin").await.unwrap();
         assert!(
             state.entities.iter().all(|e| e.entity_type != EntityType::Project),
             "no project node should exist past the cap"
@@ -1089,13 +1089,13 @@ mod tests {
         let chunks = vec![(
             "f.md".to_string(),
             0i64,
-            "Met with Darwin Capani about Project JARVIS.".to_string(),
+            "Met with Darwin Capani about Project DARWIN.".to_string(),
         )];
         let stats = build_from_chunks(&mem, &DeterministicExtractor, &chunks)
             .await
             .unwrap();
         assert!(stats.relationships_written >= 1, "a co-occurrence edge must be written: {stats:?}");
-        let state = world_model::query(&mem, "jarvis").await.unwrap();
+        let state = world_model::query(&mem, "darwin").await.unwrap();
         assert!(
             state.relationships.iter().any(|r| r.relation == "mentions"),
             "the shared world model must hold the mentions edge: {:?}",
@@ -1142,7 +1142,7 @@ mod tests {
         let chunks = vec![(
             "f.md".to_string(),
             0i64,
-            "Project JARVIS is here.".to_string(),
+            "Project DARWIN is here.".to_string(),
         )];
         // OFF (shipped default) -> mines NOTHING even with real chunks.
         let off = map_documents(false, false, &mem, &DeterministicExtractor, &chunks)

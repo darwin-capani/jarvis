@@ -1,5 +1,5 @@
 //! PROACTIVE INTELLIGENCE — the HABIT DETECTOR (#13) + the PREDICTIVE SUGGESTER
-//! (#14). The piece of JARVIS that, having WATCHED a recurring pattern in the
+//! (#14). The piece of DARWIN that, having WATCHED a recurring pattern in the
 //! redacted, agent-scoped episodic store, OFFERS to help — and never more than
 //! that. Everything here is a SUGGESTION: it is surfaced, never acted; the user
 //! ACCEPTS it, and accepting still routes through the EXISTING gated path.
@@ -20,7 +20,7 @@
 //!      OWN recorded episodes. Sparse / empty / contradictory history yields NO
 //!      suggestion — we never invent one (the same rule episodic_recall follows:
 //!      a no-match recall returns nothing). The detection is a HEURISTIC over
-//!      counts, never a claim that JARVIS "knows what you want".
+//!      counts, never a claim that DARWIN "knows what you want".
 //!   2. PROPOSE-ONLY + GATED-ACCEPT. A suggestion NEVER auto-acts. Accepting a
 //!      habit offer creates the standing mission through the EXISTING gated
 //!      [`crate::standing::create`] path (the confirmed `standing_create`
@@ -28,7 +28,7 @@
 //!      carries no action at all.
 //!   3. GATED BY `[proactive].suggest` (SHIPS ON). [`detect`] returns EMPTY
 //!      unless `[proactive].suggest` is on. That flag is the suggester's OWN
-//!      master switch and ships TRUE (config.rs default + jarvis.toml pin),
+//!      master switch and ships TRUE (config.rs default + darwin.toml pin),
 //!      mirroring `[proactive].speak` — it is deliberately NOT `[proactive].enabled`
 //!      (which ships ON only to power the unrelated first-contact brief). So with
 //!      the shipped config NO suggestion surfaces. Even with `suggest` on, a
@@ -347,7 +347,7 @@ pub fn detect(
 ) -> Vec<Suggestion> {
     // GATE: with the suggester off, surface nothing at all. This is the
     // suggester's OWN master switch — `[proactive].suggest` — which SHIPS ON
-    // (config.rs default true + jarvis.toml `suggest = true`), mirroring
+    // (config.rs default true + darwin.toml `suggest = true`), mirroring
     // `[proactive].speak`. It is deliberately NOT `[proactive].enabled` (which
     // ships ON only for the first-contact brief), so the suggestion feed is gated
     // by a flag that actually ships off, not by being dead code.
@@ -610,11 +610,11 @@ mod tests {
     fn recurring_intent_at_floor_produces_a_habit_offer_carrying_a_proposed_mission() {
         // Three "budget.review" turns -> a habit offer.
         let eps = vec![
-            ep("agent.jarvis", "budget.review", &morning_ts(1)),
-            ep("agent.jarvis", "budget.review", &morning_ts(2)),
-            ep("agent.jarvis", "budget.review", &morning_ts(3)),
+            ep("agent.darwin", "budget.review", &morning_ts(1)),
+            ep("agent.darwin", "budget.review", &morning_ts(2)),
+            ep("agent.darwin", "budget.review", &morning_ts(3)),
         ];
-        let out = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let out = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         // At least one habit-automation offer for budget.review.
         let habit = out.iter().find_map(|s| match &s.kind {
             SuggestionKind::HabitAutomation { topic, occurrences, proposed } if topic == "budget.review" => {
@@ -642,11 +642,11 @@ mod tests {
         // assert the proposal exists and is a plain StandingMission value — there
         // is no store handle in this path at all, so it CANNOT have created one.
         let eps = vec![
-            ep("agent.jarvis", "deploy.check", &morning_ts(1)),
-            ep("agent.jarvis", "deploy.check", &morning_ts(2)),
-            ep("agent.jarvis", "deploy.check", &morning_ts(3)),
+            ep("agent.darwin", "deploy.check", &morning_ts(1)),
+            ep("agent.darwin", "deploy.check", &morning_ts(2)),
+            ep("agent.darwin", "deploy.check", &morning_ts(3)),
         ];
-        let out = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let out = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         let proposed = out.iter().find_map(|s| match &s.kind {
             SuggestionKind::HabitAutomation { proposed, .. } => Some(proposed.clone()),
             _ => None,
@@ -665,10 +665,10 @@ mod tests {
     fn below_floor_history_produces_no_habit_offer_never_fabricates() {
         // Only two budget.review turns — below the floor of 3.
         let eps = vec![
-            ep("agent.jarvis", "budget.review", &morning_ts(1)),
-            ep("agent.jarvis", "budget.review", &morning_ts(2)),
+            ep("agent.darwin", "budget.review", &morning_ts(1)),
+            ep("agent.darwin", "budget.review", &morning_ts(2)),
         ];
-        let out = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let out = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         assert!(
             !out.iter().any(|s| matches!(&s.kind, SuggestionKind::HabitAutomation { .. })),
             "two occurrences must NOT fabricate a habit offer: {out:?}"
@@ -677,7 +677,7 @@ mod tests {
 
     #[test]
     fn empty_history_produces_nothing() {
-        let out = detect(&cfg_on(), "agent.jarvis", &[], &DismissLedger::default());
+        let out = detect(&cfg_on(), "agent.darwin", &[], &DismissLedger::default());
         assert!(out.is_empty(), "no episodes -> no suggestions, never invented: {out:?}");
     }
 
@@ -685,13 +685,13 @@ mod tests {
     fn contradictory_scattered_history_produces_nothing() {
         // Many DIFFERENT topics, none repeating to the floor -> no pattern.
         let eps = vec![
-            ep("agent.jarvis", "budget.review", &morning_ts(1)),
-            ep("agent.jarvis", "deploy.check", &morning_ts(2)),
-            ep("agent.jarvis", "music.play", &morning_ts(3)),
-            ep("agent.jarvis", "weather.query", &morning_ts(4)),
-            ep("agent.jarvis", "calendar.add", &morning_ts(5)),
+            ep("agent.darwin", "budget.review", &morning_ts(1)),
+            ep("agent.darwin", "deploy.check", &morning_ts(2)),
+            ep("agent.darwin", "music.play", &morning_ts(3)),
+            ep("agent.darwin", "weather.query", &morning_ts(4)),
+            ep("agent.darwin", "calendar.add", &morning_ts(5)),
         ];
-        let out = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let out = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         assert!(out.is_empty(), "no topic clears the floor -> nothing: {out:?}");
     }
 
@@ -699,9 +699,9 @@ mod tests {
     fn pure_chitchat_never_becomes_a_habit_even_when_frequent() {
         // "conversation" recurs many times but is explicitly non-actionable.
         let eps: Vec<Episode> = (1..=6)
-            .map(|d| ep("agent.jarvis", "conversation", &morning_ts(d)))
+            .map(|d| ep("agent.darwin", "conversation", &morning_ts(d)))
             .collect();
-        let out = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let out = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         assert!(out.is_empty(), "chit-chat must never become an offer: {out:?}");
     }
 
@@ -723,11 +723,11 @@ mod tests {
                 .to_rfc3339()
         };
         let eps = vec![
-            ep("agent.jarvis", "news.brief", &local_morning(1)),
-            ep("agent.jarvis", "news.brief", &local_morning(2)),
-            ep("agent.jarvis", "news.brief", &local_morning(3)),
+            ep("agent.darwin", "news.brief", &local_morning(1)),
+            ep("agent.darwin", "news.brief", &local_morning(2)),
+            ep("agent.darwin", "news.brief", &local_morning(3)),
         ];
-        let out = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let out = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         let pred = out.iter().find_map(|s| match &s.kind {
             SuggestionKind::Predictive { topic, time_of_day, occurrences } if topic == "news.brief" => {
                 Some((s, time_of_day.clone(), *occurrences))
@@ -750,8 +750,8 @@ mod tests {
         let local_morning = |day: u32| {
             Local.with_ymd_and_hms(2026, 6, day, 8, 0, 0).single().unwrap().to_rfc3339()
         };
-        let eps: Vec<Episode> = (1..=3).map(|d| ep("agent.jarvis", "stretch.routine", &local_morning(d))).collect();
-        let out = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let eps: Vec<Episode> = (1..=3).map(|d| ep("agent.darwin", "stretch.routine", &local_morning(d))).collect();
+        let out = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         let pred = out
             .iter()
             .find(|s| matches!(&s.kind, SuggestionKind::Predictive { .. }))
@@ -765,8 +765,8 @@ mod tests {
 
     #[test]
     fn accepting_a_habit_offer_yields_a_gated_standing_create_request_not_a_direct_create() {
-        let eps: Vec<Episode> = (1..=3).map(|d| ep("agent.jarvis", "inbox.triage", &morning_ts(d))).collect();
-        let out = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let eps: Vec<Episode> = (1..=3).map(|d| ep("agent.darwin", "inbox.triage", &morning_ts(d))).collect();
+        let out = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         let offer = out
             .iter()
             .find(|s| matches!(&s.kind, SuggestionKind::HabitAutomation { .. }))
@@ -792,8 +792,8 @@ mod tests {
         // mission. There is no Memory handle in its signature, so by construction
         // it cannot persist a standing mission — the create only happens when the
         // request is replayed through the gated standing path.
-        let eps: Vec<Episode> = (1..=3).map(|d| ep("agent.jarvis", "report.compile", &morning_ts(d))).collect();
-        let out = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let eps: Vec<Episode> = (1..=3).map(|d| ep("agent.darwin", "report.compile", &morning_ts(d))).collect();
+        let out = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         let offer = out.iter().find(|s| matches!(&s.kind, SuggestionKind::HabitAutomation { .. })).unwrap();
         let req = accept_request(offer).unwrap();
         // The request names the suggestion id (so the caller suppresses it after
@@ -809,10 +809,10 @@ mod tests {
     #[test]
     fn proactive_off_surfaces_nothing_even_with_a_strong_pattern() {
         // A clear, strong recurring pattern that would CERTAINLY produce offers...
-        let eps: Vec<Episode> = (1..=6).map(|d| ep("agent.jarvis", "budget.review", &morning_ts(d))).collect();
+        let eps: Vec<Episode> = (1..=6).map(|d| ep("agent.darwin", "budget.review", &morning_ts(d))).collect();
         // ...but with the suggester OFF, the master gate suppresses ALL of it — no
         // offer, no prediction, nothing surfaces.
-        let out = detect(&cfg_off(), "agent.jarvis", &eps, &DismissLedger::default());
+        let out = detect(&cfg_off(), "agent.darwin", &eps, &DismissLedger::default());
         assert!(out.is_empty(), "[proactive].suggest off must surface NOTHING: {out:?}");
     }
 
@@ -820,14 +820,14 @@ mod tests {
     fn the_shipped_default_config_has_the_suggestion_gate_on() {
         // FULL-POWER DEFAULT: the suggester is gated by `suggest`, which now defaults
         // TRUE (config.rs default) so the feature ships ON. The struct default is what
-        // `Config::load` falls back to and what the shipped jarvis.toml pins. Accepting
+        // `Config::load` falls back to and what the shipped darwin.toml pins. Accepting
         // a surfaced habit offer STILL routes through the gated standing_create
         // confirmation — surfacing a suggestion is never an auto-action.
         let shipped = ProactiveConfig::default();
         assert!(shipped.suggest, "the suggester gate ships ON (suggest=true, full-power default)");
         // And a strong pattern under the SHIPPED default DOES surface a suggestion.
-        let eps: Vec<Episode> = (1..=6).map(|d| ep("agent.jarvis", "budget.review", &morning_ts(d))).collect();
-        let out = detect(&shipped, "agent.jarvis", &eps, &DismissLedger::default());
+        let eps: Vec<Episode> = (1..=6).map(|d| ep("agent.darwin", "budget.review", &morning_ts(d))).collect();
+        let out = detect(&shipped, "agent.darwin", &eps, &DismissLedger::default());
         assert!(!out.is_empty(), "shipped-default config (suggest on) must surface the observed pattern: {out:?}");
     }
 
@@ -838,8 +838,8 @@ mod tests {
         // posture), a strong pattern still surfaces nothing — only `suggest` opens
         // the feed.
         let cfg = ProactiveConfig { enabled: true, suggest: false, ..Default::default() };
-        let eps: Vec<Episode> = (1..=6).map(|d| ep("agent.jarvis", "budget.review", &morning_ts(d))).collect();
-        let out = detect(&cfg, "agent.jarvis", &eps, &DismissLedger::default());
+        let eps: Vec<Episode> = (1..=6).map(|d| ep("agent.darwin", "budget.review", &morning_ts(d))).collect();
+        let out = detect(&cfg, "agent.darwin", &eps, &DismissLedger::default());
         assert!(out.is_empty(), "enabled=true must NOT open the suggestion gate: {out:?}");
     }
 
@@ -849,9 +849,9 @@ mod tests {
 
     #[test]
     fn a_dismissed_offer_is_suppressed_on_the_next_pass() {
-        let eps: Vec<Episode> = (1..=4).map(|d| ep("agent.jarvis", "budget.review", &morning_ts(d))).collect();
+        let eps: Vec<Episode> = (1..=4).map(|d| ep("agent.darwin", "budget.review", &morning_ts(d))).collect();
         // First pass: an offer is produced.
-        let first = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let first = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         let offer = first
             .iter()
             .find(|s| matches!(&s.kind, SuggestionKind::HabitAutomation { topic, .. } if topic == "budget.review"))
@@ -860,7 +860,7 @@ mod tests {
         let mut ledger = DismissLedger::default();
         ledger.suppress(&offer.id);
         // Second pass over the SAME episodes: the dismissed offer does not return.
-        let second = detect(&cfg_on(), "agent.jarvis", &eps, &ledger);
+        let second = detect(&cfg_on(), "agent.darwin", &eps, &ledger);
         assert!(
             !second.iter().any(|s| s.id == offer.id),
             "a dismissed offer must not re-surface: {second:?}"
@@ -888,10 +888,10 @@ mod tests {
         let mut eps: Vec<Episode> = Vec::new();
         for topic in ["t.alpha", "t.bravo", "t.charlie", "t.delta", "t.echo", "t.foxtrot"] {
             for d in 1..=4 {
-                eps.push(ep("agent.jarvis", topic, &morning_ts(d)));
+                eps.push(ep("agent.darwin", topic, &morning_ts(d)));
             }
         }
-        let out = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let out = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         assert!(out.len() <= MAX_SUGGESTIONS, "result must be bounded: {} > {}", out.len(), MAX_SUGGESTIONS);
         assert_eq!(out.len(), MAX_SUGGESTIONS, "with abundant patterns the cap is filled");
     }
@@ -936,12 +936,12 @@ mod tests {
 
     #[test]
     fn habit_offer_telemetry_carries_the_feed_card_fields() {
-        let eps: Vec<Episode> = (1..=3).map(|d| ep("agent.jarvis", "budget.review", &morning_ts(d))).collect();
-        let out = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let eps: Vec<Episode> = (1..=3).map(|d| ep("agent.darwin", "budget.review", &morning_ts(d))).collect();
+        let out = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         let offer = out.iter().find(|s| matches!(&s.kind, SuggestionKind::HabitAutomation { .. })).unwrap();
         let t = offer.telemetry();
         assert_eq!(t["kind"], "habit_automation");
-        assert_eq!(t["agent"], "agent.jarvis");
+        assert_eq!(t["agent"], "agent.darwin");
         assert_eq!(t["topic"], "budget.review");
         assert_eq!(t["occurrences"], 3);
         assert_eq!(t["id"], offer.id);
@@ -957,8 +957,8 @@ mod tests {
     fn predictive_telemetry_carries_no_action_and_is_marked_non_acting() {
         use chrono::{Local, TimeZone};
         let local_morning = |day: u32| Local.with_ymd_and_hms(2026, 6, day, 8, 0, 0).single().unwrap().to_rfc3339();
-        let eps: Vec<Episode> = (1..=3).map(|d| ep("agent.jarvis", "news.brief", &local_morning(d))).collect();
-        let out = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let eps: Vec<Episode> = (1..=3).map(|d| ep("agent.darwin", "news.brief", &local_morning(d))).collect();
+        let out = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         let pred = out.iter().find(|s| matches!(&s.kind, SuggestionKind::Predictive { .. })).unwrap();
         let t = pred.telemetry();
         assert_eq!(t["kind"], "predictive");
@@ -990,9 +990,9 @@ mod tests {
     fn an_unparseable_episode_ts_contributes_no_time_signal_but_does_not_panic() {
         // A garbled ts must not crash the predictive miner; that episode just adds
         // no time bucket. The habit (count-only) path still works from it.
-        let mut eps: Vec<Episode> = (1..=3).map(|d| ep("agent.jarvis", "budget.review", &morning_ts(d))).collect();
-        eps.push(ep("agent.jarvis", "budget.review", "not-a-timestamp"));
-        let out = detect(&cfg_on(), "agent.jarvis", &eps, &DismissLedger::default());
+        let mut eps: Vec<Episode> = (1..=3).map(|d| ep("agent.darwin", "budget.review", &morning_ts(d))).collect();
+        eps.push(ep("agent.darwin", "budget.review", "not-a-timestamp"));
+        let out = detect(&cfg_on(), "agent.darwin", &eps, &DismissLedger::default());
         // The habit offer still fires (count includes the garbled-ts episode).
         let offer = out.iter().find_map(|s| match &s.kind {
             SuggestionKind::HabitAutomation { occurrences, .. } => Some(*occurrences),
@@ -1016,7 +1016,7 @@ mod tests {
     impl TempDb {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "jarvis-proactive-intel-test-{}-{}.db",
+                "darwin-proactive-intel-test-{}-{}.db",
                 std::process::id(),
                 tag
             ));
@@ -1051,9 +1051,9 @@ mod tests {
         // but NO standing mission created (surface_pass touches no standing store).
         let db = TempDb::new("over-threshold");
         let memory = Memory::open(&db.0).expect("open mem");
-        seed(&memory, "agent.jarvis", "budget.review", 4).await;
+        seed(&memory, "agent.darwin", "budget.review", 4).await;
 
-        let pass = surface_pass(&cfg_on(), &memory, "agent.jarvis").await;
+        let pass = surface_pass(&cfg_on(), &memory, "agent.darwin").await;
         let offer = pass.suggestions.iter().find(|s| {
             matches!(&s.kind, SuggestionKind::HabitAutomation { topic, .. } if topic == "budget.review")
         });
@@ -1062,7 +1062,7 @@ mod tests {
         // non-acting shape.
         let t = offer.telemetry();
         assert_eq!(t["kind"], "habit_automation");
-        assert_eq!(t["agent"], "agent.jarvis");
+        assert_eq!(t["agent"], "agent.darwin");
         assert_eq!(t["auto_acts"], false);
         assert_eq!(t["accept_routes_through"], "standing_create");
         // No standing mission exists — surface_pass only reads episodes.
@@ -1077,9 +1077,9 @@ mod tests {
         // wiring boundary (not just inside the pure detector).
         let db = TempDb::new("gate-off");
         let memory = Memory::open(&db.0).expect("open mem");
-        seed(&memory, "agent.jarvis", "budget.review", 6).await;
+        seed(&memory, "agent.darwin", "budget.review", 6).await;
 
-        let pass = surface_pass(&cfg_off(), &memory, "agent.jarvis").await;
+        let pass = surface_pass(&cfg_off(), &memory, "agent.darwin").await;
         assert!(
             pass.suggestions.is_empty(),
             "gate off => the live pass surfaces nothing: {:?}",
@@ -1092,9 +1092,9 @@ mod tests {
         // Below-threshold history through the live path => nothing (never invents).
         let db = TempDb::new("sparse");
         let memory = Memory::open(&db.0).expect("open mem");
-        seed(&memory, "agent.jarvis", "budget.review", 2).await; // below floor of 3
+        seed(&memory, "agent.darwin", "budget.review", 2).await; // below floor of 3
 
-        let pass = surface_pass(&cfg_on(), &memory, "agent.jarvis").await;
+        let pass = surface_pass(&cfg_on(), &memory, "agent.darwin").await;
         assert!(
             pass.suggestions.is_empty(),
             "sparse history => no live suggestion: {:?}",
@@ -1130,10 +1130,10 @@ mod tests {
         // the next live pass — dedup survives across ticks.
         let db = TempDb::new("ledger");
         let memory = Memory::open(&db.0).expect("open mem");
-        seed(&memory, "agent.jarvis", "budget.review", 4).await;
+        seed(&memory, "agent.darwin", "budget.review", 4).await;
 
         // First pass produces an offer.
-        let first = surface_pass(&cfg_on(), &memory, "agent.jarvis").await;
+        let first = surface_pass(&cfg_on(), &memory, "agent.darwin").await;
         let offer = first
             .suggestions
             .iter()
@@ -1148,7 +1148,7 @@ mod tests {
             .unwrap();
 
         // Next pass loads the ledger and suppresses the dismissed offer.
-        let second = surface_pass(&cfg_on(), &memory, "agent.jarvis").await;
+        let second = surface_pass(&cfg_on(), &memory, "agent.darwin").await;
         assert!(
             !second.suggestions.iter().any(|s| s.id == offer.id),
             "a persisted-dismissed offer must not re-surface: {:?}",

@@ -1,4 +1,4 @@
-//! HUD Settings — the config-edit BACKEND (the trust boundary for `config/jarvis.toml`).
+//! HUD Settings — the config-edit BACKEND (the trust boundary for `config/darwin.toml`).
 //!
 //! WHAT THIS IS: three Tauri commands that let the Settings window READ the current
 //! whitelisted settings (`config_get`), write a BATCH of validated edits IN PLACE
@@ -10,7 +10,7 @@
 //! ALONE — this module only edits the TOML those modules read at startup. There is
 //! NO hot-reload (every daemon module caches its config in a `OnceLock` at boot),
 //! so a change takes effect ONLY on the explicit `daemon_restart`. The UI is honest
-//! about that: it batches edits and exposes one "Apply changes — restarts JARVIS".
+//! about that: it batches edits and exposes one "Apply changes — restarts DARWIN".
 //!
 //! SAFETY (the whole point — KEEP the gates while giving control):
 //!   * `config_set` is a STRICT WHITELIST. Only the keys in [`SETTINGS`] can be
@@ -37,9 +37,9 @@ use std::process::Stdio;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-/// The launchd label for jarvisd — the SAME label `scripts/apply_heal.sh` kicks
+/// The launchd label for darwind — the SAME label `scripts/apply_heal.sh` kicks
 /// after a healed build. Restart is `launchctl kickstart -k gui/<uid>/<label>`.
-const DAEMON_LABEL: &str = "com.jarvis.daemon";
+const DAEMON_LABEL: &str = "com.darwin.daemon";
 
 /* ----------------------------------------------------------- the whitelist */
 
@@ -101,7 +101,7 @@ pub const AUTONOMY_STATES: &[&str] = &["off", "propose", "auto"];
 
 /// The flat whitelist: EXACTLY the simple (bool / int / float / enum) settings the
 /// Settings window may edit. Ranges + options are lifted from daemon/src/config.rs
-/// and config/jarvis.toml. NOTHING outside this table (plus the 3-way autonomy
+/// and config/darwin.toml. NOTHING outside this table (plus the 3-way autonomy
 /// sections) can be written. Autonomy `enabled`/`mode` are DELIBERATELY absent
 /// here — they are driven only through the 3-way path.
 pub const SETTINGS: &[Setting] = &[
@@ -158,7 +158,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { section: "voice", key: "stream_tts", kind: Kind::Bool },
     Setting { section: "voice", key: "event_cues", kind: Kind::Bool },
     // WHO opens the mic: "device" = the daemon opens it via cpal (default,
-    // unchanged); "app" = the JARVIS HUD app captures the mic (clean "JARVIS"
+    // unchanged); "app" = the DARWIN HUD app captures the mic (clean "DARWIN"
     // prompt) and streams the audio to the daemon. Switch to "app" to grant the
     // mic through a real prompt, then restart the daemon.
     Setting { section: "voice", key: "mic_source", kind: Kind::Enum(&["device", "app"]) },
@@ -173,15 +173,15 @@ pub const SETTINGS: &[Setting] = &[
     Setting { section: "shell", key: "enabled", kind: Kind::Bool },
     Setting { section: "ui_automation", key: "enabled", kind: Kind::Bool },
     // WHERE the approved actuation is posted: false = the daemon posts the
-    // CGEvent itself (grant Accessibility to the service); true = the JARVIS app
-    // posts it, so macOS shows a clean "JARVIS" Accessibility prompt. All safety
+    // CGEvent itself (grant Accessibility to the service); true = the DARWIN app
+    // posts it, so macOS shows a clean "DARWIN" Accessibility prompt. All safety
     // gates run in the daemon before the post either way. Restart the daemon.
     Setting { section: "ui_automation", key: "actuate_via_app", kind: Kind::Bool },
     Setting { section: "mcp", key: "enabled", kind: Kind::Bool },
     Setting { section: "webhooks", key: "enabled", kind: Kind::Bool },
     Setting { section: "plugin_sdk", key: "enabled", kind: Kind::Bool },
     Setting { section: "docsearch", key: "enabled", kind: Kind::Bool },
-    // docsearch.roots: ABSOLUTE folder allowlist JARVIS may index; ships empty.
+    // docsearch.roots: ABSOLUTE folder allowlist DARWIN may index; ships empty.
     Setting { section: "docsearch", key: "roots", kind: Kind::StrArray { paths: true } },
     Setting { section: "docsearch", key: "build_graph", kind: Kind::Bool },
     Setting { section: "code", key: "enabled", kind: Kind::Bool },
@@ -783,7 +783,7 @@ fn apply_writes_in_place(
         .collect();
     if !missing.is_empty() {
         return Err(format!(
-            "could not locate these keys in config/jarvis.toml: {}",
+            "could not locate these keys in config/darwin.toml: {}",
             missing.join(", ")
         ));
     }
@@ -866,14 +866,14 @@ fn inline_comment_start(vregion: &str) -> Option<usize> {
 
 /* --------------------------------------------------------------- root + I/O */
 
-/// Resolve `config/jarvis.toml` under the SAME JARVIS root the command channel +
-/// self-heal use (the `resolve_root_for_command` resolver: JARVIS_ROOT env, else
-/// the exe/cwd upward walk to the scripts/apply_heal.sh + config/jarvis.toml
-/// markers). The installed root is `~/Library/Application Support/JARVIS`; in dev
+/// Resolve `config/darwin.toml` under the SAME DARWIN root the command channel +
+/// self-heal use (the `resolve_root_for_command` resolver: DARWIN_ROOT env, else
+/// the exe/cwd upward walk to the scripts/apply_heal.sh + config/darwin.toml
+/// markers). The installed root is `~/Library/Application Support/DARWIN`; in dev
 /// it is the repo. We never accept a path from the frontend.
 fn config_path() -> Result<PathBuf, String> {
     let root = crate::heal::resolve_root_for_command()?;
-    Ok(root.join("config").join("jarvis.toml"))
+    Ok(root.join("config").join("darwin.toml"))
 }
 
 /// Build the full GET snapshot from already-read TOML text. Pure (no I/O), so the
@@ -986,7 +986,7 @@ pub fn apply_changes(text: &str, changes: &[Change]) -> Result<String, String> {
 /* --------------------------------------------------------------- commands */
 
 /// READ the current values of every whitelisted setting from the live
-/// config/jarvis.toml at the resolved JARVIS root. Async (off-runtime file read).
+/// config/darwin.toml at the resolved DARWIN root. Async (off-runtime file read).
 #[tauri::command]
 pub async fn config_get() -> Result<Vec<SettingState>, String> {
     let path = config_path()?;
@@ -996,7 +996,7 @@ pub async fn config_get() -> Result<Vec<SettingState>, String> {
     Ok(build_get(&text))
 }
 
-/// WRITE a batch of whitelisted key->value edits to config/jarvis.toml IN PLACE,
+/// WRITE a batch of whitelisted key->value edits to config/darwin.toml IN PLACE,
 /// preserving all comments + structure. Validates EVERY change against the
 /// whitelist (allowed keys + per-key type/options/range) BEFORE writing; rejects
 /// anything else. Writes atomically (temp file + rename) so a crash mid-write can
@@ -1045,8 +1045,8 @@ pub struct RestartResult {
     pub detail: String,
 }
 
-/// RESTART jarvisd so a config change takes effect (there is no hot-reload). Runs
-/// `launchctl kickstart -k gui/<uid>/com.jarvis.daemon` — the SAME incantation
+/// RESTART darwind so a config change takes effect (there is no hot-reload). Runs
+/// `launchctl kickstart -k gui/<uid>/com.darwin.daemon` — the SAME incantation
 /// scripts/apply_heal.sh uses after a healed build. If the agent is not loaded,
 /// `kickstart` fails and we return an HONEST "not loaded" detail rather than
 /// pretending a restart happened. The command takes NO argument from the
@@ -1069,7 +1069,7 @@ pub async fn daemon_restart() -> Result<RestartResult, String> {
     if output.status.success() {
         return Ok(RestartResult {
             ok: true,
-            detail: format!("JARVIS restarted ({target}); the new config is now live."),
+            detail: format!("DARWIN restarted ({target}); the new config is now live."),
         });
     }
 
@@ -1077,7 +1077,7 @@ pub async fn daemon_restart() -> Result<RestartResult, String> {
     // clear, secret-free explanation (stderr is launchctl's own diagnostic).
     let stderr = String::from_utf8_lossy(&output.stderr);
     let detail = if stderr.contains("Could not find") || stderr.contains("No such process") {
-        format!("the JARVIS daemon ({DAEMON_LABEL}) is not loaded — start it, then your changes take effect.")
+        format!("the DARWIN daemon ({DAEMON_LABEL}) is not loaded — start it, then your changes take effect.")
     } else {
         format!(
             "restart failed: {}",
@@ -1118,7 +1118,7 @@ pub async fn pick_folder() -> Result<Option<String>, String> {
     // (error -128) — we map that to Ok(None), not an error.
     let output = Command::new("/usr/bin/osascript")
         .arg("-e")
-        .arg("POSIX path of (choose folder with prompt \"Select a folder JARVIS may index\")")
+        .arg("POSIX path of (choose folder with prompt \"Select a folder DARWIN may index\")")
         .stdin(Stdio::null())
         .output()
         .await
@@ -1154,11 +1154,11 @@ mod tests {
     use std::path::Path;
 
     /// The exact config header + a representative slice of the real
-    /// config/jarvis.toml, with the carefully-written honest comments, used to
+    /// config/darwin.toml, with the carefully-written honest comments, used to
     /// prove the in-place edit preserves them byte-for-byte.
     const SAMPLE: &str = "\
-# JARVIS canonical configuration.
-# Read by jarvisd and the inference server.
+# DARWIN canonical configuration.
+# Read by darwind and the inference server.
 
 [audio]
 rms_threshold = 0.015   # RMS gate: below this is treated as silence
@@ -1480,7 +1480,7 @@ profile = \"default\"      # SHIPS NEUTRAL.
     fn every_whitelisted_key_exists_in_the_real_config_file() {
         // Guard against whitelist drift: every flat (section,key) AND every
         // autonomy section's enabled+mode MUST exist in the shipped
-        // config/jarvis.toml, or a GET would surface an "unset" sentinel and a
+        // config/darwin.toml, or a GET would surface an "unset" sentinel and a
         // SET would error "could not locate". Resolved relative to this source
         // file so it does not depend on the test's cwd.
         // CARGO_MANIFEST_DIR is the absolute path to hud/src-tauri; the repo
@@ -1489,7 +1489,7 @@ profile = \"default\"      # SHIPS NEUTRAL.
         let root = manifest
             .parent().and_then(Path::parent)
             .expect("repo root above hud/src-tauri");
-        let cfg = root.join("config/jarvis.toml");
+        let cfg = root.join("config/darwin.toml");
         let text = std::fs::read_to_string(&cfg)
             .unwrap_or_else(|e| panic!("read {}: {e}", cfg.display()));
         let raw = read_raw_values(&text);
@@ -1518,7 +1518,7 @@ profile = \"default\"      # SHIPS NEUTRAL.
         // line is byte-for-byte identical to the original (use Path::file! root).
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = manifest.parent().and_then(Path::parent).unwrap();
-        let text = std::fs::read_to_string(root.join("config/jarvis.toml")).unwrap();
+        let text = std::fs::read_to_string(root.join("config/darwin.toml")).unwrap();
         let updated = apply_changes(
             &text,
             &[Change { id: "integrations.allow_consequential".into(), value: SettingValue::Bool(false) }],
@@ -1897,13 +1897,13 @@ roots = []                     # EXPLICIT codebase-root allowlist, SHIPS EMPTY.
 
     #[test]
     fn real_config_round_trips_new_v1_fields_no_collateral_change() {
-        // End-to-end over the REAL shipped config/jarvis.toml (a temp in-memory
+        // End-to-end over the REAL shipped config/darwin.toml (a temp in-memory
         // copy; the file is never written): set a model id + both roots arrays +
         // local_warm + the budget, prove GET returns them, and prove ONLY the
         // targeted lines changed (comments + every other line intact).
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = manifest.parent().and_then(Path::parent).unwrap();
-        let text = std::fs::read_to_string(root.join("config/jarvis.toml")).unwrap();
+        let text = std::fs::read_to_string(root.join("config/darwin.toml")).unwrap();
 
         // DRIFT-PROOF BY CONSTRUCTION: read each field's CURRENT shipped value and
         // pick a target proven to DIFFER (asserted below). This keeps the "exactly

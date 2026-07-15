@@ -150,7 +150,7 @@ fn lock() -> std::sync::MutexGuard<'static, Option<PendingConfirmation>> {
 ///
 /// `standing_create` is gated here for a DIFFERENT reason than the integration
 /// tools: it does not POST or SPEND, but ESTABLISHING a standing mission spawns
-/// recurring autonomy, which is itself a consequential decision JARVIS must never
+/// recurring autonomy, which is itself a consequential decision DARWIN must never
 /// make on a low-confidence guess. Routing it through the SAME cross-turn gate
 /// means a create PARKS for a spoken human "yes" instead of silently creating a
 /// recurring mission. (`standing_list` / `standing_cancel` are read-only /
@@ -199,7 +199,7 @@ pub const CONSEQUENTIAL_TOOLS: &[&str] = &[
     // TCC consent + a real display) and built-not-run.
     "ui_actuate",
     // Adding an MCP connector = a persistent mutation of the machine's tool
-    // surface (a vetted [[mcp.servers]] entry written to jarvis.toml). It ALWAYS
+    // surface (a vetted [[mcp.servers]] entry written to darwin.toml). It ALWAYS
     // parks for a spoken yes on the exact spec; it never auto-applies. It handles
     // NO secret (the token goes to the Keychain out-of-band) and the connector is
     // added INERT (agents=[], every tool gated).

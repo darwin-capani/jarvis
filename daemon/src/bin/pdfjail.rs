@@ -2,7 +2,7 @@
 //!
 //! This is the complete, filter- and structure-AGNOSTIC fix for the PDF
 //! decompression-bomb residuals that no in-process guard can close (see
-//! `docsearch::pdf_decompression_within_budget`). `jarvisd` never decodes a PDF
+//! `docsearch::pdf_decompression_within_budget`). `darwind` never decodes a PDF
 //! in its own address space anymore: it spawns THIS short-lived child, pipes the
 //! PDF bytes to its stdin, and reads the extracted text from its stdout under a
 //! timeout. The child does exactly three things and then exits:
@@ -14,7 +14,7 @@
 //!      XRef/ObjStm that the parser must inflate just to read the file — makes an
 //!      allocation in THIS child fail. Rust's allocator then ABORTS the process
 //!      (an alloc failure does not unwind), so the bomb kills the CHILD and can
-//!      never reach jarvisd. The parent sees a non-zero exit and honest-skips.
+//!      never reach darwind. The parent sees a non-zero exit and honest-skips.
 //!   2. EXTRACT — `pdf_extract::extract_text_from_mem` on the stdin bytes, inside
 //!      `catch_unwind` so a parser panic becomes a clean non-zero exit too.
 //!   3. EMIT — write the extracted UTF-8 text to stdout and `exit(0)`.
@@ -121,7 +121,7 @@ fn write_result(out: &[u8]) -> std::io::Result<()> {
 
 /// Redirects FD 1 -> FD 2 (stderr) for the lifetime of the guard, saving the real
 /// stdout FD so [`write_result`] can emit the clean text to it afterward. Unix
-/// only; a no-op elsewhere (JARVIS is a macOS/Unix host).
+/// only; a no-op elsewhere (DARWIN is a macOS/Unix host).
 struct StdoutShield;
 
 #[cfg(unix)]
@@ -247,7 +247,7 @@ fn arm_address_space_limit(budget: u64) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Non-Unix: no RLIMIT_AS. JARVIS ships on macOS; this only keeps the helper
+/// Non-Unix: no RLIMIT_AS. DARWIN ships on macOS; this only keeps the helper
 /// compiling elsewhere (it still provides process isolation + the parent timeout).
 #[cfg(not(unix))]
 fn arm_address_space_limit(_budget: u64) -> std::io::Result<()> {

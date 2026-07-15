@@ -69,7 +69,7 @@ export default function OnboardingWizard({
         className="modal onboarding-modal"
         role="dialog"
         aria-modal="true"
-        aria-label="JARVIS first-run setup"
+        aria-label="DARWIN first-run setup"
         onClick={(e) => e.stopPropagation()}
       >
         <Frame title="WELCOME // FIRST-RUN SETUP" tag="ARMED · GATED">

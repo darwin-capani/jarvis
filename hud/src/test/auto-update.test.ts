@@ -59,17 +59,17 @@ const notConfigured = (): UpdateCheck => ({
 });
 const upToDate = (): UpdateCheck => ({
   status: "up_to_date",
-  detail: "JARVIS is on the latest version.",
+  detail: "DARWIN is on the latest version.",
   version: null,
 });
 const errored = (): UpdateCheck => ({ status: "error", detail: "offline" });
 const unavailable = (): UpdateCheck => ({
   status: "unavailable",
-  detail: "Updates are checked from the JARVIS desktop app.",
+  detail: "Updates are checked from the DARWIN desktop app.",
 });
 const installed = (version = "1.4.0"): UpdateCheck => ({
   status: "installed",
-  detail: `Version ${version} was downloaded, verified, and installed — relaunch JARVIS to finish.`,
+  detail: `Version ${version} was downloaded, verified, and installed — relaunch DARWIN to finish.`,
   version,
 });
 
@@ -164,7 +164,7 @@ describe("launch branch — only status 'available' surfaces anything", () => {
   });
 
   it("the silent notice is honest + names the version (never a silent surprise)", () => {
-    expect(silentUpdateNotice("3.1.0")).toBe("Updating JARVIS to 3.1.0…");
+    expect(silentUpdateNotice("3.1.0")).toBe("Updating DARWIN to 3.1.0…");
   });
 });
 
@@ -219,7 +219,7 @@ describe("UpdateDialog render (three buttons + honest copy)", () => {
   it("names the real version and the signature-verification sub-copy", () => {
     const h = html("1.4.0");
     expect(h).toContain("UPDATE AVAILABLE");
-    expect(h).toContain("JARVIS 1.4.0 is available.");
+    expect(h).toContain("DARWIN 1.4.0 is available.");
     expect(h.toLowerCase()).toContain("signature-verified before installing");
   });
 
@@ -343,7 +343,7 @@ describe("silent launch install when pref is ON", () => {
     relaunchSpy.mockResolvedValue(true);
     const outcome = await runLaunch(available("5.0.0"), true);
     expect(outcome).toBe("silent"); // never "dialog"
-    expect(toastSpy).toHaveBeenCalledWith("Updating JARVIS to 5.0.0…");
+    expect(toastSpy).toHaveBeenCalledWith("Updating DARWIN to 5.0.0…");
     expect(checkSpy).toHaveBeenCalledWith(true);
     expect(relaunchSpy).toHaveBeenCalledTimes(1);
   });

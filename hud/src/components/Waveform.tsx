@@ -81,7 +81,7 @@ export default function Waveform({ connected }: WaveformProps) {
         if (!online) {
           ctx.fillStyle = "rgba(73, 104, 122, 0.35)";
         } else if (muted) {
-          ctx.fillStyle = `rgba(157, 125, 255, ${0.25 + level * 0.6})`; // JARVIS talking
+          ctx.fillStyle = `rgba(157, 125, 255, ${0.25 + level * 0.6})`; // DARWIN talking
         } else {
           // continuous color ramp cyan -> bright ice over level (no branch)
           const g = Math.min(1, level * 1.6);

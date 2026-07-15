@@ -62,7 +62,7 @@ export default function AuditPanel({
             <div className="audit-off dim-note">
               The audit log is OFF. Consequential decisions are still gated
               (confirmation + master switch + voice-id), but they are not being
-              recorded. Enable <code>[audit].enabled</code> in jarvis.toml to keep a
+              recorded. Enable <code>[audit].enabled</code> in darwin.toml to keep a
               tamper-evident record.
             </div>
           ) : (

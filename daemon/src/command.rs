@@ -410,7 +410,7 @@ fn decide(raw: &str) -> Decision {
             }
             let name = clamp_text(req.name);
             let name = name.trim();
-            let name = if name.is_empty() { "JARVIS pronunciation" } else { name };
+            let name = if name.is_empty() { "DARWIN pronunciation" } else { name };
             Command::CreatePronunciation {
                 word: word.to_string(),
                 say: say.to_string(),
@@ -1171,7 +1171,7 @@ impl CommandPipeline for LivePipeline {
         // must agree with what will actually run); off => an honest refusal,
         // never a fabricated "queued for tonight".
         let (live, _issues) =
-            crate::config::Config::load(&self.root.join("config").join("jarvis.toml"));
+            crate::config::Config::load(&self.root.join("config").join("darwin.toml"));
         let agent_name = self.resolve_agent(agent).name.clone();
         crate::overnight::enqueue(
             &self.root,
@@ -1392,7 +1392,7 @@ mod tests {
             (json!({"token": "t", "cmd": "policy", "text": "always allow the gmail_send action"}), true),
             (json!({"token": "t", "cmd": "play_cue", "cue": "confirm"}), true),
             (json!({"token": "t", "cmd": "design_voice", "agent": "edith", "description": "a calm warm british woman, mid-thirties"}), true),
-            (json!({"token": "t", "cmd": "create_pronunciation", "word": "JARVIS", "say": "jarviss"}), true),
+            (json!({"token": "t", "cmd": "create_pronunciation", "word": "DARWIN", "say": "darwins"}), true),
             (json!({"token": "t", "cmd": "compose_music", "prompt": "a calm lo-fi study beat"}), true),
         ];
         for (line, _ok) in cases {
@@ -1434,10 +1434,10 @@ mod tests {
             json!({"token": "t", "cmd": "design_voice", "agent": "edith", "description": "too short"}),
             json!({"token": "t", "cmd": "design_voice", "agent": "edith"}),
             // create_pronunciation: an empty word or an empty say is a BadRequest.
-            json!({"token": "t", "cmd": "create_pronunciation", "say": "jarviss"}),
-            json!({"token": "t", "cmd": "create_pronunciation", "word": "  ", "say": "jarviss"}),
-            json!({"token": "t", "cmd": "create_pronunciation", "word": "JARVIS"}),
-            json!({"token": "t", "cmd": "create_pronunciation", "word": "JARVIS", "say": "  "}),
+            json!({"token": "t", "cmd": "create_pronunciation", "say": "darwins"}),
+            json!({"token": "t", "cmd": "create_pronunciation", "word": "  ", "say": "darwins"}),
+            json!({"token": "t", "cmd": "create_pronunciation", "word": "DARWIN"}),
+            json!({"token": "t", "cmd": "create_pronunciation", "word": "DARWIN", "say": "  "}),
             // compose_music: a missing/empty/whitespace prompt is a BadRequest.
             json!({"token": "t", "cmd": "compose_music"}),
             json!({"token": "t", "cmd": "compose_music", "prompt": ""}),
@@ -1544,11 +1544,11 @@ mod tests {
     #[test]
     fn create_pronunciation_validates_a_single_alias_rule() {
         // word + say (no name) -> CreatePronunciation with a defaulted name.
-        let line = json!({"token": "t", "cmd": "create_pronunciation", "word": "  JARVIS  ", "say": "  jarviss  "}).to_string();
+        let line = json!({"token": "t", "cmd": "create_pronunciation", "word": "  DARWIN  ", "say": "  darwins  "}).to_string();
         match decide(&line) {
             Decision::Ok { command: Command::CreatePronunciation { word, say, name }, .. } => {
-                assert_eq!(word, "JARVIS", "word is trimmed + carried verbatim");
-                assert_eq!(say, "jarviss", "say is trimmed + carried verbatim");
+                assert_eq!(word, "DARWIN", "word is trimmed + carried verbatim");
+                assert_eq!(say, "darwins", "say is trimmed + carried verbatim");
                 assert!(!name.is_empty(), "the dictionary name is defaulted, never empty");
             }
             other => panic!("complete create_pronunciation must be Ok, got {other:?}"),
@@ -1991,15 +1991,15 @@ mod tests {
         let pipeline = Arc::new(MockPipeline::default());
         let dispatcher = Arc::new(ProbeDispatcher::default());
         let lim = fresh_limiter();
-        let line = json!({"token": valid_token(), "cmd": "create_pronunciation", "word": "JARVIS", "say": "jarviss"}).to_string();
+        let line = json!({"token": valid_token(), "cmd": "create_pronunciation", "word": "DARWIN", "say": "darwins"}).to_string();
         let r = handle_line(&line, &pipeline, &dispatcher, &lim, false).await;
         assert_eq!(r["ok"], true);
-        assert_eq!(r["reply"], "pron:JARVIS:jarviss");
+        assert_eq!(r["reply"], "pron:DARWIN:darwins");
         assert_eq!(pipeline.create_pron_calls.load(Ordering::SeqCst), 1, "reached the pronunciation arm");
         // word + say are carried verbatim; the name is defaulted (non-empty).
         let last = pipeline.last_pron.lock().unwrap().clone().unwrap();
-        assert_eq!(last.0, "JARVIS");
-        assert_eq!(last.1, "jarviss");
+        assert_eq!(last.0, "DARWIN");
+        assert_eq!(last.1, "darwins");
         assert!(!last.2.is_empty(), "the dictionary name is defaulted");
         // It did NOT route through the model pipeline (ask) — no model path here.
         assert_eq!(pipeline.ask_calls.load(Ordering::SeqCst), 0, "create_pronunciation never reaches the model");
@@ -2013,7 +2013,7 @@ mod tests {
         let pipeline = Arc::new(MockPipeline::default());
         let dispatcher = Arc::new(ProbeDispatcher::default());
         let lim = fresh_limiter();
-        let line = json!({"token": valid_token(), "cmd": "create_pronunciation", "word": "JARVIS", "say": ""}).to_string();
+        let line = json!({"token": valid_token(), "cmd": "create_pronunciation", "word": "DARWIN", "say": ""}).to_string();
         let r = handle_line(&line, &pipeline, &dispatcher, &lim, false).await;
         assert_eq!(r["error"], "bad_request", "an empty alias is a bad_request");
         assert_eq!(pipeline.create_pron_calls.load(Ordering::SeqCst), 0, "never routes");
@@ -2249,7 +2249,7 @@ mod tests {
 
     fn open_temp_memory(tag: &str) -> crate::memory::Memory {
         let path = std::env::temp_dir().join(format!(
-            "jarvis-command-test-{}-{tag}.db",
+            "darwin-command-test-{}-{tag}.db",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
@@ -2258,7 +2258,7 @@ mod tests {
 
     fn live_dispatcher(tag: &str) -> (LiveDispatcher, PathBuf) {
         let mem = Arc::new(open_temp_memory(tag));
-        let root = std::env::temp_dir().join(format!("jarvis-cmd-{tag}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("darwin-cmd-{tag}-{}", std::process::id()));
         (LiveDispatcher { memory: mem, root: root.clone() }, root)
     }
 

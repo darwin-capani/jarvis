@@ -1,6 +1,6 @@
 # Global-Scan
 
-First micro-app on the JARVIS micro-app runtime substrate (`docs/SANDBOX.md`).
+First micro-app on the DARWIN micro-app runtime substrate (`docs/SANDBOX.md`).
 A world **intel feed aggregator**: it polls open, reputable, non-paywalled
 RSS/Atom feeds, dedupes and ranks the latest items newest-first, optionally adds
 a neutral one-line summary per top item plus a short overall brief from the
@@ -15,11 +15,11 @@ predicts nothing and surveils no one.
 |---|---|
 | `manifest.toml` | Sandbox manifest (SANDBOX.md schema). `net_hosts` lists exactly the feed hostnames in `feeds.toml`. |
 | `feeds.toml` | Category → list of RSS/Atom feed URLs. Every URL verified to return a parseable feed over HTTPS on 2026-06-13. |
-| `main.py` | The app. Runs under `jarvisd` + `sandbox-exec`; reads `JARVIS_APP_SOCKET` / `JARVIS_APP_TOKEN` from env. |
+| `main.py` | The app. Runs under `darwind` + `sandbox-exec`; reads `DARWIN_APP_SOCKET` / `DARWIN_APP_TOKEN` from env. |
 
 ## How it runs
 
-`jarvisd` launches `main.py` under a generated seatbelt profile and hands it a
+`darwind` launches `main.py` under a generated seatbelt profile and hands it a
 per-launch capability token. The app:
 
 1. Connects to its per-app Unix socket (`state/ipc/apps/global-scan.sock`).

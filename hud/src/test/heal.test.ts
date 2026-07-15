@@ -120,7 +120,7 @@ describe("apply lifecycle", () => {
     const s = applyReduce(toApplying(), {
       type: "applyOk",
       restarted: true,
-      message: "Healed. JARVIS restarted on the new build.",
+      message: "Healed. DARWIN restarted on the new build.",
     });
     expect(s.phase).toBe("applied");
     expect(s.restarted).toBe(true);

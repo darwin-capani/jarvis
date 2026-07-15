@@ -548,7 +548,7 @@ mod tests {
     impl TempDb {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "jarvis-standing-test-{}-{}.db",
+                "darwin-standing-test-{}-{}.db",
                 std::process::id(),
                 tag
             ));
@@ -768,7 +768,7 @@ mod tests {
         // world model (it's daemon state, not user knowledge).
         let db = TempDb::new("isolation");
         let mem = Memory::open(&db.0).unwrap();
-        let _ = create(&mem, "secret standing goal about jarvis", Schedule::parse("daily"))
+        let _ = create(&mem, "secret standing goal about darwin", Schedule::parse("daily"))
             .await
             .unwrap();
         // Agent-scoped recall (what an agent's prompt is fed) must not see it.

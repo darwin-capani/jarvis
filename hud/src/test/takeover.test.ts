@@ -174,7 +174,7 @@ describe("TakeoverStage layout (device-gated render aside; the DOM stage is real
     const variants: HudState[] = [
       initialState(),
       { ...hud, connected: true },
-      { ...hud, activeAgent: { name: "jarvis", hue: 190, role: "Prime Orchestrator" } },
+      { ...hud, activeAgent: { name: "darwin", hue: 190, role: "Prime Orchestrator" } },
     ];
     for (const v of variants) {
       const html = render({ state: v, onExit: () => {} });

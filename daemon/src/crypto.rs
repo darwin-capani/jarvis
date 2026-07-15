@@ -1,6 +1,6 @@
 //! ENCRYPTED MEMORY AT REST (#11) — the key-management + SQLCipher key seam.
 //!
-//! This module owns the 256-bit master key for JARVIS's at-rest encryption and
+//! This module owns the 256-bit master key for DARWIN's at-rest encryption and
 //! the small surface that applies it: generating the key, holding it in a
 //! zeroizing/secret wrapper that is NEVER logged/Debug/argv/telemetry, reading
 //! it from (and writing it to) the macOS Keychain, and applying it to a
@@ -21,13 +21,13 @@
 //!     stores it inside its OWN encrypted SQLCipher SQLite blob.
 //!
 //! EXPLICITLY NOT ENCRYPTED (honest scope):
-//!   * the config TOML (`config/jarvis.toml`) — non-secret tuning;
+//!   * the config TOML (`config/darwin.toml`) — non-secret tuning;
 //!   * the macOS Keychain item itself — already OS-protected;
 //!   * `:memory:` test DBs;
 //!   * and — CRITICALLY — the IN-RAM working set, the decrypted pages, and the
 //!     key itself WHILE THE DAEMON RUNS. SQLCipher protects AT REST ON DISK only.
 //!     It does NOT defend against a live-process / root attacker who can read
-//!     jarvisd's RAM. And: lose the Keychain item => the DBs are unrecoverable.
+//!     darwind's RAM. And: lose the Keychain item => the DBs are unrecoverable.
 //!
 //! ## OFF by default (pinned)
 //!
@@ -365,7 +365,7 @@ mod tests {
 
     fn tmp(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "jarvis-crypto-test-{}-{}.db",
+            "darwin-crypto-test-{}-{}.db",
             std::process::id(),
             tag
         ))
@@ -538,14 +538,14 @@ mod tests {
         // contain the plaintext canary — the source DB's stale sidecars must be
         // cleaned up, not just the main file swapped.
         let dir = std::env::temp_dir().join(format!(
-            "jarvis-crypto-walres-{}-{}",
+            "darwin-crypto-walres-{}-{}",
             std::process::id(),
             "d"
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("jarvis.db");
-        let tmp_enc = dir.join("jarvis.db.enc-migrate");
+        let path = dir.join("darwin.db");
+        let tmp_enc = dir.join("darwin.db.enc-migrate");
 
         // 1. Build a PLAINTEXT DB *in WAL mode*, write a committed canary, and then
         //    leak the connection (mem::forget) WITHOUT a checkpoint/close — exactly a
@@ -561,7 +561,7 @@ mod tests {
             // Simulate an unclean shutdown: drop the handle without checkpoint.
             std::mem::forget(conn);
         }
-        let wal = dir.join("jarvis.db-wal");
+        let wal = dir.join("darwin.db-wal");
         // Precondition: the stale plaintext WAL sidecar exists and DOES contain the
         // cleartext canary (otherwise the test would not be exercising the residue).
         assert!(wal.exists(), "precondition: a stale -wal sidecar must exist");
@@ -593,7 +593,7 @@ mod tests {
         }
         // And the stale sidecars are gone.
         assert!(!wal.exists(), "stale plaintext -wal sidecar must be removed");
-        assert!(!dir.join("jarvis.db-shm").exists(), "stale -shm sidecar must be removed");
+        assert!(!dir.join("darwin.db-shm").exists(), "stale -shm sidecar must be removed");
 
         // 4. The migrated data still reads back WITH the key (no data lost: the
         //    migration's default-journal open folded the WAL in before export).

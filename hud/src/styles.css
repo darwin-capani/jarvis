@@ -1,4 +1,4 @@
-/* JARVIS HUD — classic sci-fi FUI restyle (build directive #4).
+/* DARWIN HUD — classic sci-fi FUI restyle (build directive #4).
  *
  * Language: near-black navy void, dotted grid + concentric watermark +
  * scanlines backdrop; angular cut-corner frames with corner brackets and
@@ -1430,8 +1430,8 @@ svg.tri circle {
 }
 
 .line.user .who { color: var(--ice-dim); }
-.line.jarvis .who { color: var(--cyan); }
-.line.jarvis.cloud .who { color: var(--cloud-violet); }
+.line.darwin .who { color: var(--cyan); }
+.line.darwin.cloud .who { color: var(--cloud-violet); }
 
 .line .text {
   color: var(--ice);
@@ -4099,7 +4099,7 @@ svg.tri circle {
 }
 
 /* The [voice_id] key reference inside the voice-id settings note — a compact
-   bulleted list of the exact lockstep jarvis.toml keys. */
+   bulleted list of the exact lockstep darwin.toml keys. */
 .kv-note ul.voiceid-keys {
   margin: 4px 0 6px;
   padding-left: 16px;
@@ -4205,8 +4205,8 @@ svg.tri circle {
 
 /* ------------------------------------------------------ system settings */
 /* The dedicated SYSTEM SETTINGS surface (SystemSettingsPanel) — a second tab in
-   the Settings modal that edits config/jarvis.toml. Batched edits, an explicit
-   Apply-restarts-JARVIS action, and explicit confirms for dangerous changes.
+   the Settings modal that edits config/darwin.toml. Batched edits, an explicit
+   Apply-restarts-DARWIN action, and explicit confirms for dangerous changes.
    Reuses the dark HUD aesthetic (cyan/amber/red on near-black, the mono face). */
 
 /* The system tab is denser than credentials — give it more room. */
@@ -4611,7 +4611,7 @@ svg.tri circle {
   width: 520px;
 }
 
-/* A minimal, dependency-free progress spinner for the "waiting for JARVIS to
+/* A minimal, dependency-free progress spinner for the "waiting for DARWIN to
    come online…" state. */
 .setup-spinner {
   width: 22px;
@@ -4628,7 +4628,7 @@ svg.tri circle {
   }
 }
 
-/* ABOUT PANEL — the custom "About J.A.R.V.I.S." panel. Replaces the macOS
+/* ABOUT PANEL — the custom "About D.A.R.W.I.N." panel. Replaces the macOS
    standard about panel so it can host a working Check-for-Updates button + the
    credit. Centered, compact, with a self-contained reactor glyph. */
 .about-backdrop {
@@ -7180,7 +7180,7 @@ svg.tri circle {
 }
 
 /* ------------------------------------------------------------------------ *
- * MEMORY // EPISODIC TIMELINE + WHAT JARVIS KNOWS ABOUT YOU (components/      *
+ * MEMORY // EPISODIC TIMELINE + WHAT DARWIN KNOWS ABOUT YOU (components/      *
  * MemoryPanel.tsx). The HUD-side surface for the episodic store (Core-A) +    *
  * the user model (Core-B). TELEMETRY-FED + READ-MOSTLY: it shows ACTIVITY     *
  * (counts, timestamps, agents, the eviction proof) — never the episode bodies *
@@ -7356,7 +7356,7 @@ svg.tri circle {
   font-weight: 600;
 }
 
-/* WHAT JARVIS KNOWS ABOUT YOU — the user-model inspector. */
+/* WHAT DARWIN KNOWS ABOUT YOU — the user-model inspector. */
 .mem-um {
   display: flex;
   align-items: center;
@@ -8429,7 +8429,7 @@ textarea:focus-visible,
    MK II — VOICE-REACTIVE LIGHT FIELD
    A cyan glow blooming from the core across the HUD, its strength following the
    smoothed --voice amplitude (set per-frame from the audioStore) — the core
-   "lighting the room" as JARVIS speaks/listens. z:2, pointer-events:none.
+   "lighting the room" as DARWIN speaks/listens. z:2, pointer-events:none.
    =================================================================== */
 .voice-field {
   position: absolute;

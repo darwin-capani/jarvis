@@ -1,4 +1,4 @@
-//! Mark-Forge — deterministic 3D rigid-body physics sandbox for Project JARVIS.
+//! Mark-Forge — deterministic 3D rigid-body physics sandbox for Project DARWIN.
 //!
 //! A fixed-timestep, impulse-based rigid-body engine (pure CPU/f64) that emits
 //! compact body-transform telemetry over the per-app JSONL socket, which the

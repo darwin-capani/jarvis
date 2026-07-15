@@ -74,7 +74,7 @@ export default function AnswerSourcesPanel({
 
           <div className="answer-foot dim-note">
             Citations are the REAL tool-result sources that informed the answer —
-            the files, memories, episodes, or pages JARVIS actually consulted this
+            the files, memories, episodes, or pages DARWIN actually consulted this
             turn, never invented. <b>From my own knowledge</b> means the turn used
             no retrieval (no source was consulted). Confidence is the model&rsquo;s
             own self-report (grounded / inferred / uncertain), not a measured

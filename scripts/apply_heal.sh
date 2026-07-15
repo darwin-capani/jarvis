@@ -336,29 +336,29 @@ if ! (cd "$DAEMON" && cargo build --release); then
   fail "release rebuild failed (patch is applied to daemon/src; fix or revert by hand)"
 fi
 
-# Clear the pending marker so JARVIS stops announcing the proposal.
+# Clear the pending marker so DARWIN stops announcing the proposal.
 if command -v sqlite3 >/dev/null 2>&1; then
-  sqlite3 "$ROOT/state/jarvis.db" "DELETE FROM facts WHERE key = 'meta.heal_pending';" || true
+  sqlite3 "$ROOT/state/darwin.db" "DELETE FROM facts WHERE key = 'meta.heal_pending';" || true
 else
   echo "sqlite3 not found; clear the marker manually:" >&2
-  echo "  sqlite3 $ROOT/state/jarvis.db \"DELETE FROM facts WHERE key = 'meta.heal_pending';\"" >&2
+  echo "  sqlite3 $ROOT/state/darwin.db \"DELETE FROM facts WHERE key = 'meta.heal_pending';\"" >&2
 fi
 
 # ----------------------------------------------------------------- restart
-# Restart jarvisd if its launchd service is loaded so the healed binary runs.
+# Restart darwind if its launchd service is loaded so the healed binary runs.
 # kickstart -k restarts a running service; if the service is not loaded the
 # command fails and we fall back to telling the user to restart manually.
 RESTARTED=0
 if command -v launchctl >/dev/null 2>&1; then
-  if launchctl kickstart -k "gui/$(id -u)/com.jarvis.daemon" >/dev/null 2>&1; then
+  if launchctl kickstart -k "gui/$(id -u)/com.darwin.daemon" >/dev/null 2>&1; then
     RESTARTED=1
   fi
 fi
 
 if [ "$RESTARTED" -eq 1 ]; then
-  echo "daemon restarted (launchctl kickstart com.jarvis.daemon)."
+  echo "daemon restarted (launchctl kickstart com.darwin.daemon)."
 else
-  echo "restart jarvisd manually to run the patched build (launchd service not loaded)."
+  echo "restart darwind manually to run the patched build (launchd service not loaded)."
 fi
 
 result_ok

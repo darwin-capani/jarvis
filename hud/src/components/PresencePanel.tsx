@@ -5,7 +5,7 @@ import Frame from "./Frame";
  * PRESENCE // ATTENTION — the fused attention state (daemon presence.rs). Away /
  * Present / Focused, computed from input recency + (optional) speech + vision.
  * When Focused (silent flow) or Away, EDITH holds spoken proactivity — the panel
- * shows that honestly. Permission-neutral: this only ever quiets JARVIS.
+ * shows that honestly. Permission-neutral: this only ever quiets DARWIN.
  *
  * HONESTY: `signals` shows which raw inputs actually fed the fusion this tick.
  * Input recency feeds it today; speech + vision are wired but not yet sourced, so

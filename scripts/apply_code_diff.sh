@@ -14,7 +14,7 @@
 # NEVER edits the tree. Applying it for real is a privileged mutation of the
 # user's source, so this script is CONFINED BY CONSTRUCTION and RE-VALIDATES:
 #   - the codebase root is the user-allowlisted [code].roots (NOT an arbitrary
-#     path); the script reads it from config/jarvis.toml,
+#     path); the script reads it from config/darwin.toml,
 #   - it re-confines the diff headers (a `..`/absolute/empty target after -p1 is
 #     refused) — the same chokepoint the daemon's clean_code_diff enforces, AND
 #   - it runs /usr/bin/patch under sandbox-exec with a DEFAULT-DENY SBPL profile
@@ -32,7 +32,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROPOSALS="$ROOT/state/code/proposals"
-CONFIG="$ROOT/config/jarvis.toml"
+CONFIG="$ROOT/config/darwin.toml"
 
 # Structured progress for the HUD. Stages: revalidating | applying.
 # Terminal line is always exactly one RESULT: ok | RESULT: failed <reason>.
@@ -126,7 +126,7 @@ confined_patch() {
 }
 
 # ------------------------------------------------------- codebase root (config)
-# Resolve the FIRST allowlisted [code].roots entry from config/jarvis.toml. The
+# Resolve the FIRST allowlisted [code].roots entry from config/darwin.toml. The
 # root is a USER-ALLOWLISTED config value, NEVER an arbitrary path. We read only
 # the [code] table's `roots` array (single-line or multi-line), take the first
 # entry, and require it to be an EXISTING absolute directory. With [code] off /
@@ -217,7 +217,7 @@ fi
 # Resolve the allowlisted codebase root. No [code].roots => nothing to apply into.
 CODE_ROOT_RAW="$(code_first_root || true)"
 if [ -z "$CODE_ROOT_RAW" ]; then
-  fail "no [code].roots allowlisted in config/jarvis.toml — refusing (code intelligence applies only into an allowlisted codebase root)"
+  fail "no [code].roots allowlisted in config/darwin.toml — refusing (code intelligence applies only into an allowlisted codebase root)"
 fi
 if [ ! -d "$CODE_ROOT_RAW" ]; then
   fail "allowlisted codebase root '$CODE_ROOT_RAW' is not an existing directory — refusing"
@@ -319,9 +319,9 @@ if ! confined_patch "$CODE_ROOT" -p1 --batch <"$PATCH_FILE"; then
   fail "patch application to the codebase failed (a partial apply may have written under $CODE_ROOT; review it)"
 fi
 
-# Clear the pending marker so JARVIS stops announcing the proposal (best-effort).
+# Clear the pending marker so DARWIN stops announcing the proposal (best-effort).
 if command -v sqlite3 >/dev/null 2>&1; then
-  sqlite3 "$ROOT/state/jarvis.db" "DELETE FROM facts WHERE key = 'meta.code_pending';" 2>/dev/null || true
+  sqlite3 "$ROOT/state/darwin.db" "DELETE FROM facts WHERE key = 'meta.code_pending';" 2>/dev/null || true
 fi
 
 echo "applied the proposed diff to your codebase at $CODE_ROOT."

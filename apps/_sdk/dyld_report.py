@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Reference dyld module-report stub for JARVIS micro-apps (docs/INTROSPECT.md).
+"""Reference dyld module-report stub for DARWIN micro-apps (docs/INTROSPECT.md).
 
 A micro-app collects its loaded-module inventory once (e.g. on `start`) and sends
-it to jarvisd over the EXISTING per-app socket as a
+it to darwind over the EXISTING per-app socket as a
 `{"type":"modules","data":{"modules":[{"path","uuid"},...]}}` line (the app's own
 `send` still stamps the capability token). The daemon attests the set against a
 trust-on-first-use baseline and flags any module the baseline never had —

@@ -701,7 +701,7 @@ mod tests {
         crate::memory::NotebookEntry {
             id: 0,
             ts: String::new(),
-            agent_namespace: "agent.jarvis".into(),
+            agent_namespace: "agent.darwin".into(),
             topic_key: topic.to_lowercase(),
             topic: topic.into(),
             synthesized: synth.into(),

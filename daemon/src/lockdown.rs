@@ -457,13 +457,13 @@ mod tests {
     }
 
     /// A unique, self-cleaning temp state dir — the stdlib pattern used across the
-    /// crate's FS tests (no extra dep): `temp_dir()/jarvis-lockdown-<pid>-<tag>`,
+    /// crate's FS tests (no extra dep): `temp_dir()/darwin-lockdown-<pid>-<tag>`,
     /// wiped on construction AND on drop.
     struct TempState(PathBuf);
     impl TempState {
         fn new(tag: &str) -> Self {
             let dir = std::env::temp_dir()
-                .join(format!("jarvis-lockdown-test-{}-{tag}", std::process::id()));
+                .join(format!("darwin-lockdown-test-{}-{tag}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(dir.join("state")).unwrap();
             TempState(dir)
@@ -666,7 +666,7 @@ mod tests {
             "shut it all down",
             "shut everything down",
             "emergency stop",
-            "Jarvis, emergency stop.",
+            "Darwin, emergency stop.",
         ] {
             assert!(is_panic_intent(u), "{u:?} should trigger panic");
         }

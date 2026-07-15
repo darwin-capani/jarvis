@@ -8,7 +8,7 @@
 # manifests listed here are Dependabot's business.
 version: 2
 updates:
-  # Rust daemon (jarvisd + pdfjail helper).
+  # Rust daemon (darwind + pdfjail helper).
   - package-ecosystem: cargo
     directory: /daemon
     schedule:

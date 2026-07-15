@@ -35,7 +35,7 @@ final class AppWiringTests: XCTestCase {
     private func synthesizeVideo(frameCount: Int, width: Int = 64, height: Int = 48,
                                  fps: Int32 = 30) async throws -> URL {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("jarvis_vision_appwire_\(UUID().uuidString).mov")
+            .appendingPathComponent("darwin_vision_appwire_\(UUID().uuidString).mov")
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }

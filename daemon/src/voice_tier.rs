@@ -9,8 +9,8 @@
 //!   * It is an ADDED VOICE LAYER (text-to-speech only). The premium ElevenLabs
 //!     voices are an OPTION; on-device Kokoro is the DEFAULT and the FALLBACK.
 //!   * It is NOT a replacement for Kokoro, and NOT a hosted "Conversational
-//!     Agents" platform — JARVIS owns its own brain/router/turn-taking. ElevenLabs
-//!     is used purely to synthesize speech from text JARVIS already produced.
+//!     Agents" platform — DARWIN owns its own brain/router/turn-taking. ElevenLabs
+//!     is used purely to synthesize speech from text DARWIN already produced.
 //!   * It SHIPS ON ([voice].cloud_tier=true, full-power default) but is INERT
 //!     WITHOUT AN ELEVENLABS KEY: reached only when the key is present AND the tier
 //!     is non-Local; otherwise on-device Kokoro (the private default + fallback).
@@ -270,7 +270,7 @@ mod tests {
     use crate::config::Config;
     use crate::model_tier::Tier;
 
-    /// A config with the cloud tier ON and `jarvis`/`friday` mapped to EL voices.
+    /// A config with the cloud tier ON and `darwin`/`friday` mapped to EL voices.
     /// `vision` is deliberately LEFT UNMAPPED to exercise the per-agent fallback.
     fn cfg_tier_on() -> Config {
         let mut c = Config::default();
@@ -278,7 +278,7 @@ mod tests {
         c.voice.model = "eleven_flash_v2_5".to_string();
         c.voice
             .voices
-            .insert("jarvis".to_string(), "EL_JARVIS".to_string());
+            .insert("darwin".to_string(), "EL_DARWIN".to_string());
         c.voice
             .voices
             .insert("friday".to_string(), "EL_FRIDAY".to_string());
@@ -299,7 +299,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.voice.cloud_tier = false;
         assert!(!cfg.voice.cloud_tier, "explicitly disabled cloud tier");
-        let b = resolve_voice_backend(&cfg, "jarvis", "bm_george", Tier::Heavy, true);
+        let b = resolve_voice_backend(&cfg, "darwin", "bm_george", Tier::Heavy, true);
         assert_eq!(b, Backend::Kokoro { voice: "bm_george".to_string() });
         assert!(!b.is_cloud(), "Kokoro never leaves the device");
         assert_eq!(b.as_str(), "kokoro");
@@ -310,8 +310,8 @@ mod tests {
     #[test]
     fn no_key_picks_kokoro_even_when_enabled() {
         let cfg = cfg_tier_on();
-        // jarvis IS mapped + tier is non-Local, but there is NO key -> Kokoro.
-        let b = resolve_voice_backend(&cfg, "jarvis", "bm_george", Tier::Heavy, false);
+        // darwin IS mapped + tier is non-Local, but there is NO key -> Kokoro.
+        let b = resolve_voice_backend(&cfg, "darwin", "bm_george", Tier::Heavy, false);
         assert_eq!(b, Backend::Kokoro { voice: "bm_george".to_string() });
     }
 
@@ -322,7 +322,7 @@ mod tests {
         let cfg = cfg_tier_on();
         // Everything else satisfied, but the active tier is Local ("work offline")
         // -> VOICE stays on-device. NO cloud TTS.
-        let b = resolve_voice_backend(&cfg, "jarvis", "bm_george", Tier::Local, true);
+        let b = resolve_voice_backend(&cfg, "darwin", "bm_george", Tier::Local, true);
         assert_eq!(b, Backend::Kokoro { voice: "bm_george".to_string() });
         assert!(!b.is_cloud());
     }
@@ -333,11 +333,11 @@ mod tests {
     fn elevenlabs_only_when_enabled_key_nonlocal_and_mapped() {
         let cfg = cfg_tier_on();
         for tier in [Tier::Fast, Tier::Heavy] {
-            let b = resolve_voice_backend(&cfg, "jarvis", "bm_george", tier, true);
+            let b = resolve_voice_backend(&cfg, "darwin", "bm_george", tier, true);
             assert_eq!(
                 b,
                 Backend::ElevenLabs {
-                    voice_id: "EL_JARVIS".to_string(),
+                    voice_id: "EL_DARWIN".to_string(),
                     model: "eleven_flash_v2_5".to_string(),
                 },
                 "ElevenLabs expected at tier {tier:?}"
@@ -378,7 +378,7 @@ mod tests {
         // returns is constructed from config voice ids + model — never a key. Prove
         // the Debug rendering of BOTH variants carries nothing key-shaped.
         let cfg = cfg_tier_on();
-        let el = resolve_voice_backend(&cfg, "jarvis", "bm_george", Tier::Heavy, true);
+        let el = resolve_voice_backend(&cfg, "darwin", "bm_george", Tier::Heavy, true);
         let kk = resolve_voice_backend(&cfg, "vision", "bf_isabella", Tier::Heavy, true);
         for b in [&el, &kk] {
             let dbg = format!("{b:?}");
@@ -388,7 +388,7 @@ mod tests {
         }
         // ElevenLabs variant exposes only voice_id + model (both non-secret).
         if let Backend::ElevenLabs { voice_id, model } = &el {
-            assert_eq!(voice_id, "EL_JARVIS");
+            assert_eq!(voice_id, "EL_DARWIN");
             assert_eq!(model, "eleven_flash_v2_5");
         } else {
             panic!("expected ElevenLabs");
@@ -600,7 +600,7 @@ mod tests {
     fn backend_selection_matrix_is_conservative() {
         let cfg = cfg_tier_on();
         // (key_present, tier) -> expected cloud?  Only key && non-Local is cloud
-        // (jarvis is mapped). Local and no-key are always on-device.
+        // (darwin is mapped). Local and no-key are always on-device.
         let cases = [
             (true, Tier::Heavy, true),
             (true, Tier::Fast, true),
@@ -610,7 +610,7 @@ mod tests {
             (false, Tier::Local, false),
         ];
         for (key, tier, want_cloud) in cases {
-            let b = resolve_voice_backend(&cfg, "jarvis", "bm_george", tier, key);
+            let b = resolve_voice_backend(&cfg, "darwin", "bm_george", tier, key);
             assert_eq!(
                 b.is_cloud(),
                 want_cloud,

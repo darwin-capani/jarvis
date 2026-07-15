@@ -24,7 +24,7 @@
 //!   - relationship:      `user.world.rel.<from_id>.<relation>.<to_id>` = value
 //!     where `<type>` is one of the bounded [`EntityType`] kinds and `<id>` /
 //!     `<from_id>` / `<to_id>` are SLUGS (lowercased, non-alphanumeric collapsed to
-//!     `_`) so a name like "Project JARVIS" round-trips to a stable `project_jarvis`.
+//!     `_`) so a name like "Project DARWIN" round-trips to a stable `project_darwin`.
 //!     The human-readable display name is itself stored as the `name` attribute, so
 //!     nothing is lost to slugging.
 //!
@@ -646,7 +646,7 @@ mod tests {
     impl TempDb {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "jarvis-world-test-{}-{}.db",
+                "darwin-world-test-{}-{}.db",
                 std::process::id(),
                 tag
             ));
@@ -668,11 +668,11 @@ mod tests {
 
     #[test]
     fn slugify_normalizes_and_is_stable() {
-        assert_eq!(slugify("Project JARVIS").as_deref(), Some("project_jarvis"));
+        assert_eq!(slugify("Project DARWIN").as_deref(), Some("project_darwin"));
         assert_eq!(slugify("  Darwin  Capani  ").as_deref(), Some("darwin_capani"));
         assert_eq!(slugify("Q3-2026!!!").as_deref(), Some("q3_2026"));
         // round-trips: slugging a slug is a fixpoint
-        let s = slugify("Project JARVIS").unwrap();
+        let s = slugify("Project DARWIN").unwrap();
         assert_eq!(slugify(&s).as_deref(), Some(s.as_str()));
         // all-punctuation slugs to nothing
         assert_eq!(slugify("!!! --- ???"), None);
@@ -696,15 +696,15 @@ mod tests {
 
     #[test]
     fn entity_and_rel_keys_roundtrip_through_parse() {
-        let k = entity_key(EntityType::Project, "project_jarvis", "status");
+        let k = entity_key(EntityType::Project, "project_darwin", "status");
         assert_eq!(
             parse_entity_key(&k),
-            Some((EntityType::Project, "project_jarvis".to_string(), "status".to_string()))
+            Some((EntityType::Project, "project_darwin".to_string(), "status".to_string()))
         );
-        let rk = rel_key("project_jarvis", "owned_by", "darwin");
+        let rk = rel_key("project_darwin", "owned_by", "darwin");
         assert_eq!(
             parse_rel_key(&rk),
-            Some(("project_jarvis".to_string(), "owned_by".to_string(), "darwin".to_string()))
+            Some(("project_darwin".to_string(), "owned_by".to_string(), "darwin".to_string()))
         );
         // foreign / malformed keys parse to None (skipped, never panic)
         assert_eq!(parse_entity_key("user.name"), None);
@@ -718,19 +718,19 @@ mod tests {
         let db = TempDb::new("entity-roundtrip");
         let mem = Memory::open(&db.0).unwrap();
 
-        set_attribute(&mem, EntityType::Project, "Project JARVIS", "status", "active")
+        set_attribute(&mem, EntityType::Project, "Project DARWIN", "status", "active")
             .await
             .unwrap();
-        set_attribute(&mem, EntityType::Project, "Project JARVIS", "phase", "3")
+        set_attribute(&mem, EntityType::Project, "Project DARWIN", "phase", "3")
             .await
             .unwrap();
 
-        let state = query(&mem, "jarvis").await.unwrap();
+        let state = query(&mem, "darwin").await.unwrap();
         assert_eq!(state.entities.len(), 1, "one entity: {state:?}");
         let e = &state.entities[0];
         assert_eq!(e.entity_type, EntityType::Project);
-        assert_eq!(e.id, "project_jarvis");
-        assert_eq!(e.name, "Project JARVIS", "display name preserved verbatim");
+        assert_eq!(e.id, "project_darwin");
+        assert_eq!(e.name, "Project DARWIN", "display name preserved verbatim");
         assert_eq!(
             e.attributes,
             vec![
@@ -760,21 +760,21 @@ mod tests {
     async fn relationship_roundtrip_and_links_entities_in_query() {
         let db = TempDb::new("rel-roundtrip");
         let mem = Memory::open(&db.0).unwrap();
-        set_attribute(&mem, EntityType::Project, "JARVIS", "status", "active")
+        set_attribute(&mem, EntityType::Project, "DARWIN", "status", "active")
             .await
             .unwrap();
         set_attribute(&mem, EntityType::Person, "Darwin", "role", "owner")
             .await
             .unwrap();
-        set_relationship(&mem, "JARVIS", "owned by", "Darwin", "since 2026")
+        set_relationship(&mem, "DARWIN", "owned by", "Darwin", "since 2026")
             .await
             .unwrap();
 
         // Querying the project surfaces the relationship that touches it.
-        let state = query(&mem, "jarvis").await.unwrap();
+        let state = query(&mem, "darwin").await.unwrap();
         assert_eq!(state.relationships.len(), 1);
         let r = &state.relationships[0];
-        assert_eq!(r.from, "jarvis");
+        assert_eq!(r.from, "darwin");
         assert_eq!(r.relation, "owned_by");
         assert_eq!(r.to, "darwin");
         assert_eq!(r.value, "since 2026");
@@ -798,7 +798,7 @@ mod tests {
     async fn query_returns_nothing_for_unknown_topic_never_fabricates() {
         let db = TempDb::new("no-match");
         let mem = Memory::open(&db.0).unwrap();
-        set_attribute(&mem, EntityType::Project, "jarvis", "status", "active")
+        set_attribute(&mem, EntityType::Project, "darwin", "status", "active")
             .await
             .unwrap();
         let state = query(&mem, "quantum chromodynamics").await.unwrap();
@@ -874,12 +874,12 @@ mod tests {
         let db = TempDb::new("isolation");
         let mem = Memory::open(&db.0).unwrap();
         // A real world entity in the shared tier.
-        set_attribute(&mem, EntityType::Project, "Project JARVIS", "status", "active")
+        set_attribute(&mem, EntityType::Project, "Project DARWIN", "status", "active")
             .await
             .unwrap();
         // A PRIVATE note in another agent's namespace, AND a private note that
         // even MENTIONS the same topic word — neither may ever appear in the model.
-        mem.upsert_fact("agent.friday.secret", "friday private intel about jarvis")
+        mem.upsert_fact("agent.friday.secret", "friday private intel about darwin")
             .await
             .unwrap();
         mem.upsert_fact("agent.pepper.note", "pepper private reminder")
@@ -891,7 +891,7 @@ mod tests {
         let state = snapshot(&mem).await.unwrap();
         // Only the world entity is present; no private rows, no plain user.* facts.
         assert_eq!(state.entities.len(), 1);
-        assert_eq!(state.entities[0].id, "project_jarvis");
+        assert_eq!(state.entities[0].id, "project_darwin");
         let rendered = render(&state);
         assert!(!rendered.contains("private"), "private note leaked: {rendered}");
         assert!(!rendered.contains("friday"), "agent namespace leaked: {rendered}");
@@ -910,9 +910,9 @@ mod tests {
     async fn structure_rows_skips_foreign_and_malformed() {
         // Pure structuring: only well-formed world rows survive.
         let rows = vec![
-            ("user.world.entity.project.jarvis.status".to_string(), "active".to_string()),
-            ("user.world.entity.project.jarvis.name".to_string(), "JARVIS".to_string()),
-            ("user.world.rel.jarvis.owned_by.darwin".to_string(), "true".to_string()),
+            ("user.world.entity.project.darwin.status".to_string(), "active".to_string()),
+            ("user.world.entity.project.darwin.name".to_string(), "DARWIN".to_string()),
+            ("user.world.rel.darwin.owned_by.darwin".to_string(), "true".to_string()),
             // foreign rows that happen to share the prefix family but aren't valid
             ("user.world.garbage".to_string(), "x".to_string()),
             ("user.name".to_string(), "Darwin".to_string()),
@@ -920,7 +920,7 @@ mod tests {
         ];
         let state = structure_rows(rows);
         assert_eq!(state.entities.len(), 1);
-        assert_eq!(state.entities[0].name, "JARVIS");
+        assert_eq!(state.entities[0].name, "DARWIN");
         assert_eq!(state.relationships.len(), 1);
         let r = render(&state);
         assert!(!r.contains("private"));

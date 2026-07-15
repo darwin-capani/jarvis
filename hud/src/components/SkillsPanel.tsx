@@ -3,7 +3,7 @@ import type { SkillEntry, SkillsCatalog } from "../core/events";
 import Frame from "./Frame";
 
 /**
- * SKILLS // MARKETPLACE — the review/visibility surface for JARVIS's hand-written
+ * SKILLS // MARKETPLACE — the review/visibility surface for DARWIN's hand-written
  * in-tree skill library (daemon/src/skills/). It browses the catalog by CATEGORY,
  * lets the user search/filter by name, and shows each skill's one-line "when to
  * use" description, its category, and a CONSEQUENTIAL badge (it parks behind the
@@ -97,7 +97,7 @@ function SkillsPanelBody({ catalog }: { catalog: SkillsCatalog }) {
               The skill library is OFF (<code>[skills].enabled = false</code>). The
               catalog below is shown for reference, but the <code>skill_list</code>{" "}
               / <code>skill_invoke</code> meta-tools are not offered to any agent
-              until you enable it in jarvis.toml.
+              until you enable it in darwin.toml.
             </div>
           ) : null}
 
@@ -155,7 +155,7 @@ function SkillsPanelBody({ catalog }: { catalog: SkillsCatalog }) {
           </div>
 
           <div className="skills-foot dim-note">
-            JARVIS's skill library is a hand-written, in-tree set of small, pure,
+            DARWIN's skill library is a hand-written, in-tree set of small, pure,
             deterministic capabilities — not a populated community marketplace. The
             count above is the genuine shipped total. It is infinitely extensible
             (add a skill in-tree, via an external manifest, or through Self-Forge).

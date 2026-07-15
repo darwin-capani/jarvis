@@ -26,7 +26,7 @@ export interface AudioStore {
   mean(): number;
   /** Most recent rms frame. */
   readonly lastRms: number;
-  /** Daemon-side is_speaking(): mic muted because JARVIS is talking. */
+  /** Daemon-side is_speaking(): mic muted because DARWIN is talking. */
   readonly micMuted: boolean;
   /** Monotonic write counter (cheap change detection for consumers). */
   readonly version: number;

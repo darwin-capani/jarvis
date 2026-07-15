@@ -566,9 +566,9 @@ final class AppEnvTests: XCTestCase {
 
     func testLoadsRequiredKeys() throws {
         let env = try AppEnv.load(from: [
-            "JARVIS_APP_TOKEN": "abc",
-            "JARVIS_APP_SOCKET": "/tmp/state/ipc/apps/vision.sock",
-            "JARVIS_APP_NAME": "vision",
+            "DARWIN_APP_TOKEN": "abc",
+            "DARWIN_APP_SOCKET": "/tmp/state/ipc/apps/vision.sock",
+            "DARWIN_APP_NAME": "vision",
         ])
         XCTAssertEqual(env.token, "abc")
         XCTAssertEqual(env.socketPath, "/tmp/state/ipc/apps/vision.sock")
@@ -579,16 +579,16 @@ final class AppEnvTests: XCTestCase {
 
     func testMissingTokenThrows() {
         XCTAssertThrowsError(try AppEnv.load(from: [
-            "JARVIS_APP_SOCKET": "/tmp/x.sock", "JARVIS_APP_NAME": "vision",
+            "DARWIN_APP_SOCKET": "/tmp/x.sock", "DARWIN_APP_NAME": "vision",
         ])) { error in
-            XCTAssertEqual(error as? AppEnv.EnvError, .missing("JARVIS_APP_TOKEN"))
+            XCTAssertEqual(error as? AppEnv.EnvError, .missing("DARWIN_APP_TOKEN"))
         }
     }
 
     func testInterimCapabilityFlagsParse() throws {
         let env = try AppEnv.load(from: [
-            "JARVIS_APP_TOKEN": "t", "JARVIS_APP_SOCKET": "/s", "JARVIS_APP_NAME": "vision",
-            "JARVIS_VISION_CAMERA": "true", "JARVIS_VISION_SCREEN": "0",
+            "DARWIN_APP_TOKEN": "t", "DARWIN_APP_SOCKET": "/s", "DARWIN_APP_NAME": "vision",
+            "DARWIN_VISION_CAMERA": "true", "DARWIN_VISION_SCREEN": "0",
         ])
         XCTAssertTrue(env.cameraDeclared)
         XCTAssertFalse(env.screenDeclared)

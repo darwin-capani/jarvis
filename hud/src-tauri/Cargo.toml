@@ -1,12 +1,12 @@
 [package]
-name = "jarvis-hud"
+name = "darwin-hud"
 version = "0.1.0"
-description = "JARVIS HUD — fullscreen telemetry face for jarvisd"
+description = "DARWIN HUD — fullscreen telemetry face for darwind"
 edition = "2021"
 rust-version = "1.77.2"
 
 [lib]
-name = "jarvis_hud_lib"
+name = "darwin_hud_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -38,7 +38,7 @@ security-framework = "3"
 tokio = { version = "1", features = ["process", "fs", "io-util"] }
 # IN-PROCESS microphone capture (mic_stream.rs). Capturing the mic in THIS app
 # bundle (which carries NSMicrophoneUsageDescription + the audio-input
-# entitlement) makes macOS show a clean "JARVIS" mic prompt; the raw f32 PCM is
+# entitlement) makes macOS show a clean "DARWIN" mic prompt; the raw f32 PCM is
 # then streamed over a Unix socket to the daemon's app-audio ingest. NOTE: the
 # daemon stays on the 0.15 line (rodio 0.20 shares its cpal); the two stacks
 # have separate lockfiles, and the wire format between them is raw f32 PCM —
@@ -62,7 +62,7 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
 # SYSTEM ACCESS — fire the REAL macOS TCC prompts from THIS app bundle (tcc.rs) so
-# the user sees a clean "JARVIS" dialog. block2 carries the AVFoundation
+# the user sees a clean "DARWIN" dialog. block2 carries the AVFoundation
 # requestAccess completion handler; core-foundation builds the
 # AXIsProcessTrustedWithOptions options dict. Both are already in the lock
 # (transitive), so naming them as direct deps adds no new crate to the graph.
@@ -70,8 +70,8 @@ block2 = "0.6"
 core-foundation = "0.10"
 # UI ACTUATOR (actuator.rs) — post the SINGLE CGEvent (click / type / key) for a
 # token-authenticated daemon actuation request IN THIS app process, so macOS shows
-# a clean "JARVIS would like to control this computer" Accessibility prompt
-# (JARVIS.app, not the daemon). The HUD is the SERVER that holds the Accessibility
+# a clean "DARWIN would like to control this computer" Accessibility prompt
+# (DARWIN.app, not the daemon). The HUD is the SERVER that holds the Accessibility
 # grant + posts the event. Already in the lock (transitive via tao); naming it as
 # a direct dep adds no new crate to the graph.
 core-graphics = "0.25"

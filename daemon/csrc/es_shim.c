@@ -29,12 +29,12 @@ typedef struct {
     int actor_pid;            // the acquirer/signaler (get_task/signal); else -1
     const char *actor_path;
     int signal_number;        // signal events only
-} jarvis_es_event;
+} darwin_es_event;
 
-typedef void (*jarvis_es_callback)(const jarvis_es_event *);
+typedef void (*darwin_es_callback)(const darwin_es_event *);
 
 static es_client_t *g_client = NULL;
-static jarvis_es_callback g_cb = NULL;
+static darwin_es_callback g_cb = NULL;
 
 static const char *proc_path(const es_process_t *p) {
     if (p == NULL || p->executable == NULL || p->executable->path.data == NULL) {
@@ -56,7 +56,7 @@ static void handle_message(const es_message_t *msg) {
     if (g_cb == NULL || msg == NULL) {
         return;
     }
-    jarvis_es_event e;
+    darwin_es_event e;
     memset(&e, 0, sizeof(e));
     e.subject_pid = -1;
     e.actor_pid = -1;
@@ -112,7 +112,7 @@ static void handle_message(const es_message_t *msg) {
 
 // Returns 0 on success; -1 if es_new_client failed (most commonly not entitled /
 // not root); -2 if es_subscribe failed.
-int jarvis_es_start(jarvis_es_callback cb) {
+int darwin_es_start(darwin_es_callback cb) {
     g_cb = cb;
     es_new_client_result_t r = es_new_client(&g_client, ^(es_client_t *c, const es_message_t *msg) {
         (void)c;
@@ -137,7 +137,7 @@ int jarvis_es_start(jarvis_es_callback cb) {
     return 0;
 }
 
-void jarvis_es_stop(void) {
+void darwin_es_stop(void) {
     if (g_client != NULL) {
         es_unsubscribe_all(g_client);
         es_delete_client(g_client);

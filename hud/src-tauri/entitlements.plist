@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  HARDENED-RUNTIME ENTITLEMENTS for the JARVIS HUD (.app).
+  HARDENED-RUNTIME ENTITLEMENTS for the DARWIN HUD (.app).
 
   These are referenced from tauri.conf.json (bundle.macOS.entitlements) and are
   applied by the codesign step that `tauri build` runs WHEN a Developer ID
@@ -14,7 +14,7 @@
                            ALSO requires a TCC prompt with the
                            NSMicrophoneUsageDescription string (see Info.plist
                            keys in tauri.conf.json) before the mic is opened.
-    * automation.apple-events — JARVIS's ui_actuate / takeover paths drive other
+    * automation.apple-events — DARWIN's ui_actuate / takeover paths drive other
                            apps and the desktop via AppleEvents (e.g. the
                            uninstall command opens Terminal.app; the folder
                            picker shells `osascript`). Hardened runtime blocks

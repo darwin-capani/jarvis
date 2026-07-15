@@ -61,7 +61,7 @@ const mockActive: Record<string, unknown> = {
   not_encrypted: [
     "the config TOML",
     "the macOS Keychain item itself (already OS-protected)",
-    "the in-RAM working set + decrypted pages + the key while jarvisd runs",
+    "the in-RAM working set + decrypted pages + the key while darwind runs",
   ],
   honesty:
     "SQLCipher protects AT REST ON DISK only — not against a live-process/root attacker (key + plaintext are in RAM while running). The master key lives only in the macOS Keychain (account memory_encryption_key); lose it and the encrypted DBs are unrecoverable. Enabling changes the on-disk format (a one-time migration).",
@@ -282,7 +282,7 @@ describe("SettingsModal encryption section (honest, scope-exact)", () => {
     // the exact config key + the enable steps
     expect(html).toContain("encrypt_memory");
     expect(html).toContain("[security]");
-    expect(html.toLowerCase()).toContain("restart jarvisd");
+    expect(html.toLowerCase()).toContain("restart darwind");
   });
 
   it("renders the AWAITING state before the snapshot arrives", () => {

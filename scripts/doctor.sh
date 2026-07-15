@@ -1,5 +1,5 @@
 #!/bin/bash
-# doctor.sh — read-only JARVIS environment diagnostic (WS2).
+# doctor.sh — read-only DARWIN environment diagnostic (WS2).
 #
 # Inspects the INSTALLED environment and prints an honest status board. It
 # starts NOTHING, stops nothing, changes nothing — every check is a read. It
@@ -28,12 +28,12 @@ case "${1:-}" in
 esac
 
 # --- resolve root EXACTLY like the daemon ------------------------------------
-if [ -n "${JARVIS_ROOT:-}" ]; then
-    ROOT="$JARVIS_ROOT"
+if [ -n "${DARWIN_ROOT:-}" ]; then
+    ROOT="$DARWIN_ROOT"
 else
     ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
-export JARVIS_ROOT="$ROOT"
+export DARWIN_ROOT="$ROOT"
 
 # --- optional cinematic UI (graceful plain fallback) -------------------------
 _UI=0
@@ -62,8 +62,8 @@ fi
 
 # --- derived paths -----------------------------------------------------------
 VENV_PY="$ROOT/.venv/bin/python"
-JARVISD="$ROOT/daemon/target/release/jarvisd"
-CONFIG="$ROOT/config/jarvis.toml"
+DARWIND="$ROOT/daemon/target/release/darwind"
+CONFIG="$ROOT/config/darwin.toml"
 IPC="$ROOT/state/ipc"
 INF_SOCK="$IPC/inference.sock"
 CMD_SOCK="$IPC/command.sock"
@@ -133,7 +133,7 @@ agent_loaded() {
 FAULT=0
 
 say_hr
-printf 'JARVIS doctor — read-only environment diagnostic\n'
+printf 'DARWIN doctor — read-only environment diagnostic\n'
 printf 'root: %s\n' "$ROOT"
 say_hr
 
@@ -141,7 +141,7 @@ say_hr
 if [ -d "$ROOT" ] && { [ -f "$CONFIG" ] || [ -d "$ROOT/state" ]; }; then
     say_ok "root resolved: $ROOT"
 else
-    say_fail "root does not look like a JARVIS tree: $ROOT (no config/jarvis.toml, no state/)"
+    say_fail "root does not look like a DARWIN tree: $ROOT (no config/darwin.toml, no state/)"
     FAULT=1
 fi
 if [ -f "$CONFIG" ] && [ -s "$CONFIG" ]; then
@@ -161,11 +161,11 @@ else
     say_warn "venv python missing: $VENV_PY (python3.11 -m venv .venv)"
 fi
 BIN_TAG="MISSING"
-if [ -x "$JARVISD" ]; then
-    say_ok "daemon binary: $JARVISD"
+if [ -x "$DARWIND" ]; then
+    say_ok "daemon binary: $DARWIND"
     BIN_TAG="OK"
 else
-    say_warn "daemon binary not built: $JARVISD (cargo build --release)"
+    say_warn "daemon binary not built: $DARWIND (cargo build --release)"
 fi
 
 # --- models: check BOTH locations + flag the HF_HOME runtime split -----------
@@ -226,29 +226,29 @@ fi
 # --- LaunchAgents ------------------------------------------------------------
 INF_AGENT_TAG="UNKNOWN"
 DMN_AGENT_TAG="UNKNOWN"
-for label in com.jarvis.inference com.jarvis.daemon; do
+for label in com.darwin.inference com.darwin.daemon; do
     plist="$AGENT_DIR/$label.plist"
     if agent_loaded "$label"; then
         say_ok "LaunchAgent loaded: $label"
-        [ "$label" = "com.jarvis.inference" ] && INF_AGENT_TAG="LOADED" || DMN_AGENT_TAG="LOADED"
+        [ "$label" = "com.darwin.inference" ] && INF_AGENT_TAG="LOADED" || DMN_AGENT_TAG="LOADED"
     elif [ "$?" -eq 2 ]; then
         say_info "launchctl unavailable — cannot check $label"
     elif [ -f "$plist" ]; then
         say_warn "LaunchAgent installed but NOT loaded: $label ($plist) — scripts/install_boot.sh --install"
-        [ "$label" = "com.jarvis.inference" ] && INF_AGENT_TAG="NOTLOADED" || DMN_AGENT_TAG="NOTLOADED"
+        [ "$label" = "com.darwin.inference" ] && INF_AGENT_TAG="NOTLOADED" || DMN_AGENT_TAG="NOTLOADED"
     else
         say_info "LaunchAgent not installed: $label (manual bring-up only; scripts/install_boot.sh --install to persist)"
-        [ "$label" = "com.jarvis.inference" ] && INF_AGENT_TAG="ABSENT" || DMN_AGENT_TAG="ABSENT"
+        [ "$label" = "com.darwin.inference" ] && INF_AGENT_TAG="ABSENT" || DMN_AGENT_TAG="ABSENT"
     fi
 done
 
 # inference plist ThrottleInterval hint (the gap assess flagged).
-INF_PLIST="$AGENT_DIR/com.jarvis.inference.plist"
+INF_PLIST="$AGENT_DIR/com.darwin.inference.plist"
 if [ -f "$INF_PLIST" ]; then
     if grep -q "ThrottleInterval" "$INF_PLIST" 2>/dev/null; then
-        say_ok "com.jarvis.inference has ThrottleInterval (crash-loop rate-limited)"
+        say_ok "com.darwin.inference has ThrottleInterval (crash-loop rate-limited)"
     else
-        say_warn "com.jarvis.inference has NO ThrottleInterval — a crash-looping server can restart-spam (the daemon plist sets 10)"
+        say_warn "com.darwin.inference has NO ThrottleInterval — a crash-looping server can restart-spam (the daemon plist sets 10)"
     fi
 fi
 
@@ -263,7 +263,7 @@ say_info "TCC: mic + screen-recording consent are device-gated and granted in Sy
 # =============================================================================
 say_hr
 if [ "$_UI" -eq 1 ] && command -v ui_status_board >/dev/null 2>&1; then
-    ui_status_board "JARVIS DOCTOR" \
+    ui_status_board "DARWIN DOCTOR" \
         "VENV PYTHON|$VENV_TAG" \
         "DAEMON BINARY|$BIN_TAG" \
         "ON-DEVICE MODELS|$MODELS_TAG" \
@@ -273,7 +273,7 @@ if [ "$_UI" -eq 1 ] && command -v ui_status_board >/dev/null 2>&1; then
         "INFERENCE AGENT|$INF_AGENT_TAG" \
         "DAEMON AGENT|$DMN_AGENT_TAG" 2>/dev/null || true
 else
-    printf '\n  JARVIS DOCTOR\n'
+    printf '\n  DARWIN DOCTOR\n'
     printf '    venv python ........ %s\n' "$VENV_TAG"
     printf '    daemon binary ...... %s\n' "$BIN_TAG"
     printf '    on-device models ... %s\n' "$MODELS_TAG"
@@ -285,7 +285,7 @@ else
 fi
 
 if [ "$FAULT" -ne 0 ]; then
-    say_fail "doctor found a structural fault (see above) — this does not look like a usable JARVIS root"
+    say_fail "doctor found a structural fault (see above) — this does not look like a usable DARWIN root"
     exit 1
 fi
 say_info "doctor is read-only: it started/stopped/changed nothing. UP/DOWN reflect the moment it ran."

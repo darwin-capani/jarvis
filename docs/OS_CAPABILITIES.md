@@ -1,7 +1,7 @@
-# JARVIS-OS — Advanced Capability Matrix: Doability & Phase 1
+# DARWIN-OS — Advanced Capability Matrix: Doability & Phase 1
 
 This document assesses the "Canonical Behavioral & Task Matrix" and "Autonomous
-Self-Healing Core" specification against (a) what JARVIS already is, and (b)
+Self-Healing Core" specification against (a) what DARWIN already is, and (b)
 what is physically and computationally possible on Apple Silicon (M1 or later;
 developed on an M4 Mac Mini). It then defines Phase 1 of building toward that spec.
 
@@ -14,11 +14,11 @@ camera cannot.
 
 ## 1. The Self-Healing Core — already ~90% built
 
-The entire second section of the spec describes what jarvisd already is.
+The entire second section of the spec describes what darwind already is.
 
 | Spec requirement | Status | Where it lives |
 |---|---|---|
-| Self-monitoring Rust daemon that "runs completely on itself" | ✅ **Built** | `daemon/` — jarvisd, LaunchAgent boot, KeepAlive |
+| Self-monitoring Rust daemon that "runs completely on itself" | ✅ **Built** | `daemon/` — darwind, LaunchAgent boot, KeepAlive |
 | Local ultra-fast MLX model matrix for intent classification + offline tasks | ✅ **Built** | `inference/server.py` classify (Qwen3-4B on Metal), local handlers |
 | Dynamic fallback that routes to Anthropic **only when the task exceeds local hardware** | ✅ **Built** | `router.rs` — cloud iff `complexity=="heavy" \|\| confidence<0.6`; `anthropic::complete_with_tools` |
 | Continuously ingest its own error logs | ✅ **Built** | `heal.rs` — tails `state/logs/daemon.log`, edge-triggered error-burst detection |
@@ -50,7 +50,7 @@ same rail," plus a few genuinely new subsystems.
 
 | # | Spec area | Verdict | Real engineering form |
 |---|---|---|---|
-| 1 | **Environmental & IoT Automation** | ✅ Real | Smart-home read + gated control through the user's OWN Home Assistant (or compatible) hub over its local REST API — raw HomeKit/Matter is not cleanly reachable from a macOS daemon, so JARVIS relays to the hub and the hub talks to the devices; control previews (dry-run) by default. "Predictive hardware maintenance" → SMART/thermal/battery-cycle trend monitoring of *this Mac*. |
+| 1 | **Environmental & IoT Automation** | ✅ Real | Smart-home read + gated control through the user's OWN Home Assistant (or compatible) hub over its local REST API — raw HomeKit/Matter is not cleanly reachable from a macOS daemon, so DARWIN relays to the hub and the hub talks to the devices; control previews (dry-run) by default. "Predictive hardware maintenance" → SMART/thermal/battery-cycle trend monitoring of *this Mac*. |
 | 2 | **R&D & Prototyping** | 🟡 Real, scoped | Parsing architectural/engineering notes → LLM (trivial). "Structural stress simulation" → a real FEA pipeline (you supply a meshed CAD model + loads + materials; it runs a solver) — **not** "glance at a part and know if it holds." 3D schematic render → already specced as the **Silicon Canvas** app. |
 | 3 | **Global Data Aggregation** | ✅ Real | Scheduled public-API polling, multi-source search, stream ingestion, LLM filtering for macro-trends. Direct extension of the web tools already built. |
 | 4 | **Predictive Kinematics & Spatial Analysis** | 🔴 Mostly cinematic | **Cannot** assess "material structural integrity" from a camera — a lens sees surfaces, not internal fatigue/load capacity (that needs ultrasound/X-ray/strain gauges). Real form: a vision model that detects *visible surface defects* (cracks, wear) and does *narrow* object tracking + simple ballistic/kinematic prediction in a controlled scene. General "decode any motion and predict it" is not buildable. |
@@ -85,7 +85,7 @@ the read-only `doc_search` tool owned by Mnemosyne. Honest properties:
   `.docx / .xlsx / .pptx` text is mined by pure-Rust, on-device extractors
   (`docsearch.rs`); PDFs run inside a **memory-jailed helper subprocess**
   (`src/bin/pdfjail.rs`, `RLIMIT_AS` + decompression-bomb guards) so a malformed
-  or bomb file aborts the child, never jarvisd. Extraction stays within the
+  or bomb file aborts the child, never darwind. Extraction stays within the
   allowlisted roots. **Scanned/image-only or encrypted files yield no text → an
   honest skip, never silently indexed** (do not assume such a PDF was read).
   This is distinct from the Spotlight filename *Find files* lookup, which is a
@@ -158,7 +158,7 @@ self-healing pipeline up to (not past) the human gate.
 ### Explicitly deferred / reframed (not in Phase 1, stated honestly)
 - **IoT/Home control** (area 1): shipped as the **Dum-E** agent over the user's
   OWN Home Assistant (or compatible) hub — no HomeKit entitlements; the hub owns
-  the device link and JARVIS relays reads + gated (dry-run-by-default) control to
+  the device link and DARWIN relays reads + gated (dry-run-by-default) control to
   it over the local REST API.
 - **FEA / 3D schematics** (area 2): real but heavyweight → rides on the
   Silicon Canvas app, post-HUD.
@@ -199,7 +199,7 @@ self-healing pipeline up to (not past) the human gate.
   its own confirm; **never batched, never an autonomous loop**. It actuates only
   under the consequential-actions **master switch ON + the confirm + voice-id +
   `!lockdown`**. The actuation itself is **DEVICE-gated**: it requires the macOS
-  **Accessibility (TCC) permission** — runtime user consent JARVIS cannot
+  **Accessibility (TCC) permission** — runtime user consent DARWIN cannot
   self-grant (not SBPL-grantable) — and a real display; the CGEvent/AX seam is
   **built but never invoked in any test** (the planner + the gate routing are
   proven hermetically). An actuation result is **never fabricated**: when consent

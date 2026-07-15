@@ -5,9 +5,9 @@ import os
 import socket
 import sys
 
-TOKEN = os.environ.get("JARVIS_APP_TOKEN", "")
-SOCKET_PATH = os.environ.get("JARVIS_APP_SOCKET", "")
-APP_NAME = os.environ.get("JARVIS_APP_NAME", "rewrite")
+TOKEN = os.environ.get("DARWIN_APP_TOKEN", "")
+SOCKET_PATH = os.environ.get("DARWIN_APP_SOCKET", "")
+APP_NAME = os.environ.get("DARWIN_APP_NAME", "rewrite")
 # The daemon-mediated generate proxy lives beside our own relay socket.
 GENERATE_SOCK = (
     os.path.join(os.path.dirname(SOCKET_PATH), "generate.sock") if SOCKET_PATH else ""
@@ -131,7 +131,7 @@ def drain_lines(buf, max_frame=MAX_FRAME_BYTES):
 
 def main():
     if not TOKEN or not SOCKET_PATH:
-        print("missing JARVIS_APP_TOKEN / JARVIS_APP_SOCKET; not launched by jarvisd", file=sys.stderr)
+        print("missing DARWIN_APP_TOKEN / DARWIN_APP_SOCKET; not launched by darwind", file=sys.stderr)
         return 1
     conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     conn.connect(SOCKET_PATH)

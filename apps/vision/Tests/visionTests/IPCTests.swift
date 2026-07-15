@@ -29,8 +29,8 @@ final class VideoPathConfinementTests: XCTestCase {
     }
 
     func testGrantedDirIsAppsVisionVideosInput() {
-        let r = VideoPathResolver(projectRoot: "/Users/x/jarvis")
-        XCTAssertEqual(r.grantedDir, "/Users/x/jarvis/apps/vision/videos/input")
+        let r = VideoPathResolver(projectRoot: "/Users/x/darwin")
+        XCTAssertEqual(r.grantedDir, "/Users/x/darwin/apps/vision/videos/input")
     }
 
     func testLexicalRejectsAbsolutePath() {

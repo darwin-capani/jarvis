@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "JARVIS",
+  "productName": "DARWIN",
   "version": "1.0.3",
-  "identifier": "com.jarvis.hud",
+  "identifier": "com.darwin.hud",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "JARVIS",
+        "title": "DARWIN",
         "width": 1440,
         "height": 900,
         "minWidth": 1024,
@@ -43,7 +43,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/darwin-capani/jarvis/releases/latest/download/latest.json"
+        "https://github.com/darwin-capani/darwin/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVCMUFEMUNFOERFOTRBRQpSV1N1bE43b0hLMnhCWnp4MUd1di9KY3Z0R2hZTkdqU1ZncjdmNEp2ZzYrWGlBOXpEZ0dzMVhhcQo="
     }

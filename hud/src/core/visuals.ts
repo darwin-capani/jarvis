@@ -83,7 +83,7 @@ function baseVisualTarget(state: CoreState, rms: number): CoreVisualTarget {
     case "speaking":
       // Calm amplitude breathing; the renderer mixes a (now gentle) synthetic
       // envelope with rms through a smoothed follower. Slower pulse + shallow
-      // depth so JARVIS "breathes" while talking instead of vibrating.
+      // depth so DARWIN "breathes" while talking instead of vibrating.
       return {
         hue: HUE_CYAN,
         intensity: 0.85 + clamp01(rms * 5) * 0.3,

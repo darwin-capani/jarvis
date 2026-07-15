@@ -13,7 +13,7 @@ Tauri app on a real Apple Silicon Mac — never claimed-measured here.
 ## Sandbox contract (binding: `manifest.toml`)
 
 - Runtime `binary` (prebuilt native Rust binary in the app dir — mirrors
-  silicon-canvas; jarvisd execs it directly under `sandbox-exec`, `apps.rs`
+  silicon-canvas; darwind execs it directly under `sandbox-exec`, `apps.rs`
   `Runtime::Binary`).
 - `gpu = false`: the **engine is CPU-only** (f64 scalar math). The HUD renders the
   bodies; the app never touches a GPU device.
@@ -21,7 +21,7 @@ Tauri app on a real Apple Silicon Mac — never claimed-measured here.
   (scenes are constructed via IPC ops, not loaded from disk); `fs_write` is a single
   scratch dir reserved for an optional deterministic replay-trace dump.
 - IPC: JSONL over `state/ipc/apps/mark-forge.sock`, capability token per outbound
-  line (`JARVIS_APP_TOKEN`); socket + name + token arrive via the env, NEVER argv
+  line (`DARWIN_APP_TOKEN`); socket + name + token arrive via the env, NEVER argv
   (`daemon/src/apps.rs`).
 - UI: `surface = "panel"` — the HUD renders the bodies in an R3F sandbox panel from
   the `physics.bodies` transforms; input (spawn/step/reset) arrives as JSONL ops

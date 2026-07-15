@@ -170,8 +170,8 @@ describe("forgeApplyCommand", () => {
 describe("replyToActions", () => {
   it("maps an ok prose reply to a single attributed reply line", () => {
     const reply: CommandReply = { ok: true, reply: "Roll call complete." };
-    const actions = replyToActions(reply, { expectPending: false, replyAgent: "jarvis" });
-    expect(actions).toEqual([{ type: "reply", agent: "jarvis", text: "Roll call complete." }]);
+    const actions = replyToActions(reply, { expectPending: false, replyAgent: "darwin" });
+    expect(actions).toEqual([{ type: "reply", agent: "darwin", text: "Roll call complete." }]);
   });
 
   it("maps a failed reply to a single error line carrying the daemon's reason", () => {

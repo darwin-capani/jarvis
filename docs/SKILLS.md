@@ -1,6 +1,6 @@
-# JARVIS Skill Framework — the open standard
+# DARWIN Skill Framework — the open standard
 
-This is the authoritative spec for JARVIS's **skill library**: a hand-written,
+This is the authoritative spec for DARWIN's **skill library**: a hand-written,
 in-tree set of small, pure capabilities, plus the open standard that lets the set
 grow. Where other notes disagree with this document, this one wins.
 
@@ -116,7 +116,7 @@ tool surface no matter how many skills exist:
 ### Per-agent allowlist
 
 Pure read-only skills are broadly safe, but the meta-tools sit on a sensible
-allowlist: the orchestrator **jarvis** (via its `["*"]` wildcard) plus the
+allowlist: the orchestrator **darwin** (via its `["*"]` wildcard) plus the
 utility/knowledge agents **friday**, **mnemosyne**, and **sage**. A consequential
 skill set is never silently granted to every agent — and a consequential skill
 still parks behind the confirmation gate regardless of which agent invoked it.
@@ -215,7 +215,7 @@ A manifest can never smuggle in an ungated side effect.
   runtime-discovered tool surface with the same consequential-park gate and
   per-server agent allowlist. Skills and MCP tools share the no-double-underscore
   rule so the two namespaces never collide.
-- **Self-Forge** — JARVIS can draft a new sandboxed micro-app (propose-only,
+- **Self-Forge** — DARWIN can draft a new sandboxed micro-app (propose-only,
   human-gated); a forged tool can back a manifest skill's `run`.
 
 ## Config
@@ -241,4 +241,4 @@ enabled = true   # SHIPS ON — pure skills are safe to offer by default. This o
 - A consequential skill **parks** (never auto-runs) — proven with a test skill
   whose `run` panics if ever executed without a confirmed `Execute` gate.
 - The two meta-tools are in the tool surface (mirror test) and on the
-  jarvis/friday/mnemosyne/sage allowlists only.
+  darwin/friday/mnemosyne/sage allowlists only.

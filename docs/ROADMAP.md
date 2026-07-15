@@ -1,17 +1,17 @@
-# JARVIS Roadmap
+# DARWIN Roadmap
 
 ## Phase 1 — Scaffold ✅ complete
 
-- `jarvisd` core loop: audio capture → VAD → STT → intent classify → route (local | cloud), per `docs/ARCHITECTURE.md`.
+- `darwind` core loop: audio capture → VAD → STT → intent classify → route (local | cloud), per `docs/ARCHITECTURE.md`.
 - MLX inference server on python3.11 (Metal GPU): `transcribe` / `classify` / `generate` over `state/ipc/inference.sock`.
-- Memory subsystem: SQLite at `state/jarvis.db` (`events`, `facts`, `transcripts`).
+- Memory subsystem: SQLite at `state/darwin.db` (`events`, `facts`, `transcripts`).
 - Telemetry WebSocket server on `127.0.0.1:7177`, hosted by the daemon.
-- Canonical config at `config/jarvis.toml` with hardcoded fallbacks in both processes.
+- Canonical config at `config/darwin.toml` with hardcoded fallbacks in both processes.
 - Sandbox blueprint (`docs/SANDBOX.md`) and the four launch-app manifests under `apps/`.
 
 ## Phase 1.5 — Boot integration ✅ complete
 
-- Boot-to-JARVIS on the target Mac (any Apple Silicon Mac): auto-login + launchd LaunchAgents (`com.jarvis.inference`, `com.jarvis.daemon`, both KeepAlive) wrapping `boot/run_inference.sh` / `boot/run_daemon.sh`. Power-on → daemon + local AI live with no interaction. See `docs/ARCHITECTURE.md` § Boot experience.
+- Boot-to-DARWIN on the target Mac (any Apple Silicon Mac): auto-login + launchd LaunchAgents (`com.darwin.inference`, `com.darwin.daemon`, both KeepAlive) wrapping `boot/run_inference.sh` / `boot/run_daemon.sh`. Power-on → daemon + local AI live with no interaction. See `docs/ARCHITECTURE.md` § Boot experience.
 - Installer: `scripts/install_boot.sh` (dry-run by default, `--install` to apply, `--uninstall` to remove; also `scripts/uninstall_boot.sh`).
 - Secrets convention: `state/env.sh` (gitignored, chmod 600), sourced by the boot wrappers for `ANTHROPIC_API_KEY`.
 - ANE groundwork pulled forward from Phase 3: `scripts/ane_probe.py` Core ML probe (model cached under `state/ane/`, `--loop N` for `powermetrics --samplers ane_power` verification). Aux-model selection stays in Phase 3.
@@ -28,8 +28,8 @@
 
 - **No fixed response strings.** Local handlers return data, not prose (`HandlerOutput {data, llm_voice}`); every spoken reply is phrased by the LLM in persona via the extended `generate` op (`history` / `facts` / `data`, persona prefix KV-cached). If the inference server is down, the daemon speaks the raw data string — graceful degradation, not a canned personality. Cloud prompts assemble the same way in `anthropic.rs`.
 - **Learning loop.** New `extract_facts` op (≤ 3 durable namespaced facts per exchange, strict-JSON with empty-list fallback). After speaking, a non-blocking daemon task extracts facts → `upsert_fact` → `memory.learned` telemetry. `transcripts` gains a `response` column (idempotent migration); `recent_exchanges(6)` + `all_facts(12)` are folded into every reply, local and cloud. See `docs/ARCHITECTURE.md` § Learning loop.
-- **Persona and voice.** `inference/prompts/persona.txt` rewritten to the Iron-Man-films JARVIS register — composed British butler-AI, "sir", dry understatement, concise — and made the single source of truth (read by the daemon for cloud calls too). Default voice `[speech] voice = "bm_george"` (British male).
-- **Voice audition workflow.** Sample WAVs at `state/voice-samples/<voice>.wav` (`bm_george`, `bm_fable`, `bm_daniel`, `bm_lewis`, `am_michael`), all the same line, generated server-side. Listen with `afplay state/voice-samples/<voice>.wav`, then set `[speech] voice` in `config/jarvis.toml`.
+- **Persona and voice.** `inference/prompts/persona.txt` rewritten to the Iron-Man-films DARWIN register — composed British butler-AI, "sir", dry understatement, concise — and made the single source of truth (read by the daemon for cloud calls too). Default voice `[speech] voice = "bm_george"` (British male).
+- **Voice audition workflow.** Sample WAVs at `state/voice-samples/<voice>.wav` (`bm_george`, `bm_fable`, `bm_daniel`, `bm_lewis`, `am_michael`), all the same line, generated server-side. Listen with `afplay state/voice-samples/<voice>.wav`, then set `[speech] voice` in `config/darwin.toml`.
 - **State-of-the-art specs (docs only; implementation Phase 2+).** `docs/HUD.md` — the buildable Phase-2 HUD design + engineering spec — and `apps/<name>/SPEC.md` for the four launch apps.
 
 ## Phase 2 — HUD ✅ shipped v1
@@ -41,7 +41,7 @@ The HUD from `docs/HUD.md` is real: a Tauri 2 + Vite + React + TypeScript + Reac
 - Design system §1: dark glass (`#05080C`), cyan holographic wireframes, glass-morphism panels (blur, 1 px cyan borders, scanlines, monospace accents).
 - Reactive core §2: R3F wireframe icosahedron + inner energy sphere + ~6k-particle orbit field with all six state signatures — idle breathing, listening pulse synced to live mic RMS, processing spin, thinking-local cyan surge, thinking-cloud violet shift + upward particle stream, speaking amplitude pulses. The state machine is a **pure, vitest-covered TypeScript reducer** (`hud/src/core/`, 69 tests).
 - Telemetry map §3: transcript feed, CPU/MEM/DISK/UPTIME gauges, 64-bar waveform equalizer from the new `audio.level` events, pipeline latency strip (`pipeline.completed`), learned-fact/action toasts, inference-offline + heal indicators.
-- Settings panel §5.1: masked Anthropic API key entry, Save/Test/Remove against the macOS Keychain (`com.jarvis.daemon` / `anthropic_api_key`, `security(1)` args-only, never plaintext, never logged); the daemon resolves env `ANTHROPIC_API_KEY` first, else the Keychain item, once at startup — `daemon.started` reports `cloud_key_present`. Entering the cloud key never requires a shell.
+- Settings panel §5.1: masked Anthropic API key entry, Save/Test/Remove against the macOS Keychain (`com.darwin.daemon` / `anthropic_api_key`, `security(1)` args-only, never plaintext, never logged); the daemon resolves env `ANTHROPIC_API_KEY` first, else the Keychain item, once at startup — `daemon.started` reports `cloud_key_present`. Entering the cloud key never requires a shell.
 - Performance: bloom postprocessing with an **adaptive governor** — particle count and bloom degrade in tiers when frame time stays over 20 ms.
 - F11 + button fullscreen toggle on a 1440×900 window; daemon-side `audio.level` (≤ 1 per 66 ms) feeds the waveform; the consolidation pass now also mines `user.habit.<slug>` facts (lifelong-learning habit mining, ≥ 3 user-line occurrences, deterministically backstopped).
 
@@ -53,16 +53,16 @@ The HUD from `docs/HUD.md` is real: a Tauri 2 + Vite + React + TypeScript + Reac
 
 ## Phase 3 — Self-heal + ANE auxiliary models
 
-- Self-heal **v2 has landed** (`daemon/src/heal.rs`, ships **ON** (armed), **PROPOSE-ONLY** (`mode = "propose"`) — INERT without a cloud key: the heavy-model diff draft needs `ANTHROPIC_API_KEY`, else the watchdog emits `heal.blocked{reason:"no_api_key"}` and patches nothing): error-burst detection → root-cause diagnosis (with the cited source attached) → N Opus candidate diffs → per-candidate staged `cargo check`+`cargo test` → adversarial review + confidence → proposal for gated human apply (`scripts/apply_heal.sh <ts>`); the HUD surfaces it in a warn-amber SELF-REPAIR panel. The full loop is battle-tested through the real cloud by `jarvisd --heal-drill` against a planted fault in a throwaway crate. **Remaining for this phase:** soak-test in propose mode against real bursts (auto mode stays opt-in and documented dangerous). See `docs/ARCHITECTURE.md` § Self-heal v2.
-- Optimization-from-usage loop **API has landed and is now wired live** (`daemon/src/optimize.rs`, ships **ON**, `mode = "propose"`; live recording is runtime-gated + PII-redacted): a local PII-redacted **Trace Store** records each interaction + outcome, and an **Optimizer** tunes **only agent routing** — a thin cue-weight layer over `agents.rs` `CUE_VOCAB`. It splits traces into train + HELD-OUT, generates a bounded candidate set, and adopts the best **ONLY IF** it beats the baseline by the margin on held-out traces **and** regresses no class — so it can't make JARVIS worse. It is **propose-only**: a passing candidate is written as a reviewable `proposal.md`/`proposal.json` diff for gated human apply (`scripts/apply_optimization.sh <ts>`, a reversible `CUE_VOCAB` source edit) and **never** silently mutates live behavior. Fully hermetically unit-tested with **mock traces**. **Wired (done):** `record_trace` is called from the per-turn bookkeeping path (gated by `[optimize].enabled`, NO-OP when OFF, skipped for transient screen-read turns) with cross-turn `CorrectedNextTurn` labelling, and `run_optimizer` runs in a gated periodic `optimize_task` — both **propose-only** (mode KEEPS `"propose"`; no auto-apply-to-live path), so live wiring only makes the machinery reachable and never auto-tunes routing. **Remaining for this phase:** operational soak — accrue a real corpus at **runtime** with `[optimize] enabled = true` and review proposals in propose mode (the wiring itself is no longer pending). See `docs/ARCHITECTURE.md` § Optimization-from-usage loop.
+- Self-heal **v2 has landed** (`daemon/src/heal.rs`, ships **ON** (armed), **PROPOSE-ONLY** (`mode = "propose"`) — INERT without a cloud key: the heavy-model diff draft needs `ANTHROPIC_API_KEY`, else the watchdog emits `heal.blocked{reason:"no_api_key"}` and patches nothing): error-burst detection → root-cause diagnosis (with the cited source attached) → N Opus candidate diffs → per-candidate staged `cargo check`+`cargo test` → adversarial review + confidence → proposal for gated human apply (`scripts/apply_heal.sh <ts>`); the HUD surfaces it in a warn-amber SELF-REPAIR panel. The full loop is battle-tested through the real cloud by `darwind --heal-drill` against a planted fault in a throwaway crate. **Remaining for this phase:** soak-test in propose mode against real bursts (auto mode stays opt-in and documented dangerous). See `docs/ARCHITECTURE.md` § Self-heal v2.
+- Optimization-from-usage loop **API has landed and is now wired live** (`daemon/src/optimize.rs`, ships **ON**, `mode = "propose"`; live recording is runtime-gated + PII-redacted): a local PII-redacted **Trace Store** records each interaction + outcome, and an **Optimizer** tunes **only agent routing** — a thin cue-weight layer over `agents.rs` `CUE_VOCAB`. It splits traces into train + HELD-OUT, generates a bounded candidate set, and adopts the best **ONLY IF** it beats the baseline by the margin on held-out traces **and** regresses no class — so it can't make DARWIN worse. It is **propose-only**: a passing candidate is written as a reviewable `proposal.md`/`proposal.json` diff for gated human apply (`scripts/apply_optimization.sh <ts>`, a reversible `CUE_VOCAB` source edit) and **never** silently mutates live behavior. Fully hermetically unit-tested with **mock traces**. **Wired (done):** `record_trace` is called from the per-turn bookkeeping path (gated by `[optimize].enabled`, NO-OP when OFF, skipped for transient screen-read turns) with cross-turn `CorrectedNextTurn` labelling, and `run_optimizer` runs in a gated periodic `optimize_task` — both **propose-only** (mode KEEPS `"propose"`; no auto-apply-to-live path), so live wiring only makes the machinery reachable and never auto-tunes routing. **Remaining for this phase:** operational soak — accrue a real corpus at **runtime** with `[optimize] enabled = true` and review proposals in propose mode (the wiring itself is no longer pending). See `docs/ARCHITECTURE.md` § Optimization-from-usage loop.
 - Core ML auxiliary models: wake-word, VAD, and embeddings exported to Core ML so Core ML may schedule them onto the Neural Engine, freeing the GPU for MLX. Replaces the RMS-gate VAD with a learned one. (ANE probe groundwork landed in Phase 1.5; what remains here is model selection and export.)
 
 ## Phase 3 — Agent constellation (the "council") 🟡 framework v1 shipped
 
-**Shipped (framework v1):** the constellation *experience* runs on the existing engine — 27 named agents as **profiles on one 4B LLM + Kokoro TTS**, orchestrated by Jarvis-Prime, with the central core changing color per active agent. Delivered:
+**Shipped (framework v1):** the constellation *experience* runs on the existing engine — 27 named agents as **profiles on one 4B LLM + Kokoro TTS**, orchestrated by Darwin-Prime, with the central core changing color per active agent. Delivered:
 
 - **Roster + registry** — `config/agents.toml` (27 `[[agent]]`: name, role, voice, hue, persona_file, tools, namespace) → typed `AgentRegistry` (`daemon/src/agents.rs`, serde + `deny_unknown_fields`, validated, canonical-roster fallback). 27 persona files (`inference/personas/*.txt`), each ~120–180 words in role + register on the butler base, each carrying an `INTRO:` self-introduction line. HUD mirror in `hud/src/core/agents.ts`.
-- **Jarvis-Prime delegation** — deterministic, unit-tested rule map in `router.rs::select_agent` (intent + whole-word keyword cues → agent; unmatched → jarvis; offline conversation → hulk). Emits `agent.active{name, role, hue}`; the selected agent runs the existing converse/cloud pipeline under its own persona, voice, namespace, and allowlist.
+- **Darwin-Prime delegation** — deterministic, unit-tested rule map in `router.rs::select_agent` (intent + whole-word keyword cues → agent; unmatched → darwin; offline conversation → hulk). Emits `agent.active{name, role, hue}`; the selected agent runs the existing converse/cloud pipeline under its own persona, voice, namespace, and allowlist.
 - **Per-agent voice + persona** — the `converse` op now accepts an optional `persona` name (server maps it to `inference/personas/<name>.txt`, bypassing the base KV cache; backward-compatible) and the agent's Kokoro voice, so each agent both phrases and sounds like itself.
 - **Tool isolation** — `router.rs::enforce_tool` hands an out-of-allowlist intent to the tool's real owner (least-privilege compartmentalization; the security win). Memory recall is namespaced (`memory.rs::agent_scoped_facts`): own namespace + shared only, `meta.*` filtered.
 - **Roll-call** — "roll call / introduce the team / assemble" sequences all 27 agents speaking their `INTRO:` in their own voice, emitting `agent.active` per agent so the HUD highlight + core color cycle; interruptible.
@@ -75,10 +75,10 @@ The HUD from `docs/HUD.md` is real: a Tauri 2 + Vite + React + TypeScript + Reac
 
 The original plan (still the reference for the per-agent build order below):
 
-A roster of specialist sub-agents under JARVIS as **Prime Orchestrator**. NOT 27 separate
+A roster of specialist sub-agents under DARWIN as **Prime Orchestrator**. NOT 27 separate
 processes/models (16 GB cannot hold them) — ONE shared inference engine with a per-agent
 **profile**: persona prompt, allowed-intent set, tool/actuator allowlist, memory namespace
-(`agent.<name>.*` facts + a shared pool JARVIS sees), model tier, and data scope (local-only
+(`agent.<name>.*` facts + a shared pool DARWIN sees), model tier, and data scope (local-only
 vs cloud vs internet). The existing router becomes the orchestrator: classify intent → select
 agent → run the existing converse/cloud pipeline under that agent's profile. The security win
 is **compartmentalization** — each agent runs least-privilege with scoped tools and memory
@@ -87,7 +87,7 @@ its lane. That isolation, not the renaming, is what hardens the system.
 
 | Agent | Domain | Notes / scope |
 |---|---|---|
-| **Jarvis** | Prime Orchestrator | The existing router + delegation layer; owns hand-off, conflict resolution, the shared memory pool. |
+| **Darwin** | Prime Orchestrator | The existing router + delegation layer; owns hand-off, conflict resolution, the shared memory pool. |
 | **Friday** | Daily Intel | Morning brief, calendar, news digest, day plan. Builds on the proactive layer + Global-Scan. |
 | **Veronica** | Content + Comms | Drafting messages, posts, emails, replies. Cloud-heavy (Opus). |
 | **Vision** | Research + OSINT | Deep web research; OSINT **scoped to the user's own footprint / authorized targets only**. Internet + cloud. |

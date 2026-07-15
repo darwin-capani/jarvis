@@ -101,7 +101,7 @@ function IndexStatusRow({
         <div className="docsearch-empty dim-note">
           No files are indexed yet. On-device file search ships OFF — enable{" "}
           <code>[docsearch].enabled</code> and add a folder under{" "}
-          <code>[docsearch].roots</code> in jarvis.toml (it indexes only the
+          <code>[docsearch].roots</code> in darwin.toml (it indexes only the
           folders you allowlist, never your whole disk), then say{" "}
           <b>&ldquo;index my documents&rdquo;</b>.
         </div>
@@ -137,8 +137,8 @@ function IndexStatusRow({
             className={`docsearch-pill ${pdfJail ? "jailed" : "unjailed"}`}
             title={
               pdfJail
-                ? "PDF text extraction runs in the memory-jailed pdfjail subprocess — a decompression bomb aborts the short-lived helper child, never jarvisd"
-                : "the pdfjail helper binary is missing next to jarvisd, so PDF extraction is on the weaker in-process guard (known filter-chain / parse-time bomb residuals) — rebuild the daemon (cargo build --release) or reinstall to restore the jail"
+                ? "PDF text extraction runs in the memory-jailed pdfjail subprocess — a decompression bomb aborts the short-lived helper child, never darwind"
+                : "the pdfjail helper binary is missing next to darwind, so PDF extraction is on the weaker in-process guard (known filter-chain / parse-time bomb residuals) — rebuild the daemon (cargo build --release) or reinstall to restore the jail"
             }
           >
             {pdfJail ? "PDF JAIL ARMED" : "PDF JAIL MISSING"}

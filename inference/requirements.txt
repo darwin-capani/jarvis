@@ -1,4 +1,4 @@
-# JARVIS inference layer dependencies.
+# DARWIN inference layer dependencies.
 #
 # IMPORTANT: install with python3.11 (/opt/homebrew/bin/python3.11).
 # Python 3.14 lacks prebuilt wheels for mlx and its native deps; 3.11 is the

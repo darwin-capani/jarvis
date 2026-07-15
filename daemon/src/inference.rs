@@ -60,7 +60,7 @@ pub struct Classification {
 }
 
 /// One turn of prior conversation, oldest first on the wire.
-/// Shared contract: speaker is exactly "user" or "jarvis".
+/// Shared contract: speaker is exactly "user" or "darwin".
 #[derive(Serialize)]
 struct HistoryTurn<'a> {
     speaker: &'static str,
@@ -127,7 +127,7 @@ struct Request<'a> {
     /// inference/personas/<persona>.txt and uses that text as the system
     /// prefix for this one reply (per-agent voicing), falling back to its
     /// default persona when absent — so an old server simply ignores it and
-    /// every agent speaks in the base JARVIS persona. The daemon passes the
+    /// every agent speaks in the base DARWIN persona. The daemon passes the
     /// agent NAME (not the file text) so the server can KV-cache each agent's
     /// prefix; see this module's wire-contract note for what server.py must
     /// accept.
@@ -419,7 +419,7 @@ struct FactItem {
 #[derive(Serialize)]
 struct TranscriptPair<'a> {
     user: &'a str,
-    jarvis: &'a str,
+    darwin: &'a str,
 }
 
 /// One stored fact on the consolidate wire — key/value objects, unlike the
@@ -981,7 +981,7 @@ impl InferenceClient {
         })
     }
 
-    /// Context-aware generation. `history` is (user, jarvis) exchange pairs
+    /// Context-aware generation. `history` is (user, darwin) exchange pairs
     /// oldest first — each pair becomes two alternating wire turns. `facts`
     /// are pre-formatted "key: value" strings; `data` is verified handler
     /// output the model must convey without inventing numbers. All three are
@@ -1005,10 +1005,10 @@ impl InferenceClient {
     ) -> Result<String> {
         let turns: Vec<HistoryTurn> = history
             .iter()
-            .flat_map(|(user, jarvis)| {
+            .flat_map(|(user, darwin)| {
                 [
                     HistoryTurn { speaker: "user", text: user },
-                    HistoryTurn { speaker: "jarvis", text: jarvis },
+                    HistoryTurn { speaker: "darwin", text: darwin },
                 ]
             })
             .collect();
@@ -1058,7 +1058,7 @@ impl InferenceClient {
             transcripts: transcripts
                 .iter()
                 .take(40) // wire contract: at most 40 exchanges
-                .map(|(user, jarvis)| TranscriptPair { user, jarvis })
+                .map(|(user, darwin)| TranscriptPair { user, darwin })
                 .collect(),
             facts: facts
                 .iter()
@@ -1494,10 +1494,10 @@ impl InferenceClient {
     ) -> Result<ConverseDone> {
         let turns: Vec<HistoryTurn> = history
             .iter()
-            .flat_map(|(user, jarvis)| {
+            .flat_map(|(user, darwin)| {
                 [
                     HistoryTurn { speaker: "user", text: user },
-                    HistoryTurn { speaker: "jarvis", text: jarvis },
+                    HistoryTurn { speaker: "darwin", text: darwin },
                 ]
             })
             .collect();
@@ -2175,12 +2175,12 @@ mod tests {
     fn clone_voice_request_carries_sample_name_and_key_only() {
         let mut req = Request::new("c-1".to_string(), "clone_voice");
         req.path = Some("/root/state/voiceid/owner.wav".to_string());
-        req.text = Some("JARVIS cloned voice (jarvis)");
+        req.text = Some("DARWIN cloned voice (darwin)");
         req.el_key = Some("sk-secret-key");
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["op"], "clone_voice");
         assert_eq!(v["path"], "/root/state/voiceid/owner.wav");
-        assert_eq!(v["text"], "JARVIS cloned voice (jarvis)");
+        assert_eq!(v["text"], "DARWIN cloned voice (darwin)");
         assert_eq!(v["el_key"], "sk-secret-key");
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains("elevenlabs_api_key"), "the Keychain account name never rides the wire");
@@ -2272,9 +2272,9 @@ mod tests {
     fn create_pronunciation_request_carries_name_rules_and_key() {
         let rules = vec![
             PronunciationRule {
-                string_to_replace: "JARVIS".to_string(),
+                string_to_replace: "DARWIN".to_string(),
                 rule_type: "alias".to_string(),
-                alias: Some("jarviss".to_string()),
+                alias: Some("darwins".to_string()),
                 phoneme: None,
                 alphabet: None,
             },
@@ -2287,17 +2287,17 @@ mod tests {
             },
         ];
         let mut req = Request::new("cp-1".to_string(), "create_pronunciation");
-        req.name = Some("JARVIS dictionary");
+        req.name = Some("DARWIN dictionary");
         req.rules = Some(&rules);
         req.el_key = Some("sk-secret-key");
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["op"], "create_pronunciation");
-        assert_eq!(v["name"], "JARVIS dictionary");
+        assert_eq!(v["name"], "DARWIN dictionary");
         assert_eq!(v["el_key"], "sk-secret-key", "key reaches the server in the body only");
         // The rules ride as a flat list matching the EL add-from-rules contract.
-        assert_eq!(v["rules"][0]["string_to_replace"], "JARVIS");
+        assert_eq!(v["rules"][0]["string_to_replace"], "DARWIN");
         assert_eq!(v["rules"][0]["type"], "alias", "the rule discriminator serializes as `type`");
-        assert_eq!(v["rules"][0]["alias"], "jarviss");
+        assert_eq!(v["rules"][0]["alias"], "darwins");
         assert!(v["rules"][0].get("phoneme").is_none(), "an alias rule omits phoneme");
         assert_eq!(v["rules"][1]["type"], "phoneme");
         assert_eq!(v["rules"][1]["phoneme"], "ˈɛndʒɪnˌɛks");
@@ -2508,7 +2508,7 @@ mod tests {
             op: "consolidate",
             transcripts: vec![TranscriptPair {
                 user: "my name is Darwin",
-                jarvis: "Noted, sir.",
+                darwin: "Noted, sir.",
             }],
             facts: vec![FactPair {
                 key: "user.name",
@@ -2520,7 +2520,7 @@ mod tests {
             json!({
                 "id": "req-7",
                 "op": "consolidate",
-                "transcripts": [{"user": "my name is Darwin", "jarvis": "Noted, sir."}],
+                "transcripts": [{"user": "my name is Darwin", "darwin": "Noted, sir."}],
                 "facts": [{"key": "user.name", "value": "Darwin"}],
             })
         );

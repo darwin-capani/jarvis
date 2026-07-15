@@ -1,10 +1,10 @@
 #!/usr/bin/env python3.11
-"""Nexus — JARVIS micro-app: low-latency audio routing matrix + studio control.
+"""Nexus — DARWIN micro-app: low-latency audio routing matrix + studio control.
 
 The CONTROL PLANE for Project Nexus (SPEC.md §2). It runs as a separate,
-seatbelt-sandboxed process launched by jarvisd, talks to the daemon over a
+seatbelt-sandboxed process launched by darwind, talks to the daemon over a
 per-app Unix socket using newline-delimited JSON, and authenticates every line
-it SENDS with the capability token jarvisd minted for this launch.
+it SENDS with the capability token darwind minted for this launch.
 
 It does NOT do the realtime audio itself — Python cannot sit on the CoreAudio
 IOProc (SPEC §2). The realtime/DSP core is a small Rust `cdylib`
@@ -19,10 +19,10 @@ IOProc (SPEC §2). The realtime/DSP core is a small Rust `cdylib`
 
 Protocol (must match the daemon's app host — daemon/src/apps.rs, and the shipped
 global-scan/main.py CONTRACT):
-  env JARVIS_APP_SOCKET  abs path to state/ipc/apps/nexus.sock (the daemon owns
+  env DARWIN_APP_SOCKET  abs path to state/ipc/apps/nexus.sock (the daemon owns
                          and binds it; this app CONNECTS, never binds).
-  env JARVIS_APP_TOKEN   capability token to stamp on every OUTBOUND line.
-  env JARVIS_APP_NAME    this app's name (defaults to "nexus").
+  env DARWIN_APP_TOKEN   capability token to stamp on every OUTBOUND line.
+  env DARWIN_APP_NAME    this app's name (defaults to "nexus").
 
   app -> host (one JSON object per line, token-stamped):
     {"token": <env>, "type": "items", "data": {"topic", **fields}}     telemetry
@@ -705,12 +705,12 @@ def _finite(x: float) -> float | None:
 # Main run loop (sandboxed mode, driven by the host).
 # --------------------------------------------------------------------------- #
 def main() -> int:
-    sock_path = os.environ.get("JARVIS_APP_SOCKET")
-    token = os.environ.get("JARVIS_APP_TOKEN")
+    sock_path = os.environ.get("DARWIN_APP_SOCKET")
+    token = os.environ.get("DARWIN_APP_TOKEN")
     if not sock_path or not token:
         sys.stderr.write(
-            "nexus: JARVIS_APP_SOCKET and JARVIS_APP_TOKEN must be set "
-            "(this app runs under jarvisd, not standalone)\n"
+            "nexus: DARWIN_APP_SOCKET and DARWIN_APP_TOKEN must be set "
+            "(this app runs under darwind, not standalone)\n"
         )
         return 2
 

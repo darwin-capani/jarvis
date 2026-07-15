@@ -123,7 +123,7 @@ describe("onboarding step model", () => {
     expect(blob).toContain("gated");
     expect(blob).toContain("off"); // autonomy ships off
     expect(blob).toContain("keychain"); // the key is never logged/shown
-    // never overclaims that JARVIS will act for the user without the gate
+    // never overclaims that DARWIN will act for the user without the gate
     expect(blob).toContain("never");
   });
 });

@@ -393,7 +393,7 @@ pub fn derive_inverse(tool: &str, input: &Value, outcome: &str) -> Inverse {
             why: "a UI action's downstream effect is app-defined — there's no safe mechanical inverse".into(),
         },
         "connector_add" => Inverse::None {
-            why: "no connector-remove primitive exists; the connector was added inert — delete its block from jarvis.toml to undo".into(),
+            why: "no connector-remove primitive exists; the connector was added inert — delete its block from darwin.toml to undo".into(),
         },
         "skill_invoke" => Inverse::None {
             why: "a consequential skill's effects aren't mechanically reversible".into(),

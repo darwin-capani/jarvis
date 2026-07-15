@@ -1,10 +1,10 @@
 //! #35 WEBHOOK TRIGGERS — the daemon's FIRST inbound INTERNET-adjacent surface,
 //! so the most security-sensitive module in this build. An external relay (a CI
 //! system, a smart-home hub, a local tunnel) can POST a small signed event that
-//! maps to a JARVIS intent — but only under the strongest fences:
+//! maps to a DARWIN intent — but only under the strongest fences:
 //!
 //!   1. HMAC AUTH over the RAW body. Every request carries an
-//!      `X-Jarvis-Signature: sha256=<hex>` header; the receiver recomputes
+//!      `X-Darwin-Signature: sha256=<hex>` header; the receiver recomputes
 //!      `HMAC-SHA256(secret, raw_body)` and compares CONSTANT-TIME. A missing,
 //!      malformed, forged, or stale signature is REJECTED (401-equivalent) and
 //!      NEVER routes — an unauthenticated request reaches no intent at all.
@@ -56,10 +56,10 @@ pub const WEBHOOK_SECRET_ACCOUNT: &str = "webhook_hmac_secret";
 
 /// The signature header an inbound request must carry. The value is
 /// `sha256=<hex>` where `<hex>` is `HMAC-SHA256(secret, raw_body)`.
-pub const SIGNATURE_HEADER: &str = "x-jarvis-signature";
+pub const SIGNATURE_HEADER: &str = "x-darwin-signature";
 /// The event-name header. (A body `event` field is also honored as a fallback,
 /// but the header is the canonical channel.)
-pub const EVENT_HEADER: &str = "x-jarvis-event";
+pub const EVENT_HEADER: &str = "x-darwin-event";
 
 /// The decision [`handle_webhook`] reaches for one inbound request, BEFORE any
 /// side effect. PURE and exhaustively unit-tested: every reject path is distinct
@@ -113,7 +113,7 @@ fn parse_signature(header: &str) -> Option<String> {
 /// secret — the unit tests sign synthetic bodies with a fixed secret to prove
 /// the accept/reject paths without a live daemon or Keychain. Also the public
 /// signing primitive a trusted relay/signer mirrors to produce the
-/// `X-Jarvis-Signature` header (the verify side, [`verify_signature`], is the
+/// `X-Darwin-Signature` header (the verify side, [`verify_signature`], is the
 /// daemon's; this is the counterpart for documenting/exercising the contract).
 #[allow(dead_code)] // public signing primitive; exercised by the hermetic tests.
 pub fn sign_body(secret: &[u8], raw_body: &[u8]) -> String {
@@ -134,7 +134,7 @@ fn verify_signature(secret: &[u8], raw_body: &[u8], presented_hex: &str) -> bool
     mac.verify_slice(&presented).is_ok()
 }
 
-/// Resolve the event name for a request: the `X-Jarvis-Event` header wins; a
+/// Resolve the event name for a request: the `X-Darwin-Event` header wins; a
 /// top-level `event` string in the JSON body is honored as a fallback.
 fn resolve_event(event_header: Option<&str>, raw_body: &[u8]) -> Option<String> {
     if let Some(h) = event_header {

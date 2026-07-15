@@ -1,6 +1,6 @@
 # Security Policy
 
-JARVIS is an autonomous, on-device-first AI desktop environment that can act on
+DARWIN is an autonomous, on-device-first AI desktop environment that can act on
 your machine and reach the network. Security is a first-class concern, and the
 project ships **full-power by default — consequential power is ARMED**, with every
 consequential action held behind multiple independent per-action gates that stay
@@ -14,7 +14,7 @@ of them: the switch alone never executes anything.
 discussion for anything exploitable.**
 
 - Email the maintainer at **darcapalb@gmail.com** with the subject line
-  `JARVIS SECURITY`.
+  `DARWIN SECURITY`.
 - Include: a description, affected component/path, reproduction steps or a PoC,
   and the impact you observed.
 - You will get an acknowledgement; please allow time for a fix before any public
@@ -26,7 +26,7 @@ credential immediately** — do not wait for a response.
 
 ## Security posture (what protects you)
 
-JARVIS ships full-power, but the consequential surface is layered behind multiple
+DARWIN ships full-power, but the consequential surface is layered behind multiple
 independent gates that stay enforced at the runtime chokepoints — each of which must
 pass, and none of which is a default you can flip away:
 
@@ -102,4 +102,4 @@ require an attacker to have already disabled the safety gates with the owner's
 explicit consent, or issues in third-party dependencies (report those upstream,
 though a heads-up here is welcome).
 
-Thank you for helping keep JARVIS users safe.
+Thank you for helping keep DARWIN users safe.

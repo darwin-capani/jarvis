@@ -255,7 +255,7 @@ public final class CameraSource: NSObject, FrameSource, @unchecked Sendable {
     /// Capture preset; medium keeps inference cheap on the ANE/GPU.
     private let sessionPreset: AVCaptureSession.Preset
     private let session = AVCaptureSession()
-    private let sampleQueue = DispatchQueue(label: "jarvis.vision.camera.samples")
+    private let sampleQueue = DispatchQueue(label: "darwin.vision.camera.samples")
 
     /// Continuation for the live frame stream; set when `frames()` starts.
     private let stateLock = NSLock()
@@ -390,7 +390,7 @@ public final class ScreenSource: NSObject, FrameSource, @unchecked Sendable {
     /// Target capture FPS (kept modest; the pipeline throttles events anyway).
     private let fps: Int
 
-    private let sampleQueue = DispatchQueue(label: "jarvis.vision.screen.samples")
+    private let sampleQueue = DispatchQueue(label: "darwin.vision.screen.samples")
     private let stateLock = NSLock()
     private var stream: SCStream?
     private var continuation: AsyncStream<Frame>.Continuation?

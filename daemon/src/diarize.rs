@@ -249,14 +249,14 @@ mod tests {
     #[test]
     fn maps_two_speakers_into_contiguous_turns_with_timings() {
         // A synthetic Scribe-style response: speaker_0 says "hello there", speaker_1
-        // replies "hi jarvis", speaker_0 again "all good".
+        // replies "hi darwin", speaker_0 again "all good".
         let resp = ScribeResponse {
-            text: "hello there hi jarvis all good".to_string(),
+            text: "hello there hi darwin all good".to_string(),
             words: vec![
                 word("hello", Some("speaker_0"), 0.0, 0.4),
                 word("there", Some("speaker_0"), 0.5, 0.9),
                 word("hi", Some("speaker_1"), 1.2, 1.4),
-                word("jarvis", Some("speaker_1"), 1.5, 1.9),
+                word("darwin", Some("speaker_1"), 1.5, 1.9),
                 word("all", Some("speaker_0"), 2.2, 2.4),
                 word("good", Some("speaker_0"), 2.5, 2.9),
             ],
@@ -264,13 +264,13 @@ mod tests {
         let turns = diarize(&resp);
         assert_eq!(turns.len(), 3, "three contiguous turns: s0, s1, s0");
         assert_eq!(turns[0], Turn { speaker_id: "speaker_0".into(), text: "hello there".into(), start: Some(0.0), end: Some(0.9) });
-        assert_eq!(turns[1], Turn { speaker_id: "speaker_1".into(), text: "hi jarvis".into(), start: Some(1.2), end: Some(1.9) });
+        assert_eq!(turns[1], Turn { speaker_id: "speaker_1".into(), text: "hi darwin".into(), start: Some(1.2), end: Some(1.9) });
         assert_eq!(turns[2], Turn { speaker_id: "speaker_0".into(), text: "all good".into(), start: Some(2.2), end: Some(2.9) });
         assert!(is_multi_speaker(&turns), "two distinct speakers reported");
         // Rendered transcript carries the real labels.
         assert_eq!(
             render(&turns),
-            "speaker_0: hello there\nspeaker_1: hi jarvis\nspeaker_0: all good"
+            "speaker_0: hello there\nspeaker_1: hi darwin\nspeaker_0: all good"
         );
     }
 

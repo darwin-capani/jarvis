@@ -2,7 +2,7 @@
 //!
 //! Two entry points share ONE honest check engine:
 //!
-//!   * `jarvisd --selftest` — validates the installed environment WITHOUT
+//!   * `darwind --selftest` — validates the installed environment WITHOUT
 //!     starting the full daemon (no audio, no MCP connect, no model). It prints
 //!     a truthful PASS / SKIP / FAIL board and exits NON-ZERO on any hard FAIL.
 //!     Mirrors `inference/server.py --selftest`'s honesty: a check that could
@@ -104,20 +104,20 @@ pub fn filesystem_checks(root: &Path) -> Vec<Check> {
     let mut checks = Vec::new();
 
     // Root resolution: we always have a path; report which one + how it looks.
-    if root.join("config").join("jarvis.toml").exists() || root.join("state").is_dir() {
+    if root.join("config").join("darwin.toml").exists() || root.join("state").is_dir() {
         checks.push(Check::pass("root", format!("resolved to {}", root.display())));
     } else {
         checks.push(Check::fail(
             "root",
             format!(
-                "{} has neither config/jarvis.toml nor state/ — set JARVIS_ROOT or run from the install home",
+                "{} has neither config/darwin.toml nor state/ — set DARWIN_ROOT or run from the install home",
                 root.display()
             ),
         ));
     }
 
-    // config/jarvis.toml readable.
-    let config_path = root.join("config").join("jarvis.toml");
+    // config/darwin.toml readable.
+    let config_path = root.join("config").join("darwin.toml");
     match std::fs::read_to_string(&config_path) {
         Ok(s) if !s.trim().is_empty() => {
             checks.push(Check::pass("config", format!("{} readable", config_path.display())))
@@ -145,7 +145,7 @@ pub fn filesystem_checks(root: &Path) -> Vec<Check> {
     }
 
     // daemon binary.
-    let binary = root.join("daemon").join("target").join("release").join("jarvisd");
+    let binary = root.join("daemon").join("target").join("release").join("darwind");
     if is_executable(&binary) {
         checks.push(Check::pass("binary", format!("{} present", binary.display())));
     } else {
@@ -157,7 +157,7 @@ pub fn filesystem_checks(root: &Path) -> Vec<Check> {
 
     // pdfjail memory-jail helper — the sibling subprocess that extracts PDF text
     // under an RLIMIT_AS cap so a decompression bomb aborts the CHILD, never
-    // jarvisd. PASS when present; SKIP (not FAIL) when absent so a dev checkout
+    // darwind. PASS when present; SKIP (not FAIL) when absent so a dev checkout
     // reports honestly — but the daemon logs a runtime WARN and silently falls
     // back to the weaker in-process guard, so a production install should have it.
     let jail = root.join("daemon").join("target").join("release").join("pdfjail");
@@ -277,7 +277,7 @@ pub async fn telemetry_port_check(port: u16) -> Check {
         }
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => Check::skip(
             "telemetry_port",
-            format!("{addr} already in use — a jarvisd is likely already running"),
+            format!("{addr} already in use — a darwind is likely already running"),
         ),
         Err(e) => Check::fail("telemetry_port", format!("{addr} not bindable: {e}")),
     }
@@ -364,16 +364,16 @@ pub fn startup_blocking_checks(root: &Path) -> Vec<Check> {
         .collect()
 }
 
-/// Resolve the JARVIS root EXACTLY like the daemon's `resolve_root` so
+/// Resolve the DARWIN root EXACTLY like the daemon's `resolve_root` so
 /// `--selftest` targets the same tree the running daemon would. Kept here so
 /// the selftest path does not depend on main.rs internals.
 pub fn resolve_root_like_daemon() -> PathBuf {
-    if let Ok(root) = std::env::var("JARVIS_ROOT") {
+    if let Ok(root) = std::env::var("DARWIN_ROOT") {
         return PathBuf::from(root);
     }
     if let Ok(exe) = std::env::current_exe() {
         for ancestor in exe.ancestors().skip(1) {
-            if ancestor.join("config").join("jarvis.toml").exists() || ancestor.join("state").is_dir()
+            if ancestor.join("config").join("darwin.toml").exists() || ancestor.join("state").is_dir()
             {
                 return ancestor.to_path_buf();
             }
@@ -390,7 +390,7 @@ mod tests {
     use super::*;
 
     fn tmp_root(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("jarvis-selfcheck-{}-{}", tag, std::process::id()));
+        let d = std::env::temp_dir().join(format!("darwin-selfcheck-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
     }
@@ -451,7 +451,7 @@ mod tests {
     fn startup_blocking_checks_pass_on_a_well_formed_tree() {
         let root = tmp_root("good");
         std::fs::create_dir_all(root.join("config")).unwrap();
-        std::fs::write(root.join("config").join("jarvis.toml"), "[telemetry]\nport = 7177\n").unwrap();
+        std::fs::write(root.join("config").join("darwin.toml"), "[telemetry]\nport = 7177\n").unwrap();
         for sub in ["ipc", "logs", "tmp"] {
             std::fs::create_dir_all(root.join("state").join(sub)).unwrap();
         }
@@ -474,7 +474,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let root = tmp_root("loose");
         std::fs::create_dir_all(root.join("config")).unwrap();
-        std::fs::write(root.join("config").join("jarvis.toml"), "x=1\n").unwrap();
+        std::fs::write(root.join("config").join("darwin.toml"), "x=1\n").unwrap();
         for sub in ["ipc", "logs", "tmp"] {
             std::fs::create_dir_all(root.join("state").join(sub)).unwrap();
         }

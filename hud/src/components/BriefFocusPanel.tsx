@@ -13,7 +13,7 @@ import Frame from "./Frame";
  *   BRIEF — the PRIORITIZED brief items, each with its REAL source citation
  *   (the signal's origin: a calendar event id / a message id / a news source).
  *   When there is no digest (or it is honestly empty) it shows the honest-empty
- *   state — "nothing to brief; no signals; JARVIS won't pad it" — rather than a
+ *   state — "nothing to brief; no signals; DARWIN won't pad it" — rather than a
  *   fabricated item. An UNCONNECTED source contributes no signal (honestly
  *   absent), so an empty radar reads as quiet, never invented.
  *
@@ -84,7 +84,7 @@ function BriefSection({ digest }: { digest: ProactiveDigest | null }) {
         {empty ? (
           <span
             className="brief-pill empty"
-            title="no signals surfaced — JARVIS does not pad the brief with a fabricated item"
+            title="no signals surfaced — DARWIN does not pad the brief with a fabricated item"
           >
             NOTHING TO BRIEF
           </span>
@@ -100,7 +100,7 @@ function BriefSection({ digest }: { digest: ProactiveDigest | null }) {
 
       {empty ? (
         <div className="brief-empty dim-note">
-          Nothing to brief — no signals on the radar. JARVIS won&rsquo;t pad it
+          Nothing to brief — no signals on the radar. DARWIN won&rsquo;t pad it
           with an invented item; an unconnected source contributes nothing
           (honestly absent, never fabricated).
         </div>
@@ -235,7 +235,7 @@ function FocusQuieting({ focus }: { focus: FocusActive }) {
 }
 
 /** The shared honesty line — the permission-neutral contract, stated out loud so
- *  the operator knows a focus profile can only ever make JARVIS quieter. */
+ *  the operator knows a focus profile can only ever make DARWIN quieter. */
 function FocusContractNote() {
   return (
     <span>

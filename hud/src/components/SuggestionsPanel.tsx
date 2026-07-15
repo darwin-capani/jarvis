@@ -10,7 +10,7 @@ import Frame from "./Frame";
  * from the redacted, agent-scoped episodic store — never an action.
  *
  * SAFETY / HONESTY CONTRACT (do not regress):
- *   - These are SUGGESTIONS, not actions. JARVIS NEVER auto-acts on them (every
+ *   - These are SUGGESTIONS, not actions. DARWIN NEVER auto-acts on them (every
  *     card carries auto_acts=false; the panel renders no "do it now" button).
  *     They are OBSERVED-pattern based (threshold-gated), so they CAN be wrong and
  *     are always DISMISSIBLE.
@@ -64,7 +64,7 @@ export default function SuggestionsPanel({
           ))}
 
           <div className="sg-foot dim-note">
-            These are SUGGESTIONS, not actions — JARVIS never acts on them by
+            These are SUGGESTIONS, not actions — DARWIN never acts on them by
             itself. They come from patterns observed in your own past turns, so
             they can be wrong; dismiss any that miss. Accepting a habit offer does
             not create anything directly: it proposes a standing mission that still
@@ -101,7 +101,7 @@ function SuggestionCard({
         </span>
         <span className="sg-agent">{suggestion.agent}</span>
         {/* The honest never-auto-act marker, grounded in the wire field. */}
-        <span className="sg-noact" title="JARVIS never acts on a suggestion by itself">
+        <span className="sg-noact" title="DARWIN never acts on a suggestion by itself">
           NEVER AUTO-ACTS
         </span>
       </div>

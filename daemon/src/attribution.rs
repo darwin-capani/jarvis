@@ -157,7 +157,7 @@ fn format_section(title: &str, rows: &[(String, Stat)]) -> String {
 fn analyze(traces: &[Trace]) -> String {
     if traces.is_empty() {
         return "No traces recorded yet — I have no evidence to attribute capability performance. \
-                Use JARVIS for a while and this fills in."
+                Use DARWIN for a while and this fills in."
             .to_string();
     }
     let agents = tally(traces, agent_key);
@@ -449,18 +449,18 @@ mod tests {
             t("pepper", "gcal_create", Outcome::Success),
             t("pepper", "gcal_create", Outcome::Success),
             t("pepper", "", Outcome::Failed), // no tool -> skipped in tool tally
-            t("jarvis", "shell_run", Outcome::Failed),
+            t("darwin", "shell_run", Outcome::Failed),
             t("", "orphan", Outcome::Success), // no agent -> skipped in agent tally
         ];
         let agents = tally(&traces, |x| {
             let a = x.agent.trim();
             (!a.is_empty()).then(|| a.to_string())
         });
-        // pepper (3 graded) sorts before jarvis (1); the empty-agent row is skipped.
+        // pepper (3 graded) sorts before darwin (1); the empty-agent row is skipped.
         assert_eq!(agents.len(), 2);
         assert_eq!(agents[0].0, "pepper");
         assert_eq!(agents[0].1.graded(), 3);
-        assert_eq!(agents[1].0, "jarvis");
+        assert_eq!(agents[1].0, "darwin");
 
         let tools = tally(&traces, |x| {
             let k = x.tool_or_skill.trim();
@@ -479,13 +479,13 @@ mod tests {
             traces.push(t("pepper", "gcal_create", Outcome::Success));
         }
         traces.push(t("pepper", "gcal_create", Outcome::Failed));
-        // jarvis: 2 failed only -> insufficient data (2 < MIN_SAMPLE).
-        traces.push(t("jarvis", "shell_run", Outcome::Failed));
-        traces.push(t("jarvis", "shell_run", Outcome::Failed));
+        // darwin: 2 failed only -> insufficient data (2 < MIN_SAMPLE).
+        traces.push(t("darwin", "shell_run", Outcome::Failed));
+        traces.push(t("darwin", "shell_run", Outcome::Failed));
 
         let out = analyze(&traces);
         assert!(out.contains("pepper — 6 turns, 83% success [reliable]"), "got:\n{out}");
-        assert!(out.contains("jarvis — 2 turns, 0% success [insufficient data]"), "got:\n{out}");
+        assert!(out.contains("darwin — 2 turns, 0% success [insufficient data]"), "got:\n{out}");
         assert!(out.contains("gcal_create — 6 turns, 83% success [reliable]"), "got:\n{out}");
         assert!(out.contains("changed nothing"));
     }
@@ -510,9 +510,9 @@ mod tests {
         for _ in 0..5 {
             traces.push(t("karen", "gmail_send", Outcome::Failed));
         }
-        // jarvis (agent): 2 failed only -> below MIN_SAMPLE -> NOT judged.
-        traces.push(t("jarvis", "shell_run", Outcome::Failed));
-        traces.push(t("jarvis", "shell_run", Outcome::Failed));
+        // darwin (agent): 2 failed only -> below MIN_SAMPLE -> NOT judged.
+        traces.push(t("darwin", "shell_run", Outcome::Failed));
+        traces.push(t("darwin", "shell_run", Outcome::Failed));
         // vega (agent): 3 success + 2 failed -> 60% -> MIXED (well-sampled, neither).
         for _ in 0..3 {
             traces.push(t("vega", "web_search", Outcome::Success));
@@ -529,8 +529,8 @@ mod tests {
         assert_eq!(h.failing, 2);
         // vega (agent) + web_search (tool) both 60% -> 2 mixed (accounted, not dropped).
         assert_eq!(h.mixed, 2, "vega + web_search");
-        // The low-sample jarvis/shell_run is neither reliable nor failing nor flagged.
-        assert!(h.flags.iter().all(|f| f.name != "jarvis" && f.name != "shell_run"));
+        // The low-sample darwin/shell_run is neither reliable nor failing nor flagged.
+        assert!(h.flags.iter().all(|f| f.name != "darwin" && f.name != "shell_run"));
         // A failing flag carries an honest rate + count.
         let karen = h.flags.iter().find(|f| f.name == "karen").expect("karen flagged");
         assert_eq!(karen.kind, "agent");
@@ -554,19 +554,19 @@ mod tests {
         let mut traces = Vec::new();
         // base64_encode: eval-verified skill, 9 success + 1 corrected -> 90% -> candidate.
         for _ in 0..9 {
-            traces.push(t("jarvis", "base64_encode", Outcome::Success));
+            traces.push(t("darwin", "base64_encode", Outcome::Success));
         }
-        traces.push(t("jarvis", "base64_encode", Outcome::CorrectedNextTurn));
+        traces.push(t("darwin", "base64_encode", Outcome::CorrectedNextTurn));
         // rot13: eval-verified but only 60% -> reliable-ish, NOT promotion-grade.
         for _ in 0..3 {
-            traces.push(t("jarvis", "rot13", Outcome::Success));
+            traces.push(t("darwin", "rot13", Outcome::Success));
         }
         for _ in 0..2 {
-            traces.push(t("jarvis", "rot13", Outcome::Failed));
+            traces.push(t("darwin", "rot13", Outcome::Failed));
         }
         // word_count: excellent (100%) but NOT eval-verified -> excluded.
         for _ in 0..6 {
-            traces.push(t("jarvis", "word_count", Outcome::Success));
+            traces.push(t("darwin", "word_count", Outcome::Success));
         }
         let eval: HashSet<String> =
             ["base64_encode".to_string(), "rot13".to_string()].into_iter().collect();

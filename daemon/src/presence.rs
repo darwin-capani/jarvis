@@ -6,7 +6,7 @@
 //! attention signals into one honest state — **Away / Present / Focused** — that
 //! the anticipation loop uses to QUIET spoken proactivity during flow (never to
 //! enable anything: like the focus profile, this is permission-neutral — it can
-//! only make JARVIS quieter, never louder or more capable).
+//! only make DARWIN quieter, never louder or more capable).
 //!
 //! PURE + total: [`fuse`] takes an explicit [`PresenceInputs`] snapshot and
 //! thresholds and returns a [`Presence`] — no globals, no I/O — so the fusion

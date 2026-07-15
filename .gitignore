@@ -1,5 +1,5 @@
 # ============================================================================
-#  Project JARVIS — .gitignore
+#  Project DARWIN — .gitignore
 #  This repo is intended to be PUBLIC. Nothing sensitive, secret, generated,
 #  or large may be tracked. When in doubt, exclude it.
 #  Source of truth that MUST be committed: config/*.toml, daemon/src,
@@ -176,7 +176,7 @@ __pycache__/
 
 # ----------------------------------------------------------------------------
 #  Rendered / installed LaunchAgent plists.
-#  The boot/*.plist files are __JARVIS_ROOT__ TEMPLATES and ARE committed.
+#  The boot/*.plist files are __DARWIN_ROOT__ TEMPLATES and ARE committed.
 #  Anything rendered to an absolute path or staged for install is not.
 # ----------------------------------------------------------------------------
 *.rendered.plist
@@ -205,7 +205,7 @@ state/tmp/
 # ----------------------------------------------------------------------------
 build/
 out/
-*.app/               # bundled JARVIS.app etc. (built fresh by the installer)
+*.app/               # bundled DARWIN.app etc. (built fresh by the installer)
 *.dmg
 *.pkg
 *.zip

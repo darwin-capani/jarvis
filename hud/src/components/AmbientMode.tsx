@@ -19,7 +19,7 @@ export default function AmbientMode({
   feedCount: number;
 }) {
   return (
-    <div className="ambient-mode" role="status" aria-label="JARVIS at rest">
+    <div className="ambient-mode" role="status" aria-label="DARWIN at rest">
       <div className="ambient-clock">{formatTime(now)}</div>
       <div className="ambient-date">{formatDate(now)}</div>
       <div className="ambient-line dim-note">

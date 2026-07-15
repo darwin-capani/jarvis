@@ -11,7 +11,7 @@
 #
 # The proposed app was validated in a CONFINED staging copy (manifest minimal,
 # default-deny SBPL derivable, build + tests green) when it was DRAFTED.
-# DEPLOYING it for real is a privileged mutation — it makes JARVIS discover and
+# DEPLOYING it for real is a privileged mutation — it makes DARWIN discover and
 # RUN a freshly-authored app — so this script RE-VALIDATES from scratch before
 # it ever touches apps/:
 #   - verify the proposal lives strictly under state/forge/proposals/<ts>/
@@ -19,7 +19,7 @@
 #   - copy the proposed app/<name>/ into a FRESH re-validation staging dir,
 #   - RE-CHECK the manifest + permission minimization (no device perms; fs_write
 #     only to the app's own state dir; confined fs_read; capped bare-host
-#     net_hosts) by handing the manifest to `jarvisd --validate-forge-manifest`,
+#     net_hosts) by handing the manifest to `darwind --validate-forge-manifest`,
 #     which runs the SAME forge::validate_manifest gate the draft path runs over
 #     the manifest as the daemon's OWN toml parser sees it. This is deliberately
 #     NOT a textual scan: a text scan is a TOML parser-differential (it can't see
@@ -30,7 +30,7 @@
 #   - rebuild + retest the app in the staging copy (cargo check + cargo test for
 #     a Rust app, py_compile for python),
 #   - and ONLY on green move the app into apps/<name>/ so AppRegistry::discover
-#     picks it up on the next jarvisd start.
+#     picks it up on the next darwind start.
 # Any gate failure exits non-zero and leaves apps/ untouched.
 #
 # --yes skips ONLY the read -r prompt: the GUI's two-step confirm replaces the
@@ -136,7 +136,7 @@ if [ "$MODE_YES" -eq 0 ]; then
   cat "$MANIFEST"
   echo "====================================="
 
-  printf 'Deploy this forged app into %s/%s and let JARVIS discover it on next start? [y/N] ' "$APPS" "$APP_NAME"
+  printf 'Deploy this forged app into %s/%s and let DARWIN discover it on next start? [y/N] ' "$APPS" "$APP_NAME"
   read -r answer
   case "$answer" in
     y | Y | yes | YES) ;;
@@ -166,7 +166,7 @@ fi
 # (`permissions.fs_write = [...]`, `permissions.gpu = true`) or an inline table
 # (`permissions = { gpu = true }`) parses CLEAN on the daemon (which honors the
 # over-broad grants at launch) while sliding past every text check. We therefore
-# hand the manifest to `jarvisd --validate-forge-manifest`, which runs the EXACT
+# hand the manifest to `darwind --validate-forge-manifest`, which runs the EXACT
 # same forge::validate_manifest gate the draft path runs (schema +
 # deny_unknown_fields + name == dir + permission minimization + default-deny SBPL
 # derivability) over the manifest as the daemon's toml crate actually parses it.
@@ -184,21 +184,21 @@ fi
 # hard dependency below for the staging rebuild/retest, so this adds none.
 # Incremental, so a no-op when up to date.
 #
-# JARVISD_VALIDATE_BIN: an OPTIONAL override pointing at an ALREADY-BUILT jarvisd
+# DARWIND_VALIDATE_BIN: an OPTIONAL override pointing at an ALREADY-BUILT darwind
 # that implements the gate (used by the hermetic apply_forge.sh test harness,
 # which runs the script in a temp ROOT that has no daemon/ tree to build). It
 # only changes WHERE the gate binary lives, never WHAT the gate does: the very
 # next step PROVES the chosen binary actually rejects an over-broad probe before
 # any verdict is trusted, so a wrong/stale override fails closed.
-if [ -n "${JARVISD_VALIDATE_BIN:-}" ] && [ -x "${JARVISD_VALIDATE_BIN}" ]; then
-  JARVISD_BIN="$JARVISD_VALIDATE_BIN"
+if [ -n "${DARWIND_VALIDATE_BIN:-}" ] && [ -x "${DARWIND_VALIDATE_BIN}" ]; then
+  DARWIND_BIN="$DARWIND_VALIDATE_BIN"
 else
-  if ! (cd "$ROOT/daemon" && cargo build --release --bin jarvisd); then
-    fail "could not build jarvisd to run the deploy-time permission gate — apps/ NOT modified"
+  if ! (cd "$ROOT/daemon" && cargo build --release --bin darwind); then
+    fail "could not build darwind to run the deploy-time permission gate — apps/ NOT modified"
   fi
-  JARVISD_BIN="$ROOT/daemon/target/release/jarvisd"
-  if [ ! -x "$JARVISD_BIN" ]; then
-    fail "jarvisd binary missing after build; cannot run the permission gate — apps/ NOT modified"
+  DARWIND_BIN="$ROOT/daemon/target/release/darwind"
+  if [ ! -x "$DARWIND_BIN" ]; then
+    fail "darwind binary missing after build; cannot run the permission gate — apps/ NOT modified"
   fi
 fi
 
@@ -226,10 +226,10 @@ PROBE_EOF
 # a correctly-rejecting probe (a bare `VAR="$(cmd)"` assignment from a failing
 # command substitution trips `set -e` before $? can be read).
 PROBE_RC=0
-PROBE_OUT="$("$JARVISD_BIN" --validate-forge-manifest "$PROBE_MANIFEST" gateprobe 2>&1)" || PROBE_RC=$?
+PROBE_OUT="$("$DARWIND_BIN" --validate-forge-manifest "$PROBE_MANIFEST" gateprobe 2>&1)" || PROBE_RC=$?
 rm -rf "$PROBE_DIR"
 if [ "$PROBE_RC" -eq 0 ] || ! printf '%s' "$PROBE_OUT" | grep -q 'FORGE MANIFEST REJECTED'; then
-  fail "deploy-gate self-test FAILED: jarvisd did not reject an over-broad probe manifest (stale or wrong binary?) — apps/ NOT modified"
+  fail "deploy-gate self-test FAILED: darwind did not reject an over-broad probe manifest (stale or wrong binary?) — apps/ NOT modified"
 fi
 
 # Run the gate on the REAL manifest. forge::validate_manifest_file prints
@@ -237,7 +237,7 @@ fi
 # non-zero exit. It parses with the daemon's OWN toml crate, so dotted keys /
 # inline tables / multi-line arrays / deny_unknown_fields are all decided exactly
 # as the daemon would grant them.
-if ! "$JARVISD_BIN" --validate-forge-manifest "$MANIFEST" "$APP_NAME"; then
+if ! "$DARWIND_BIN" --validate-forge-manifest "$MANIFEST" "$APP_NAME"; then
   fail "manifest failed the forge permission-minimization gate (see FORGE MANIFEST REJECTED above) — apps/ NOT modified"
 fi
 
@@ -280,8 +280,8 @@ esac
 
 # ----------------------------------------------------------------- deploy
 # Green. Move the validated app into apps/<name>/. AppRegistry::discover scans
-# apps/ at startup, so the app is picked up on the next jarvisd start — it is NOT
-# started by this script (the operator restarts jarvisd, then launches the app
+# apps/ at startup, so the app is picked up on the next darwind start — it is NOT
+# started by this script (the operator restarts darwind, then launches the app
 # deliberately, e.g. by voice). Born sandboxed: the daemon generates the
 # default-deny SBPL from the manifest + mints a capability token at launch.
 stage "deploying"
@@ -292,14 +292,14 @@ mkdir -p "$APPS"
 rm -rf "$STAGING/target"
 cp -R "$STAGING" "$APPS/$APP_NAME"
 
-# Clear the pending marker so JARVIS stops announcing the proposal.
+# Clear the pending marker so DARWIN stops announcing the proposal.
 if command -v sqlite3 >/dev/null 2>&1; then
-  sqlite3 "$ROOT/state/jarvis.db" "DELETE FROM facts WHERE key = 'meta.forge_pending';" || true
+  sqlite3 "$ROOT/state/darwin.db" "DELETE FROM facts WHERE key = 'meta.forge_pending';" || true
 else
   echo "sqlite3 not found; clear the marker manually:" >&2
-  echo "  sqlite3 $ROOT/state/jarvis.db \"DELETE FROM facts WHERE key = 'meta.forge_pending';\"" >&2
+  echo "  sqlite3 $ROOT/state/darwin.db \"DELETE FROM facts WHERE key = 'meta.forge_pending';\"" >&2
 fi
 
-echo "deployed forged app to apps/$APP_NAME — restart jarvisd so AppRegistry::discover picks it up,"
+echo "deployed forged app to apps/$APP_NAME — restart darwind so AppRegistry::discover picks it up,"
 echo "then launch it deliberately (it is NOT auto-started)."
 result_ok

@@ -1,4 +1,4 @@
-//! SYSTEM ACCESS — open the macOS Privacy & Security panes JARVIS needs.
+//! SYSTEM ACCESS — open the macOS Privacy & Security panes DARWIN needs.
 //!
 //! WHAT THIS IS: two Tauri commands that take the user to the exact macOS
 //! permission switch, because macOS does NOT let any app grant itself a TCC
@@ -31,14 +31,14 @@ use tokio::process::Command;
 
 /// One allowlisted Privacy pane: the key the frontend sends, the FIXED macOS
 /// anchor we map it to, the pane's display label, and HONEST per-pane guidance
-/// for how JARVIS shows up there (some panes have a "+", others list the app
+/// for how DARWIN shows up there (some panes have a "+", others list the app
 /// only after it first uses the capability — saying "+" for the latter would be
 /// factually wrong).
 struct Pane {
     key: &'static str,
     anchor: &'static str,
     label: &'static str,
-    /// How JARVIS appears in THIS pane — accurate to the pane's real mechanism.
+    /// How DARWIN appears in THIS pane — accurate to the pane's real mechanism.
     guidance: &'static str,
 }
 
@@ -52,43 +52,43 @@ const PRIVACY_PANES: &[Pane] = &[
         key: "full_disk",
         anchor: "Privacy_AllFiles",
         label: "Full Disk Access",
-        guidance: "Click the + to add JARVIS if it isn't listed, then switch it on.",
+        guidance: "Click the + to add DARWIN if it isn't listed, then switch it on.",
     },
     Pane {
         key: "accessibility",
         anchor: "Privacy_Accessibility",
         label: "Accessibility",
-        guidance: "Switch JARVIS on — click the + to add it first if it isn't listed.",
+        guidance: "Switch DARWIN on — click the + to add it first if it isn't listed.",
     },
     Pane {
         key: "screen",
         anchor: "Privacy_ScreenCapture",
         label: "Screen & System Audio Recording",
-        guidance: "Switch JARVIS on — click the + to add it first if it isn't listed.",
+        guidance: "Switch DARWIN on — click the + to add it first if it isn't listed.",
     },
     Pane {
         key: "microphone",
         anchor: "Privacy_Microphone",
         label: "Microphone",
-        guidance: "JARVIS appears here the first time it uses the mic — switch it on then.",
+        guidance: "DARWIN appears here the first time it uses the mic — switch it on then.",
     },
     Pane {
         key: "input_monitoring",
         anchor: "Privacy_ListenEvent",
         label: "Input Monitoring",
-        guidance: "Switch JARVIS on — click the + to add it first if it isn't listed.",
+        guidance: "Switch DARWIN on — click the + to add it first if it isn't listed.",
     },
     Pane {
         key: "automation",
         anchor: "Privacy_Automation",
         label: "Automation",
-        guidance: "JARVIS appears here after it first drives another app — switch it on then.",
+        guidance: "DARWIN appears here after it first drives another app — switch it on then.",
     },
     Pane {
         key: "camera",
         anchor: "Privacy_Camera",
         label: "Camera",
-        guidance: "JARVIS appears here the first time it uses the camera — switch it on then.",
+        guidance: "DARWIN appears here the first time it uses the camera — switch it on then.",
     },
 ];
 
@@ -96,7 +96,7 @@ const PRIVACY_PANES: &[Pane] = &[
 /// all" target — plus its label and guidance.
 const PRIVACY_HUB_ANCHOR: &str = "Privacy";
 const PRIVACY_HUB_LABEL: &str = "Privacy & Security";
-const PRIVACY_HUB_GUIDANCE: &str = "Open each category and switch JARVIS on.";
+const PRIVACY_HUB_GUIDANCE: &str = "Open each category and switch DARWIN on.";
 
 /// Resolve an allowlisted pane key to its pane record. `None` for any unknown
 /// key — this is the SECURITY GATE: only a known key yields an anchor, and the
@@ -126,7 +126,7 @@ pub struct PaneOpen {
 
 /// Shell `/usr/bin/open <url>` and map the outcome. `url` is ALWAYS a
 /// backend-built string (from `pane_url` over a static anchor) — never raw
-/// caller input. `guidance` is the pane's honest "how JARVIS shows up here" line.
+/// caller input. `guidance` is the pane's honest "how DARWIN shows up here" line.
 /// Honest about failure (no GUI session) rather than pretending.
 async fn open_url(url: &str, label: &str, guidance: &str) -> Result<PaneOpen, String> {
     let output = Command::new("/usr/bin/open")
@@ -182,7 +182,7 @@ pub async fn request_all_permissions() -> Result<PaneOpen, String> {
 }
 
 /// REQUEST a permission the right way: fire the NATIVE macOS prompt from this app
-/// bundle (so the user sees a clean "JARVIS" dialog) for the permissions that have
+/// bundle (so the user sees a clean "DARWIN" dialog) for the permissions that have
 /// a request API; for the ones that do NOT (Full Disk Access, Automation) — or one
 /// macOS won't re-prompt because it was already denied — fall back to opening the
 /// exact Settings pane. The native request runs on a blocking thread (some TCC

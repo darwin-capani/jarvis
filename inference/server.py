@@ -1,5 +1,5 @@
 #!/opt/homebrew/bin/python3.11
-"""JARVIS inference server.
+"""DARWIN inference server.
 
 Asyncio Unix-domain-socket server speaking newline-delimited JSON at
 state/ipc/inference.sock per the shared contract:
@@ -52,10 +52,10 @@ state/ipc/inference.sock per the shared contract:
                set up" message. HONESTY: image generation is 100% ON-DEVICE (MLX
                diffusion) — the prompt and the generated pixels stay on the
                machine and NEVER leave the device; there is NO cloud image API.
-             "history"?: [{"speaker": "user"|"jarvis", "text": str}, ...],
+             "history"?: [{"speaker": "user"|"darwin", "text": str}, ...],
              "facts"?: [str], "data"?: str, "response"?: str,
              "opener_spoken"?: str, "texts"?: [str] (op=embed),
-             "transcripts"?: [{"user": str, "jarvis": str}, ...]}
+             "transcripts"?: [{"user": str, "darwin": str}, ...]}
              (op=consolidate reads "transcripts" (<=40, oldest first) and a
               differently-shaped "facts": [{"key": str, "value": str}, ...])
   op=clone_voice responds {"id", "ok": true, "voice_id": str} on a successful
@@ -205,7 +205,7 @@ import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = PROJECT_ROOT / "config" / "jarvis.toml"
+CONFIG_PATH = PROJECT_ROOT / "config" / "darwin.toml"
 SOCKET_PATH = PROJECT_ROOT / "state" / "ipc" / "inference.sock"
 LOG_PATH = PROJECT_ROOT / "state" / "logs" / "inference.log"
 TMP_DIR = PROJECT_ROOT / "state" / "tmp"
@@ -250,7 +250,7 @@ def load_agent_persona(name):
     _AGENT_PERSONA_CACHE[name] = text
     return text
 
-# Contract fallback defaults (used when config/jarvis.toml is missing).
+# Contract fallback defaults (used when config/darwin.toml is missing).
 DEFAULT_LLM = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
 DEFAULT_STT = "mlx-community/whisper-small-mlx"
 DEFAULT_TTS = "mlx-community/Kokoro-82M-bf16"
@@ -275,7 +275,7 @@ DEFAULT_IMAGE_MODEL = "schnell"
 # names); speculative stays HONESTLY inert (normal gen, speculative=false
 # reported) until BOTH this checkpoint is present AND mlx_lm's speculative
 # support is available. The real speedup is device/model-dependent and
-# on-device only. Kept in lockstep with config/jarvis.toml [inference].draft_model
+# on-device only. Kept in lockstep with config/darwin.toml [inference].draft_model
 # and the installer's read_model_id DEFAULT_DRAFT.
 DEFAULT_DRAFT = "mlx-community/Qwen3-0.6B-4bit"
 DEFAULT_VOICE = "bm_george"
@@ -876,7 +876,7 @@ def _multipart_body(fields, file_field, file_name, file_bytes, content_type="aud
     without the network. Returns (content_type_header, body_bytes). PURE."""
     import os as _os
 
-    boundary = "----jarvisclone" + _os.urandom(16).hex()
+    boundary = "----darwinclone" + _os.urandom(16).hex()
     crlf = b"\r\n"
     parts = []
     for name, value in fields.items():
@@ -1369,7 +1369,7 @@ def _load_mlx_diffusion():
 # Opener bank ([speech].openers fallback): short acknowledgement lines
 # synthesized to state/openers/opener-<idx>.wav at preload so the daemon can
 # play one the instant an utterance ends, before STT even starts. Must stay
-# in lockstep with [speech].openers in config/jarvis.toml.
+# in lockstep with [speech].openers in config/darwin.toml.
 DEFAULT_OPENERS = [
     "Right away, sir.",
     "Of course.",
@@ -1379,7 +1379,7 @@ DEFAULT_OPENERS = [
 ]
 
 # TTS engine registry: per-engine default HF repo and default voice (the most
-# JARVIS-suitable voice each engine offers). [speech].engine selects the
+# DARWIN-suitable voice each engine offers). [speech].engine selects the
 # engine, [speech].model overrides the repo ("" = this default). Adoption is
 # GATED: a non-kokoro engine ships as default only after measuring warm
 # RTF (= synth_seconds / audio_seconds) <= 0.5 on the target machine, a clean
@@ -1405,7 +1405,7 @@ TTS_ENGINE_DEFAULTS = {
     "orpheus": {"model": "mlx-community/orpheus-3b-0.1-ft-4bit", "voice": "leo"},
 }
 # Dedicated classify model ("" = reuse the main LLM). Must stay in lockstep
-# with [models].classifier in config/jarvis.toml. Gated: only ships non-empty
+# with [models].classifier in config/darwin.toml. Gated: only ships non-empty
 # after passing the 7-utterance accuracy eval (>=6/7, all heavy cases heavy).
 # 2026-06-12 (M1 Pro, mlx_lm 0.31.3): every small candidate FAILED the gate —
 # Qwen3-0.6B-4bit 4/7 (parrots the prompt's last few-shot example for memory
@@ -1894,7 +1894,7 @@ FADE_OUT_SAMPLES = 240
 # PRNG key instead of mlx_lm's make_sampler.
 #
 # Temp bump 0.6 -> 0.85 (persona part B): at 0.6 short turns collapsed onto a
-# couple of stock phrasings — five "Hi JARVIS" samples returned the same two
+# couple of stock phrasings — five "Hi DARWIN" samples returned the same two
 # task-acknowledgement sentences ("Right away, sir. System online. Standing
 # by."), which reads as a console, not a person. 0.85 (with top-p 0.95 holding
 # the tail in check) gives genuinely distinct greetings each call while the
@@ -1961,7 +1961,7 @@ ORPHEUS_VOICES = frozenset({"tara", "leah", "jess", "leo", "dan", "mia", "zac", 
 # "heavy" both force escalation to cloud.
 CLASSIFY_FALLBACK = {"intent": "conversation", "confidence": 0.3, "complexity": "heavy", "args": {}}
 
-log = logging.getLogger("jarvis.inference")
+log = logging.getLogger("darwin.inference")
 
 
 def setup_logging():
@@ -1977,7 +1977,7 @@ def setup_logging():
 
 
 def load_config():
-    """Read settings from config/jarvis.toml with contract defaults.
+    """Read settings from config/darwin.toml with contract defaults.
 
     Each key is validated independently: one bad value (e.g. speed = "fast")
     keeps the rest of the file applied, and the log names exactly which keys
@@ -2009,7 +2009,7 @@ def load_config():
         # an EMPTY extra warm-set + a 0 budget == today's behavior (only the
         # base [models].llm is kept warm). Multi-resident is OPT-IN and
         # RAM-bounded — see [models].local_warm / local_budget_gib / local_sizes
-        # in config/jarvis.toml. Conservative on purpose: a low-RAM Mac left at
+        # in config/darwin.toml. Conservative on purpose: a low-RAM Mac left at
         # the defaults is unaffected.
         "local_warm": [],
         "local_budget_gib": 0.0,
@@ -2234,7 +2234,7 @@ def load_classifier_template():
     except OSError:
         log.exception("could not read %s; using built-in minimal classifier prompt", PROMPT_PATH)
         return (
-            "You are the JARVIS intent classifier. Given one user utterance, "
+            "You are the DARWIN intent classifier. Given one user utterance, "
             'return ONLY a JSON object {"intent": "...", "confidence": 0.0, '
             '"complexity": "light"|"heavy", "args": {}}.\n\n'
             'Utterance: "{utterance}"\nJSON:'
@@ -2808,7 +2808,7 @@ class InferenceEngine:
         import mlx.core as mx
         from mlx_audio.tts.models.kokoro import istftnet
 
-        if getattr(istftnet.SineGen, "_jarvis_len_patch", False):
+        if getattr(istftnet.SineGen, "_darwin_len_patch", False):
             return
 
         def aligned_call(self, f0):
@@ -2828,7 +2828,7 @@ class InferenceEngine:
             return sine_waves * uv + noise, uv, noise
 
         istftnet.SineGen.__call__ = aligned_call
-        istftnet.SineGen._jarvis_len_patch = True
+        istftnet.SineGen._darwin_len_patch = True
         log.info("applied SineGen length-alignment patch (mlx-audio 0.4.4 vocoder bug)")
 
     def _ensure_tts(self):
@@ -3934,7 +3934,7 @@ class InferenceEngine:
         if transcripts:
             for turn in transcripts:
                 lines.append(f"User: {turn['user']}")
-                lines.append(f"Assistant: {turn['jarvis']}")
+                lines.append(f"Assistant: {turn['darwin']}")
         else:
             lines.append("(none)")
         lines.append("")
@@ -5049,7 +5049,7 @@ _HABIT_FILLER_WORDS = frozenset(
         "likes",
         "wants",
         "please",
-        "jarvis",
+        "darwin",
         "thing",
         "things",
         "request",
@@ -5302,11 +5302,11 @@ class InferenceServer:
             for turn in history:
                 if (
                     not isinstance(turn, dict)
-                    or turn.get("speaker") not in ("user", "jarvis")
+                    or turn.get("speaker") not in ("user", "darwin")
                     or not isinstance(turn.get("text"), str)
                 ):
                     raise ValueError(
-                        "'history' entries must be {\"speaker\": \"user\"|\"jarvis\", \"text\": str}"
+                        "'history' entries must be {\"speaker\": \"user\"|\"darwin\", \"text\": str}"
                     )
         facts = req.get("facts")
         if facts is not None:
@@ -5724,10 +5724,10 @@ class InferenceServer:
                     if (
                         not isinstance(turn, dict)
                         or not isinstance(turn.get("user"), str)
-                        or not isinstance(turn.get("jarvis"), str)
+                        or not isinstance(turn.get("darwin"), str)
                     ):
                         raise ValueError(
-                            "'transcripts' entries must be {\"user\": str, \"jarvis\": str}"
+                            "'transcripts' entries must be {\"user\": str, \"darwin\": str}"
                         )
                 # Keep the newest window if the caller over-sends (the
                 # contract caps the request at 40; transcripts arrive oldest
@@ -6232,12 +6232,12 @@ def _selftest_diarize():
     (e) spacing/audio_event tokens are skipped; (f) empty text -> no turns."""
     # (a) two speakers -> three contiguous turns (s0, s1, s0) with timings.
     resp = {
-        "text": "hello there hi jarvis all good",
+        "text": "hello there hi darwin all good",
         "words": [
             {"text": "hello", "type": "word", "speaker_id": "speaker_0", "start": 0.0, "end": 0.4},
             {"text": "there", "type": "word", "speaker_id": "speaker_0", "start": 0.5, "end": 0.9},
             {"text": "hi", "type": "word", "speaker_id": "speaker_1", "start": 1.2, "end": 1.4},
-            {"text": "jarvis", "type": "word", "speaker_id": "speaker_1", "start": 1.5, "end": 1.9},
+            {"text": "darwin", "type": "word", "speaker_id": "speaker_1", "start": 1.5, "end": 1.9},
             {"text": "all", "type": "word", "speaker_id": "speaker_0", "start": 2.2, "end": 2.4},
             {"text": "good", "type": "word", "speaker_id": "speaker_0", "start": 2.5, "end": 2.9},
         ],
@@ -6245,7 +6245,7 @@ def _selftest_diarize():
     turns = _diarize_scribe_words(resp)
     assert len(turns) == 3, turns
     assert turns[0] == {"speaker_id": "speaker_0", "text": "hello there", "start": 0.0, "end": 0.9}, turns[0]
-    assert turns[1] == {"speaker_id": "speaker_1", "text": "hi jarvis", "start": 1.2, "end": 1.9}, turns[1]
+    assert turns[1] == {"speaker_id": "speaker_1", "text": "hi darwin", "start": 1.2, "end": 1.9}, turns[1]
     assert turns[2] == {"speaker_id": "speaker_0", "text": "all good", "start": 2.2, "end": 2.9}, turns[2]
 
     # (b) single speaker -> one coalesced turn.

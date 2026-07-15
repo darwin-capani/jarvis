@@ -11,13 +11,13 @@
 //! - An actual SEND is a SEPARATE, EXPLICIT action that rides the EXISTING
 //!   consequential gate (`integrations::gate(confirm)` == Execute iff
 //!   `consequential_allowed()` && a fresh confirm) exactly like a normal
-//!   `gmail_send` / `slack_post_message`. Turning [drafts] ON only enables JARVIS
+//!   `gmail_send` / `slack_post_message`. Turning [drafts] ON only enables DARWIN
 //!   to *compose* drafts proactively; it can never cause an autonomous send.
 //! - A persisted draft NEVER carries a pre-approval. It is inert text. To send it,
 //!   the user issues the normal gated send tool with the draft's content, which
 //!   parks for a spoken yes (master ON) or only previews (master OFF, the default).
 //!
-//! HONESTY: JARVIS never sends a draft on its own. A draft is the help; the human
+//! HONESTY: DARWIN never sends a draft on its own. A draft is the help; the human
 //! presses send. The module persists drafts to the SAME `meta.*` fact store the
 //! standing-mission records use (in-RAM/temp SQLite in tests), so nothing here
 //! touches a real network or a real send.
@@ -96,7 +96,7 @@ pub struct PendingDraft {
     pub body: String,
     /// ALWAYS [`STATUS_DRAFT`]. The module has no send path, so this never changes
     /// to "sent" here — proof, in the persisted shape, that a draft is never sent
-    /// by JARVIS.
+    /// by DARWIN.
     pub status: String,
     /// RFC3339 creation timestamp.
     pub created: String,
@@ -239,7 +239,7 @@ mod tests {
     impl TempDb {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "jarvis-drafts-test-{}-{}.db",
+                "darwin-drafts-test-{}-{}.db",
                 std::process::id(),
                 tag
             ));
@@ -337,7 +337,7 @@ mod tests {
         assert!(
             line.to_lowercase().contains("send it yourself")
                 && line.to_lowercase().contains("won't send"),
-            "the review line is explicit that JARVIS won't send the draft: {line}"
+            "the review line is explicit that DARWIN won't send the draft: {line}"
         );
     }
 

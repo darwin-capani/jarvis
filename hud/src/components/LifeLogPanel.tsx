@@ -8,7 +8,7 @@ import Frame from "./Frame";
  *
  * It surfaces the MOST RECENT life-log voice command and its digest:
  *   - the PERIOD (today / this week) and the REAL recorded-episode count;
- *   - the rendered DIGEST TEXT (the same honest, empty-aware line JARVIS spoke);
+ *   - the rendered DIGEST TEXT (the same honest, empty-aware line DARWIN spoke);
  *   - the bounded, ALREADY-REDACTED salient THEMES and distinct TOPICS; and
  *   - a bounded sample of the most-recent already-redacted SUMMARIES.
  *
@@ -53,7 +53,7 @@ export default function LifeLogPanel({ digest }: { digest: LifeLogDigest | null 
             </span>
           </div>
 
-          {/* The rendered digest line — the same honest, empty-aware text JARVIS
+          {/* The rendered digest line — the same honest, empty-aware text DARWIN
               spoke. */}
           {digest.digestText.length > 0 && (
             <div className="lifelog-digest-text">{digest.digestText}</div>
@@ -61,7 +61,7 @@ export default function LifeLogPanel({ digest }: { digest: LifeLogDigest | null 
 
           {digest.empty ? (
             <div className="lifelog-empty dim-note">
-              Nothing logged for {digest.period}. JARVIS will not invent an event
+              Nothing logged for {digest.period}. DARWIN will not invent an event
               to fill the gap — an empty window stays empty.
             </div>
           ) : (

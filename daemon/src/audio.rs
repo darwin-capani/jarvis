@@ -18,11 +18,11 @@ const FRAME_MS: u64 = 30;
 /// fan, the TV) must not grow the buffer without bound (~11.5 MB/min at
 /// 48kHz) or produce WAVs too long to transcribe inside the request timeout.
 const MAX_SEGMENT_SECS: usize = 30;
-/// Echo-settle window measured from the moment JARVIS goes QUIET after a barge
+/// Echo-settle window measured from the moment DARWIN goes QUIET after a barge
 /// — i.e. from when `is_speaking()` drops, which itself already trails the last
 /// audio by the reply loop's MUTE_TAIL. Room echo + the speaker's draining audio
 /// linger a little past that, so the capture gate stays shut for this ADDITIONAL
-/// margin before feeding the VAD — JARVIS's own tail can never be segmented into
+/// margin before feeding the VAD — DARWIN's own tail can never be segmented into
 /// an utterance, transcribed, and re-routed (the echo-feedback / triple-open
 /// bug). This is ON TOP of MUTE_TAIL (the clock starts where MUTE_TAIL ends), so
 /// the total post-audio cushion is MUTE_TAIL + this. Acoustic length is
@@ -122,18 +122,18 @@ fn capture_loop(root: PathBuf, cfg: Arc<Config>, tx: UnboundedSender<Event>) -> 
     // barge_in_rms can be set from real data instead of guessed.
     let mut last_barge_log = Instant::now();
     // Echo-safety state machine (RC-1): set the moment a barge fires; capture
-    // stays gated shut until JARVIS is no longer speaking AND BARGE_SETTLE_MS
-    // has elapsed since this instant, so the gate can never feed JARVIS's own
+    // stays gated shut until DARWIN is no longer speaking AND BARGE_SETTLE_MS
+    // has elapsed since this instant, so the gate can never feed DARWIN's own
     // draining audio / room echo into the VAD. None when no barge is pending.
     let mut barge_armed_at: Option<Instant> = None;
-    // A barge fired but JARVIS is still speaking: the echo-settle clock
+    // A barge fired but DARWIN is still speaking: the echo-settle clock
     // (barge_armed_at) is started only once he goes quiet, so the settle is
     // measured from quiet-onset, not the barge instant (which falls during
     // speech and would give ~zero real post-speech cushion).
     let mut barge_pending = false;
     let settle = Duration::from_millis(BARGE_SETTLE_MS);
     // #34 WHISPER AUTO-ENGAGE energy series. A SMALL ring of recent per-chunk mono
-    // RMS values over genuine user-capture windows (never JARVIS's echo). The PURE
+    // RMS values over genuine user-capture windows (never DARWIN's echo). The PURE
     // `prosody::apply_auto_engage_global` heuristic reads it behind BOTH
     // [voice].whisper && [voice].whisper_auto; with EITHER off (the shipped default)
     // the call is a no-op and we never even build the series, so capture is
@@ -162,7 +162,7 @@ fn capture_loop(root: PathBuf, cfg: Arc<Config>, tx: UnboundedSender<Event>) -> 
         }
         // Live mic level for the HUD waveform, rate-limited to one event per
         // LEVEL_INTERVAL. Emitted BEFORE the speaking gate on purpose: while
-        // JARVIS talks the mic still hears the room (mostly JARVIS itself)
+        // DARWIN talks the mic still hears the room (mostly DARWIN itself)
         // and the HUD waveform must stay alive, flagged speaking=true.
         if let Some(rms) = meter.push_frames(&chunk, channels, Instant::now()) {
             telemetry::emit(
@@ -172,15 +172,15 @@ fn capture_loop(root: PathBuf, cfg: Arc<Config>, tx: UnboundedSender<Event>) -> 
             );
         }
         // Capture gate (RC-1 — the echo-safety invariant). The decision is NOT
-        // "is a barge requested": that is what let JARVIS hear himself (the
+        // "is a barge requested": that is what let DARWIN hear himself (the
         // gate reopened while is_speaking() was still true through MUTE_TAIL,
         // so his draining audio + echo was segmented, transcribed and
         // re-routed — the triple-open / "glitching" bug). The rule now:
         //
-        //   * While JARVIS is speaking: ALWAYS drop + reset. No exception for a
+        //   * While DARWIN is speaking: ALWAYS drop + reset. No exception for a
         //     pending barge — BARGE_IN only means "stop synthesizing the rest
         //     of THIS reply", never "start capturing".
-        //   * After a barge, once JARVIS has gone quiet: keep dropping until the
+        //   * After a barge, once DARWIN has gone quiet: keep dropping until the
         //     echo-settle window has elapsed, THEN arm capture (reset the VAD so
         //     the user's real utterance starts from a clean onset).
         //   * No barge, not speaking: capture normally.
@@ -189,7 +189,7 @@ fn capture_loop(root: PathBuf, cfg: Arc<Config>, tx: UnboundedSender<Event>) -> 
             let rms = chunk_rms(&chunk, channels);
             let frames = chunk.len() / channels.max(1);
             // Tuning aid: when the mic rises above the silence floor WHILE
-            // JARVIS speaks (his echo, or you talking over him), log the level
+            // DARWIN speaks (his echo, or you talking over him), log the level
             // at most ~2x/sec. Talk over him and read the peak here, then set
             // barge_in_rms to just under it.
             let now = Instant::now();
@@ -203,18 +203,18 @@ fn capture_loop(root: PathBuf, cfg: Arc<Config>, tx: UnboundedSender<Event>) -> 
                     "barge: mic level during playback (set barge_in_rms just under your interruption level)"
                 );
             }
-            // Track JARVIS's echo level so the detector's threshold stays
+            // Track DARWIN's echo level so the detector's threshold stays
             // adaptive (RC-8): every dropped frame feeds the rolling baseline.
             barge.observe_baseline(rms);
             // Only run the detector while no barge is already pending — once one
             // has fired, the reply is already being cut and re-firing is moot.
             if !crate::speech::barge_in_requested() && barge.observe(rms, frames) {
-                info!(rms, "barge-in: user spoke over JARVIS; cutting the reply");
+                info!(rms, "barge-in: user spoke over DARWIN; cutting the reply");
                 telemetry::emit("audio", "barge_in", json!({"rms": round4(rms as f64)}));
                 crate::speech::request_barge_in();
                 barge.reset();
                 // Mark the barge pending; the echo-settle clock starts only once
-                // JARVIS goes quiet (below), so capture resumes AFTER he stops
+                // DARWIN goes quiet (below), so capture resumes AFTER he stops
                 // AND the echo tail clears — never on his own draining audio.
                 barge_pending = true;
             }
@@ -224,7 +224,7 @@ fn capture_loop(root: PathBuf, cfg: Arc<Config>, tx: UnboundedSender<Event>) -> 
             continue;
         }
 
-        // Not speaking. If a barge is pending (it fired while JARVIS was still
+        // Not speaking. If a barge is pending (it fired while DARWIN was still
         // talking), START the echo-settle clock NOW — this first quiet chunk —
         // so the settle is measured from when he actually went quiet, not from
         // the barge instant (which fell during speech and gave ~zero cushion).
@@ -694,7 +694,7 @@ impl Vad {
         self.counter
     }
 
-    /// Discard any in-progress capture state (used while JARVIS speaks).
+    /// Discard any in-progress capture state (used while DARWIN speaks).
     fn reset(&mut self) {
         self.frame.clear();
         self.pending.clear();
@@ -708,7 +708,7 @@ impl Vad {
 /// The capture gate's verdict for one mic chunk.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Gate {
-    /// Discard the chunk (and reset the VAD): JARVIS is speaking, or his echo
+    /// Discard the chunk (and reset the VAD): DARWIN is speaking, or his echo
     /// has not yet settled after a barge.
     Drop,
     /// Feed the chunk to the VAD: a genuine user-capture window.
@@ -718,11 +718,11 @@ enum Gate {
 /// PURE capture-gate decision (RC-1), factored out of the realtime loop so the
 /// echo-safety invariant is unit-testable without a mic.
 ///
-/// The ONLY way to reach `Capture` is: JARVIS is NOT speaking, AND either no
+/// The ONLY way to reach `Capture` is: DARWIN is NOT speaking, AND either no
 /// barge is pending, OR a barge fired and the echo-settle window has fully
 /// elapsed since it armed. A barge alone NEVER opens the gate — that was the
 /// echo-feedback bug (the gate reopened while is_speaking() was still true
-/// through the reply's MUTE_TAIL, so JARVIS's own draining audio + room echo
+/// through the reply's MUTE_TAIL, so DARWIN's own draining audio + room echo
 /// was captured, transcribed, and re-routed, re-running the action).
 ///
 /// `since_barge` is `None` when no barge is pending, else the time elapsed
@@ -769,14 +769,14 @@ fn chunk_rms(chunk: &[f32], channels: usize) -> f32 {
     }
 }
 
-/// Watches the mic DURING JARVIS's playback for the user barging in. Fires once
+/// Watches the mic DURING DARWIN's playback for the user barging in. Fires once
 /// the ACCUMULATED loud time (above the effective threshold) reaches
-/// `dwell_samples`. Two echo-safety guards (RC-8) keep JARVIS's OWN voice from
+/// `dwell_samples`. Two echo-safety guards (RC-8) keep DARWIN's OWN voice from
 /// tripping it, since his echo through the speakers has syllable gaps shorter
 /// than the dip-tolerance window and would otherwise slowly integrate to dwell:
 ///
 ///   1. ADAPTIVE THRESHOLD. While dropped frames stream by, the detector tracks
-///      a rolling baseline of the mic RMS it sees (JARVIS's echo level) and
+///      a rolling baseline of the mic RMS it sees (DARWIN's echo level) and
 ///      requires barge frames to exceed `baseline + margin`, not just the fixed
 ///      configured floor — so a louder-than-expected reply cannot creep over a
 ///      static threshold. The effective threshold is `max(configured, baseline
@@ -785,7 +785,7 @@ fn chunk_rms(chunk: &[f32], channels: usize) -> f32 {
 ///      un-bridged run of `arm_samples` over-threshold audio. Steady-state echo
 ///      (loud/quiet/loud at syllable cadence) never produces that contiguous
 ///      burst, so it can never reach the dip-tolerant accumulation phase. A real
-///      interruption — a person actually talking over JARVIS — clears the short
+///      interruption — a person actually talking over DARWIN — clears the short
 ///      arming burst easily, after which the original late-fire-fixing dip
 ///      tolerance applies unchanged.
 ///
@@ -797,7 +797,7 @@ struct BargeDetector {
     dwell_samples: usize,
     quiet_reset_samples: usize,
     arm_samples: usize,
-    /// Rolling baseline of observed echo RMS while JARVIS speaks; barge frames
+    /// Rolling baseline of observed echo RMS while DARWIN speaks; barge frames
     /// must clear `baseline + BASELINE_MARGIN` as well as the fixed threshold.
     baseline: f32,
     /// Whether the contiguous arming burst has been seen this run; until then
@@ -814,11 +814,11 @@ impl BargeDetector {
     /// accumulator. Longer than an inter-word gap, shorter than a real pause.
     const RESET_QUIET_MS: usize = 220;
     /// Contiguous over-threshold audio required to ARM dip-tolerant
-    /// accumulation. Long enough that JARVIS's syllable-gapped echo never
+    /// accumulation. Long enough that DARWIN's syllable-gapped echo never
     /// sustains it, short enough that a real interruption clears it instantly.
     const ARM_BURST_MS: usize = 120;
     /// How much a barge frame must exceed the rolling echo baseline. Keeps the
-    /// detector adaptive when JARVIS is louder than the static threshold.
+    /// detector adaptive when DARWIN is louder than the static threshold.
     const BASELINE_MARGIN: f32 = 0.02;
     /// EMA weight for the echo baseline (per chunk). Small: a slow average so a
     /// single loud transient does not yank the baseline up and self-suppress.
@@ -841,7 +841,7 @@ impl BargeDetector {
     }
 
     /// Update the rolling echo baseline with one observed RMS. Called for every
-    /// dropped frame while JARVIS speaks, so the baseline tracks his echo level.
+    /// dropped frame while DARWIN speaks, so the baseline tracks his echo level.
     fn observe_baseline(&mut self, rms: f32) {
         self.baseline += Self::BASELINE_ALPHA * (rms - self.baseline);
     }
@@ -1077,7 +1077,7 @@ mod tests {
 
     #[test]
     fn barge_detector_accumulates_loud_and_tolerates_inter_word_dips() {
-        // dwell 1000, quiet-reset 500, threshold 0.06 (above JARVIS's ~0.04
+        // dwell 1000, quiet-reset 500, threshold 0.06 (above DARWIN's ~0.04
         // echo), arm 200 (a short contiguous burst arms dip tolerance).
         let mut d = detector(true, 0.06, 1000, 500, 200);
         // Echo-level frames (below threshold) never accumulate or arm.
@@ -1099,10 +1099,10 @@ mod tests {
         assert!(!off.observe(1.0, 1_000_000));
     }
 
-    /// RC-8: JARVIS's own echo at syllable cadence (loud/quiet/loud, each gap
+    /// RC-8: DARWIN's own echo at syllable cadence (loud/quiet/loud, each gap
     /// shorter than the dip-reset but the loud runs shorter than the arming
     /// burst) must NEVER arm, so it can never integrate to a false barge — the
-    /// mechanism that fired the detector on JARVIS himself and caused the
+    /// mechanism that fired the detector on DARWIN himself and caused the
     /// echo-feedback triple-open. A sustained run DOES fire.
     #[test]
     fn barge_detector_rejects_syllable_cadence_echo_but_fires_on_a_sustained_run() {
@@ -1151,7 +1151,7 @@ mod gate_tests {
     use std::time::Duration;
 
     /// RC-1, the echo-safety invariant. The capture gate Drops every frame
-    /// while JARVIS speaks AND through the echo-settle window after a barge;
+    /// while DARWIN speaks AND through the echo-settle window after a barge;
     /// only a clean non-speaking, settled window Captures. A barge alone never
     /// opens the gate.
     #[test]
@@ -1159,13 +1159,13 @@ mod gate_tests {
         let settle = Duration::from_millis(300);
 
         // Speaking: ALWAYS Drop, regardless of barge state. This is what makes
-        // JARVIS's own draining audio impossible to re-capture.
+        // DARWIN's own draining audio impossible to re-capture.
         assert_eq!(gate_decision(true, None, settle), Gate::Drop);
         assert_eq!(gate_decision(true, Some(Duration::ZERO), settle), Gate::Drop);
         assert_eq!(
             gate_decision(true, Some(Duration::from_secs(10)), settle),
             Gate::Drop,
-            "even long after a barge, a speaking JARVIS is never captured"
+            "even long after a barge, a speaking DARWIN is never captured"
         );
 
         // Not speaking, no barge pending: a normal capture window.

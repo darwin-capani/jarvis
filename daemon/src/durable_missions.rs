@@ -299,7 +299,7 @@ mod tests {
     impl TempDb {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "jarvis-durmission-test-{}-{}.db",
+                "darwin-durmission-test-{}-{}.db",
                 std::process::id(),
                 tag
             ));

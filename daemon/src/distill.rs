@@ -612,7 +612,7 @@ mod tests {
         }
     }
     fn tempdir(tag: &str) -> TempDir {
-        let p = std::env::temp_dir().join(format!("jarvis-distill-test-{}-{tag}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("darwin-distill-test-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         TempDir(p)

@@ -78,7 +78,7 @@ pub mod whoop;
 // hub's entities/states (GET /api/states) ungated, and under the gate CONTROLS a
 // device by calling a service (POST /api/services/<domain>/<service>). Token-based
 // (base URL + long-lived token from the Keychain), not OAuth. Control goes through
-// the user's OWN Home Assistant hub — JARVIS does not speak HomeKit directly.
+// the user's OWN Home Assistant hub — DARWIN does not speak HomeKit directly.
 pub mod smarthome;
 // Plaid personal-finance client (midas, Personal Treasury) — READ-ONLY: reads the
 // user's account balances, recent transactions, and a by-category spending summary
@@ -139,7 +139,7 @@ pub type IntegrationResult<T> = std::result::Result<T, IntegrationError>;
 
 const SECURITY_BIN: &str = "/usr/bin/security";
 /// Same service namespace the HUD settings panel and anthropic.rs use.
-const KEYCHAIN_SERVICE: &str = "com.jarvis.daemon";
+const KEYCHAIN_SERVICE: &str = "com.darwin.daemon";
 /// security(1) is bounded exactly like actions.rs / anthropic.rs: 5s +
 /// kill_on_drop so a hung subprocess can never wedge the caller.
 const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -161,7 +161,7 @@ const ALLOWED_ACCOUNTS: &[&str] = &[
     "google_calendar_oauth",
     // Round-2 Google OAuth2 core (google_oauth.rs): one OAuth client + one
     // consent for Calendar/Gmail/Drive. The first two are pasted by the user in
-    // Settings; the refresh token is WRITTEN by JARVIS after consent. Access
+    // Settings; the refresh token is WRITTEN by DARWIN after consent. Access
     // tokens are NEVER persisted (memory only), so there is deliberately no
     // access-token account here. These constants live in google_oauth.rs
     // (`ACCOUNT_*`); the literals are repeated here only because the allowlist is
@@ -171,7 +171,7 @@ const ALLOWED_ACCOUNTS: &[&str] = &[
     "google_oauth_refresh_token",
     // Round-3a social OAuth2 providers (oauth2.rs): X (Twitter API v2) and
     // LinkedIn, each a confidential OAuth2 client. The client id/secret are
-    // pasted by the user in Settings; the refresh token is WRITTEN by JARVIS
+    // pasted by the user in Settings; the refresh token is WRITTEN by DARWIN
     // after consent (access tokens are NEVER persisted — memory only, so there is
     // deliberately no access-token account). These constants live in oauth2.rs
     // (`X_ACCOUNT_*` / `LINKEDIN_ACCOUNT_*`); the literals are repeated here only
@@ -189,7 +189,7 @@ const ALLOWED_ACCOUNTS: &[&str] = &[
     // two non-OAuth values on every call — a developer token (a SECRET, header
     // `developer-token`) and a customer id (in the resource path) — plus an
     // OPTIONAL login-customer-id (manager account) header; all pasted by the user
-    // in Settings. The refresh token is WRITTEN by JARVIS after consent. These
+    // in Settings. The refresh token is WRITTEN by DARWIN after consent. These
     // constants live in oauth2.rs (`GOOGLE_ADS_ACCOUNT_*`); a mirror test keeps
     // them in lockstep.
     "google_ads_client_id",
@@ -200,7 +200,7 @@ const ALLOWED_ACCOUNTS: &[&str] = &[
     "google_ads_login_customer_id",
     // Round-3b META ADS (meta_ads.rs). Meta has NO refresh token: the app
     // credentials (`meta_app_id`/`meta_app_secret`) are pasted in Settings, the
-    // ~60-day LONG-lived token (`meta_long_lived_token`) is WRITTEN by JARVIS after
+    // ~60-day LONG-lived token (`meta_long_lived_token`) is WRITTEN by DARWIN after
     // the short->long exchange (the ONLY token persisted — no refresh token, so no
     // access-token-vs-refresh distinction here), and `meta_ad_account_id` is the
     // targeted ad account. These constants live in meta_ads.rs (`META_ACCOUNT_*`);
@@ -212,7 +212,7 @@ const ALLOWED_ACCOUNTS: &[&str] = &[
     // WHOOP (oauth2.rs `WHOOP` ProviderConfig — agent "vitalis", Health &
     // Biometrics). A confidential OAuth2 client: the client id/secret are pasted
     // by the user in Settings (from their own WHOOP developer app); the refresh
-    // token is WRITTEN by JARVIS after consent (access tokens are NEVER persisted —
+    // token is WRITTEN by DARWIN after consent (access tokens are NEVER persisted —
     // memory only, so there is deliberately no access-token account). These
     // constants live in oauth2.rs (`WHOOP_ACCOUNT_*`); the literals are repeated
     // here only because the allowlist is a `&[&str]` const — a mirror test keeps
@@ -228,14 +228,14 @@ const ALLOWED_ACCOUNTS: &[&str] = &[
     // — Home Assistant long-lived tokens do not expire on a schedule. These
     // constants live in smarthome.rs (`ACCOUNT_*`); a mirror test keeps them in
     // lockstep. HONESTY: control goes through the user's OWN Home Assistant hub;
-    // JARVIS does not talk HomeKit directly (raw HomeKit is not cleanly reachable
+    // DARWIN does not talk HomeKit directly (raw HomeKit is not cleanly reachable
     // from a macOS daemon).
     "homeassistant_url",
     "homeassistant_token",
     // Plaid (plaid.rs — agent "midas", Personal Treasury). A TOKEN-based finance
     // READER, NOT OAuth: the user pastes their own Plaid app `plaid_client_id` +
     // `plaid_secret` in Settings, plus a per-institution `plaid_access_token` minted
-    // by Plaid LINK (a frontend/sandbox token-exchange step JARVIS does not
+    // by Plaid LINK (a frontend/sandbox token-exchange step DARWIN does not
     // perform). All three ride only the request BODY at call time (Plaid uses no
     // Authorization header); none is logged. There is no refresh/consent flow here.
     // These constants live in plaid.rs (`ACCOUNT_*`); a mirror test keeps them in
@@ -281,11 +281,11 @@ const ALLOWED_ACCOUNTS: &[&str] = &[
     // "work offline/local") TTS behaves exactly as today (on-device Kokoro). This
     // constant lives in `crate::voice_tier::ELEVENLABS_ACCOUNT`; a mirror test keeps
     // the allowlist + the module in lockstep. VOICE-ONLY: it synthesizes speech;
-    // JARVIS owns its own brain/router/turn-taking (no hosted Conversational Agents).
+    // DARWIN owns its own brain/router/turn-taking (no hosted Conversational Agents).
     "elevenlabs_api_key",
     // AT-REST ENCRYPTION master key (#11; crypto.rs). The 256-bit master key for
     // transparent whole-file SQLCipher encryption of the sensitive local stores.
-    // GENERATED on enable (OS CSPRNG) and WRITTEN to the Keychain by JARVIS via the
+    // GENERATED on enable (OS CSPRNG) and WRITTEN to the Keychain by DARWIN via the
     // same `security add-generic-password -U` pattern as the OAuth refresh tokens;
     // READ at startup by the existing `resolve_secret` to open the encrypted stores.
     // It is held in a zeroizing `crypto::SecretKey` and is NEVER logged / Debug /
@@ -468,7 +468,7 @@ pub fn account_is_allowlisted(account: &str) -> bool {
 
 /// Read an integration secret from the macOS Keychain by account name.
 ///
-/// Runs `security find-generic-password -s com.jarvis.daemon -a <account> -w`
+/// Runs `security find-generic-password -s com.darwin.daemon -a <account> -w`
 /// as an args-only [`Command`] (never a shell string), with a 5s timeout and
 /// kill_on_drop — the same discipline as `actions::run_command` and
 /// anthropic.rs's key lookup. Returns the trimmed, non-blank secret, or `None`
@@ -1509,13 +1509,13 @@ mod tests {
     }
 
     /// The security(1) argv is exactly the contract invocation, generalized
-    /// over the account: find-generic-password against com.jarvis.daemon with
+    /// over the account: find-generic-password against com.darwin.daemon with
     /// -w. Asserted without running security(1).
     #[test]
     fn keychain_argv_is_the_contract_invocation() {
         assert_eq!(
             keychain_query_args("github_pat"),
-            ["find-generic-password", "-s", "com.jarvis.daemon", "-a", "github_pat", "-w"]
+            ["find-generic-password", "-s", "com.darwin.daemon", "-a", "github_pat", "-w"]
         );
     }
 
@@ -1528,7 +1528,7 @@ mod tests {
         let args = keychain_write_args("github_pat");
         assert_eq!(
             args,
-            ["add-generic-password", "-U", "-s", "com.jarvis.daemon", "-a", "github_pat", "-w"]
+            ["add-generic-password", "-U", "-s", "com.darwin.daemon", "-a", "github_pat", "-w"]
         );
         // The LAST token is a bare `-w` (no value follows it in argv).
         assert_eq!(*args.last().unwrap(), "-w", "-w must be the final, valueless arg");

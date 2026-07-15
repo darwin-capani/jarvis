@@ -57,7 +57,7 @@ const API_KEY_HEADER: &str = "hibp-api-key";
 
 /// HIBP requires a descriptive User-Agent on every call; it rejects requests
 /// without one. This is NOT a secret — it identifies the calling app.
-const USER_AGENT: &str = "jarvis-aegis";
+const USER_AGENT: &str = "darwin-aegis";
 
 /// How many breach names to spell out before collapsing to "and N more".
 const LIST_PREVIEW: usize = 6;

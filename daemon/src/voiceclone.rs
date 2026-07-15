@@ -13,7 +13,7 @@
 //!     pending->confirmed machine, mirroring the cross-turn confirmation gate).
 //!   * AUTHORIZATION-BOUND — you may only clone a voice you are authorized to use
 //!     (your own). The sample must be an owner-authorized file CONFINED under the
-//!     JARVIS root ([`confine_sample`]); a path that escapes the root is rejected, so
+//!     DARWIN root ([`confine_sample`]); a path that escapes the root is rejected, so
 //!     this can never be pointed at an arbitrary recording of someone else.
 //!   * REVERSIBLE + OFF-respecting — the cloned id is stored LOCALLY
 //!     (`state/voice/cloned.json`); deleting it ("forget the clone") drops the slot.
@@ -79,7 +79,7 @@ pub fn classify_intent(utterance: &str) -> Option<CloneIntent> {
 }
 
 /// The cross-turn CONSENT state for a proposed clone. A "clone my voice" intent
-/// installs [`CloneState::Pending`] and JARVIS asks the user to confirm; uploading
+/// installs [`CloneState::Pending`] and DARWIN asks the user to confirm; uploading
 /// only happens on the NEXT turn when the user explicitly says yes. This mirrors the
 /// confirmation gate so a clone (audio leaving the device) can never fire from a
 /// single utterance, automatically, or from a misheard fragment.
@@ -152,7 +152,7 @@ pub fn is_confirmation(utterance: &str) -> bool {
     })
 }
 
-/// Confine a chosen sample path to the JARVIS root (AUTHORIZATION-BOUND): the sample
+/// Confine a chosen sample path to the DARWIN root (AUTHORIZATION-BOUND): the sample
 /// must resolve to a real file UNDER `root` (e.g. `state/voiceid/…`,
 /// `state/voice-samples/…`, or an owner file the operator placed in the tree). A
 /// path that escapes the root (absolute elsewhere, `..` traversal) is REJECTED, so a
@@ -373,7 +373,7 @@ pub fn consent_prompt(sample_display: &str) -> String {
 
 /// The display name for the cloned voice on ElevenLabs. Stable + non-secret.
 pub fn clone_display_name(agent: &str) -> String {
-    format!("JARVIS cloned voice ({agent})")
+    format!("DARWIN cloned voice ({agent})")
 }
 
 #[cfg(test)]
@@ -386,7 +386,7 @@ mod tests {
         // Clone phrasings.
         for u in [
             "clone my voice",
-            "JARVIS, clone my voice with ElevenLabs",
+            "DARWIN, clone my voice with ElevenLabs",
             "make a voice clone of me",
             "register my voice with the cloud, clone it",
         ] {
@@ -455,7 +455,7 @@ mod tests {
         // nothing has left the device.
         let pending = CloneState::Pending {
             sample: PathBuf::from("/root/state/voiceid/owner.wav"),
-            agent: "jarvis".to_string(),
+            agent: "darwin".to_string(),
         };
         assert_ne!(pending, CloneState::Idle);
     }
@@ -530,7 +530,7 @@ mod tests {
 
         // Record a confirmed clone, persist, reload.
         let mut clones = ClonedVoices::default();
-        clones.set("jarvis", "EL_CLONED_JARVIS");
+        clones.set("darwin", "EL_CLONED_DARWIN");
         save_clones(&root, &clones).expect("persist the non-secret cloned id");
         #[cfg(unix)]
         {
@@ -539,17 +539,17 @@ mod tests {
             assert_eq!(mode, 0o600, "the cloned-id store must be 0600");
         }
         let loaded = load_clones(&root);
-        assert_eq!(loaded.voices.get("jarvis").map(String::as_str), Some("EL_CLONED_JARVIS"));
+        assert_eq!(loaded.voices.get("darwin").map(String::as_str), Some("EL_CLONED_DARWIN"));
 
         // merge_into fills an UNMAPPED agent but NEVER clobbers an explicit config map.
         let mut effective: BTreeMap<String, String> = BTreeMap::new();
-        effective.insert("jarvis".to_string(), "CONFIG_JARVIS".to_string()); // operator's explicit choice
+        effective.insert("darwin".to_string(), "CONFIG_DARWIN".to_string()); // operator's explicit choice
         let mut more = loaded.clone();
         more.set("friday", "EL_CLONED_FRIDAY"); // unmapped in config
         more.merge_into(&mut effective);
         assert_eq!(
-            effective.get("jarvis").map(String::as_str),
-            Some("CONFIG_JARVIS"),
+            effective.get("darwin").map(String::as_str),
+            Some("CONFIG_DARWIN"),
             "an explicit config mapping must win over a cloned id"
         );
         assert_eq!(
@@ -560,8 +560,8 @@ mod tests {
 
         // forget drops the slot; after forget the agent has no cloned id.
         let mut f = loaded.clone();
-        assert!(f.forget("jarvis"), "forget reports a present clone");
-        assert!(!f.forget("jarvis"), "second forget reports none");
+        assert!(f.forget("darwin"), "forget reports a present clone");
+        assert!(!f.forget("darwin"), "second forget reports none");
         assert!(f.voices.is_empty());
 
         std::fs::remove_dir_all(&root).ok();
@@ -628,15 +628,15 @@ mod tests {
 
     #[test]
     fn clone_display_name_is_stable_and_secret_free() {
-        let n = clone_display_name("jarvis");
-        assert!(n.contains("jarvis"));
+        let n = clone_display_name("darwin");
+        assert!(n.contains("darwin"));
         assert!(!n.to_lowercase().contains("api_key"));
     }
 
     /// A unique, throwaway temp dir under the OS temp — no daemon, no network.
     fn tmp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "jarvis-voiceclone-{tag}-{}-{}",
+            "darwin-voiceclone-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

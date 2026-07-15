@@ -1,5 +1,5 @@
 //! Self-learning reflection: a background task that periodically asks the
-//! inference server to consolidate JARVIS's memory — merging duplicate
+//! inference server to consolidate DARWIN's memory — merging duplicate
 //! facts, preferring the newest phrasing on conflicts, and deleting facts
 //! the user later contradicted.
 //!
@@ -34,7 +34,7 @@ const TRANSCRIPT_WINDOW: usize = 40;
 const FACTS_WINDOW: usize = 200;
 /// Recent EPISODES (the orchestrator's shared tier) folded into the USER MODEL
 /// consolidation each reflection cycle. Bounded: the profile compounds from the
-/// recent past, not the whole store. The shared tier ("agent.jarvis") is read
+/// recent past, not the whole store. The shared tier ("agent.darwin") is read
 /// because the USER MODEL is the USER's, shared by every agent — and reading the
 /// shared scope keeps a specialist's private episodes out of it (isolation).
 const USER_MODEL_EPISODE_WINDOW: usize = 200;
@@ -176,11 +176,11 @@ async fn stamp(memory: &Memory, now: u64) {
 /// reflection task). NEVER fabricates: consolidate only writes entries whose
 /// signal cleared the observation threshold.
 async fn consolidate_user_model(memory: &Memory, facts: &[(String, String)]) {
-    // Read the SHARED-tier episodes only ("agent.jarvis"): the user model is the
+    // Read the SHARED-tier episodes only ("agent.darwin"): the user model is the
     // USER's, shared by every agent, and the shared scope keeps a specialist's
     // private episodes out of the profile (isolation on the way IN).
     let episodes = match memory
-        .episodes_recent("agent.jarvis", USER_MODEL_EPISODE_WINDOW)
+        .episodes_recent("agent.darwin", USER_MODEL_EPISODE_WINDOW)
         .await
     {
         Ok(eps) => eps,

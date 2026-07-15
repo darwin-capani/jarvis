@@ -35,7 +35,7 @@ export default function TccSentinelPanel({
         <div className="tcc-body">
           {!sentinel.available ? (
             <div className="tcc-note dim-note">
-              macOS is blocking the privacy database (TCC). Grant JARVIS Full Disk
+              macOS is blocking the privacy database (TCC). Grant DARWIN Full Disk
               Access in System Settings › Privacy &amp; Security to inventory app
               permissions — read-only; I never change a permission.
             </div>

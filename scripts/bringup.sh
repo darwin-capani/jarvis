@@ -1,8 +1,8 @@
 #!/bin/bash
-# bringup.sh — one-command JARVIS bring-up + read-only smoke test (WS2).
+# bringup.sh — one-command DARWIN bring-up + read-only smoke test (WS2).
 #
-# Resolves the JARVIS root EXACTLY like the daemon, starts the inference server
-# then jarvisd in the correct order (OR detects an already-running pair via the
+# Resolves the DARWIN root EXACTLY like the daemon, starts the inference server
+# then darwind in the correct order (OR detects an already-running pair via the
 # live sockets and leaves them alone), waits for readiness with BOUNDED
 # timeouts, runs ONE non-consequential token-gated `roster` IPC round-trip on
 # the command socket, asserts a healthy reply, prints a per-subsystem PASS /
@@ -23,14 +23,14 @@
 set -euo pipefail
 
 # --- resolve root EXACTLY like the daemon / boot wrappers --------------------
-# JARVIS_ROOT env wins (install + boot wrappers set it); else this script's
+# DARWIN_ROOT env wins (install + boot wrappers set it); else this script's
 # parent dir (the install_boot.sh / boot wrapper pattern).
-if [ -n "${JARVIS_ROOT:-}" ]; then
-    ROOT="$JARVIS_ROOT"
+if [ -n "${DARWIN_ROOT:-}" ]; then
+    ROOT="$DARWIN_ROOT"
 else
     ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
-export JARVIS_ROOT="$ROOT"
+export DARWIN_ROOT="$ROOT"
 
 # --- optional cinematic UI (graceful plain fallback) -------------------------
 # Reuse scripts/ui.sh styling when present; otherwise fall back to plain,
@@ -52,9 +52,9 @@ say_hr()   { if [ "$_UI" -eq 1 ]; then ui_hr; else printf -- '---\n'; fi; }
 
 # --- derived paths (the daemon's exact layout) -------------------------------
 VENV_PY="$ROOT/.venv/bin/python"
-JARVISD="$ROOT/daemon/target/release/jarvisd"
+DARWIND="$ROOT/daemon/target/release/darwind"
 SERVER_PY="$ROOT/inference/server.py"
-CONFIG="$ROOT/config/jarvis.toml"
+CONFIG="$ROOT/config/darwin.toml"
 IPC="$ROOT/state/ipc"
 INF_SOCK="$IPC/inference.sock"
 CMD_SOCK="$IPC/command.sock"
@@ -86,8 +86,8 @@ if [ -f "$ROOT/state/env.sh" ]; then
 fi
 
 # --- timeouts (bounded) ------------------------------------------------------
-INF_TIMEOUT="${JARVIS_BRINGUP_INF_TIMEOUT:-120}"   # cold model load can be slow
-DMN_TIMEOUT="${JARVIS_BRINGUP_DMN_TIMEOUT:-30}"
+INF_TIMEOUT="${DARWIN_BRINGUP_INF_TIMEOUT:-120}"   # cold model load can be slow
+DMN_TIMEOUT="${DARWIN_BRINGUP_DMN_TIMEOUT:-30}"
 POLL_INTERVAL="0.25"
 
 MODE="start"
@@ -202,7 +202,7 @@ trap teardown EXIT INT TERM
 # STAGE 0 — preflight (honest SKIP, never fake)
 # =============================================================================
 if [ "$_UI" -eq 1 ]; then ui_stage 1 4 "PREFLIGHT" 2>/dev/null || say_hr; else say_hr; fi
-printf 'JARVIS bring-up — root: %s\n' "$ROOT"
+printf 'DARWIN bring-up — root: %s\n' "$ROOT"
 
 PREFLIGHT_OK=1
 if [ -f "$CONFIG" ]; then
@@ -225,11 +225,11 @@ else
     say_skip "venv python missing: $VENV_PY — cannot start the inference server here"
 fi
 HAVE_BIN=0
-if [ -x "$JARVISD" ]; then
-    say_ok "daemon binary present: $JARVISD"
+if [ -x "$DARWIND" ]; then
+    say_ok "daemon binary present: $DARWIND"
     HAVE_BIN=1
 else
-    say_skip "daemon binary missing: $JARVISD — cargo build --release first"
+    say_skip "daemon binary missing: $DARWIND — cargo build --release first"
 fi
 HAVE_SERVER=0
 if [ -f "$SERVER_PY" ]; then
@@ -294,9 +294,9 @@ elif [ "$MODE" = "no-start" ]; then
     say_skip "daemon command channel not up and --no-start given — not starting it"
     DMN_STAGE="skip"
 elif [ "$HAVE_BIN" -eq 1 ]; then
-    say_info "starting daemon: $JARVISD"
+    say_info "starting daemon: $DARWIND"
     mkdir -p "$LOGS"
-    JARVIS_ROOT="$ROOT" "$JARVISD" >>"$DMN_LOG" 2>&1 &
+    DARWIN_ROOT="$ROOT" "$DARWIND" >>"$DMN_LOG" 2>&1 &
     STARTED_DMN_PID=$!
     say_info "daemon pid $STARTED_DMN_PID — waiting up to ${DMN_TIMEOUT}s for the command channel + token"
     # Invoked indirectly via poll_until "$@" (shellcheck can't trace it).
@@ -315,7 +315,7 @@ elif [ "$HAVE_BIN" -eq 1 ]; then
         DMN_STAGE="fail"
     fi
 else
-    say_skip "no daemon binary — cannot start jarvisd in this tree (no-daemon branch)"
+    say_skip "no daemon binary — cannot start darwind in this tree (no-daemon branch)"
     DMN_STAGE="skip"
 fi
 fi

@@ -59,7 +59,7 @@ pub const ACCOUNT_CLIENT_ID: &str = "google_oauth_client_id";
 /// clients still issue a secret; it is used only in the token POST body, never
 /// in the auth URL, never logged.
 pub const ACCOUNT_CLIENT_SECRET: &str = "google_oauth_client_secret";
-/// The long-lived *refresh token* — WRITTEN by JARVIS after consent, read back
+/// The long-lived *refresh token* — WRITTEN by DARWIN after consent, read back
 /// on every connect. Lives ONLY in the Keychain.
 pub const ACCOUNT_REFRESH_TOKEN: &str = "google_oauth_refresh_token";
 
@@ -439,7 +439,7 @@ fn percent_decode(s: &str) -> String {
 /// sees confirmation instead of a raw response. No secrets, no dynamic content.
 const CLOSE_TAB_PAGE: &str =
     "<!doctype html><html><body style=\"font-family:system-ui;text-align:center;padding:3rem\">\
-     <h2>JARVIS is connected to Google.</h2><p>You can close this tab.</p></body></html>";
+     <h2>DARWIN is connected to Google.</h2><p>You can close this tab.</p></body></html>";
 
 /// Build the full HTTP/1.1 response (status line + headers + body) for the
 /// close-tab page. Pure, so the wire shape is testable.

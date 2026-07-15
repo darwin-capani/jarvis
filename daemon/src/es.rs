@@ -22,7 +22,7 @@ use tracing::{info, warn};
 
 use crate::introspect::{ingest_security_event, SecurityEvent};
 
-/// Mirrors `jarvis_es_event` in csrc/es_shim.c (the flat C ABI).
+/// Mirrors `darwin_es_event` in csrc/es_shim.c (the flat C ABI).
 #[repr(C)]
 struct FlatEvent {
     kind: c_int,
@@ -45,12 +45,12 @@ type EsCallback = extern "C" fn(*const FlatEvent);
 // on two DIFFERENT #[link] attributes (EndpointSecurity vs bsm) as a duplicate;
 // both links are needed and its "remove one" suggestion would break linking.
 #[allow(clippy::duplicated_attributes)]
-#[link(name = "jarvis_es_shim", kind = "static", modifiers = "+whole-archive")]
+#[link(name = "darwin_es_shim", kind = "static", modifiers = "+whole-archive")]
 #[link(name = "EndpointSecurity", kind = "dylib")]
 #[link(name = "bsm", kind = "dylib")]
 extern "C" {
-    fn jarvis_es_start(cb: EsCallback) -> c_int;
-    fn jarvis_es_stop();
+    fn darwin_es_start(cb: EsCallback) -> c_int;
+    fn darwin_es_stop();
 }
 
 /// Map the flat C event kind to a `SecurityEvent`. Pure — unit-tested without the
@@ -82,7 +82,7 @@ extern "C" fn on_event(ev: *const FlatEvent) {
     if ev.subject_pid < 0 {
         return;
     }
-    // Only act on jarvisd's own children; a non-app pid is not attributed.
+    // Only act on darwind's own children; a non-app pid is not attributed.
     let Some((app, jit)) = crate::introspect::app_for_pid(ev.subject_pid as u32) else {
         return;
     };
@@ -105,7 +105,7 @@ fn cstr(p: *const c_char) -> String {
 /// an honest reason when the entitlement/root/notarization aren't present (the
 /// light introspect path is unaffected either way). Device-gated.
 pub fn start() -> Result<(), String> {
-    let rc = unsafe { jarvis_es_start(on_event) };
+    let rc = unsafe { darwin_es_start(on_event) };
     match rc {
         0 => Ok(()),
         -1 => Err("es_new_client failed — needs root + the com.apple.developer.endpoint-security.client entitlement + a notarized host".to_string()),
@@ -117,7 +117,7 @@ pub fn start() -> Result<(), String> {
 #[allow(dead_code)]
 pub fn stop() {
     // SAFETY: idempotent in the shim (guards a NULL client).
-    unsafe { jarvis_es_stop() }
+    unsafe { darwin_es_stop() }
 }
 
 /// Try to start the ES client and report the outcome honestly on telemetry + the

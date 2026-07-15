@@ -101,7 +101,7 @@ export default function App() {
   const [deckOpen, setDeckOpen] = useState(false);
 
   // CINEMATIC BOOT / WAKE REVEAL — the one-shot power-on overlay. Plays the
-  // FIRST time the telemetry link connects (JARVIS "waking"), never on later
+  // FIRST time the telemetry link connects (DARWIN "waking"), never on later
   // reconnect flaps (a ref latches it). Purely cosmetic: it gates nothing and
   // self-dismisses on a timer or any key/click.
   const [bootPlaying, setBootPlaying] = useState(false);
@@ -136,7 +136,7 @@ export default function App() {
   // launch check, and the StrictMode double-invoke in dev never double-checks.
   const launchUpdateChecked = useRef(false);
 
-  // ABOUT PANEL — the custom "About J.A.R.V.I.S." panel (replaces the macOS
+  // ABOUT PANEL — the custom "About D.A.R.W.I.N." panel (replaces the macOS
   // standard about panel so it can carry a working "Check for Updates" button +
   // the credit). `aboutOpen` is driven ONLY by the native menu event below;
   // `appVersion` is the version that event carries (the real bundle version).
@@ -366,7 +366,7 @@ export default function App() {
   }, []);
 
   // ABOUT MENU — open the custom About panel when the user picks
-  // "About J.A.R.V.I.S." from the native macOS menu. The Rust shell emits
+  // "About D.A.R.W.I.N." from the native macOS menu. The Rust shell emits
   // `menu://about` with the bundle version as payload; we stash it and open the
   // panel. No-op (no native menu) outside the Tauri shell. Unsubscribe on unmount.
   useEffect(
@@ -735,7 +735,7 @@ export default function App() {
         />
       )}
 
-      {/* ABOUT PANEL — the custom "About J.A.R.V.I.S." panel. Mounts when the
+      {/* ABOUT PANEL — the custom "About D.A.R.W.I.N." panel. Mounts when the
           native "About" menu item is picked (App listens for menu://about). It
           carries the version, a working Check-for-Updates button, and the
           credit. A real available version routes to the signed UpdateDialog. */}
@@ -757,7 +757,7 @@ export default function App() {
 
       {/* FIRST-RUN SETUP — the install gate for a freshly-downloaded app. Mounts
           ONLY when (in the Tauri shell) the backend is genuinely NOT installed
-          AND the daemon is not reachable; NEVER when JARVIS is installed +
+          AND the daemon is not reachable; NEVER when DARWIN is installed +
           running (decideShowSetup). It opens Terminal on the real install.sh and
           auto-dismisses when the daemon connects (state.connected flips true). */}
       {showSetup && <FirstRunSetup connected={state.connected} />}

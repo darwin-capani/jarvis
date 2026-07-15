@@ -769,7 +769,7 @@ mod tests {
         // A tiny cap (3), far below the 10_000 default.
         let log = AuditLog::in_memory().unwrap().with_max_entries(3);
         for i in 0..6 {
-            log.record("agent.jarvis", "open_url", &format!("t{i}"), Decision::Ask, Outcome::Parked)
+            log.record("agent.darwin", "open_url", &format!("t{i}"), Decision::Ask, Outcome::Parked)
                 .await
                 .unwrap();
         }
@@ -796,7 +796,7 @@ mod tests {
     #[tokio::test]
     async fn open_encrypted_round_trips_and_is_ciphertext_at_rest() {
         // Hermetic temp file + an EXPLICIT in-test key (no Keychain, no network).
-        let path = std::env::temp_dir().join(format!("jarvis-audit-enc-{}.db", std::process::id()));
+        let path = std::env::temp_dir().join(format!("darwin-audit-enc-{}.db", std::process::id()));
         for s in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{s}", path.display()));
         }

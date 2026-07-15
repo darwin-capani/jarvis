@@ -8,7 +8,7 @@
 //!     alert/heal, a routine confirmation, a wellness/biometric reply, a greeting/
 //!     roll-call, …), which [`ProsodyProfile`] should colour the delivery, and what
 //!     speak params does that profile produce ON THE RESOLVED BACKEND?
-//!   * #34 — is JARVIS in WHISPER (discreet) mode, and if so how does that make the
+//!   * #34 — is DARWIN in WHISPER (discreet) mode, and if so how does that make the
 //!     delivery terser + softer — WITHOUT ever silencing a safety confirmation?
 //!
 //! ## Honesty (the whole point)
@@ -561,10 +561,10 @@ mod tests {
         Backend::Kokoro { voice: "bm_george".to_string() }
     }
     fn el_v3() -> Backend {
-        Backend::ElevenLabs { voice_id: "EL_JARVIS".to_string(), model: ELEVENLABS_V3_MODEL.to_string() }
+        Backend::ElevenLabs { voice_id: "EL_DARWIN".to_string(), model: ELEVENLABS_V3_MODEL.to_string() }
     }
     fn el_flash() -> Backend {
-        Backend::ElevenLabs { voice_id: "EL_JARVIS".to_string(), model: "eleven_flash_v2_5".to_string() }
+        Backend::ElevenLabs { voice_id: "EL_DARWIN".to_string(), model: "eleven_flash_v2_5".to_string() }
     }
 
     fn cfg_prosody_on() -> Config {

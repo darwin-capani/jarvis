@@ -1,7 +1,7 @@
 //! Connector Add — the CONSEQUENTIAL "add an MCP connector" action.
 //!
 //! Adding an MCP connector is a real, persistent mutation of the user's machine
-//! posture, so it runs ONLY through the strongest gate JARVIS has: it is in
+//! posture, so it runs ONLY through the strongest gate DARWIN has: it is in
 //! `confirm::CONSEQUENTIAL_TOOLS`, so `execute_tool` PARKS it and replays it only
 //! after a fresh, cross-turn SPOKEN "yes" on the exact spec (name, transport,
 //! url/command). Nothing is written until that confirmation fires.
@@ -19,7 +19,7 @@
 //!     user separately grants agents and restarts to actually connect. "Armed by
 //!     default, gated per action" is preserved: an added-but-ungranted connector
 //!     is ON-but-inert.
-//!   * SURGICAL, ATOMIC CONFIG EDIT. jarvis.toml is a hand-authored file the
+//!   * SURGICAL, ATOMIC CONFIG EDIT. darwin.toml is a hand-authored file the
 //!     daemon otherwise never rewrites; this APPENDS one validated block to the
 //!     end (temp file + rename) and touches nothing else — no reparse-and-
 //!     reserialize that could drop the user's comments, formatting, or
@@ -46,7 +46,7 @@ use crate::config::Config;
 use crate::integrations::{gate, mcp_token_account, ActionMode};
 use crate::mcp::is_https_url;
 
-/// Process-global path to `config/jarvis.toml`, installed once at startup (the
+/// Process-global path to `config/darwin.toml`, installed once at startup (the
 /// same OnceLock pattern as the optimizer trace store) so the dispatch layer can
 /// reach the config file without threading a path through every tool signature.
 static CONFIG_PATH: OnceLock<PathBuf> = OnceLock::new();
@@ -60,7 +60,7 @@ fn config_path() -> Option<&'static PathBuf> {
     CONFIG_PATH.get()
 }
 
-/// The two MCP transports JARVIS understands.
+/// The two MCP transports DARWIN understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Transport {
     Http,
@@ -128,7 +128,7 @@ struct Spec {
 
 /// Add an MCP connector. CONSEQUENTIAL: in DryRun (the park preview, and the OFF
 /// master switch) it returns the faithful preview and writes NOTHING; in Execute
-/// (a replayed spoken "yes") it appends the validated block to jarvis.toml. A
+/// (a replayed spoken "yes") it appends the validated block to darwin.toml. A
 /// validation failure returns `Err` so the action errors out rather than parking.
 pub async fn add_connector(req: ConnectorRequest) -> Result<String> {
     let transport = Transport::parse(&req.transport)
@@ -292,7 +292,7 @@ fn preview(spec: &Spec) -> String {
         }
     };
     format!(
-        "Add the MCP connector '{name}' ({transport}: {detail}){token}? It will be written to config/jarvis.toml \
+        "Add the MCP connector '{name}' ({transport}: {detail}){token}? It will be written to config/darwin.toml \
          INERT — no agent may use it and every tool stays gated until you grant agents and restart. \
          I never handle the secret. Say yes to confirm.",
         name = spec.name,
@@ -302,7 +302,7 @@ fn preview(spec: &Spec) -> String {
 }
 
 /// The success report after the block is written. Tells the user the exact,
-/// out-of-band steps to make the connector live — the secret never touches JARVIS.
+/// out-of-band steps to make the connector live — the secret never touches DARWIN.
 fn success_report(spec: &Spec) -> String {
     let account = mcp_token_account(&spec.name).unwrap_or_else(|| format!("mcp_{}_token", spec.name));
     let token_step = if spec.uses_token {
@@ -310,16 +310,16 @@ fn success_report(spec: &Spec) -> String {
             "\n  1. Store its token in the Keychain yourself (I never see it). Run this \
              and paste the token at the prompt (so it never lands in your shell history \
              or the process list): \
-             security add-generic-password -U -s com.jarvis.daemon -a {account} -w \
+             security add-generic-password -U -s com.darwin.daemon -a {account} -w \
              (or paste it in Settings)."
         )
     } else {
         String::new()
     };
     format!(
-        "Added MCP connector '{name}' ({transport}) to config/jarvis.toml. It is INERT — no agent may use it \
+        "Added MCP connector '{name}' ({transport}) to config/darwin.toml. It is INERT — no agent may use it \
          and every tool on it stays gated. To make it live:{token_step}\n  {grant}. Grant the agents you want in \
-         that block's `agents = []`.\n  {restart}. Restart JARVIS so it connects.",
+         that block's `agents = []`.\n  {restart}. Restart DARWIN so it connects.",
         name = spec.name,
         transport = spec.transport.as_str(),
         grant = if spec.uses_token { "2" } else { "1" },
@@ -488,7 +488,7 @@ mod tests {
         assert!(r.contains("INERT"));
         assert!(r.contains("security add-generic-password"));
         assert!(r.contains("mcp_files_token"));
-        assert!(r.contains("Restart JARVIS"));
+        assert!(r.contains("Restart DARWIN"));
         // A no-token connector omits the keychain step.
         let r2 = success_report(&stdio_spec());
         assert!(!r2.contains("security add-generic-password"));

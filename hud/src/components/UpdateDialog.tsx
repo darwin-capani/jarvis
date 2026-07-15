@@ -112,7 +112,7 @@ export default function UpdateDialog({ version, onClose }: UpdateDialogProps) {
         <div className="syscfg-confirm-title">UPDATE AVAILABLE</div>
 
         <div className="kv-note">
-          <strong>JARVIS {version} is available.</strong>
+          <strong>DARWIN {version} is available.</strong>
           <div style={{ marginTop: 6 }}>
             Downloaded updates are signature-verified before installing.
           </div>
@@ -128,7 +128,7 @@ export default function UpdateDialog({ version, onClose }: UpdateDialogProps) {
         {installed && (
           <div className="syscfg-status ok" role="status">
             {needsManualRestart
-              ? "Update installed and signature-verified. Restart JARVIS to finish updating."
+              ? "Update installed and signature-verified. Restart DARWIN to finish updating."
               : state.detail}
           </div>
         )}

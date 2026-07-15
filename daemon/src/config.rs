@@ -4,7 +4,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use tracing::warn;
 
-/// Mirrors config/jarvis.toml. Every section and key falls back to the
+/// Mirrors config/darwin.toml. Every section and key falls back to the
 /// contract defaults so the daemon runs even with no config file on disk.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -27,7 +27,7 @@ pub struct Config {
     pub focus: FocusConfig,
     pub apps: AppsConfig,
     /// [introspect] — MICRO-APP INTROSPECTION (introspect.rs). `enabled` SHIPS ON
-    /// (full-power default). READ-ONLY DEFENSE: a slow sentinel over jarvisd's OWN
+    /// (full-power default). READ-ONLY DEFENSE: a slow sentinel over darwind's OWN
     /// sandboxed children that flags SBPL profile-drift (on-disk tamper) and RSS/
     /// CPU anomalies via sysinfo (same-UID, no entitlement, no ES/ptrace). It
     /// emits telemetry for the HUD/posture and takes NO action — reacting to a
@@ -40,7 +40,7 @@ pub struct Config {
     /// [drafts] — AUTO-DRAFT (#25, drafts.rs). `enabled` SHIPS ON (full-power
     /// default): proactive drafting is on. A draft is ALWAYS a reviewable PENDING
     /// suggestion — never auto-sent (the module has NO send path) — so enabling
-    /// only governs whether JARVIS composes drafts proactively, never whether one
+    /// only governs whether DARWIN composes drafts proactively, never whether one
     /// is dispatched.
     pub drafts: DraftsConfig,
     /// [missions] — DURABLE MISSIONS (#26, durable_missions.rs). `durable` SHIPS ON
@@ -63,8 +63,8 @@ pub struct Config {
     pub notebooks: NotebookConfig,
     pub lifelog: LifeLogConfig,
     pub voice: VoiceConfig,
-    /// [wake] — the CUSTOM WAKE-WORD (#32). `phrase` defaults to "jarvis" and
-    /// `enabled` SHIPS ON (full-power default) — since the phrase is "jarvis",
+    /// [wake] — the CUSTOM WAKE-WORD (#32). `phrase` defaults to "darwin" and
+    /// `enabled` SHIPS ON (full-power default) — since the phrase is "darwin",
     /// enabling preserves today's wake behavior exactly. PURE matcher in wake.rs;
     /// the always-listening loop that consults it is DEVICE-gated (mic/TCC).
     pub wake: WakeConfig,
@@ -176,7 +176,7 @@ pub struct Config {
 /// Every section and key the config knows, for unknown-key diagnostics
 /// (audit fix: a typo'd key or section used to be silently ignored with zero
 /// signal). MUST stay in lockstep with the section structs below and with
-/// config/jarvis.toml — including keys consumed only server-side.
+/// config/darwin.toml — including keys consumed only server-side.
 /// "mode" under self_heal is part of the self-heal contract
 /// ("propose"|"auto") and is listed here so adding it never reads as a typo.
 const KNOWN_KEYS: &[(&str, &[&str])] = &[
@@ -248,7 +248,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("apps", &["autostart"]),
     // [introspect] — the READ-ONLY micro-app introspection sentinel
     // (introspect.rs): SBPL profile-drift + per-app RSS/CPU anomaly surfacing.
-    // `enabled` SHIPS ON (full-power default); it only observes jarvisd's own
+    // `enabled` SHIPS ON (full-power default); it only observes darwind's own
     // children (same-UID, no entitlement) and never acts.
     ("introspect", &["enabled", "interval_secs", "startup_delay_secs", "cpu_alert_percent", "rss_growth_ratio"]),
     // [integrations] — `allow_consequential` is THE master gate for outward/
@@ -359,7 +359,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // private default + fallback). When active the TTS text leaves the device.
     // `model` is the ElevenLabs model id (default eleven_flash_v2_5). `voices` is an
     // inline per-agent map (agent name -> EL voice id); an empty/unmapped agent falls
-    // back to that agent's Kokoro voice. VOICE-ONLY: JARVIS owns its own
+    // back to that agent's Kokoro voice. VOICE-ONLY: DARWIN owns its own
     // brain/router/turn-taking — this tier is TTS, not a hosted Conversational Agents
     // platform. Listed here so neither key reads as a typo; the [voice.voices] table
     // is validated structurally by serde.
@@ -396,7 +396,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // or timing. Listed so it never reads as a typo.
     ("voice", &["cloud_tier", "cloud_stt", "model", "voices", "adaptive_prosody", "whisper", "whisper_auto", "diarize", "cloud_sfx", "cloud_music", "stream_tts", "pronunciation_dictionary_id", "pronunciation_dictionary_version", "event_cues", "mic_source"]),
     // [wake] — CUSTOM WAKE-WORD (#32, wake.rs). `enabled` SHIPS ON (full-power
-    // default): since `phrase` defaults to "jarvis", behavior is identical to today
+    // default): since `phrase` defaults to "darwin", behavior is identical to today
     // unless the phrase is changed. The always-listening loop that consults the
     // matcher is DEVICE-GATED (mic/TCC). The PURE wake_match
     // (case/punct/whitespace-insensitive + a small edit-distance tolerance; NEVER
@@ -632,7 +632,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // cheaper local Fast sub-tier + defer heavy work on low battery / serious thermal;
     // it never loosens a gate, never makes a cloud call. The live pmset/thermal read
     // is device-gated behind this flag. `low_battery_pct` is the discharge threshold
-    // below which (on battery) JARVIS prefers Fast + defers heavy work. Listed so
+    // below which (on battery) DARWIN prefers Fast + defers heavy work. Listed so
     // neither reads as a typo.
     ("power", &["adaptive", "low_battery_pct"]),
     // [report] — REPORT GENERATION (#40, report.rs). `enabled` SHIPS ON (full-power
@@ -656,14 +656,14 @@ pub struct AudioConfig {
     pub rms_threshold: f64,
     pub silence_ms: u64,
     pub min_speech_ms: u64,
-    /// Barge-in: let the user interrupt JARVIS mid-reply by speaking over him.
+    /// Barge-in: let the user interrupt DARWIN mid-reply by speaking over him.
     pub barge_in: bool,
     /// RMS the user's voice must exceed DURING playback to count as a barge-in —
-    /// set well ABOVE rms_threshold so JARVIS's own voice through the speakers
+    /// set well ABOVE rms_threshold so DARWIN's own voice through the speakers
     /// (echo) cannot trip it. Device/volume dependent; tune on the real Mac
-    /// (raise it if JARVIS cuts himself off; lower it if barge-in won't trigger).
+    /// (raise it if DARWIN cuts himself off; lower it if barge-in won't trigger).
     pub barge_in_rms: f64,
-    /// How long (ms) the user must stay above barge_in_rms before JARVIS stops —
+    /// How long (ms) the user must stay above barge_in_rms before DARWIN stops —
     /// a dwell so a cough/click/transient never cuts him off.
     pub barge_in_ms: u64,
     /// Ambient sound monitor (task #15). When ON (and macOS mic/TCC
@@ -706,7 +706,7 @@ pub struct ModelsConfig {
     pub stt: String,
     /// Dedicated small resident model for op=classify; "" = reuse the main
     /// LLM. Consumed server-side; mirrored here so the Default impl stays in
-    /// lockstep with jarvis.toml. Gated: only set after a candidate passes
+    /// lockstep with darwin.toml. Gated: only set after a candidate passes
     /// the 7-utterance accuracy eval (>=6/7, all heavy cases heavy).
     #[allow(dead_code)] // shared contract; read by the inference server
     pub classifier: String,
@@ -718,7 +718,7 @@ pub struct ModelsConfig {
     /// behavior and the safe state on a low-RAM Mac. Multi-resident is OPT-IN
     /// and RAM-BOUNDED (see `local_budget_gib`): the server admits an extra only
     /// while the running footprint estimate stays within budget, else it stays
-    /// single-resident. Mirrors [models].local_warm in jarvis.toml + server.py.
+    /// single-resident. Mirrors [models].local_warm in darwin.toml + server.py.
     pub local_warm: Vec<String>,
     /// RAM budget (GiB of unified memory) the local warm-set may occupy. 0 (the
     /// CONSERVATIVE default) or any non-positive value => SINGLE-RESIDENT: only
@@ -841,7 +841,7 @@ impl Default for CloudConfig {
 /// passes `voice`, maps opener WAV indices back to `openers` text, and paces
 /// clips with `sentence_pause_ms`; `engine` and `speed` are consumed
 /// server-side but are mirrored here so the Default impl stays in lockstep
-/// with jarvis.toml. `instant_opener` (SHIPS ON, full-power default) gates the
+/// with darwin.toml. `instant_opener` (SHIPS ON, full-power default) gates the
 /// canned instant acknowledgment: a task-ack WAV plays the instant an utterance
 /// ends while STT runs concurrently. Pure UX, no safety surface (set false for
 /// warmer, varied greetings instead).
@@ -875,7 +875,7 @@ pub struct SpeechConfig {
     /// `openers` clip the instant an utterance ends (STT runs concurrently),
     /// and passes opener_spoken to converse so the model continues from it.
     /// Pure UX feature, no safety surface. When false the converse stream IS
-    /// the whole reply (JARVIS greets/answers naturally from its first word —
+    /// the whole reply (DARWIN greets/answers naturally from its first word —
     /// some owners prefer that warmer behavior). All the opener machinery stays
     /// intact either way; this flag only decides whether it engages.
     pub instant_opener: bool,
@@ -937,7 +937,7 @@ impl Default for SpeechConfig {
 ///     An empty map or an unmapped agent falls back to that agent's Kokoro voice —
 ///     so turning the tier on with no mapping still works (every agent just keeps
 ///     its on-device voice until the operator maps it). VOICE-ONLY: this is a TTS
-///     voice layer; JARVIS owns its own brain/router/turn-taking.
+///     voice layer; DARWIN owns its own brain/router/turn-taking.
 ///   - `mic_source` (default "device"): where capture frames come FROM. "device"
 ///     (the default) is today's cpal path, byte-for-byte unchanged. "app" routes
 ///     the mic IN over a confined Unix socket (`state/ipc/audio_in.sock`, 0700 dir
@@ -1073,13 +1073,13 @@ impl Default for VoiceConfig {
             // VOICE AUDIO leaves the device.
             cloud_stt: true,
             model: "eleven_flash_v2_5".to_string(),
-            // Default per-agent ElevenLabs voice: Jarvis-Prime -> "George", an
+            // Default per-agent ElevenLabs voice: Darwin-Prime -> "George", an
             // ElevenLabs PREMADE (shared, stable) British male voice available to
             // ANY account. So once an EL key is in the Keychain the cloud voice
             // engages with NO manual voice-id mapping (the formerly-empty map was
             // the silent reason the EL tier never engaged). Other agents stay on
             // their on-device Kokoro voice until mapped here. Override to taste.
-            voices: [("jarvis".to_string(), "JBFqnCBsd6RMkjVDRZzb".to_string())]
+            voices: [("darwin".to_string(), "JBFqnCBsd6RMkjVDRZzb".to_string())]
                 .into_iter()
                 .collect(),
             // #33 SHIPS ON (full-power default). Expressiveness-only: picks a
@@ -1145,7 +1145,7 @@ impl Default for VoiceConfig {
 }
 
 /// [wake] — CUSTOM WAKE-WORD (#32, wake.rs). The configured phrase that gates "is this
-/// utterance for JARVIS". SHIPS ON (full-power default) + defaults to "jarvis" so the
+/// utterance for DARWIN". SHIPS ON (full-power default) + defaults to "darwin" so the
 /// default preserves today's activation behavior exactly; the PURE matcher is conservative
 /// (case/punct/whitespace-insensitive + a small edit-distance tolerance; never matches an
 /// empty/blank phrase; never triggers on a substring of a larger unrelated word). The
@@ -1154,9 +1154,9 @@ impl Default for VoiceConfig {
 #[serde(default)]
 pub struct WakeConfig {
     /// Master switch for custom-wake-word gating. SHIPS ON (full-power default): since the
-    /// phrase is "jarvis", behavior is identical to today unless the phrase is changed.
+    /// phrase is "darwin", behavior is identical to today unless the phrase is changed.
     pub enabled: bool,
-    /// The wake phrase that gates activation. Defaults to "jarvis" so even when `enabled`
+    /// The wake phrase that gates activation. Defaults to "darwin" so even when `enabled`
     /// is flipped on with no override, the default phrase preserves today's wake behavior.
     /// An empty/blank phrase NEVER matches (the matcher rejects it — fail-safe).
     pub phrase: String,
@@ -1165,13 +1165,13 @@ pub struct WakeConfig {
 impl Default for WakeConfig {
     fn default() -> Self {
         Self {
-            // SHIPS ON (full-power default). The phrase defaults to "jarvis", so
+            // SHIPS ON (full-power default). The phrase defaults to "darwin", so
             // enabling preserves today's wake behavior exactly (behavior is identical
             // unless the phrase is changed). The always-listening loop that consults
             // the matcher is DEVICE-GATED (needs mic/TCC consent).
             enabled: true,
             // Default phrase preserves today's behavior when the feature is turned on.
-            phrase: "jarvis".to_string(),
+            phrase: "darwin".to_string(),
         }
     }
 }
@@ -1457,7 +1457,7 @@ impl Default for OptimizeConfig {
     }
 }
 
-/// [episodic] — the EPISODIC STORE (episodic.rs): JARVIS's durable, redacted,
+/// [episodic] — the EPISODIC STORE (episodic.rs): DARWIN's durable, redacted,
 /// agent-scoped, BOUNDED memory of completed interactions, and the recall over
 /// it. The episodic store ships **ON** — it is the SAME always-on posture as the
 /// `transcripts` table and the lifelong-learning fact loop: a per-completed-turn
@@ -1775,10 +1775,10 @@ impl Default for ShellConfig {
 pub struct UiAutomationConfig {
     pub enabled: bool,
     /// OPT-IN (SHIPS OFF, default false): when true the final, already-approved
-    /// single actuation is POSTED THROUGH the HUD app (JARVIS.app) over the
+    /// single actuation is POSTED THROUGH the HUD app (DARWIN.app) over the
     /// `state/ipc/actuate.sock` Unix socket instead of by the daemon's own local
     /// CGEvent/AX post. The HUD holds the Accessibility TCC grant, so macOS shows
-    /// the clean "JARVIS would like to control this computer using accessibility"
+    /// the clean "DARWIN would like to control this computer using accessibility"
     /// prompt and attributes the grant to the user-facing app. Default FALSE keeps
     /// behavior BYTE-FOR-BYTE unchanged: the existing local CGEvent post runs. This
     /// changes ONLY WHERE the approved action is posted — every gate (the pure
@@ -1802,7 +1802,7 @@ impl Default for UiAutomationConfig {
             enabled: true,
             // SHIPS OFF: default to the existing local CGEvent post, byte-for-byte
             // unchanged. Operators opt in to route the post through the HUD app so
-            // macOS attributes the Accessibility grant to JARVIS.app.
+            // macOS attributes the Accessibility grant to DARWIN.app.
             actuate_via_app: false,
         }
     }
@@ -2102,7 +2102,7 @@ impl Default for VoiceIdConfig {
     }
 }
 
-/// [forge] — Self-Forge (forge.rs): JARVIS authoring a NEW sandboxed micro-app
+/// [forge] — Self-Forge (forge.rs): DARWIN authoring a NEW sandboxed micro-app
 /// from a goal. The SAME gated-codegen contract as [self_heal], generalized
 /// from "patch the daemon" to "author an app":
 ///
@@ -2169,7 +2169,7 @@ impl Default for TelemetryConfig {
 ///      `enabled`. With `suggest` on the anticipation tick surfaces observed-pattern
 ///      suggestion cards. The suggester is OBSERVED-pattern-based + propose-only:
 ///      even on it only SURFACES suggestions — accepting a habit offer still routes
-///      through the gated `standing_create` confirmation; JARVIS never auto-acts.
+///      through the gated `standing_create` confirmation; DARWIN never auto-acts.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ProactiveConfig {
@@ -2182,7 +2182,7 @@ pub struct ProactiveConfig {
     /// predictive suggester #14, proactive_intel.rs). SHIPS ON (full-power default),
     /// its OWN gate independent of `enabled` — on, the anticipation tick surfaces
     /// observed-pattern suggestion cards; accepting one still routes through the
-    /// gated standing_create confirmation (JARVIS never auto-acts).
+    /// gated standing_create confirmation (DARWIN never auto-acts).
     pub suggest: bool,
     /// Surface a calendar event this many minutes away (or nearer).
     pub lead_minutes: i64,
@@ -2209,7 +2209,7 @@ impl Default for ProactiveConfig {
             // SHIPS ON (full-power default). Habit-detector(#13) + predictive-
             // suggester(#14) master gate: on => surfaces observed-pattern suggestion
             // cards; accepting a habit offer still routes through the gated
-            // standing_create confirmation — JARVIS never auto-acts on a suggestion.
+            // standing_create confirmation — DARWIN never auto-acts on a suggestion.
             // Independent of `enabled` (which powers the first-contact brief).
             suggest: true,
             lead_minutes: 15,
@@ -2221,9 +2221,9 @@ impl Default for ProactiveConfig {
 }
 
 /// [focus] — FOCUS PROFILES (#24, focus.rs). A focus profile is a
-/// PERMISSION-NEUTRAL lens over JARVIS's proactive surfaces: it narrows WHICH
+/// PERMISSION-NEUTRAL lens over DARWIN's proactive surfaces: it narrows WHICH
 /// non-consequential intel reaches the user (which signal categories surface,
-/// brief verbosity, whether suggestions are quieted) and can ONLY make JARVIS
+/// brief verbosity, whether suggestions are quieted) and can ONLY make DARWIN
 /// quieter — never more permissive. By construction (focus.rs) a profile cannot
 /// loosen the master switch / confirm gate / voice-id / lockdown / policy, cannot
 /// enable a consequential action, and cannot raise autonomy.
@@ -2255,7 +2255,7 @@ impl Default for FocusConfig {
 }
 
 /// [apps] — the micro-app runtime substrate (docs/SANDBOX.md). `autostart`
-/// lists micro-app names jarvisd launches at startup; it defaults to EMPTY —
+/// lists micro-app names darwind launches at startup; it defaults to EMPTY —
 /// nothing is autostarted unless the operator opts in. Names that do not match
 /// a registered manifest are skipped with a telemetry warning at startup.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -2266,7 +2266,7 @@ pub struct AppsConfig {
 
 /// [introspect] — the READ-ONLY micro-app introspection sentinel (introspect.rs).
 /// `enabled` SHIPS ON: like `[audit]`, it is pure accountability/observability —
-/// it watches jarvisd's own sandboxed children (SBPL profile-drift + RSS/CPU
+/// it watches darwind's own sandboxed children (SBPL profile-drift + RSS/CPU
 /// anomalies) and never acts, so enabling it loosens nothing. With it false the
 /// sentinel loop is simply not spawned.
 #[derive(Debug, Clone, Deserialize)]
@@ -2286,7 +2286,7 @@ pub struct IntrospectConfig {
 
 impl Default for IntrospectConfig {
     fn default() -> Self {
-        // On by default — it only observes jarvisd's own children and reports.
+        // On by default — it only observes darwind's own children and reports.
         // The tuning defaults match introspect.rs's original constants, so an
         // absent/partial [introspect] section behaves exactly as before.
         Self {
@@ -2517,7 +2517,7 @@ impl Default for OvernightConfig {
 }
 
 /// [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs): an INBOUND network surface
-/// that lets an external system trigger a JARVIS intent. The MOST security-
+/// that lets an external system trigger a DARWIN intent. The MOST security-
 /// sensitive thing added here, so it ships with the strongest fences:
 ///
 ///   - `enabled` (SHIPS ON, full-power default): the subsystem master switch. INERT
@@ -2584,10 +2584,10 @@ impl Default for WebhooksConfig {
 #[serde(default, deny_unknown_fields)]
 #[derive(Default)]
 pub struct WebhookMapping {
-    /// The external event name (the `X-Jarvis-Event` header / `event` field) this
+    /// The external event name (the `X-Darwin-Event` header / `event` field) this
     /// entry maps. An inbound event whose name matches no mapping is REJECTED.
     pub event: String,
-    /// The JARVIS intent the event routes to. If this intent is consequential
+    /// The DARWIN intent the event routes to. If this intent is consequential
     /// (`crate::confirm::is_consequential_tool`) the routed action PARKS for a
     /// spoken confirm instead of executing — a webhook never auto-executes.
     pub intent: String,
@@ -2774,8 +2774,8 @@ impl Default for SkillsConfig {
 }
 
 /// [mcp] — Model Context Protocol client (mcp.rs). The most dangerous external
-/// surface in JARVIS: an MCP server is a LOCAL PROCESS (or remote endpoint) that
-/// offers tools JARVIS agents can call. `enabled` is the subsystem MASTER switch
+/// surface in DARWIN: an MCP server is a LOCAL PROCESS (or remote endpoint) that
+/// offers tools DARWIN agents can call. `enabled` is the subsystem MASTER switch
 /// and SHIPS ON (full-power default) — INERT WITHOUT SERVERS: `servers` ships EMPTY
 /// and the installer must NOT add any, so even enabled NOTHING connects until the
 /// user adds at least one `[[mcp.servers]]` entry.
@@ -2883,7 +2883,7 @@ pub struct McpServerConfig {
     /// `mcp_<name>_token` (never inline here, never logged). `false` (default) =
     /// no token. The token never appears in config, Debug, argv, or a URL.
     pub uses_token: bool,
-    /// The JARVIS agents permitted to use this server's tools. Default: EMPTY —
+    /// The DARWIN agents permitted to use this server's tools. Default: EMPTY —
     /// no agent may use it until explicitly listed (plus the orchestrator, which
     /// the manager always admits). NEVER auto-grants all agents.
     pub agents: Vec<String>,
@@ -3294,7 +3294,7 @@ mod tests {
     }
 
     /// Contract lockstep: [proactive] defaults are enabled=true,
-    /// idle_gap_hours=4 — exactly what config/jarvis.toml ships.
+    /// idle_gap_hours=4 — exactly what config/darwin.toml ships.
     #[test]
     fn proactive_defaults_match_the_contract() {
         let (cfg, issues) = Config::parse("");
@@ -3339,7 +3339,7 @@ mod tests {
         assert_eq!(cfg.proactive.quiet_end, 6);
     }
 
-    /// Lockstep with the SHIPPED file: config/jarvis.toml must parse with
+    /// Lockstep with the SHIPPED file: config/darwin.toml must parse with
     /// zero diagnostics and carry exactly the contract defaults the structs
     /// fall back to — if either side drifts, this fails.
     #[test]
@@ -3347,7 +3347,7 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("config")
-            .join("jarvis.toml");
+            .join("darwin.toml");
         let raw = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
         let (cfg, issues) = Config::parse(&raw);
@@ -3498,7 +3498,7 @@ mod tests {
 
     /// Contract lockstep: [self_heal] ships enabled=TRUE (full-power default; inert
     /// without a cloud key), mode="propose" (the gate — KEPT, never auto) — exactly
-    /// what config/jarvis.toml carries — and both keys parse without unknown-key
+    /// what config/darwin.toml carries — and both keys parse without unknown-key
     /// diagnostics.
     #[test]
     fn self_heal_defaults_and_keys_match_the_contract() {
@@ -3967,10 +3967,10 @@ mod tests {
         // The live-reload reader must NEVER hand back fabricated defaults for a
         // transiently unreadable/truncated file (the audit-snapshot emitters
         // would blip every panel for a tick) — None means "keep last good".
-        let dir = std::env::temp_dir().join(format!("jarvis-loadlive-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("darwin-loadlive-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("jarvis.toml");
+        let path = dir.join("darwin.toml");
 
         // Missing file -> None (a restart applies defaults; a live blip never does).
         assert!(Config::load_live(&path).is_none());
@@ -4425,9 +4425,9 @@ mod tests {
         );
         assert_eq!(cfg.voice.model, "eleven_flash_v2_5", "default EL model");
         assert_eq!(
-            cfg.voice.voices.get("jarvis").map(String::as_str),
+            cfg.voice.voices.get("darwin").map(String::as_str),
             Some("JBFqnCBsd6RMkjVDRZzb"),
-            "Jarvis-Prime ships mapped to the ElevenLabs premade 'George' (British) voice so the cloud tier engages with just a key"
+            "Darwin-Prime ships mapped to the ElevenLabs premade 'George' (British) voice so the cloud tier engages with just a key"
         );
         assert_eq!(
             cfg.voice.mic_source, "device",
@@ -4450,7 +4450,7 @@ mod tests {
             model = "eleven_multilingual_v2"
 
             [voice.voices]
-            jarvis = "EL_VOICE_JARVIS"
+            darwin = "EL_VOICE_DARWIN"
             friday = "EL_VOICE_FRIDAY"
         "#;
         let (cfg, issues) = Config::parse(raw);
@@ -4472,7 +4472,7 @@ mod tests {
             "pronunciation_dictionary_version must round-trip as a known key"
         );
         assert_eq!(cfg.voice.model, "eleven_multilingual_v2");
-        assert_eq!(cfg.voice.voices.get("jarvis").map(String::as_str), Some("EL_VOICE_JARVIS"));
+        assert_eq!(cfg.voice.voices.get("darwin").map(String::as_str), Some("EL_VOICE_DARWIN"));
         assert_eq!(cfg.voice.voices.get("friday").map(String::as_str), Some("EL_VOICE_FRIDAY"));
 
         // A typo'd voice key is reported, not silently swallowed.
@@ -4484,16 +4484,16 @@ mod tests {
     }
 
     /// Contract lockstep: [wake] (#32 custom wake-word) SHIPS ON (enabled=true,
-    /// full-power default) and the default phrase is "jarvis" — so enabling preserves
+    /// full-power default) and the default phrase is "darwin" — so enabling preserves
     /// today's activation behavior exactly (identical unless the phrase is changed).
     /// Every key parses without an unknown-key diagnostic.
     #[test]
-    fn wake_ships_on_default_phrase_jarvis_and_keys_match_the_contract() {
+    fn wake_ships_on_default_phrase_darwin_and_keys_match_the_contract() {
         let (cfg, issues) = Config::parse("");
         assert!(issues.is_empty());
-        assert!(cfg.wake.enabled, "custom wake-word gating SHIPS ON (full-power default; phrase 'jarvis' = today's behavior)");
+        assert!(cfg.wake.enabled, "custom wake-word gating SHIPS ON (full-power default; phrase 'darwin' = today's behavior)");
         assert_eq!(
-            cfg.wake.phrase, "jarvis",
+            cfg.wake.phrase, "darwin",
             "the default wake phrase preserves today's activation behavior"
         );
 

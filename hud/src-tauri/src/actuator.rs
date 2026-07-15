@@ -1,12 +1,12 @@
 //! UI ACTUATOR — the Tauri BACKEND side that POSTS the synthetic CGEvent IN THIS
-//! app process, so macOS shows a clean "JARVIS would like to control this computer
-//! using accessibility" prompt attributed to JARVIS.app (NOT the background
+//! app process, so macOS shows a clean "DARWIN would like to control this computer
+//! using accessibility" prompt attributed to DARWIN.app (NOT the background
 //! daemon, which is a bare LaunchAgent binary that cannot present that dialog or
 //! hold a meaningful Accessibility grant).
 //!
 //! WHY THE HUD IS THE SERVER HERE (inverted from the command channel): macOS
 //! attributes the Accessibility TCC consent to the process that POSTS the CGEvent.
-//! Only `JARVIS.app` (a real bundle that can foreground a dialog) can surface the
+//! Only `DARWIN.app` (a real bundle that can foreground a dialog) can surface the
 //! clean prompt and hold the grant — so the HUD must be the one that posts. The
 //! daemon stays the brain (it plans + gates + parks the actuation behind its
 //! off-by-default switch and confirmation gate), but when it has a single
@@ -37,7 +37,7 @@
 //! ACCESSIBILITY PROMPT: posting a CGEvent requires the Accessibility grant. The
 //! HUD has no special entitlement for it, so the FIRST attempt (when not yet
 //! granted) calls `AXIsProcessTrustedWithOptions` with the prompt option ONCE to
-//! TRIGGER the clean "JARVIS would like to control this computer" dialog, then
+//! TRIGGER the clean "DARWIN would like to control this computer" dialog, then
 //! replies honestly that it is not granted yet.
 //!
 //! SHAPE: [`parse_request`] (request narrowing — the EXACT inverse of the daemon's
@@ -485,7 +485,7 @@ mod imp {
 
     // Accessibility — ApplicationServices. `AXIsProcessTrusted` is the
     // non-prompting check; `AXIsProcessTrustedWithOptions` + the prompt key shows
-    // the clean "JARVIS would like to control this computer using accessibility"
+    // the clean "DARWIN would like to control this computer using accessibility"
     // dialog (which offers to open System Settings). Mirrors tcc.rs's link
     // pattern.
     #[link(name = "ApplicationServices", kind = "framework")]
@@ -496,7 +496,7 @@ mod imp {
     }
 
     /// Fire the clean Accessibility prompt ONCE (no-op if already decided). macOS
-    /// shows the "JARVIS would like to control this computer using accessibility"
+    /// shows the "DARWIN would like to control this computer using accessibility"
     /// dialog only from the not-determined state; afterward this is inert.
     fn trigger_accessibility_prompt() {
         unsafe {
@@ -518,11 +518,11 @@ mod imp {
         // DEVICE GATE: the Accessibility TCC consent. Without it macOS silently
         // drops every synthetic event — so we refuse HONESTLY rather than pretend
         // the action landed, AND fire the clean prompt once so the user can grant
-        // it. The next request (after they approve + enable JARVIS) actuates.
+        // it. The next request (after they approve + enable DARWIN) actuates.
         if !unsafe { AXIsProcessTrusted() } {
             trigger_accessibility_prompt();
             return Reply::fail(
-                "accessibility not granted — approve the JARVIS prompt then enable JARVIS in System Settings",
+                "accessibility not granted — approve the DARWIN prompt then enable DARWIN in System Settings",
             );
         }
         match action {
@@ -754,7 +754,7 @@ mod tests {
         assert_eq!(parsed.as_object().unwrap().len(), 2);
 
         // A failure reply is honest: ok:false with the detail.
-        let fail = Reply::fail("accessibility not granted — approve the JARVIS prompt then enable JARVIS in System Settings");
+        let fail = Reply::fail("accessibility not granted — approve the DARWIN prompt then enable DARWIN in System Settings");
         let parsed: Value = serde_json::from_str(fail.encode().trim_end()).unwrap();
         assert_eq!(parsed["ok"], false);
         assert!(parsed["detail"].as_str().unwrap().contains("accessibility not granted"));
@@ -783,7 +783,7 @@ mod tests {
 
     #[test]
     fn actuate_socket_path_is_under_state_ipc() {
-        let p = actuate_socket_path(Path::new("/jarvis"));
-        assert_eq!(p, Path::new("/jarvis/state/ipc/actuate.sock"));
+        let p = actuate_socket_path(Path::new("/darwin"));
+        assert_eq!(p, Path::new("/darwin/state/ipc/actuate.sock"));
     }
 }

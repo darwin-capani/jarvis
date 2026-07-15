@@ -853,7 +853,7 @@ pub enum ModelSwapIntent {
     Fast,
     /// Work offline / on-device / privately — NO cloud call. -> override Some(Local).
     Local,
-    /// Back to automatic — clear the override, let JARVIS pick per turn.
+    /// Back to automatic — clear the override, let DARWIN pick per turn.
     Auto,
 }
 
@@ -927,8 +927,8 @@ pub fn classify_model_swap(utterance: &str) -> Option<ModelSwapIntent> {
         "back to normal",
         "default mode",
         "back to default",
-        "let jarvis decide",
-        "let jarvis pick",
+        "let darwin decide",
+        "let darwin pick",
         "let you decide",
         "you decide which model",
         "pick for me",
@@ -1279,7 +1279,7 @@ mod tests {
         for u in [
             "auto mode",
             "automatic mode",
-            "let jarvis decide",
+            "let darwin decide",
             "back to normal",
             "default mode",
             "pick for me",
@@ -1303,7 +1303,7 @@ mod tests {
             "my internet is fast today",                   // "fast"
             "that was a powerful speech",                  // "powerful"
             "she ran fast to catch the bus",               // "fast"
-            "what's the weather like, jarvis",             // plain chat
+            "what's the weather like, darwin",             // plain chat
             "i need a quick answer about taxes",           // "quick" but not a model cmd
             "the local cafe is on device street",          // "local" + "device"
             "tell me something best for breakfast",        // "best" but no "model"

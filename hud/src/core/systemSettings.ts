@@ -3,7 +3,7 @@
  * SystemSettingsPanel renders from. It mirrors the backend whitelist
  * (src-tauri/src/config_settings.rs SETTINGS + AUTONOMY_SECTIONS) and pairs each
  * editable key with the HONEST hint/warning copy LIFTED from the comments in
- * config/jarvis.toml. The backend remains the trust boundary: this catalog only
+ * config/darwin.toml. The backend remains the trust boundary: this catalog only
  * decides what the UI offers + how it warns; every value still rides config_set's
  * strict whitelist validation, and a change takes effect only on daemon RESTART.
  *
@@ -77,7 +77,7 @@ export interface CatalogEntry {
 
 /**
  * THE CATALOG. Order within a group is the render order. Hints are condensed
- * from config/jarvis.toml's comments — kept honest (no overstated guarantees).
+ * from config/darwin.toml's comments — kept honest (no overstated guarantees).
  */
 export const CATALOG: CatalogEntry[] = [
   /* ----------------------------------------------------- SAFETY & GATES */
@@ -157,7 +157,7 @@ export const CATALOG: CatalogEntry[] = [
       "Propose: write the validated patch + report and wait for a human to apply it. " +
       "Full-auto: the daemon APPLIES the patch to itself, rebuilds, and restarts — dangerous.",
     danger:
-      "Self-heal Full-auto lets the daemon APPLY its own validated patch, rebuild --release, and EXIT so its supervisor restarts it. It edits and restarts JARVIS without you in the loop.",
+      "Self-heal Full-auto lets the daemon APPLY its own validated patch, rebuild --release, and EXIT so its supervisor restarts it. It edits and restarts DARWIN without you in the loop.",
     dangerWhen: "auto",
   },
   {
@@ -242,7 +242,7 @@ export const CATALOG: CatalogEntry[] = [
     label: "Suggestions feed",
     control: "toggle",
     hint:
-      "Proactive-intelligence suggester (habit detector + predictive suggester) — its OWN switch. Surfaces observed-pattern suggestion cards; accepting a habit offer still routes through the gated confirmation. JARVIS never auto-acts.",
+      "Proactive-intelligence suggester (habit detector + predictive suggester) — its OWN switch. Surfaces observed-pattern suggestion cards; accepting a habit offer still routes through the gated confirmation. DARWIN never auto-acts.",
   },
   {
     id: "proactive.quiet_start",
@@ -274,7 +274,7 @@ export const CATALOG: CatalogEntry[] = [
       deep_focus: "Deep focus",
     },
     hint:
-      "A permission-NEUTRAL lens over the proactive surfaces — it can ONLY make JARVIS quieter, never loosen a gate. \"work\" silences news/routine/market; \"sleep\"/\"deep_focus\" surface only critical. Critical signals always survive.",
+      "A permission-NEUTRAL lens over the proactive surfaces — it can ONLY make DARWIN quieter, never loosen a gate. \"work\" silences news/routine/market; \"sleep\"/\"deep_focus\" surface only critical. Critical signals always survive.",
   },
 
   /* ----------------------------------------------------- PERCEPTION */
@@ -374,7 +374,7 @@ export const CATALOG: CatalogEntry[] = [
     hint:
       "Optional ElevenLabs cloud voice layer on top of on-device Kokoro. INERT WITHOUT A KEY (needs elevenlabs_api_key + a non-Local tier). When active the TTS TEXT leaves the device. On-device Kokoro stays the fallback.",
     danger:
-      "With the cloud TTS tier active (and a key present, non-Local tier) the TEXT JARVIS is about to speak LEAVES the device on a round trip to ElevenLabs. On-device Kokoro stays the private fallback.",
+      "With the cloud TTS tier active (and a key present, non-Local tier) the TEXT DARWIN is about to speak LEAVES the device on a round trip to ElevenLabs. On-device Kokoro stays the private fallback.",
     dangerWhen: "on",
   },
   {
@@ -434,12 +434,12 @@ export const CATALOG: CatalogEntry[] = [
     control: "select",
     optionLabels: {
       device: "Background service (default)",
-      app: "JARVIS app — clean prompt",
+      app: "DARWIN app — clean prompt",
     },
     hint:
       "WHO opens the microphone. \"Background service\" (default) keeps today's behavior — the daemon opens the mic itself. " +
-      "\"JARVIS app\" makes the app capture the mic, so macOS shows a clean \"JARVIS\" permission prompt, and the app streams the audio to the service over a local socket. " +
-      "After switching to \"JARVIS app\", RESTART the daemon; the app then asks for the microphone the next time it launches.",
+      "\"DARWIN app\" makes the app capture the mic, so macOS shows a clean \"DARWIN\" permission prompt, and the app streams the audio to the service over a local socket. " +
+      "After switching to \"DARWIN app\", RESTART the daemon; the app then asks for the microphone the next time it launches.",
   },
   {
     id: "voice.pronunciation_dictionary_id",
@@ -546,11 +546,11 @@ export const CATALOG: CatalogEntry[] = [
   {
     id: "ui_automation.actuate_via_app",
     group: "Capabilities",
-    label: "Actuate via the JARVIS app",
+    label: "Actuate via the DARWIN app",
     control: "toggle",
     hint:
       "WHERE an already-approved click/keystroke is posted. OFF (default): the background service posts it (grant Accessibility to the service). " +
-      "ON: the JARVIS app posts it, so macOS shows a clean \"JARVIS would like to control this computer\" prompt and the grant is the app's. " +
+      "ON: the DARWIN app posts it, so macOS shows a clean \"DARWIN would like to control this computer\" prompt and the grant is the app's. " +
       "EVERY safety gate (per-action confirm, bounds, the full gate stack) still runs in the service BEFORE the post — this only changes who posts the final event. Restart the daemon after changing.",
   },
   {
@@ -561,7 +561,7 @@ export const CATALOG: CatalogEntry[] = [
     hint:
       "Connect to external MCP tool servers — the MOST DANGEROUS external surface (an MCP server runs code on your machine). INERT WITHOUT SERVERS: the servers list ships empty, so nothing connects until you add a [[mcp.servers]] entry. Every consequential MCP tool still rides the full gate.",
     danger:
-      "MCP connects to external tool servers — code that runs on YOUR machine and exposes tools an agent can call. It is INERT until you add a [[mcp.servers]] entry to jarvis.toml; even then every consequential MCP tool parks behind the full gate.",
+      "MCP connects to external tool servers — code that runs on YOUR machine and exposes tools an agent can call. It is INERT until you add a [[mcp.servers]] entry to darwin.toml; even then every consequential MCP tool parks behind the full gate.",
     dangerWhen: "on",
   },
   {
@@ -586,7 +586,7 @@ export const CATALOG: CatalogEntry[] = [
     label: "On-device file search",
     control: "toggle",
     hint:
-      "On-device file RAG — contents + embeddings NEVER leave the device. INERT WITHOUT ROOTS: the folder allowlist ships empty, so even enabled it indexes nothing until you allowlist a folder (set roots in jarvis.toml). Text-like files only.",
+      "On-device file RAG — contents + embeddings NEVER leave the device. INERT WITHOUT ROOTS: the folder allowlist ships empty, so even enabled it indexes nothing until you allowlist a folder (set roots in darwin.toml). Text-like files only.",
   },
   {
     id: "docsearch.roots",
@@ -595,7 +595,7 @@ export const CATALOG: CatalogEntry[] = [
     control: "pathlist",
     placeholder: "/Users/you/Documents",
     hint:
-      "Folders JARVIS may index for file/code search; contents stay on-device; nothing is read until a folder is added. Each entry is an ABSOLUTE path. Use Add folder… (native picker) or type an absolute path.",
+      "Folders DARWIN may index for file/code search; contents stay on-device; nothing is read until a folder is added. Each entry is an ABSOLUTE path. Use Add folder… (native picker) or type an absolute path.",
   },
   {
     id: "docsearch.build_graph",
@@ -620,7 +620,7 @@ export const CATALOG: CatalogEntry[] = [
     control: "pathlist",
     placeholder: "/Users/you/project",
     hint:
-      "Folders JARVIS may index for file/code search; contents stay on-device; nothing is read until a folder is added. The apply script writes ONLY under a root here. Also add the same root under file-search folders so the code is retrievable.",
+      "Folders DARWIN may index for file/code search; contents stay on-device; nothing is read until a folder is added. The apply script writes ONLY under a root here. Also add the same root under file-search folders so the code is retrievable.",
   },
   {
     id: "local_tools.enabled",

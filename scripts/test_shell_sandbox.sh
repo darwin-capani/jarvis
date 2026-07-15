@@ -8,7 +8,7 @@
 #
 #   1. CLASSIFIER (denylist): classify_shell_command rejects the destructive /
 #      exfil patterns (rm -rf, dd, mkfs, sudo, fork bomb, curl|sh, writes to
-#      /etc / ~/.claude / the daemon state, killing jarvisd, networking tools) —
+#      /etc / ~/.claude / the daemon state, killing darwind, networking tools) —
 #      including obfuscation attempts (extra spaces, $IFS, quotes, backslashes) —
 #      and passes a benign ls/echo.
 #   2. SBPL PROFILE TEXT: generate_shell_sbpl is DENY-DEFAULT ((deny default)),
@@ -23,7 +23,7 @@
 #      (the project's safety model): the switch is on, but nothing runs without
 #      the spoken confirm + gates above.
 #
-# THE ONE HARD PROHIBITION: this selftest NEVER runs jarvisd, never opens a port,
+# THE ONE HARD PROHIBITION: this selftest NEVER runs darwind, never opens a port,
 # never loads a model, never makes a network call, and — above all — never EXECs
 # a sandboxed command. It validates the generated profile TEXT + the classifier /
 # gate-routing DECISIONS via the hermetic cargo unit tests, which are themselves

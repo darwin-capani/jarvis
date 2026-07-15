@@ -21,7 +21,7 @@ describe("agent roster (static mirror)", () => {
     expect(new Set(names).size).toBe(names.length);
     for (const n of names) expect(n).toBe(n.toLowerCase());
     expect(names).toEqual([
-      "jarvis",
+      "darwin",
       "friday",
       "veronica",
       "vision",
@@ -51,7 +51,7 @@ describe("agent roster (static mirror)", () => {
     ]);
   });
 
-  it("jarvis is first (roll-call order) and is the PRIME_AGENT with the default hue", () => {
+  it("darwin is first (roll-call order) and is the PRIME_AGENT with the default hue", () => {
     expect(ROSTER[0].name).toBe(PRIME_AGENT);
     expect(ROSTER[0].hue).toBe(DEFAULT_AGENT_HUE);
   });
@@ -89,7 +89,7 @@ describe("agentProfile lookup", () => {
 
   it("is case-insensitive and trims whitespace", () => {
     expect(agentProfile("  VISION ")?.name).toBe("vision");
-    expect(agentProfile("Jarvis")?.name).toBe("jarvis");
+    expect(agentProfile("Darwin")?.name).toBe("darwin");
   });
 
   it("returns null for an unknown agent", () => {

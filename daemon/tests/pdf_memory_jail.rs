@@ -183,7 +183,7 @@ fn jail_exits_nonzero_on_a_corrupt_pdf() {
 
 /// ON-DEVICE (`#[ignore]`): a real ~2 GiB FlateDecode content bomb makes the CHILD
 /// allocate past its RLIMIT_AS budget, so the child ABORTS (non-zero / killed exit)
-/// and produces no usable text — and jarvisd, in the real path, is never touched.
+/// and produces no usable text — and darwind, in the real path, is never touched.
 /// This is the residual-closing proof that cannot run hermetically (it needs a real
 /// subprocess bomb and multiple GiB of transient child memory).
 #[test]

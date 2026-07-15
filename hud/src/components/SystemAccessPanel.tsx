@@ -9,7 +9,7 @@ import {
 
 /**
  * SYSTEM ACCESS // macOS PERMISSIONS — the panel that takes the user straight to
- * each macOS Privacy & Security switch JARVIS uses.
+ * each macOS Privacy & Security switch DARWIN uses.
  *
  * HONESTY CONTRACT (do not regress): macOS does NOT let any app grant itself a
  * TCC permission. This panel can only OPEN the right pane (and the OS prompts on
@@ -32,7 +32,7 @@ export default function SystemAccessPanel() {
       setBusy(key);
       setNote("");
       try {
-        // Fire the NATIVE macOS prompt from the app (clean "JARVIS" dialog); the
+        // Fire the NATIVE macOS prompt from the app (clean "DARWIN" dialog); the
         // backend falls back to opening Settings when macOS won't prompt.
         const r = await requestAccess(key);
         setNote(r.detail);
@@ -141,7 +141,7 @@ export default function SystemAccessPanel() {
 
       {!shell ? (
         <div className="cred-hint">
-          Opening System Settings needs the JARVIS desktop app — these buttons are
+          Opening System Settings needs the DARWIN desktop app — these buttons are
           inactive in a browser preview.
         </div>
       ) : null}

@@ -613,7 +613,7 @@ mod tests {
             Fact::new("user.pet", "a corgi named Watson"),
             Fact::new("user.preference.editor", "prefers neovim over vscode"),
             Fact::new("user.coffee", "drinks oat-milk flat whites"),
-            Fact::new("project.jarvis", "building a local AI assistant on a Mac mini"),
+            Fact::new("project.darwin", "building a local AI assistant on a Mac mini"),
         ]
     }
 

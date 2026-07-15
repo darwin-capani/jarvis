@@ -28,7 +28,7 @@ export interface TelemetryEnvelope {
 /** audio / audio.level — capture loop, rate-limited to >=66ms (contract #1). */
 export interface AudioLevelData {
   rms: number; // f32 rounded to 4dp
-  speaking: boolean; // daemon's is_speaking() (mic muted while JARVIS talks)
+  speaking: boolean; // daemon's is_speaking() (mic muted while DARWIN talks)
 }
 
 /** system / system.load — telemetry.rs::system_load_task, every 2s. */
@@ -699,7 +699,7 @@ export interface ProactiveSurfaceData {
  *                                                                            *
  * HONESTY (mirrors the daemon's posture, surfaced verbatim by the panel):     *
  * these are OBSERVED-pattern SUGGESTIONS (threshold-gated, never invented on   *
- * sparse/empty history), they can be WRONG and are DISMISSIBLE, JARVIS NEVER   *
+ * sparse/empty history), they can be WRONG and are DISMISSIBLE, DARWIN NEVER   *
  * auto-acts on them (auto_acts is always false), and accepting STILL goes      *
  * through the normal confirmation gate. SECRET-FREE: every field traces to     *
  * redacted, agent-scoped episodic data — there is no body/utterance/secret on  *
@@ -719,7 +719,7 @@ export type SuggestionTimeOfDay = "morning" | "afternoon" | "evening";
 
 /** One parsed `proactive.suggestion` feed card. Common fields are always
  *  present; the kind-specific fields are populated per `kind`. `autoActs` is
- *  ALWAYS false (JARVIS never auto-acts on a suggestion) — it is carried so the
+ *  ALWAYS false (DARWIN never auto-acts on a suggestion) — it is carried so the
  *  panel can state the never-auto-act posture from the wire, not a hard-code.
  *
  *  HABIT (kind="habit_automation"): `proposedGoal` + `proposedSchedule` are the
@@ -744,7 +744,7 @@ export interface Suggestion {
   topic: string;
   /** How many times it recurred — the evidence, surfaced honestly. */
   occurrences: number;
-  /** ALWAYS false: JARVIS never auto-acts on a suggestion. Carried from the
+  /** ALWAYS false: DARWIN never auto-acts on a suggestion. Carried from the
    *  wire so the panel's never-auto-act copy is grounded in the payload. */
   autoActs: boolean;
   /** habit only: the PROPOSED standing-mission goal (NOT created). null for a
@@ -883,7 +883,7 @@ export type BriefPriority = "urgent" | "important" | "routine";
  *  REAL rendered source citation (e.g. "calendar:evt_9"). All three are required
  *  for a renderable row — a row with no line or no source is dropped by
  *  [`parseProactiveDigest`] (a citation is the honesty anchor; without it the row
- *  would be an uncited claim, which JARVIS does not surface). */
+ *  would be an uncited claim, which DARWIN does not surface). */
 export interface BriefItem {
   /** The relevance priority — drives the row's rank chip. */
   priority: BriefPriority;
@@ -968,7 +968,7 @@ export function briefPriorityLabel(p: BriefPriority): string {
  * A focus profile (default | work | sleep | deep_focus | a named custom) is a *
  * PERMISSION-NEUTRAL lens: apply_profile adjusts ONLY non-consequential knobs *
  * — which signal CATEGORIES surface, brief VERBOSITY, and whether SUGGESTIONS *
- * are quieted. It can only ever make JARVIS QUIETER, never more permissive.   *
+ * are quieted. It can only ever make DARWIN QUIETER, never more permissive.   *
  * By CONSTRUCTION the daemon's TunedBehavior carries NO gate/permission/      *
  * autonomy field, so the card cannot leak one — and it states the contract    *
  * explicitly on the wire (permission_neutral / raises_autonomy / loosens_gate) *
@@ -1063,7 +1063,7 @@ export function focusIsDefault(f: FocusActive): boolean {
   );
 }
 
-/** system / agent.active — router.rs (CONTRACT part A). Emitted when Jarvis-
+/** system / agent.active — router.rs (CONTRACT part A). Emitted when Darwin-
  *  Prime delegates a request to an agent, and once per agent during a roll
  *  call. `hue` (0..360) drives the R3F core color + the constellation glow;
  *  `role` is the one-liner for the active-agent affordance. The HUD also has
@@ -1076,7 +1076,7 @@ export interface AgentActiveData {
 }
 
 /* ------------------------------------------------------------------------ *
- * Micro-app runtime relay (SANDBOX.md / build contract). jarvisd is the     *
+ * Micro-app runtime relay (SANDBOX.md / build contract). darwind is the     *
  * ONLY socket-holder: each app talks to the daemon over its own per-app     *
  * Unix socket, and the daemon relays the data onto 7177 as `app.*` system   *
  * events so the HUD panel renders WITHOUT opening its own socket.           *
@@ -1124,7 +1124,7 @@ export function appManifestIssueLine(data: Record<string, unknown>): string | nu
  *  voice command is translated into a structured op and forwarded to a running
  *  micro-app over its per-app socket (e.g. "show me the 3V3 net" -> Silicon
  *  Canvas `select.net`). `op` is the verbatim JSON op line that was sent. This
- *  is an activity/provenance signal (what JARVIS just did), not a panel surface
+ *  is an activity/provenance signal (what DARWIN just did), not a panel surface
  *  — the reducer logs it to the actions ticker + a transient toast. */
 export interface AppOpForwardedData {
   name: string;
@@ -2815,7 +2815,7 @@ export interface McpToolStatus {
  *  whether it handshook at startup; `tools` is empty until/unless connected.
  *  `usesToken` is a BOOL only — the panel NEVER renders a token/secret (there is
  *  no token field on the wire to render). `agents` is the per-server allowlist:
- *  which JARVIS agents may use this server's tools. */
+ *  which DARWIN agents may use this server's tools. */
 export interface McpServerStatus {
   name: string;
   transport: string; // "stdio" | "http" (tolerant of future kinds)
@@ -2947,7 +2947,7 @@ export function parseTccAnomalies(data: Record<string, unknown>): string[] {
 // by its telemetry-contract tests). Every SINGLE-APP event keys the app on
 // "app" (NOT "name"); keep the str(data, "app") reads below in lockstep with
 // those builders.
-// The ambient READ-ONLY sentinel over jarvisd's OWN sandboxed children:
+// The ambient READ-ONLY sentinel over darwind's OWN sandboxed children:
 // SBPL profile-drift, RSS/CPU anomalies, and cooperative dyld module attestation.
 // SECRET-FREE: app names + counts + module paths only, never a token or file
 // contents. Parsers never throw; the status never returns null.
@@ -3127,7 +3127,7 @@ export function parsePostureSnapshot(data: Record<string, unknown>): PostureSnap
 
 // ---------------------------------------------------------------------------
 // CAPABILITY ATTRIBUTION HEALTH (attribution.health) — the PROPOSE-ONLY ambient
-// signal of which of JARVIS's own agents/skills are reliable vs failing, from
+// signal of which of DARWIN's own agents/skills are reliable vs failing, from
 // the trace corpus (daemon/src/attribution.rs). Counts + failing-capability
 // flags only — no secret, no raw utterance. Parsers never throw.
 // ---------------------------------------------------------------------------
@@ -3456,7 +3456,7 @@ export function applyPluginHandshake(
  * sensitive SQLite stores + the voiceid owner blob are encrypted AT REST ON DISK  *
  * with transparent whole-file SQLCipher AES-256; the config TOML, the Keychain    *
  * item itself, and — critically — the in-RAM working set + decrypted pages + the  *
- * key while jarvisd runs are NOT protected. Ships OFF + opt-in. The indicator     *
+ * key while darwind runs are NOT protected. Ships OFF + opt-in. The indicator     *
  * copy must say all of this plainly and never claim "all your data is encrypted". *
  * ------------------------------------------------------------------------ */
 
@@ -4187,7 +4187,7 @@ export function sttTierDetail(backend: SttBackend | null): string {
  *  #32 CUSTOM WAKE-WORD (daemon/src/wake.rs + audio.rs/router.rs).           *
  *      `audio` / `utterance.no_wake` {phrase, path} — emitted when an         *
  *      utterance is DROPPED for lacking the configured wake phrase. The       *
- *      phrase here is the ACTIVE configured wake word (default "jarvis"),     *
+ *      phrase here is the ACTIVE configured wake word (default "darwin"),     *
  *      surfaced read-only; the `path` (a local wav path) is NOT carried onto  *
  *      the HUD surface (it is not a panel field).                             *
  *                                                                            *
@@ -4231,7 +4231,7 @@ export interface DiarizationState {
 }
 
 /** The ACTIVE WAKE WORD sub-state. `phrase` is the configured wake phrase the
- *  daemon last reported (via utterance.no_wake) — defaults to "jarvis" (today's
+ *  daemon last reported (via utterance.no_wake) — defaults to "darwin" (today's
  *  behavior). `lastDropped` flips true once an utterance has been dropped for
  *  lacking the wake word (the honest "the gate is live and rejecting" signal).
  *  The wav path is NEVER carried here. */
@@ -4251,7 +4251,7 @@ export interface AudioIoStatus {
 
 /** The resting AUDIO-I/O status before any telemetry: interpret idle (no segment
  *  fed), diarization not seen (and honestly NOT able to diarize until an
- *  EL-Scribe frame says otherwise), wake on the default "jarvis" phrase with
+ *  EL-Scribe frame says otherwise), wake on the default "darwin" phrase with
  *  nothing dropped yet. All three features ship OFF, so this IS the shipped
  *  default the panel renders. */
 export function audioIoInitial(): AudioIoStatus {
@@ -4269,7 +4269,7 @@ export function audioIoInitial(): AudioIoStatus {
       multiSpeaker: false,
       turns: 0,
     },
-    wake: { phrase: "jarvis", lastDropped: false },
+    wake: { phrase: "darwin", lastDropped: false },
   };
 }
 
@@ -4426,7 +4426,7 @@ export function diarizationDetail(d: DiarizationState): string {
     return "On-device whisper has NO diarization model — this is a single honest stream (speaker: unknown), never a fabricated speaker. Speaker labels need the ElevenLabs-Scribe backend, which carries them.";
   }
   return d.multiSpeaker
-    ? "ElevenLabs Scribe reported MULTIPLE distinct speakers — the labels are the backend's, never fabricated by JARVIS."
+    ? "ElevenLabs Scribe reported MULTIPLE distinct speakers — the labels are the backend's, never fabricated by DARWIN."
     : "ElevenLabs Scribe is active but reported a single speaker this turn — an honest single stream.";
 }
 
@@ -5074,7 +5074,7 @@ export function throttleTierPrefLabel(p: ThrottlePlan | null): string {
 }
 
 /** FUI tone for the throttle dot: `warn` when a plan is throttling (a state worth
- *  noticing — the device asked JARVIS to ease off), `idle` when nothing throttled
+ *  noticing — the device asked DARWIN to ease off), `idle` when nothing throttled
  *  (the OFF/neutral default). PURE. */
 export function throttleTone(p: ThrottlePlan | null): "warn" | "idle" {
   return p === null ? "idle" : "warn";
@@ -5840,7 +5840,7 @@ export function parseDocSearchResult(data: Record<string, unknown>): DocSearchRe
 }
 
 /** Parse a `docsearch.status` payload: whether the daemon's PDF memory-jail
- *  helper (pdfjail) sits next to the running jarvisd, i.e. whether PDF text
+ *  helper (pdfjail) sits next to the running darwind, i.e. whether PDF text
  *  extraction runs jailed or on the weaker in-process fallback guard. STRICT:
  *  only a literal JSON `true` reports the jail armed — an absent, malformed, or
  *  truthy-but-not-boolean field coerces to `false`, because overclaiming the
@@ -7967,7 +7967,7 @@ export function parseSessionRewind(data: Record<string, unknown>): SessionRewind
  * resolved credential, never a macro's literal secret).                       *
  *                                                                            *
  * HONESTY (the lines this surface must hold, surfaced verbatim by the panel): *
- *   #25 a draft is a SUGGESTION the user reviews + sends — JARVIS NEVER       *
+ *   #25 a draft is a SUGGESTION the user reviews + sends — DARWIN NEVER       *
  *       auto-sends it. The draft module has NO send path; an actual send is a *
  *       SEPARATE explicit action that rides the EXISTING consequential gate.   *
  *       The status surface shows the subject + a bounded preview ONLY — never  *

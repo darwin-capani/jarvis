@@ -32,7 +32,7 @@
 //!     real signal in the inputs produced it; contradictory or empty inputs yield
 //!     NO invented entry.
 //!   * PROVENANCE-tagged: every entry records WHICH episodes/facts it came from,
-//!     so the user can see why JARVIS believes it (inspectable).
+//!     so the user can see why DARWIN believes it (inspectable).
 //!   * COMPOUNDING but BOUNDED: a repeated observation REINFORCES an entry
 //!     (observed-count up, provenance extended) rather than duplicating it; the
 //!     tier is globally capped so it cannot grow without limit.
@@ -371,7 +371,7 @@ fn query_terms(about: &str) -> Vec<String> {
 
 /// CORRECT one entry: OVERRIDE its observation (when `new_observation` is
 /// non-empty) or DELETE it (when empty). The correctable contract — the user can
-/// fix or remove anything JARVIS believes about them. An override keeps the
+/// fix or remove anything DARWIN believes about them. An override keeps the
 /// entry's slug + facet but REPLACES the observation, RESETS the observed-count
 /// to 1, and stamps the provenance as a user correction (`user:correction`) so
 /// the profile honestly records that this entry is now a stated correction, not a
@@ -719,7 +719,7 @@ async fn entry_count(memory: &Memory) -> Result<usize> {
 
 /// Render the FULL profile as inspectable text WITH provenance + observed-count —
 /// the `user_model_query` tool result and the HUD inspector feed. Honest framing:
-/// it states this is what JARVIS has OBSERVED (not divined), with how many times
+/// it states this is what DARWIN has OBSERVED (not divined), with how many times
 /// and from where. Empty profile renders an explicit "nothing observed yet" line
 /// so the tool never implies knowledge it lacks.
 pub fn render(profile: &Profile) -> String {
@@ -791,7 +791,7 @@ mod tests {
     impl TempDb {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "jarvis-usermodel-test-{}-{}.db",
+                "darwin-usermodel-test-{}-{}.db",
                 std::process::id(),
                 tag
             ));
@@ -815,7 +815,7 @@ mod tests {
         Episode {
             id,
             ts: format!("2026-06-15T10:0{id}:00+00:00"),
-            agent_namespace: "agent.jarvis".to_string(),
+            agent_namespace: "agent.darwin".to_string(),
             utterance_redacted: utterance.to_string(),
             topic: "conversation".to_string(),
             salient_entities: entities.iter().map(|s| s.to_string()).collect(),
@@ -1070,10 +1070,10 @@ mod tests {
     // END-TO-END via the EPISODE store (mirrors the reflection/Pepper path)
     // ===================================================================
 
-    /// The reflection/Pepper path reads SHARED-tier episodes (agent.jarvis) and
+    /// The reflection/Pepper path reads SHARED-tier episodes (agent.darwin) and
     /// folds them + facts into the profile. This exercises that exact shape: real
     /// episodes recorded through the Memory episode store, then consolidate over
-    /// what `episodes_recent("agent.jarvis", …)` returns — and proves a SPECIALIST's
+    /// what `episodes_recent("agent.darwin", …)` returns — and proves a SPECIALIST's
     /// PRIVATE episode is NOT folded into the shared profile (isolation on the way
     /// IN), while the shared episode IS.
     #[tokio::test]
@@ -1085,7 +1085,7 @@ mod tests {
             mem.record_episode(&Episode {
                 id: 0,
                 ts: String::new(),
-                agent_namespace: "agent.jarvis".to_string(),
+                agent_namespace: "agent.darwin".to_string(),
                 utterance_redacted: format!("working on rust pass {i}"),
                 topic: "conversation".to_string(),
                 salient_entities: vec!["rust".to_string()],
@@ -1113,7 +1113,7 @@ mod tests {
         }
 
         // The reflect path's read: SHARED tier only.
-        let shared = mem.episodes_recent("agent.jarvis", 200).await.unwrap();
+        let shared = mem.episodes_recent("agent.darwin", 200).await.unwrap();
         consolidate(&mem, &shared, &[]).await.unwrap();
 
         let profile = query(&mem, "").await.unwrap();

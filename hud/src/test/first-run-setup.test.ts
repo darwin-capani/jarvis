@@ -12,7 +12,7 @@ import {
 /* ======================================================================== *
  * THE GATE — the load-bearing honesty contract. The FIRST-RUN SETUP screen   *
  * shows ONLY when (in the shell) the backend is KNOWN-not-installed AND the   *
- * daemon is not reachable; it NEVER shows when JARVIS is installed + running. *
+ * daemon is not reachable; it NEVER shows when DARWIN is installed + running. *
  * ======================================================================== */
 describe("first-run setup gate (decideShowSetup)", () => {
   it("SHOWS only when in the shell, not installed, and not connected", () => {
@@ -98,7 +98,7 @@ describe("first-run setup screen reducer", () => {
     const s = setupScreenReduce(opening, {
       type: "installResult",
       opened: true,
-      detail: "Opened Terminal running the JARVIS installer.",
+      detail: "Opened Terminal running the DARWIN installer.",
     });
     expect(s.phase).toBe("waiting");
     expect(s.detail).toContain("installer");
@@ -161,7 +161,7 @@ describe("first-run setup copy", () => {
 
 /* ======================================================================== *
  * RENDER — the intro shows the honest copy + the Install button; the waiting  *
- * state shows the "waiting for JARVIS to come online…" heading.              *
+ * state shows the "waiting for DARWIN to come online…" heading.              *
  * ======================================================================== */
 describe("FirstRunSetup render", () => {
   function html(connected = false) {
@@ -171,7 +171,7 @@ describe("FirstRunSetup render", () => {
   it("renders the intro with the honest scope copy and the Install button", () => {
     const out = html(false);
     expect(out).toContain(SETUP_COPY.title);
-    expect(out).toContain(SETUP_COPY.action); // "Install JARVIS"
+    expect(out).toContain(SETUP_COPY.action); // "Install DARWIN"
     const lower = out.toLowerCase();
     expect(lower).toContain("password");
     expect(lower).toContain("terminal");

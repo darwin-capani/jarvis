@@ -215,7 +215,7 @@ describe("SettingsModal cloud-STT section", () => {
   it("documents the pinned OFF-by-default cloud_stt key (HUD never writes config)", () => {
     const html = renderSettings(sttTierInitial());
     expect(html).toContain("cloud_stt");
-    expect(html).toContain("jarvis.toml");
+    expect(html).toContain("darwin.toml");
     const lower = html.toLowerCase();
     expect(lower).toContain("ships off");
     expect(lower).toContain("does not write daemon config");
@@ -255,7 +255,7 @@ describe("SettingsModal voice-clone section (consent-gated)", () => {
     expect(html).toContain("state/voice-samples/");
     expect(html).toContain("FORGET CLONE");
     // Authorization-bound: an escaping path is rejected.
-    expect(html.toLowerCase()).toContain("escapes the jarvis root is rejected");
+    expect(html.toLowerCase()).toContain("escapes the darwin root is rejected");
   });
 
   it("clone phrases are anchored to the daemon's classify_intent / is_confirmation", () => {

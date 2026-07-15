@@ -264,7 +264,7 @@ describe("control kinds match the catalog requirements", () => {
 /* The daemon's [voice] section grew four cloud-voice config keys; the HUD must
  * SURFACE + CONTROL them through the SAME settings catalog the other [voice]
  * flags ride. These pin that each new key is exposed in the Voice & Speech group
- * with the right control kind + honest copy (lifted from config/jarvis.toml):
+ * with the right control kind + honest copy (lifted from config/darwin.toml):
  *   - voice.cloud_sfx  -> a toggle (ships on, inert without a key, non-speech cues)
  *   - voice.stream_tts -> a toggle (opt-in lower-latency EL streaming, falls back)
  *   - voice.pronunciation_dictionary_id / _version -> text fields (empty = none).
@@ -804,7 +804,7 @@ describe("updates section (WS4a)", () => {
 });
 
 /* The settings toggle reverses the dialog's "don't ask again": it reflects +
- * flips the SAME persisted jarvis.autoUpdate flag the launch path reads. */
+ * flips the SAME persisted darwin.autoUpdate flag the launch path reads. */
 describe("auto-update settings toggle reversibility", () => {
   it("reflects + flips the same persisted preference (ON then back OFF)", () => {
     const map = new Map<string, string>();
@@ -832,7 +832,7 @@ describe("uninstall section (WS4a)", () => {
   it("is a clearly-marked danger zone with a two-stage, non-destructive first click", () => {
     const h = html();
     expect(h).toContain("DANGER ZONE");
-    expect(h).toContain("Uninstall JARVIS");
+    expect(h).toContain("Uninstall DARWIN");
     // The first (un-armed) render shows the arming button, NOT the open-terminal
     // action — a single click cannot open (let alone run) the uninstaller.
     expect(h).not.toContain("Open uninstaller in Terminal");
@@ -851,7 +851,7 @@ describe("SystemSettingsPanel render (no daemon)", () => {
     // still pending on first paint — the panel shows the loading note. This
     // proves the component mounts cleanly with no daemon present.
     const html = renderToStaticMarkup(createElement(SystemSettingsPanel));
-    expect(html).toContain("Reading config/jarvis.toml");
+    expect(html).toContain("Reading config/darwin.toml");
   });
 
   it("mounts cleanly when fed the live voice-id telemetry prop", () => {
@@ -860,6 +860,6 @@ describe("SystemSettingsPanel render (no daemon)", () => {
     // must not throw — it stays on the loading note until config_get resolves.
     const voiceId: VoiceIdStatus = { ...voiceIdInitial(), enabled: true, enrolled: true };
     const html = renderToStaticMarkup(createElement(SystemSettingsPanel, { voiceId }));
-    expect(html).toContain("Reading config/jarvis.toml");
+    expect(html).toContain("Reading config/darwin.toml");
   });
 });

@@ -1,5 +1,5 @@
 //! Need-Sensed Forge — the recurring CAPABILITY-GAP detector that auto-drafts a
-//! PROPOSE-ONLY forge proposal when JARVIS keeps being asked for something it has
+//! PROPOSE-ONLY forge proposal when DARWIN keeps being asked for something it has
 //! no tool to do.
 //!
 //! This is the genuinely-new half of "Need-Sensed Forge". The optimizer already
@@ -231,7 +231,7 @@ pub fn synthesize_goal(signal: &GapSignal) -> String {
         safe.join(", ")
     };
     let goal = format!(
-        "JARVIS users have repeatedly made requests it has NO existing tool or skill to satisfy \
+        "DARWIN users have repeatedly made requests it has NO existing tool or skill to satisfy \
          (a recurring capability gap observed {count} times). The unmet requests centre on the \
          topic '{topic}', recurring around these keywords: {kw}. Author a small, SELF-CONTAINED, \
          sandboxable micro-app that handles this kind of request, requesting the MINIMAL \
@@ -397,7 +397,7 @@ mod tests {
     /// are routing details the detector ignores). `Trace::new` redacts at
     /// construction, so pass already-safe text in tests.
     fn trace(utterance: &str, outcome: Outcome) -> Trace {
-        Trace::new(utterance, "conversation", "jarvis", "chat", "", outcome, 100, 1_700_000_000)
+        Trace::new(utterance, "conversation", "darwin", "chat", "", outcome, 100, 1_700_000_000)
     }
 
     #[test]

@@ -24,7 +24,7 @@
 //!     allowlist indexes nothing even with `enabled` true.
 //!   * BOUNDED: total files / total chunks / total bytes are capped, plus a
 //!     per-file size cap and a recursion-depth bound. The store is finite.
-//!   * FORGETTABLE: [`DocIndex::forget`] clears the index (a user can make JARVIS
+//!   * FORGETTABLE: [`DocIndex::forget`] clears the index (a user can make DARWIN
 //!     forget every indexed file).
 //!   * HONEST: a search returns ONLY chunks that were really indexed (the snippet
 //!     is the stored chunk text, the citation is its real file + offset). An empty
@@ -465,7 +465,7 @@ fn office_text(bytes: &[u8], kind: OfficeKind, cap: usize) -> Result<String> {
 /// (text/fonts) inflate far below this; a decompression bomb does not.
 const PDF_DECOMPRESS_CEILING: u64 = 256 << 20;
 
-/// The MEMORY-JAIL helper binary name — a sibling of `jarvisd` in the shipped
+/// The MEMORY-JAIL helper binary name — a sibling of `darwind` in the shipped
 /// layout (`daemon/target/release/`). See [`locate_pdfjail`] and `src/bin/pdfjail.rs`.
 const PDFJAIL_BIN: &str = "pdfjail";
 
@@ -542,7 +542,7 @@ fn flate_stream_within_budget(content: &[u8], budget: u64, spent: &mut u64) -> b
 ///
 /// The complete, filter- and structure-agnostic fix — a memory-jailed extraction
 /// subprocess (`RLIMIT_AS` on a short-lived child, [`pdf_text_jailed`]) — is now
-/// the PRODUCTION path: a bomb of any shape aborts the CHILD, never jarvisd. This
+/// the PRODUCTION path: a bomb of any shape aborts the CHILD, never darwind. This
 /// in-process guard remains the cheap FIRST-LINE defense on the fallback path
 /// (closing the common single-FlateDecode CONTENT-stream bomb with reliable
 /// boundaries); the two residuals above only matter when the helper is absent.
@@ -566,7 +566,7 @@ fn pdf_decompression_within_budget(bytes: &[u8], budget: u64) -> bool {
 /// PRODUCTION uses a MEMORY-JAILED HELPER SUBPROCESS ([`pdf_text_jailed`]): the
 /// child arms `RLIMIT_AS` before decoding, so a decompression bomb of ANY shape
 /// (single-Flate content, filter-chain-armored, or a parse-time XRef/ObjStm
-/// structural bomb) aborts the CHILD, never jarvisd — closing the residuals the
+/// structural bomb) aborts the CHILD, never darwind — closing the residuals the
 /// in-process guard cannot ([`pdf_decompression_within_budget`]). When the helper
 /// is absent (a dev/test build whose `current_exe` is the test harness, or a
 /// broken install) we FALL BACK to the in-process guard + `pdf-extract`
@@ -600,7 +600,7 @@ fn pdf_text_in_process(bytes: &[u8]) -> Result<String> {
 }
 
 /// Locate the memory-jail helper next to the RUNNING executable. In the shipped
-/// layout `jarvisd` and `pdfjail` are siblings in `daemon/target/release/`, so the
+/// layout `darwind` and `pdfjail` are siblings in `daemon/target/release/`, so the
 /// helper is `current_exe().parent()/pdfjail`. Returns `None` when it is not there
 /// (a `cargo test` build, whose `current_exe` is the test harness under
 /// `target/.../deps/` with no `pdfjail` sibling, or a broken install) -> the caller
@@ -663,7 +663,7 @@ fn warn_missing_jail_once() {
 /// stdout under a wall-clock timeout ([`PDFJAIL_TIMEOUT`]) and an output-size cap
 /// ([`PDFJAIL_MAX_OUTPUT`]). The child arms `RLIMIT_AS` before decoding, so ANY
 /// decompression bomb makes an allocation in the CHILD fail and ABORT it; the
-/// abort NEVER reaches jarvisd. A non-zero/killed exit, a timeout, or oversize
+/// abort NEVER reaches darwind. A non-zero/killed exit, a timeout, or oversize
 /// output all become an error the guard treats as an HONEST SKIP. The writer and
 /// reader run on their own threads so a full stdin pipe can never deadlock against
 /// a full stdout pipe.
@@ -1192,7 +1192,7 @@ impl DocIndex {
 
     /// FORGET: clear the entire index (every stored chunk + vector), returning how
     /// many chunk rows were removed and VACUUMing so the file actually shrinks. The
-    /// forgettable contract — a user can make JARVIS forget every indexed file.
+    /// forgettable contract — a user can make DARWIN forget every indexed file.
     pub async fn forget(&self) -> Result<u64> {
         let mut st = self.state.lock().await;
         let deleted = st.conn.execute("DELETE FROM doc_chunks", [])?;
@@ -1603,7 +1603,7 @@ mod tests {
     impl TempTree {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "jarvis-docsearch-test-{}-{}",
+                "darwin-docsearch-test-{}-{}",
                 std::process::id(),
                 tag
             ));
@@ -2346,7 +2346,7 @@ mod tests {
             ),
             (
                 "ppt/slides/slide1.xml",
-                r#"<?xml version="1.0"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><a:t>Project JARVIS</a:t><a:t>quarterly roadmap</a:t></p:spTree></p:cSld></p:sld>"#,
+                r#"<?xml version="1.0"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><a:t>Project DARWIN</a:t><a:t>quarterly roadmap</a:t></p:spTree></p:cSld></p:sld>"#,
             ),
         ])
     }
@@ -2418,7 +2418,7 @@ mod tests {
         assert!(xlsx.contains("inline cell text"), "xlsx inline string: {xlsx:?}");
 
         let pptx = office_text(&make_pptx(), OfficeKind::Pptx, 1 << 20).unwrap();
-        assert!(pptx.contains("Project JARVIS"), "pptx: {pptx:?}");
+        assert!(pptx.contains("Project DARWIN"), "pptx: {pptx:?}");
         assert!(pptx.contains("quarterly roadmap"), "pptx: {pptx:?}");
     }
 
@@ -2467,7 +2467,7 @@ mod tests {
             "xlsx text indexed"
         );
         assert!(
-            all.iter().any(|c| c.file_path == pptx_real && c.chunk_text.contains("Project JARVIS")),
+            all.iter().any(|c| c.file_path == pptx_real && c.chunk_text.contains("Project DARWIN")),
             "pptx text indexed"
         );
     }

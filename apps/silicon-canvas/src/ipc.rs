@@ -3,9 +3,9 @@
 //! Responsibility: speak the daemon's app-host protocol (`daemon/src/apps.rs`)
 //! over the per-app Unix socket. The app learns its socket + token from the env
 //! (NEVER argv):
-//!   - `JARVIS_APP_SOCKET` — abs path of `state/ipc/apps/silicon-canvas.sock`
-//!   - `JARVIS_APP_TOKEN`  — the capability token to stamp on every outbound line
-//!   - `JARVIS_APP_NAME`   — "silicon-canvas"
+//!   - `DARWIN_APP_SOCKET` — abs path of `state/ipc/apps/silicon-canvas.sock`
+//!   - `DARWIN_APP_TOKEN`  — the capability token to stamp on every outbound line
+//!   - `DARWIN_APP_NAME`   — "silicon-canvas"
 //!
 //! Inbound (host → app), one JSON object per line:
 //!   - `{"type":"start"|"refresh"|"stop"}` — host control verbs
@@ -86,15 +86,15 @@ impl AppEnv {
     /// [`CanvasError::Unauthorized`] when the socket or token is absent — the app
     /// only runs under the daemon (the binary's `main` maps this to exit code 2).
     pub fn from_env() -> Result<Self> {
-        let socket_path = std::env::var_os("JARVIS_APP_SOCKET")
+        let socket_path = std::env::var_os("DARWIN_APP_SOCKET")
             .map(PathBuf::from)
             .ok_or(CanvasError::Unauthorized)?;
-        let token = std::env::var("JARVIS_APP_TOKEN")
+        let token = std::env::var("DARWIN_APP_TOKEN")
             .ok()
             .filter(|t| !t.is_empty())
             .ok_or(CanvasError::Unauthorized)?;
         let name =
-            std::env::var("JARVIS_APP_NAME").unwrap_or_else(|_| "silicon-canvas".to_string());
+            std::env::var("DARWIN_APP_NAME").unwrap_or_else(|_| "silicon-canvas".to_string());
         // The daemon launches the child with cwd = project root.
         let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Ok(AppEnv {
@@ -1116,7 +1116,7 @@ mod tests {
             socket_path: PathBuf::from("/tmp/does-not-exist.sock"),
             token: "test-token".to_string(),
             name: "silicon-canvas".to_string(),
-            project_root: PathBuf::from("/tmp/jarvis-root"),
+            project_root: PathBuf::from("/tmp/darwin-root"),
         }
     }
 
@@ -1225,7 +1225,7 @@ mod tests {
         st.scene = Some(scene);
         st.graph = Some(graph);
         st.open_path = Some(PathBuf::from(
-            "/tmp/jarvis-root/apps/silicon-canvas/projects/x.kicad_sch",
+            "/tmp/darwin-root/apps/silicon-canvas/projects/x.kicad_sch",
         ));
         st.viewport.layers = vec![LayerVisibility {
             layer: "schematic".into(),
@@ -2249,7 +2249,7 @@ mod tests {
         st.scene = Some(s);
         st.graph = Some(graph);
         st.open_path = Some(PathBuf::from(
-            "/tmp/jarvis-root/apps/silicon-canvas/projects/board.kicad_pcb",
+            "/tmp/darwin-root/apps/silicon-canvas/projects/board.kicad_pcb",
         ));
         st.viewport.layers = vec![
             LayerVisibility { layer: "F.Cu".into(), visible: true },
@@ -2364,7 +2364,7 @@ mod tests {
             socket_path: PathBuf::from("/tmp/silicon-canvas-test-unused.sock"),
             token: token.to_string(),
             name: "silicon-canvas".to_string(),
-            project_root: PathBuf::from("/tmp/jarvis-root"),
+            project_root: PathBuf::from("/tmp/darwin-root"),
         }
     }
 

@@ -491,7 +491,7 @@ impl Memory {
         ))
     }
 
-    /// The last `n` (user utterance, JARVIS response) exchanges, oldest
+    /// The last `n` (user utterance, DARWIN response) exchanges, oldest
     /// first, ready to drop into a chat history. Transcripts without a
     /// recorded response (older rows, failed turns) are skipped.
     pub async fn recent_exchanges(&self, n: usize) -> Result<Vec<(String, String)>> {
@@ -625,14 +625,14 @@ impl Memory {
 
     /// The SQL fragment scoping episodes to one agent's recall view: its OWN
     /// namespace ("agent.<name>") plus SHARED episodes recorded under the
-    /// orchestrator ("agent.jarvis"), NEVER another specialist's private
+    /// orchestrator ("agent.darwin"), NEVER another specialist's private
     /// namespace. This mirrors `agent_scoped_facts`'s own+shared rule: the
     /// orchestrator is the common knowledge tier, so anything it recorded is
     /// visible to all, while a specialist's episodes stay private to it. A query
-    /// scoped to "agent.jarvis" itself sees only jarvis rows (own == shared),
+    /// scoped to "agent.darwin" itself sees only darwin rows (own == shared),
     /// which is correct — the orchestrator's view IS the shared tier.
     const SCOPE_CLAUSE: &'static str =
-        "(agent_namespace = ?1 OR agent_namespace = 'agent.jarvis')";
+        "(agent_namespace = ?1 OR agent_namespace = 'agent.darwin')";
 
     /// The `n` most recent episodes visible to `namespace`, NEWEST first. The
     /// temporal recall primitive. Agent-scoped (own + shared orchestrator rows).
@@ -714,7 +714,7 @@ impl Memory {
     /// FORGET: delete every episode recorded under EXACTLY `namespace` (the
     /// agent's own scope), returning how many rows were removed. The
     /// inspectable+forgettable contract — a user (or the agent's forget path)
-    /// can clear that agent's episodic memory. Passing "agent.jarvis" clears the
+    /// can clear that agent's episodic memory. Passing "agent.darwin" clears the
     /// shared/orchestrator episodes. This deletes only the named namespace's
     /// rows; it never touches another agent's private episodes.
     // Part of the episodic public API (the forgettable contract); consumed by
@@ -753,10 +753,10 @@ impl Memory {
     // appear that the run did not produce.
 
     /// The SQL fragment scoping notebooks to one agent: its OWN namespace plus
-    /// the SHARED orchestrator tier ("agent.jarvis") — mirroring the episodic
+    /// the SHARED orchestrator tier ("agent.darwin") — mirroring the episodic
     /// `SCOPE_CLAUSE`, so a specialist's private notebooks never leak to another.
     const NOTEBOOK_SCOPE_CLAUSE: &'static str =
-        "(agent_namespace = ?1 OR agent_namespace = 'agent.jarvis')";
+        "(agent_namespace = ?1 OR agent_namespace = 'agent.darwin')";
 
     /// Save one SAGE run as a notebook entry under `agent_namespace`/`topic_key`,
     /// returning the new entry's row id. The synthesized text is re-redacted at
@@ -948,7 +948,7 @@ impl Memory {
     /// read time, so a global cap never lets one agent read another's rows.
     /// Returns the number of entries deleted.
     // Bounded-retention surface; exercised by the notebook tests. Its periodic
-    // retention-task caller is the next wiring step (alongside the jarvis.db
+    // retention-task caller is the next wiring step (alongside the darwin.db
     // retention pass), so allow dead_code until then.
     #[allow(dead_code)]
     pub async fn notebook_retention_pass(&self, entries_keep: usize) -> Result<u64> {
@@ -1002,7 +1002,7 @@ mod tests {
     impl TempDb {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "jarvis-memory-test-{}-{}.db",
+                "darwin-memory-test-{}-{}.db",
                 std::process::id(),
                 tag
             ));
@@ -1369,11 +1369,11 @@ mod tests {
         // in depth, mirroring TraceStore::record).
         let db = TempDb::new("ep-redact");
         let mem = Memory::open(&db.0).unwrap();
-        let mut ep = sample_episode("agent.jarvis", "leak sk-ABCDEF0123456789ABCD here");
+        let mut ep = sample_episode("agent.darwin", "leak sk-ABCDEF0123456789ABCD here");
         ep.summary = "summary with sk-ABCDEF0123456789ABCD inside".to_string();
         mem.record_episode(&ep).await.unwrap();
 
-        let got = mem.episodes_recent("agent.jarvis", 5).await.unwrap();
+        let got = mem.episodes_recent("agent.darwin", 5).await.unwrap();
         assert_eq!(got.len(), 1);
         assert!(
             !got[0].utterance_redacted.contains("sk-ABCDEF0123456789ABCD"),
@@ -1397,7 +1397,7 @@ mod tests {
         let mem = Memory::open(&db.0).unwrap();
         mem.record_episode(&sample_episode("agent.friday", "friday market note")).await.unwrap();
         mem.record_episode(&sample_episode("agent.jerome", "jerome song note")).await.unwrap();
-        mem.record_episode(&sample_episode("agent.jarvis", "shared weather note")).await.unwrap();
+        mem.record_episode(&sample_episode("agent.darwin", "shared weather note")).await.unwrap();
 
         let friday = mem.episodes_recent("agent.friday", 10).await.unwrap();
         let texts: Vec<&str> = friday.iter().map(|e| e.utterance_redacted.as_str()).collect();
@@ -1405,8 +1405,8 @@ mod tests {
         assert!(texts.contains(&"shared weather note"), "shared orchestrator missing: {texts:?}");
         assert!(!texts.contains(&"jerome song note"), "cross-agent leak: {texts:?}");
         // The orchestrator's own view IS the shared tier (own == shared).
-        let jarvis = mem.episodes_recent("agent.jarvis", 10).await.unwrap();
-        assert_eq!(jarvis.len(), 1, "jarvis sees only the shared row");
+        let darwin = mem.episodes_recent("agent.darwin", 10).await.unwrap();
+        assert_eq!(darwin.len(), 1, "darwin sees only the shared row");
     }
 
     #[tokio::test]

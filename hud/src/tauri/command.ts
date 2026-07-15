@@ -92,7 +92,7 @@ export interface CommandReply {
  */
 export async function sendCommand(request: CommandRequest): Promise<CommandReply> {
   if (!inTauri()) {
-    return { ok: false, error: "the command deck requires the JARVIS desktop app" };
+    return { ok: false, error: "the command deck requires the DARWIN desktop app" };
   }
   try {
     return await invoke<CommandReply>("send_command", { request });
