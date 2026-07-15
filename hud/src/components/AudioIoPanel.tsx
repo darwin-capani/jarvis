@@ -727,7 +727,7 @@ function AddPronunciationForm({
             value={say}
             onChange={(e) => setSay(e.target.value)}
             disabled={!gateOpen || busy}
-            placeholder="e.g. jar viss"
+            placeholder="e.g. dar win"
             title={gateOpen ? undefined : voiceLabGateCopy(reason)}
           />
         </label>

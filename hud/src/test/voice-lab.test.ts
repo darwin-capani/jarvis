@@ -126,23 +126,23 @@ describe("buildDesignVoiceRequest (mirrors the daemon decide floors)", () => {
 
 describe("buildPronunciationRequest (mirrors the daemon decide floors)", () => {
   it("shapes a single alias rule for a valid word + say", () => {
-    const r = buildPronunciationRequest("  DARWIN  ", "  jar viss  ", "");
+    const r = buildPronunciationRequest("  DARWIN  ", "  dar win  ", "");
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.request).toEqual({ word: "DARWIN", say: "jar viss" });
+      expect(r.request).toEqual({ word: "DARWIN", say: "dar win" });
       // The blank name is OMITTED (the daemon defaults it to a fixed label).
       expect(Object.keys(r.request)).toEqual(["word", "say"]);
     }
   });
 
   it("carries the dictionary name when one is given", () => {
-    const r = buildPronunciationRequest("DARWIN", "jar viss", "My dictionary");
+    const r = buildPronunciationRequest("DARWIN", "dar win", "My dictionary");
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.request.name).toBe("My dictionary");
   });
 
   it("rejects an empty word or an empty say", () => {
-    expect(buildPronunciationRequest("   ", "jar viss", "")).toEqual({
+    expect(buildPronunciationRequest("   ", "dar win", "")).toEqual({
       ok: false,
       error: "no_word",
     });
@@ -166,7 +166,7 @@ describe("classifyVoiceLabReply", () => {
       classifyVoiceLabReply(true, "Designed and saved the Concierge voice for friday."),
     ).toBe("created");
     expect(
-      classifyVoiceLabReply(true, 'Created the pronunciation rule: say "DARWIN" as "jar viss".'),
+      classifyVoiceLabReply(true, 'Created the pronunciation rule: say "DARWIN" as "dar win".'),
     ).toBe("created");
   });
 
@@ -216,14 +216,14 @@ describe("outcome copy is honest + secret-free", () => {
   });
 
   it("pronunciation copy maps each outcome and never claims a phantom creation", () => {
-    const created = pronunciationOutcomeCopy("created", "DARWIN", "jar viss");
+    const created = pronunciationOutcomeCopy("created", "DARWIN", "dar win");
     expect(created).toContain("DARWIN");
-    expect(created).toContain("jar viss");
-    const unavailable = pronunciationOutcomeCopy("unavailable", "DARWIN", "jar viss").toLowerCase();
+    expect(created).toContain("dar win");
+    const unavailable = pronunciationOutcomeCopy("unavailable", "DARWIN", "dar win").toLowerCase();
     expect(unavailable).toContain("nothing was created");
-    const failed = pronunciationOutcomeCopy("failed", "DARWIN", "jar viss").toLowerCase();
+    const failed = pronunciationOutcomeCopy("failed", "DARWIN", "dar win").toLowerCase();
     expect(failed).toContain("nothing was created");
-    expect(pronunciationOutcomeCopy("no_shell", "DARWIN", "jar viss").toLowerCase()).toContain(
+    expect(pronunciationOutcomeCopy("no_shell", "DARWIN", "dar win").toLowerCase()).toContain(
       "desktop app",
     );
   });

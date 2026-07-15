@@ -822,7 +822,7 @@ mod tests {
             {
                 let mut r = req("create_pronunciation");
                 r.word = Some("DARWIN".into());
-                r.say = Some("jar viss".into());
+                r.say = Some("dar win".into());
                 r
             },
             // Phase-3 Compose music — carries a non-empty prompt (length optional).
@@ -882,7 +882,7 @@ mod tests {
         no_say.word = Some("DARWIN".into());
         assert!(build_request(&no_say, "T").is_err()); // no say
         let mut no_word = req("create_pronunciation");
-        no_word.say = Some("jar viss".into());
+        no_word.say = Some("dar win".into());
         assert!(build_request(&no_word, "T").is_err()); // no word
         let mut blank_say = req("create_pronunciation");
         blank_say.word = Some("DARWIN".into());
@@ -926,12 +926,12 @@ mod tests {
     fn build_request_create_pronunciation_carries_only_the_text_rule() {
         let mut r = req("create_pronunciation");
         r.word = Some("  DARWIN  ".into());
-        r.say = Some("  jar viss  ".into());
+        r.say = Some("  dar win  ".into());
         r.name = Some("My dictionary".into());
         let v = build_request(&r, "TOK").unwrap();
         assert_eq!(v["cmd"], "create_pronunciation");
         assert_eq!(v["word"], "DARWIN");
-        assert_eq!(v["say"], "jar viss");
+        assert_eq!(v["say"], "dar win");
         assert_eq!(v["name"], "My dictionary");
         assert_eq!(v["token"], "TOK", "token injected by the backend");
         // ONLY token + cmd + word + say + name — no key/id/audio field.
@@ -940,7 +940,7 @@ mod tests {
         // A blank name is OMITTED (the daemon defaults it to a fixed label).
         let mut no_name = req("create_pronunciation");
         no_name.word = Some("DARWIN".into());
-        no_name.say = Some("jar viss".into());
+        no_name.say = Some("dar win".into());
         let v = build_request(&no_name, "T").unwrap();
         assert!(v.get("name").is_none(), "blank name omitted");
         assert_eq!(v.as_object().unwrap().len(), 4); // token+cmd+word+say
@@ -951,7 +951,7 @@ mod tests {
         // A successful creation → created (the agent now speaks with it).
         let designed = parse_reply(r#"{"ok":true,"reply":"Designed and saved the Concierge voice for friday."}"#);
         assert_eq!(voice_lab_outcome(&designed).outcome, "created");
-        let pron = parse_reply(r#"{"ok":true,"reply":"Created the pronunciation rule: say \"DARWIN\" as \"jar viss\"."}"#);
+        let pron = parse_reply(r#"{"ok":true,"reply":"Created the pronunciation rule: say \"DARWIN\" as \"dar win\"."}"#);
         assert_eq!(voice_lab_outcome(&pron).outcome, "created");
         // A gate-closed rejection NEVER reads as created — it is an honest no-op.
         let offline = parse_reply(
