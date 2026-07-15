@@ -253,6 +253,13 @@ mod speech;
 mod standing;
 mod tcc;
 mod telemetry;
+// THRESHOLD (threshold.rs): a voice-scoped GUEST / restricted-speaker mode. When
+// voice-id reports an UNRECOGNIZED speaker (or the owner toggles guest mode), it
+// projects a restrict-only GUEST scope — a read-only tool allowlist, shared-only
+// recall (never the owner's private facts), and a quieter focus profile — that can
+// ONLY narrow the owner scope. A COURTESY layer on top of the unchanged master
+// switch + confirm + voice-id + policy gates, never a replacement for them.
+mod threshold;
 // FORENSIC TRIAGE SNAPSHOT (aegis): a one-shot READ-ONLY "capture everything" that
 // freezes a REDACTED, timestamped evidence bundle under state/forensics/<ts>/ and
 // folds its manifest SHA-256 into the audit chain + the Keychain external anchor.

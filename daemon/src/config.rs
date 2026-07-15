@@ -123,6 +123,20 @@ pub struct Config {
     /// falls through to the model.
     pub mirror: MirrorConfig,
     pub voice_id: VoiceIdConfig,
+    /// [threshold] — VOICE-SCOPED GUEST MODE (threshold.rs). `enabled` SHIPS ON
+    /// (armed by default): an UNRECOGNIZED speaker (per voice-id) is auto-scoped to
+    /// a restrict-only GUEST scope — a strictly READ-ONLY tool allowlist, recall
+    /// confined to the SHARED tier (never the owner's private `agent.*` facts), and
+    /// a quieter focus profile. Guest scope can ONLY narrow the owner scope; it
+    /// LAYERS ON TOP of — and never replaces — the master switch + per-action
+    /// confirm + voice-id + policy gates, which are unchanged whether or not guest
+    /// mode is on. ARMED-but-INERT: the "unrecognized" signal only exists when
+    /// voice-id is ENFORCING (enrolled), so with voice-id off (the shipped default)
+    /// this scopes nothing until the owner enrolls a voice or explicitly toggles
+    /// guest mode. HONESTY: voice-id is a bar-raiser, not a high-assurance biometric
+    /// (replay-spoofable), so guest mode is a COURTESY boundary, not a security
+    /// backstop.
+    pub threshold: ThresholdConfig,
     pub episodic: EpisodicConfig,
     pub notebooks: NotebookConfig,
     pub lifelog: LifeLogConfig,
@@ -480,6 +494,13 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // "consequential"|"all"
     // (unknown -> "consequential"); listed here so it never reads as a typo.
     ("voice_id", &["enabled", "threshold", "min_enroll_samples", "gate_scope"]),
+    // [threshold] — voice-scoped GUEST mode (threshold.rs). `enabled` is the master
+    // switch and SHIPS ON (armed by default): an unrecognized speaker is auto-scoped
+    // to a restrict-only, read-only, shared-recall-only, quieter GUEST scope. It can
+    // ONLY narrow the owner scope and LAYERS ON TOP of the unchanged master switch +
+    // confirm + voice-id + policy gates. `guest_profile` ("deep_focus" default) is
+    // the quiet focus lens a guest turn uses (restrict-only for any value).
+    ("threshold", &["enabled", "guest_profile"]),
     // [episodic] — the episodic store (episodic.rs). UNLIKE self_heal/forge/
     // optimize/voice_id, `enabled` SHIPS ON (true): it is the SAME always-on,
     // bounded, local posture as the transcripts table / lifelong-learning fact
@@ -2538,6 +2559,47 @@ impl Default for VoiceIdConfig {
     }
 }
 
+/// [threshold] — VOICE-SCOPED GUEST MODE (threshold.rs). A restrict-only GUEST
+/// scope applied when voice-id reports an UNRECOGNIZED speaker (or the owner
+/// toggles guest mode): a strictly READ-ONLY tool allowlist, recall confined to
+/// the SHARED tier (never the owner's private `agent.*` facts, reusing the existing
+/// namespace-isolation guard), and a quieter focus profile.
+///
+/// The guest scope can ONLY narrow the owner scope (restrict-only, proven in
+/// threshold.rs). It LAYERS ON TOP of — never replaces — the master switch +
+/// per-action confirm + voice-id + policy gates, which are UNCHANGED whether or not
+/// guest mode is on. HONESTY: voice-id is a bar-raiser, not a high-assurance
+/// biometric (replay-spoofable), so guest mode is a COURTESY boundary, not a
+/// security backstop.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ThresholdConfig {
+    /// Master switch, SHIPS ON (armed by default): an unrecognized speaker is
+    /// auto-scoped to guest. ARMED-but-INERT — the "unrecognized" signal only
+    /// exists when voice-id is ENFORCING (enrolled), so with voice-id off (the
+    /// shipped default) this scopes nothing until a voice is enrolled OR guest mode
+    /// is explicitly toggled. False => guest scope never applies (owner behavior
+    /// byte-for-byte).
+    pub enabled: bool,
+    /// The (quiet) focus profile a guest turn uses. Ships "deep_focus" (only a
+    /// genuinely CRITICAL signal surfaces). Parsed via
+    /// `focus::FocusProfile::from_config_str`, which is restrict-only for ANY string
+    /// — so even a typo can only ever quiet, never broaden.
+    pub guest_profile: String,
+}
+
+impl Default for ThresholdConfig {
+    fn default() -> Self {
+        Self {
+            // SHIPS ARMED (full-power default), but INERT until voice-id is enrolled
+            // — see the doc above.
+            enabled: true,
+            // A genuinely quiet guest lens: only Critical surfaces, no digest.
+            guest_profile: "deep_focus".to_string(),
+        }
+    }
+}
+
 /// [forge] — Self-Forge (forge.rs): DARWIN authoring a NEW sandboxed micro-app
 /// from a goal. The SAME gated-codegen contract as [self_heal], generalized
 /// from "patch the daemon" to "author an app":
@@ -3644,6 +3706,7 @@ impl Config {
             calibrate: section(&table, "calibrate", &mut issues),
             mirror: section(&table, "mirror", &mut issues),
             voice_id: section(&table, "voice_id", &mut issues),
+            threshold: section(&table, "threshold", &mut issues),
             episodic: section(&table, "episodic", &mut issues),
             notebooks: section(&table, "notebooks", &mut issues),
             lifelog: section(&table, "lifelog", &mut issues),

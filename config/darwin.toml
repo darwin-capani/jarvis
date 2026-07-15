@@ -460,6 +460,26 @@ threshold = 0.86             # cosine ACCEPT on the acoustic embedding (max over
 min_enroll_samples = 3       # how many owner utterances the explicit "enroll my voice" flow captures before the local profile is saved.
 gate_scope = "consequential" # "consequential" (default): gate only outward/consequential actions + the confirmation replay. "all": ALSO block non-consequential commands from an unrecognized speaker (a stricter posture). Unknown values fall back to "consequential" (never silently to "all").
 
+[threshold]
+# VOICE-SCOPED GUEST MODE (daemon/src/threshold.rs): when voice-id reports an
+# UNRECOGNIZED speaker (or the owner toggles guest mode on), DARWIN applies a
+# restrict-only GUEST scope for the turn — a strictly READ-ONLY tool allowlist (no
+# consequential/outward tools, no writes), recall confined to the SHARED tier
+# (never the owner's private agent.* facts — it REUSES voiceid/memory's existing
+# namespace-isolation guard via a reserved sentinel namespace), and a quieter focus
+# profile. A guest scope is DERIVED from the owner scope and is provably NO BROADER
+# than it on every axis: it can only ever REMOVE tools, confine recall, and quiet.
+#
+# HONESTY: voice-id is a bar-RAISER, not a high-assurance biometric (it is
+# replay-/impersonation-spoofable). Guest mode is therefore a COURTESY boundary
+# LAYERED ON TOP of — NEVER a replacement for — the real backstops: the
+# [integrations] allow_consequential master switch, the per-action spoken confirm
+# gate, the voice-id owner gate, and the per-action [policy] layer. Those are
+# UNCHANGED whether or not guest mode is on; a guest turn is gated AT LEAST as
+# strictly as an owner turn, never more loosely.
+enabled = true               # master switch, SHIPS ON (armed by default): an unrecognized speaker is auto-scoped to guest. ARMED-but-INERT — the "unrecognized" signal only exists when [voice_id] is ENFORCING (enabled + a profile enrolled), so with voice-id off (the shipped default) this scopes NOTHING until the owner enrolls a voice OR explicitly toggles guest mode. false => guest scope never applies (owner behavior byte-for-byte).
+guest_profile = "deep_focus" # the (quiet) focus profile a guest turn uses. Ships "deep_focus" (only a genuinely CRITICAL signal surfaces — a stranger doesn't get the owner's proactive intel). Parsed via focus::FocusProfile::from_config_str, which is restrict-only for ANY string, so even a typo can only ever quiet, never broaden. Other sensible values: "sleep", "work", or any custom name.
+
 [episodic]
 # The EPISODIC STORE (daemon/src/episodic.rs): DARWIN's durable, redacted,
 # agent-scoped, BOUNDED memory of completed interactions, plus the recall over it
