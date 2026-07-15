@@ -1555,7 +1555,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "standing_create",
-                "description": "ESTABLISH a STANDING MISSION: a durable, autonomous goal DARWIN runs either ON A SCHEDULE (e.g. 'every morning, review my deadlines and flag anything slipping'; 'every 6 hours, check the world model for blocked tasks') OR as a TRIPWIRE that fires when a condition on the machine/account state is crossed (e.g. 'when free disk drops below 10%, review large files'; 'when I have more than 5 unread, triage them'; 'when a calendar event is within 15 minutes, prep me'). Each run reasons over the shared World Model and runs through FURY's bounded mission engine, RE-REASONED each time it fires (never a frozen macro). Call this ONLY when the user asks for something to happen REPEATEDLY / ON A SCHEDULE / STANDINGLY, or REACTIVELY WHEN SOME CONDITION HOLDS — not for a one-shot request (answer that directly) and not for a single multi-step job (use fury_mission). SAFETY — establishing a standing mission (including ARMING a tripwire) is a CONFIRMED action: this never silently spawns recurring/reactive autonomy. When consequential actions are enabled it PARKS for a spoken human 'yes' on a later turn (it previews 'I'll set up a standing mission to <goal>, <schedule> — confirm?' and creates nothing until confirmed); when they are off it only previews. A tripwire may only READ + REASON — it holds no actuator; every consequential step a run proposes still waits for confirmation, so a mission can NEVER auto-send/post/spend. The standing-missions subsystem ships ON ([standing].enabled = true); if the operator disables it, a created mission does not fire. Bounded: at most a few active missions. 'goal' is the objective; 'schedule' is the cadence OR the condition in plain words.",
+                "description": "ESTABLISH a STANDING MISSION: a durable, autonomous goal DARWIN runs either ON A SCHEDULE (e.g. 'every morning, review my deadlines and flag anything slipping'; 'every 6 hours, check the world model for blocked tasks') OR as a TRIPWIRE that fires when a condition on the machine/account state is crossed (e.g. 'when free disk drops below 10%, review large files'; 'when I have more than 5 unread, triage them'; 'when a calendar event is within 15 minutes, prep me'). Each run reasons over the shared World Model and runs through FURY's bounded mission engine, RE-REASONED each time it fires (never a frozen macro). Call this ONLY when the user asks for something to happen REPEATEDLY / ON A SCHEDULE / STANDINGLY, or REACTIVELY WHEN SOME CONDITION HOLDS — not for a one-shot request (answer that directly) and not for a single multi-step job (use fury_mission). SAFETY — establishing a standing mission (including ARMING a tripwire) is a CONFIRMED action: this never silently spawns recurring/reactive autonomy. When consequential actions are enabled it PARKS for a spoken human 'yes' on a later turn (it previews 'I'll set up a standing mission to <goal>, <schedule> — confirm?' and creates nothing until confirmed); when they are off it only previews. A tripwire may only READ + REASON — it holds no actuator; every consequential step a run proposes goes through the SAME confirmation gate + per-action policy a direct request would (it parks for a spoken yes unless the user granted that specific tool a standing always-allow), so a mission never acts more freely than the user themselves. The standing-missions subsystem ships ON ([standing].enabled = true); if the operator disables it, a created mission does not fire. Bounded: at most a few active missions. 'goal' is the objective; 'schedule' is the cadence OR the condition in plain words.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -7777,8 +7777,10 @@ async fn dispatch_tool(
         // execute_tool parks a create for a human yes, and DARWIN never silently
         // spawns a recurring mission. The [standing].enabled subsystem master switch
         // ships ON, so a created mission runs on schedule — but every consequential
-        // step a RUN proposes parks again (it can never auto-send/post/spend), and
-        // disabling the subsystem stops a created mission from firing. Honest about cost: it
+        // step a RUN proposes goes through the SAME confirm gate + per-action policy a
+        // direct request would (it parks for a fresh yes unless the user granted that
+        // tool a standing always-allow; never more freely than the user themselves),
+        // and disabling the subsystem stops a created mission from firing. Honest about cost: it
         // persists nothing on a preview, and reports exactly what it set up.
         "standing_create" => match serde_json::from_value::<StandingCreateArgs>(input.clone()) {
             Ok(args) => Ok(standing_create_tool(memory, &args.goal, &args.schedule, args.confirm).await),
@@ -10079,8 +10081,10 @@ async fn standing_create_tool(memory: &Memory, goal: &str, schedule: &str, confi
             format!(
                 "Standing mission established: \"{}\" — {}. It's saved (id {}). \
                  The standing-missions subsystem is on by default, so it will run on \
-                 schedule; any consequential step it proposes will still wait for your \
-                 confirmation (it can never auto-send, post, or spend).",
+                 schedule; any consequential step it proposes goes through the same \
+                 confirmation gate and per-action policy a direct request would — it \
+                 parks for your spoken yes unless you've granted that specific tool a \
+                 standing always-allow, and it never acts more freely than you would.",
                 m.goal,
                 m.schedule.describe(),
                 m.id,

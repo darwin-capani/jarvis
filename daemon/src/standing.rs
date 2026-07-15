@@ -21,8 +21,10 @@
 //! tripwire RE-REASONS its response each time it fires (never a frozen macro). The
 //! result surfaces to the HUD as a `standing.*` telemetry card and is only SPOKEN
 //! when proactive speech is on. A tripwire may only READ + REASON; it holds no
-//! actuator, and every consequential step a run proposes still PARKS behind the
-//! confirmation gate. Arming a tripwire is itself the CONFIRMED `standing_create`.
+//! actuator, and every consequential step a run proposes routes through the SAME
+//! confirmation gate + per-action policy a DIRECT request would — parking for a
+//! fresh spoken "yes" UNLESS you have granted that specific tool a standing
+//! "always-allow" policy. Arming a tripwire is itself the CONFIRMED `standing_create`.
 //!
 //! ## The two safety rails (non-negotiable)
 //!
@@ -36,14 +38,17 @@
 //!    (armed), so a create PARKS for a spoken yes; with the master switch OFF
 //!    (lockdown, or an operator who disarmed it) it previews and creates nothing.
 //!
-//! 2. **NO SILENT AUTONOMY when a mission RUNS.** A run reuses
-//!    [`crate::mission::run_mission`], so every sub-task executes as its OWNING
-//!    specialist under that specialist's tool allowlist, and every CONSEQUENTIAL
-//!    step (post/send/spend/control) STILL routes through the SAME confirmation
-//!    gate + the armed-by-default master switch (ON, but a confirmed action still
-//!    needs a fresh confirm) — a standing mission can never auto-send, auto-post, or
-//!    auto-spend; those steps PARK exactly as a direct request would. A run does
-//!    autonomous READING/REASONING; any outward action waits for a human yes.
+//! 2. **NO AUTONOMY BEYOND WHAT YOU ALREADY AUTHORIZED when a mission RUNS.** A run
+//!    reuses [`crate::mission::run_mission`], so every sub-task executes as its
+//!    OWNING specialist under that specialist's tool allowlist, and every
+//!    CONSEQUENTIAL step (post/send/spend/control) routes through the SAME
+//!    confirmation gate + per-action policy + master switch a DIRECT request would —
+//!    a standing mission never acts more freely than you acting yourself. Such a step
+//!    PARKS for a fresh spoken "yes" UNLESS you have granted that specific tool a
+//!    standing "always-allow" policy, in which case it acts under exactly the
+//!    authorization you configured (and only that tool — the master switch and
+//!    lockdown still bind). A run does autonomous READING/REASONING; any outward
+//!    action it takes is one you have already authorized, per-time or via policy.
 //!
 //! The standing-missions subsystem ships ON (`[standing] enabled = true`, full-power
 //! default), but establishing a mission is still confirmation-gated and every
@@ -723,12 +728,29 @@ impl TripwireLedger {
             .unwrap_or(false)
     }
 
-    /// Set `id`'s latch state (bounded by the active-mission cap; <= [`MAX_ACTIVE`]).
+    /// Set `id`'s latch state. The ledger is kept bounded by the ACTIVE
+    /// condition-mission set via [`retain_ids`](Self::retain_ids), called each eval —
+    /// so it never accumulates entries for cancelled/edited tripwires.
     pub fn set(&mut self, id: &str, v: bool) {
         match self.latched.iter_mut().find(|(k, _)| k == id) {
             Some(slot) => slot.1 = v,
             None => self.latched.push((id.to_string(), v)),
         }
+    }
+
+    /// Drop latch entries whose id no longer belongs to a live tripwire. Called each
+    /// eval against the CURRENT condition-mission ids, so the ledger stays bounded by
+    /// the active set (<= [`MAX_ACTIVE`]) instead of growing with every distinct id
+    /// ever seen over the daemon's uptime (a cancelled/edited tripwire mints a new
+    /// content-derived id, leaving the old entry stranded without this).
+    pub fn retain_ids<F: Fn(&str) -> bool>(&mut self, keep: F) {
+        self.latched.retain(|(k, _)| keep(k));
+    }
+
+    /// The number of latch entries currently held (test-only accessor for the bound).
+    #[cfg(test)]
+    pub fn latched_count(&self) -> usize {
+        self.latched.len()
     }
 }
 
@@ -800,6 +822,14 @@ pub fn due_condition_missions<'a>(
     if !master_enabled {
         return fired; // inert when the subsystem is off / locked down
     }
+    // Keep the latch ledger bounded to the CURRENT tripwire set: drop entries for
+    // cancelled/edited condition missions so it can't grow unbounded over uptime.
+    let live: std::collections::HashSet<&str> = missions
+        .iter()
+        .filter(|m| matches!(m.schedule, Schedule::Condition { .. }))
+        .map(|m| m.id.as_str())
+        .collect();
+    ledger.retain_ids(|id| live.contains(id));
     for m in missions {
         if !m.enabled {
             continue;
@@ -1783,5 +1813,23 @@ mod tests {
         // A TIME mission carries NO arm frame (it keeps the plain standing.created).
         let time = StandingMission::new("morning review", Schedule::parse("daily at 8"));
         assert!(tripwire_armed_telemetry(&time).is_none(), "a time mission emits no tripwire-arm frame");
+    }
+
+    #[test]
+    fn the_tripwire_ledger_stays_bounded_to_the_live_mission_set() {
+        // REGRESSION: the latch ledger must not accumulate stale entries for
+        // cancelled/edited tripwires. due_condition_missions reconciles it against the
+        // CURRENT condition missions each eval, so it stays bounded by the active set.
+        let mut ledger = TripwireLedger::default();
+        let sig = Signals::default();
+        // Eval round 1: two live tripwires.
+        let a = StandingMission::new("free space", Schedule::Condition { cond: Condition::DiskFreePctBelow { pct: 10.0 } });
+        let b = StandingMission::new("triage unread", Schedule::Condition { cond: Condition::UnreadAtLeast { count: 5 } });
+        let _ = due_condition_missions(&[a.clone(), b.clone()], &sig, 1_000, &mut ledger, true, 3600);
+        // Eval round 2: `a` was cancelled and replaced by a NEW tripwire `c` (a
+        // distinct content-derived id) — the stale entry for `a` must be dropped.
+        let c = StandingMission::new("check backups", Schedule::Condition { cond: Condition::DiskFreePctBelow { pct: 5.0 } });
+        let _ = due_condition_missions(&[b.clone(), c.clone()], &sig, 2_000, &mut ledger, true, 3600);
+        assert!(!ledger.latched(&a.id) && ledger.latched_count() <= 2, "stale id pruned; bounded to the live set");
     }
 }

@@ -180,17 +180,32 @@ struct Findings {
 // Pure parsers — one per surface, unit-tested on canned output. No I/O.
 // ---------------------------------------------------------------------------
 
-/// PURE: is a name an Apple-issued certificate (benign in the trust store)? A
-/// non-Apple trusted root is the loud artifact.
+/// PURE: does a certificate name match a RECOGNIZED Apple identity? Deliberately
+/// STRICT: a loose `contains("apple")` is trivially spoofable — an attacker names a
+/// rogue root "Apple Internal Root CA" or "Pineapple Security CA" to be waved
+/// through as benign — so we recognize ONLY the reverse-DNS `com.apple.` prefix or
+/// an EXACT known Apple root CN. HONESTY: this is still a NAME heuristic, not
+/// cryptographic issuer verification — it only suppresses the LOUDEST warning for
+/// the common genuine case; anything unmatched is surfaced for the user to confirm,
+/// so the failure direction is a benign false-positive, never a false clean.
 fn name_is_apple(name: &str) -> bool {
-    let l = name.to_lowercase();
-    l.contains("apple") || l.starts_with("com.apple")
+    let l = name.trim().to_lowercase();
+    l.starts_with("com.apple.")
+        || matches!(
+            l.as_str(),
+            "apple root ca"
+                | "apple root ca - g2"
+                | "apple root ca - g3"
+                | "apple root certificate authority"
+        )
 }
 
 /// PURE: an IPv4/IPv6 loopback address (the `127.0.0.0/8` block, `::1`, or the
-/// link-local `fe80::1` loopback alias macOS uses for localhost).
+/// `fe80::1` link-local loopback alias — EXACT, optionally with a zone id like
+/// `fe80::1%en0`). NOT a prefix match: `fe80::1abc` / `fe80::1234` are ordinary
+/// link-local hosts, not loopback.
 fn is_loopback_ip(ip: &str) -> bool {
-    ip.starts_with("127.") || ip == "::1" || ip.starts_with("fe80::1")
+    ip.starts_with("127.") || ip == "::1" || ip == "fe80::1" || ip.starts_with("fe80::1%")
 }
 
 /// PURE: loopback OR the null/unspecified addresses a "block" hosts entry uses.
@@ -368,13 +383,18 @@ fn parse_system_certs(text: &str) -> Vec<SysCert> {
     out
 }
 
-/// PURE: the text inside the LAST pair of double quotes on a line, or `None` when
-/// there isn't a pair. `security` renders a cert label as `"labl"<blob>="Name"`
-/// (or `…=0x…  "Name"`), so the value is always the final quoted span.
+/// PURE: the quoted VALUE of a `security` attribute line, or `None` when the value
+/// is unquoted. `security` renders a label as `"labl"<blob>="Name"` (or
+/// `…=0x…  "Name"`), so the value is a quoted span AFTER the `=` separator. A NULL
+/// attribute prints `"labl"<blob>=<NULL>` (value unquoted) — this must yield `None`,
+/// NOT the quotes around the attribute NAME before the `=` (which used to return the
+/// bogus literal "labl" and fabricate a certificate finding). The first `=` is
+/// always the attr/value separator (an attribute name never contains `=`).
 fn extract_quoted_tail(line: &str) -> Option<String> {
-    let end = line.rfind('"')?;
-    let start = line[..end].rfind('"')?;
-    Some(line[start + 1..end].to_string())
+    let (_, value) = line.split_once('=')?;
+    let end = value.rfind('"')?;
+    let start = value[..end].rfind('"')?;
+    Some(value[start + 1..end].to_string())
 }
 
 /// PURE: parse `profiles show`. "There are no configuration profiles installed" →
@@ -991,7 +1011,7 @@ Cert 0: mitmproxy
    Number of trust settings : 1
    Trust Setting 0:
       Result Type            : kSecTrustSettingsResultTrustRoot
-Cert 1: Apple Corporate Root CA
+Cert 1: Apple Root CA - G3
    Number of trust settings : 1
    Trust Setting 0:
       Result Type            : kSecTrustSettingsResultTrustRoot";
@@ -999,8 +1019,10 @@ Cert 1: Apple Corporate Root CA
         assert_eq!(roots.len(), 2, "{roots:?}");
         let rogue = roots.iter().find(|c| c.name == "mitmproxy").unwrap();
         assert!(!rogue.apple, "a non-Apple trusted root is the loud artifact");
-        let apple = roots.iter().find(|c| c.name.contains("Apple")).unwrap();
-        assert!(apple.apple, "an Apple root is classified benign");
+        // A GENUINE Apple root CN is recognized (a spoofable "Apple Corporate/Internal
+        // Root CA" would NOT be — see apple_recognition_is_strict_and_not_name_spoofable).
+        let apple = roots.iter().find(|c| c.name == "Apple Root CA - G3").unwrap();
+        assert!(apple.apple, "a genuine Apple root is classified benign");
 
         // An unrecognized / privilege-error shape => HONEST SKIP, never a fake clean.
         let err = parse_trust_settings("SecTrustSettingsCopyCertificates: authorization denied");
@@ -1289,5 +1311,41 @@ _computerlevel[1] attribute: name: Acme Device Management";
         // A missing file => an honest SKIP, never "no entries".
         assert!(collect_hosts_from(&dir.join("nope")).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn apple_recognition_is_strict_and_not_name_spoofable() {
+        // REGRESSION: a loose contains("apple") let an attacker name a rogue root
+        // "Apple Internal Root CA" / "Pineapple Security CA" to be waved through as
+        // benign — a false clean. Only the reverse-DNS prefix or an exact known Apple
+        // root CN counts now.
+        assert!(name_is_apple("com.apple.kerberos.kdc"));
+        assert!(name_is_apple("Apple Root CA"));
+        assert!(name_is_apple("Apple Root CA - G3"));
+        assert!(!name_is_apple("Apple Internal Root CA"), "spoofed name not benign");
+        assert!(!name_is_apple("Pineapple Security CA"), "substring 'apple' not benign");
+        assert!(!name_is_apple("Corporate Proxy CA"));
+        assert!(!name_is_apple("mitmproxy"));
+    }
+
+    #[test]
+    fn extract_quoted_tail_handles_a_null_label_value() {
+        // REGRESSION: `"labl"<blob>=<NULL>` must yield None (no quoted value), NOT the
+        // quotes around the attribute NAME (which fabricated a bogus "labl" cert).
+        assert_eq!(extract_quoted_tail(r#""labl"<blob>="My Cert""#).as_deref(), Some("My Cert"));
+        assert_eq!(extract_quoted_tail(r#""labl"<blob>=<NULL>"#), None);
+        assert_eq!(extract_quoted_tail(r#""labl"<blob>=0x1A2B  "Trailing Name""#).as_deref(), Some("Trailing Name"));
+    }
+
+    #[test]
+    fn loopback_ip_match_is_exact_not_a_prefix() {
+        assert!(is_loopback_ip("127.0.0.1"));
+        assert!(is_loopback_ip("::1"));
+        assert!(is_loopback_ip("fe80::1"));
+        assert!(is_loopback_ip("fe80::1%en0"));
+        // Ordinary link-local hosts are NOT loopback (the old prefix match said yes).
+        assert!(!is_loopback_ip("fe80::1abc"));
+        assert!(!is_loopback_ip("fe80::1234:5678"));
+        assert!(!is_loopback_ip("10.0.0.5"));
     }
 }

@@ -934,6 +934,17 @@ pub fn resolve_belief(profile: &Profile, key_or_term: &str) -> Vec<ProfileEntry>
             return exact;
         }
     }
+    // Loose term match — but ONLY when the subject yields usable query terms. A
+    // subject that tokenizes to NOTHING (e.g. a single-char "c" / "r" / "3", since
+    // query_terms drops <=1-char tokens) must NOT fall through to filter_profile's
+    // empty-terms WHOLE-PROFILE passthrough. That passthrough is query()'s "what do
+    // you know about me" behavior; here it would make an explain/contest about ONE
+    // short subject resolve to EVERY belief — and contest_belief deletes + writes a
+    // suppression tombstone for each resolved entry, so a single utterance like
+    // "you're wrong about C" would wipe and permanently suppress the entire model.
+    if query_terms(q).is_empty() {
+        return Vec::new();
+    }
     filter_profile(profile.clone(), q).entries
 }
 
@@ -1958,6 +1969,37 @@ mod tests {
             "every write stays under the shared model tier: {:?}",
             real.suppressed
         );
+    }
+
+    #[tokio::test]
+    async fn contesting_a_one_char_subject_never_wipes_the_whole_model() {
+        // REGRESSION: a subject that tokenizes to NOTHING (a single char like "c" —
+        // query_terms drops <=1-char tokens) must resolve to NO belief, not the whole
+        // profile. Otherwise "you're wrong about C" would delete + permanently
+        // suppress every learned belief. resolve_belief must return honest-empty, not
+        // fall through to filter_profile's empty-terms whole-profile passthrough.
+        let db = TempDb::new("mirror-onechar");
+        let mem = Memory::open(&db.0).unwrap();
+        // Seed SEVERAL beliefs so "the whole model survives" is a meaningful assertion.
+        let facts = vec![
+            ("user.preference.editor".to_string(), "neovim".to_string()),
+            ("user.preference.shell".to_string(), "fish".to_string()),
+            ("user.preference.language".to_string(), "rust".to_string()),
+        ];
+        consolidate(&mem, &[], &facts).await.unwrap();
+        let before = snapshot(&mem).await.unwrap().entries.len();
+        assert!(before >= 2, "seeded profile has several beliefs (got {before})");
+        for probe in ["c", "r", "3", " x "] {
+            let c = contest_belief(&mem, probe).await.unwrap();
+            assert!(!c.any(), "a one-char subject '{probe}' contests NOTHING: {:?}", c.dropped);
+        }
+        assert_eq!(
+            snapshot(&mem).await.unwrap().entries.len(),
+            before,
+            "the whole model survives a one-char contest"
+        );
+        // And a one-char explain surfaces nothing (honest-empty), not the whole profile.
+        assert!(explain_belief(&mem, "c").await.unwrap().entries.is_empty());
     }
 
     #[test]
