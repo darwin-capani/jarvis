@@ -118,7 +118,7 @@ A single local engine + per-agent profiles (not 27 separate models) gives DARWIN
 
 ### The voice & persona
 
-DARWIN answers out loud in the register of the Iron Man films' DARWIN: a composed British butler-AI that addresses you as "sir," with dry understatement, kept to a few sentences. The persona (`inference/prompts/persona.txt`) is the single source of truth; there are no canned replies — every response is phrased live by the LLM from real handler data, and the persona greets and answers naturally from its first word (the old canned "Right away, sir." task-ack now ships **OFF** — set `[speech].instant_opener = true` to bring it back).
+DARWIN answers out loud in the register of the Iron Man films' butler-AI: a composed British voice that addresses you as "sir," with dry understatement, kept to a few sentences. The persona (`inference/prompts/persona.txt`) is the single source of truth; there are no canned replies — every response is phrased live by the LLM from real handler data, and the persona greets and answers naturally from its first word (the old canned "Right away, sir." task-ack now ships **OFF** — set `[speech].instant_opener = true` to bring it back).
 
 Two voice engines back this, consistent with the rest of the system — **armed by default, inert without their dependency:**
 

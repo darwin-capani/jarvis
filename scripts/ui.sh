@@ -1143,10 +1143,10 @@ darwin_banner() {
 
     # PROGRESSIVE REVEAL — each HUD element comes online in sequence with a beat.
     _ui_nap 0.12
-    # WORDMARK DECODE-IN (flourish A): "J . A . R . V . I . S ." resolves from a
+    # WORDMARK DECODE-IN (flourish A): "D . A . R . W . I . N ." resolves from a
     # few frames of scrambled glyphs, locking in left-to-right (instant +
     # centered off-tty — identical final artifact).
-    _ui_wordmark_decode "J . A . R . V . I . S ." "${UI_BOLD}${UI_BRIGHT}"
+    _ui_wordmark_decode "D . A . R . W . I . N ." "${UI_BOLD}${UI_BRIGHT}"
     _ui_nap 0.10
     _ui_centerline "Digital Assistant Running Wholly In-house, Natively" "${UI_DIM}${UI_ICE}"
     printf '\n'
@@ -1809,7 +1809,7 @@ ui_online() {
     _ui_nap 0.08
 
     # ONLINE wordmark — decodes in on a tty (instant + centered off-tty).
-    local msg="J . A . R . V . I . S .   I S   O N L I N E"
+    local msg="D . A . R . W . I . N .   I S   O N L I N E"
     if [ "$UI_COLOR_MODE" = "none" ]; then
         _ui_centerline "$msg"
     else
