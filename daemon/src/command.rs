@@ -163,6 +163,17 @@ pub enum Command {
     /// paired-device bundle from the inbox (conflict-aware, never clobbers).
     /// Operator-triggered; off unless [sync].enabled + a Keychain shared key.
     Sync,
+    /// CONTINUITY HANDOFF (handoff.rs): seal the CURRENT session's context
+    /// (transcript window, active agent, mission ref, pending world-model deltas,
+    /// draft ids, focus profile) to the outbox for the paired Mac. Carries NO
+    /// resolved credential/bearer (redacted like a macro); authority never
+    /// transfers. Operator-triggered; off unless [handoff].enabled + a shared key.
+    Handoff,
+    /// CONTINUITY HANDOFF (handoff.rs): open + restore + PARK every sealed session
+    /// capsule a paired Mac left in the inbox. Restoring context is NOT restoring
+    /// permission — the restored session PARKS; every consequential step re-hits
+    /// the fresh confirm + voice-id + master switch. Off unless [handoff].enabled.
+    Resume,
     /// OVERNIGHT AGENTS (F10): ENQUEUE a task to run while the user is away. Does
     /// NOT run it here — enqueuing is a local write; the presence-gated
     /// overnight_task runs it (tool-less) later. Off unless [overnight].enabled.
@@ -311,6 +322,8 @@ fn decide(raw: &str) -> Decision {
         "state" => Command::State,
         "distill" => Command::Distill,
         "sync" => Command::Sync,
+        "handoff" => Command::Handoff,
+        "resume" => Command::Resume,
         "overnight" => {
             let task = clamp_text(req.prompt);
             if task.trim().is_empty() {
@@ -525,6 +538,16 @@ pub trait CommandPipeline: Send + Sync {
     /// merge a paired-device bundle, NEVER exporting anything in the clear and
     /// NEVER silently clobbering. Off unless [sync].enabled + a shared key.
     fn sync(&self) -> impl std::future::Future<Output = String> + Send;
+    /// CONTINUITY HANDOFF (handoff.rs): seal the CURRENT session's context to the
+    /// paired Mac's outbox. Carries NO resolved credential/bearer (redacted like a
+    /// macro); authority never transfers. Off unless [handoff].enabled + a shared
+    /// key. Returns a spoken-style ack.
+    fn handoff(&self) -> impl std::future::Future<Output = String> + Send;
+    /// CONTINUITY HANDOFF (handoff.rs): open + restore + PARK every sealed capsule
+    /// a paired Mac left in the inbox. Restoring context PARKS — it never restores
+    /// permission. Off unless [handoff].enabled + a shared key. Returns a
+    /// spoken-style summary.
+    fn resume(&self) -> impl std::future::Future<Output = String> + Send;
     /// OVERNIGHT AGENTS (F10): ENQUEUE a task for the next away-window. A local
     /// write only — never runs the task here. Off unless [overnight].enabled.
     fn overnight(&self, task: &str, agent: Option<&str>) -> impl std::future::Future<Output = String> + Send;
@@ -839,6 +862,14 @@ where
             telemetry::emit("system", "command.routed", json!({"cmd": "sync"}));
             json!({"ok": true, "reply": pipeline.sync().await})
         }
+        Command::Handoff => {
+            telemetry::emit("system", "command.routed", json!({"cmd": "handoff"}));
+            json!({"ok": true, "reply": pipeline.handoff().await})
+        }
+        Command::Resume => {
+            telemetry::emit("system", "command.routed", json!({"cmd": "resume"}));
+            json!({"ok": true, "reply": pipeline.resume().await})
+        }
         Command::Overnight { task, agent } => {
             telemetry::emit("system", "command.routed", json!({"cmd": "overnight"}));
             json!({"ok": true, "reply": pipeline.overnight(&task, agent.as_deref()).await})
@@ -1102,6 +1133,84 @@ impl LivePipeline {
             .and_then(|a| self.agents.get(a))
             .unwrap_or_else(|| self.agents.orchestrator())
     }
+
+    /// Assemble a [`crate::handoff::SessionCapsule`] from the reachable live
+    /// session references. The transcript window comes from the ALREADY-REDACTED
+    /// optimizer trace store; the refs (agent, mission id, draft ids, world-model
+    /// state, focus profile) come from the durable stores. build_capsule redacts
+    /// the free-text a second time (defensive, idempotent), so no resolved
+    /// credential/bearer can ride across. Read-only over every source.
+    async fn build_session_capsule(&self) -> crate::handoff::SessionCapsule {
+        let mem = self.memory.as_ref();
+        // Transcript window: the recent redacted turns (secret-free at the source).
+        let transcript_window = match crate::optimize::global_trace_store() {
+            Some(store) => store
+                .recent(HANDOFF_TRANSCRIPT_WINDOW)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|t| t.utterance_redacted)
+                .collect(),
+            None => Vec::new(),
+        };
+        let active_agent = self.agents.orchestrator().name.clone();
+        // Mission ref: the most recent durable mission (its id only), if any.
+        let mission_ref = crate::durable_missions::list(mem)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .next()
+            .map(|m| m.id);
+        // Pending world-model deltas: the current structured world rendered as
+        // short delta refs (redacted at build).
+        let world_deltas = match crate::world_model::snapshot(mem).await {
+            Ok(state) => render_world_deltas(&state),
+            Err(_) => Vec::new(),
+        };
+        let draft_ids = crate::drafts::list(mem)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        let focus_profile = self.cfg.focus.profile.clone();
+        crate::handoff::build_capsule(
+            &crate::sync::device_id(mem).await,
+            &chrono::Utc::now().to_rfc3339(),
+            crate::handoff::SessionRefs {
+                transcript_window,
+                active_agent,
+                mission_ref,
+                world_deltas,
+                draft_ids,
+                focus_profile,
+            },
+        )
+    }
+}
+
+/// How many recent redacted turns a handoff capsule carries as its transcript
+/// window. Bounded (a resume hint, not an archive); the capsule builder caps it
+/// again defensively.
+const HANDOFF_TRANSCRIPT_WINDOW: usize = 40;
+
+/// Render a structured world-model snapshot into short, secret-free delta refs
+/// for a handoff capsule (each is redacted again at build time). Pure.
+fn render_world_deltas(state: &crate::world_model::WorldState) -> Vec<String> {
+    let mut out = Vec::new();
+    for e in &state.entities {
+        for (attr, val) in &e.attributes {
+            out.push(format!("{} {}={}", e.name, attr, val));
+        }
+    }
+    for r in &state.relationships {
+        if r.value.is_empty() {
+            out.push(format!("{} {} {}", r.from, r.relation, r.to));
+        } else {
+            out.push(format!("{} {} {} ({})", r.from, r.relation, r.to, r.value));
+        }
+    }
+    out
 }
 
 impl CommandPipeline for LivePipeline {
@@ -1194,6 +1303,43 @@ impl CommandPipeline for LivePipeline {
             key,
         )
         .await
+    }
+
+    async fn handoff(&self) -> String {
+        // Seal the current session's context to the paired Mac's outbox. Off /
+        // no-key both return an honest spoken line (the gate lives in hand_off);
+        // the capsule is redacted at build, so nothing consequential rides across.
+        let key = crate::integrations::resolve_secret("handoff_shared_key")
+            .await
+            .and_then(|hex| crate::crypto::SecretKey::from_hex(&hex).ok());
+        let capsule = self.build_session_capsule().await;
+        crate::handoff::hand_off(&self.cfg, &self.root, &capsule, key)
+    }
+
+    async fn resume(&self) -> String {
+        // Open + restore + PARK every capsule a paired Mac staged in the inbox.
+        // Restoring context is NOT restoring permission — the restored session
+        // PARKS; the honest note says authority did not transfer. Off / no-key
+        // refuse rather than pretend a restore happened.
+        if !self.cfg.handoff.enabled {
+            return "Continuity handoff is off, sir — turn on [handoff].enabled to resume a session from your other Mac.".to_string();
+        }
+        let key = crate::integrations::resolve_secret("handoff_shared_key")
+            .await
+            .and_then(|hex| crate::crypto::SecretKey::from_hex(&hex).ok());
+        let Some(key) = key else {
+            return "No shared handoff key, sir — pair your Macs (the key lives in the Keychain as handoff_shared_key). A capsule is never opened without it.".to_string();
+        };
+        let restored = crate::handoff::resume_from_inbox(&self.root, key.raw_bytes());
+        let Some(first) = restored.first() else {
+            return "No session capsule from a paired Mac to resume, sir.".to_string();
+        };
+        let n = restored.len();
+        if n == 1 {
+            first.note.clone()
+        } else {
+            format!("Restored {n} sessions from your paired Mac — all parked, sir. {}", first.note)
+        }
     }
 
     async fn overnight(&self, task: &str, agent: Option<&str>) -> String {
@@ -1673,6 +1819,8 @@ mod tests {
         async fn state(&self) -> String { "state".into() }
         async fn distill(&self) -> String { "distill".into() }
         async fn sync(&self) -> String { "sync".into() }
+        async fn handoff(&self) -> String { "handoff".into() }
+        async fn resume(&self) -> String { "resume".into() }
         async fn overnight(&self, task: &str, _agent: Option<&str>) -> String { format!("overnight:{task}") }
         async fn play_cue(&self, cue: &str) -> String {
             self.play_cue_calls.fetch_add(1, Ordering::SeqCst);
@@ -2382,6 +2530,8 @@ mod tests {
             async fn state(&self) -> String { unreachable!() }
             async fn distill(&self) -> String { unreachable!() }
             async fn sync(&self) -> String { unreachable!() }
+            async fn handoff(&self) -> String { unreachable!() }
+            async fn resume(&self) -> String { unreachable!() }
             async fn overnight(&self, _t: &str, _a: Option<&str>) -> String { unreachable!() }
             async fn play_cue(&self, _cue: &str) -> String { unreachable!() }
             async fn design_voice(&self, _a: &str, _d: &str, _n: &str) -> String { unreachable!() }

@@ -6587,6 +6587,55 @@ export function parseFleetStatus(data: Record<string, unknown>): FleetStatus {
 }
 
 /* ------------------------------------------------------------------------ *
+ * CONTINUITY HANDOFF (handoff.status) — the honest state of resuming a LIVE   *
+ * session on another of the owner's Macs (daemon handoff.rs, audit-snapshot   *
+ * cadence). SHIPS OFF; rides sync (also OFF). A session capsule is sealed over *
+ * the SAME sync.rs sealed path; the network transport is armed-but-inert       *
+ * (`transportInert` pinned true). AUTHORITY NEVER TRANSFERS — the capsule       *
+ * carries NO resolved credential/bearer (`carriesCredentials` pinned false),   *
+ * and restoring context PARKS (`restoreParks` pinned true): every consequential *
+ * step on the receiving Mac re-hits the fresh confirm + voice-id + master       *
+ * switch. SECRET-FREE: booleans + a non-secret device label only.               *
+ * ------------------------------------------------------------------------ */
+
+/** The continuity-handoff pipeline status. */
+export interface HandoffStatus {
+  enabled: boolean;
+  keyPresent: boolean;
+  peerConfigured: boolean;
+  transportInert: boolean;
+  /** Pinned false — a capsule carries context, never credentials/bearers. */
+  carriesCredentials: boolean;
+  /** Pinned true — restoring context never restores permission; it parks. */
+  restoreParks: boolean;
+  /** Whether an inbound session capsule from a paired Mac is staged to resume. */
+  pendingCapsule: boolean;
+  /** The paired device's non-secret label ("Resume on <device>"); may be empty. */
+  device: string;
+}
+
+/** Defensive cap on the device label — a short id/name, never free-text. */
+const HANDOFF_DEVICE_CAP = 64;
+
+/** Parse a `handoff.status` payload. NEVER returns null / never throws; a
+ *  malformed frame degrades to the honest off state. `transportInert`,
+ *  `carriesCredentials`, and `restoreParks` are PINNED to their honest values —
+ *  a payload can never claim the transport is live, that credentials ride across,
+ *  or that a restore grants permission. */
+export function parseHandoffStatus(data: Record<string, unknown>): HandoffStatus {
+  return {
+    enabled: bool(data, "enabled") === true,
+    keyPresent: bool(data, "key_present") === true,
+    peerConfigured: bool(data, "peer_configured") === true,
+    transportInert: true,
+    carriesCredentials: false,
+    restoreParks: true,
+    pendingCapsule: bool(data, "pending_capsule") === true,
+    device: (str(data, "device") ?? "").slice(0, HANDOFF_DEVICE_CAP),
+  };
+}
+
+/* ------------------------------------------------------------------------ *
  * ACOUSTIC SCENE (scene.status) — the honest state of the ambient sound-      *
  * event sensor (daemon scene.rs, audit-snapshot cadence, F6). SHIPS OFF;      *
  * inert without a bundled classifier model (`listening` reads a literal true  *

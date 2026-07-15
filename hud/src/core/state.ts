@@ -64,6 +64,7 @@ import {
   DistillStatus,
   SyncStatus,
   FleetStatus,
+  HandoffStatus,
   SceneStatus,
   OvernightStatus,
   Presence,
@@ -150,6 +151,7 @@ import {
   parseDistillStatus,
   parseSyncStatus,
   parseFleetStatus,
+  parseHandoffStatus,
   parseSceneStatus,
   parseOvernightStatus,
   parsePresence,
@@ -822,6 +824,11 @@ export interface HudState {
    *  ceilings (Never/Ask). Null until the first frame. The floor can ONLY HARDEN —
    *  it never grants an action. */
   fleet: FleetStatus | null;
+  /** The continuity-handoff pipeline's honest state (handoff.status): off/armed-
+   *  needs-pairing/paired, whether an inbound session capsule is staged, and the
+   *  two pinned truths — carries NO credentials, and restoring context PARKS
+   *  (authority never transfers). Null until the first frame. REVIEW-ONLY. */
+  handoff: HandoffStatus | null;
   /** The acoustic-scene sensor's honest state (scene.status, F6): off/armed-
    *  needs-model/listening, the sound-event vocabulary, transient events. Null
    *  until the first frame. NEVER retains audio. */
@@ -1450,6 +1457,7 @@ export function initialState(): HudState {
     distill: null,
     federatedSync: null,
     fleet: null,
+    handoff: null,
     scene: null,
     overnight: null,
     capabilityMap: null,
@@ -2809,6 +2817,12 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // fleet::emit_status). parseFleetStatus NEVER returns null and pins
       // hardens-only true (a payload can't claim the floor grants an action).
       return { ...s, fleet: parseFleetStatus(env.data) };
+    }
+    case "handoff.status": {
+      // The continuity-handoff pipeline status (main.rs audit_snapshot_task ->
+      // handoff::emit_status). parseHandoffStatus NEVER returns null and pins the
+      // honest transport-inert / no-credentials / restore-parks facts.
+      return { ...s, handoff: parseHandoffStatus(env.data) };
     }
 
     case "scene.status": {

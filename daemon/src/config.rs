@@ -257,6 +257,16 @@ pub struct Config {
     /// sealed-bundle + shared Keychain key; the baseline enters ONLY as a signed
     /// bundle (never written from a model).
     pub fleet: FleetConfig,
+    /// [handoff] — CONTINUITY HANDOFF (handoff.rs): resume a LIVE cognitive
+    /// session on ANOTHER of the owner's Macs. A [`crate::handoff::SessionCapsule`]
+    /// (transcript window, active agent, mission ref, pending world-model deltas,
+    /// draft ids, focus profile) is sealed over the SAME sync.rs sealed path under
+    /// a Keychain-paired `handoff_shared_key`. SHIPS OFF (rides [sync], also OFF).
+    /// AUTHORITY NEVER TRANSFERS: the capsule carries NO resolved credential/bearer
+    /// (redacted like a macro), and on the receiving device every consequential
+    /// step re-hits the FRESH confirm + voice-id + master switch + lockdown —
+    /// restoring context is not restoring permission. Restore PARKS (never acts).
+    pub handoff: HandoffConfig,
     /// [scene] — ACOUSTIC SCENE AWARENESS (F6, scene.rs): classify the ambient
     /// soundscape into named sound EVENTS (doorbell, knock, alarm, glass-break…),
     /// distinct from speech capture. SHIPS OFF (continuous ambient listening is a
@@ -896,6 +906,12 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("distill", &["enabled", "python", "base_model", "iters"]),
     ("sync", &["enabled", "peer_endpoint"]),
     ("fleet", &["enabled"]),
+    // [handoff] — CONTINUITY HANDOFF (handoff.rs). SHIPS OFF: rides [sync] (also
+    // OFF). The shared E2E key lives in the Keychain (account `handoff_shared_key`),
+    // NEVER inlined here; the paired-device address rides `[sync].peer_endpoint`,
+    // so only the master switch lives in this section. Listed here so `enabled`
+    // never reads as a typo.
+    ("handoff", &["enabled"]),
     ("scene", &["enabled", "confidence_floor"]),
     ("overnight", &["enabled", "min_gap_secs"]),
     // [webhooks] — WEBHOOK TRIGGERS (#35, webhooks.rs). An INBOUND network surface.
@@ -3627,6 +3643,23 @@ pub struct FleetConfig {
 }
 
 
+/// [handoff] — CONTINUITY HANDOFF (handoff.rs). SHIPS OFF: moving a live session's
+/// context to another device is a consequential act, so it is a deliberate opt-in
+/// and rides [sync] (also OFF). The shared E2E key lives ONLY in the Keychain
+/// (account `handoff_shared_key`), never here; the paired-device address rides the
+/// existing `[sync].peer_endpoint`, so this section carries just the master switch.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+#[derive(Default)]
+pub struct HandoffConfig {
+    /// Master switch. SHIPS OFF (false): with it off the pipeline is a no-op and
+    /// the status honestly reports "off". Even ON, it is INERT without a paired
+    /// peer + the shared key (Keychain only), and a restored session always PARKS —
+    /// authority never transfers.
+    pub enabled: bool,
+}
+
+
 /// [scene] — ACOUSTIC SCENE AWARENESS (F6, scene.rs). Classify the ambient
 /// soundscape into named sound events. `enabled` is a privacy master switch:
 /// continuous ambient classification is opt-in, so it SHIPS OFF.
@@ -4224,6 +4257,7 @@ impl Config {
             distill: section(&table, "distill", &mut issues),
             sync: section(&table, "sync", &mut issues),
             fleet: section(&table, "fleet", &mut issues),
+            handoff: section(&table, "handoff", &mut issues),
             scene: section(&table, "scene", &mut issues),
             overnight: section(&table, "overnight", &mut issues),
             webhooks: section(&table, "webhooks", &mut issues),

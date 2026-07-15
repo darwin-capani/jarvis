@@ -10029,6 +10029,22 @@ body,
 .fleet-rule-decision.ask { color: var(--warn-amber); }
 .fleet-empty { font-size: 0.7em; }
 .fleet-foot { margin-top: 4px; }
+/* HANDOFF // CONTINUITY (handoff.rs) — resume a live session on another of the
+   owner's Macs. Same pill palette as sync: OFF (dim) / ARMED · NEEDS PAIRING
+   (amber) / ARMED · PAIRED (green). AUTHORITY NEVER TRANSFERS — a capsule
+   carries no credentials and restoring context parks; the footnote says so. */
+.handoff-body { display: flex; flex-direction: column; gap: 5px; }
+.handoff-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.handoff-pill {
+  font-size: 0.62em; letter-spacing: 0.06em; padding: 1px 6px;
+  border-radius: 3px; border: 1px solid currentColor; white-space: nowrap;
+}
+.handoff-pill.off { color: var(--fg-dim, rgba(255, 255, 255, 0.4)); }
+.handoff-pill.armed { color: var(--warn-amber); }
+.handoff-pill.ready { color: var(--learn-green); }
+.handoff-resume { font-size: 0.66em; }
+.handoff-pending { font-size: 0.7em; color: var(--warn-amber); overflow-wrap: anywhere; }
+.handoff-foot { margin-top: 4px; }
 
 /* Acoustic scene awareness (scene.status, F6): ambient sound-event sensor.
    OFF (dim) / ARMED (amber — needs a bundled model) / LISTENING (green).

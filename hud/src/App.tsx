@@ -37,6 +37,7 @@ import CapabilityStatusPanel from "./components/CapabilityStatusPanel";
 import DistillPanel from "./components/DistillPanel";
 import SyncPanel from "./components/SyncPanel";
 import FleetPanel from "./components/FleetPanel";
+import HandoffPanel from "./components/HandoffPanel";
 import ScenePanel from "./components/ScenePanel";
 import OvernightPanel from "./components/OvernightPanel";
 import AmbientMode from "./components/AmbientMode";
@@ -655,6 +656,7 @@ export default function App() {
           <DistillPanel distill={state.distill} />
           <SyncPanel sync={state.federatedSync} />
           <FleetPanel fleet={state.fleet} />
+          <HandoffPanel handoff={state.handoff} />
           <ScenePanel scene={state.scene} />
           <OvernightPanel overnight={state.overnight} />
           <CapabilityAtlasPanel atlas={state.capabilityAtlas} />

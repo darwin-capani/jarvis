@@ -285,6 +285,15 @@ mod rewind;
 mod overnight;
 mod scene;
 mod sync;
+// CONTINUITY HANDOFF (handoff.rs): resume a LIVE cognitive session on another of
+// the owner's Macs. Seals a SessionCapsule (transcript window, active agent,
+// mission ref, pending world-model deltas, draft ids, focus profile) over the SAME
+// sync.rs AES-256-GCM sealed path under a Keychain-paired handoff_shared_key; the
+// receiving daemon RESTORES the context and PARKS. AUTHORITY NEVER TRANSFERS — the
+// capsule carries no resolved credential/bearer (redacted like a macro), and every
+// consequential step on the receiving device re-hits the fresh confirm + voice-id +
+// master switch + lockdown. Ships OFF (rides sync, also OFF). Hermetically tested.
+mod handoff;
 mod router;
 mod screen_context;
 mod secret_scan;
@@ -1042,6 +1051,13 @@ async fn audit_snapshot_task(cfg: Arc<Config>, memory: Arc<Memory>, root: PathBu
         // Keychain or a file on the tick; OFF (the shipped default) emits the honest
         // off payload. The floor can ONLY HARDEN — it never grants an action.
         fleet::emit_status(&live, &root).await;
+        // The HUD's HandoffPanel shows the continuity-handoff pipeline's honest
+        // state (handoff.rs): off/armed-needs-pairing/armed-paired, whether an
+        // inbound session capsule is staged to resume, and the two pinned truths —
+        // a capsule carries NO credentials and restoring context PARKS (authority
+        // never transfers). READ-ONLY — probes the key/peer/inbox, runs no handoff;
+        // OFF (the shipped default) never touches the Keychain.
+        handoff::emit_status(&live, &root).await;
         // The HUD's ScenePanel shows the acoustic-scene sensor's honest state
         // (scene.rs, F6): off/armed-needs-model/listening, the sound-event
         // vocabulary, and that audio is NEVER retained. READ-ONLY — probes for a
