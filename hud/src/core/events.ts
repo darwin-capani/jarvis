@@ -6193,6 +6193,60 @@ export function parsePresence(data: Record<string, unknown>): Presence {
 }
 
 /* ------------------------------------------------------------------------ *
+ * SEMANTIC PASTEBOARD (daemon pasteboard.rs -> `pasteboard / pasteboard.status`). *
+ *                                                                            *
+ * An OPT-IN (ships OFF) poller of the macOS clipboard: each new clip is       *
+ * PII-REDACTED at the source and kept in a bounded, transient in-RAM ring.    *
+ * The status frame carries the enabled gate, the clip COUNT + cap + poll      *
+ * cadence, and up to a few ALREADY-redacted + truncated clip PREVIEWS for the *
+ * panel (never raw clip text, never anything pre-redaction). When off, the    *
+ * count is 0 and there are no previews — nothing was ever captured.           *
+ * ------------------------------------------------------------------------ */
+
+export const PASTEBOARD_TOPIC_STATUS = "pasteboard.status";
+
+/** Cap on recent redacted-clip previews the panel retains/renders (defensive
+ *  against a hostile/oversized frame). */
+export const PASTEBOARD_PREVIEW_CAP = 8;
+
+/** The semantic-pasteboard status. `recent` holds ALREADY-redacted, truncated
+ *  clip previews (never raw clip text). Any unknown/garbled field coerces
+ *  conservatively (off, zero counts, no previews) — the panel never invents a
+ *  captured state, and a disabled pasteboard shows nothing captured. */
+export interface PasteboardStatus {
+  enabled: boolean;
+  count: number;
+  cap: number;
+  pollIntervalSecs: number;
+  /** Recent redacted clip previews (empty when off). */
+  recent: string[];
+}
+
+/** Parse a `pasteboard.status` payload. NEVER returns null / never throws; an
+ *  absent or garbled payload yields the honest OFF, empty snapshot. When off,
+ *  previews are dropped (a disabled pasteboard shows nothing captured), so the
+ *  panel can never render clip text for a pasteboard that is not running. */
+export function parsePasteboardStatus(data: Record<string, unknown>): PasteboardStatus {
+  const enabled = bool(data, "enabled") === true;
+  const count = num(data, "count");
+  const cap = num(data, "cap");
+  const poll = num(data, "poll_interval_secs");
+  const rawRecent = strArr(data, "recent") ?? [];
+  // Off => never surface previews, even if a frame carried some.
+  const recent = enabled
+    ? rawRecent.filter((s) => s.length > 0).slice(0, PASTEBOARD_PREVIEW_CAP)
+    : [];
+  const nonNeg = (v: number | null): number => (v === null || v < 0 ? 0 : Math.floor(v));
+  return {
+    enabled,
+    count: nonNeg(count),
+    cap: nonNeg(cap),
+    pollIntervalSecs: nonNeg(poll),
+    recent,
+  };
+}
+
+/* ------------------------------------------------------------------------ *
  * CAPABILITY MAP — the live honest "armed by default, gated per action"       *
  * readout (daemon capability.rs -> `system / capability.map`, audit-snapshot  *
  * cadence). One row per notable subsystem: ready / armed-but-needs-a-          *
@@ -8892,4 +8946,179 @@ export function parseReportReadout(data: Record<string, unknown>): ReportReadout
     citationCount,
     citations,
   };
+}
+
+/* ------------------------------------------------------------------------ *
+ * ARTIFACT REGISTRY + PEEK (artifact.rs; ArtifactRef / artifact.peek).        *
+ *                                                                            *
+ * The daemon's artifact.rs keeps a BOUNDED, in-memory, on-device registry of  *
+ * the last N things the assistant produced (report / chart / code_diff / …).  *
+ * A read-only peek surface (a voice op "what did you just do" / "peek", and    *
+ * the `artifact_peek` tool) reads the most recent (or an id'd) artifact back   *
+ * out and emits `artifact.peek`:                                              *
+ *   {"id", "kind", "title", "ts", "preview", "agent",                          *
+ *    "uncited": bool, "citation_count", "citations": [{"title","url"}]}         *
+ *                                                                            *
+ * The HUD's QuickLook overlay renders ANY kind (a compact kind-aware preview)  *
+ * with a PROVENANCE FOOTER. Honesty is LOAD-BEARING (Share Guard rides on it): *
+ * an artifact with no citation is shown UNCITED, never dressed up. `uncited`   *
+ * is RE-DERIVED from the surviving citations here — never trusted from the     *
+ * wire alone — so the overlay can never claim a source it does not hold.       *
+ * SECRET-FREE: only the kind, title, ts, the producer's redacted preview, the  *
+ * agent, and the citation LOCATORS ride the wire — never a raw body.           *
+ * ------------------------------------------------------------------------ */
+
+/** The telemetry event the peek surface emits. */
+export const ARTIFACT_PEEK_EVENT = "artifact.peek";
+
+/** The closed vocabulary of kinds the overlay renders with a kind-aware preview.
+ *  An unrecognized wire kind is rendered as a GENERIC artifact (never guessed into
+ *  a richer kind) — so `kind` is carried as a free string, and this set only drives
+ *  which kinds get a specialized label/preview. */
+export const KNOWN_ARTIFACT_KINDS = [
+  "report",
+  "chart",
+  "image",
+  "draft",
+  "code_diff",
+  "notebook",
+  "forecast",
+  "docsearch",
+] as const;
+export type KnownArtifactKind = (typeof KNOWN_ARTIFACT_KINDS)[number];
+
+/** True when `kind` is one of the vocabulary kinds the overlay renders specially. */
+export function isKnownArtifactKind(kind: string): kind is KnownArtifactKind {
+  return (KNOWN_ARTIFACT_KINDS as readonly string[]).includes(kind);
+}
+
+/** One CITATION an artifact carries (artifact.rs Citation): a human title and a
+ *  real locator (a URL, a file path, an id). At least one field is non-empty — a
+ *  both-blank citation is dropped by the parser (never a fabricated source). */
+export interface ArtifactCitation {
+  title: string;
+  url: string;
+}
+
+/** A defensively-parsed `artifact.peek` frame — the HUD's honest view of one
+ *  produced artifact. `uncited` is RE-DERIVED from the surviving citations (never
+ *  trusted from the wire), so an artifact with no real source is shown UNCITED and
+ *  can never be dressed up. `citationCount` is the daemon's honest total (which the
+ *  bounded preview may be shorter than). SECRET-FREE by construction. */
+export interface ArtifactPeek {
+  id: number;
+  /** The wire kind (a KnownArtifactKind, or any other string rendered generically). */
+  kind: string;
+  title: string;
+  ts: string;
+  /** The producer's compact, redacted preview line — shown verbatim. */
+  preview: string;
+  /** The REAL producing agent (never fabricated by the daemon). */
+  agent: string;
+  /** True when the artifact carries NO citation — re-derived from the surviving
+   *  citations, so the overlay never claims a source it does not hold. */
+  uncited: boolean;
+  /** The daemon's honest citation total (>= the surviving/shown citations). */
+  citationCount: number;
+  /** The surviving real citations (each with a usable locator), bounded. */
+  citations: ArtifactCitation[];
+}
+
+/** Cap on the citations the overlay previews from one artifact.peek frame — a VIEW
+ *  bound (the daemon's registry is itself bounded; this is belt-and-suspenders). */
+export const ARTIFACT_CITATIONS_CAP = 32;
+
+/** Coerce one untrusted citation into an ArtifactCitation, or null when it lacks a
+ *  usable locator — BOTH `title` and `url` blank means there is nothing to point at,
+ *  so it is dropped (never fabricated). Never throws. */
+function coerceArtifactCitation(o: Record<string, unknown>): ArtifactCitation | null {
+  const title = (str(o, "title") ?? "").trim();
+  const url = (str(o, "url") ?? "").trim();
+  if (title.length === 0 && url.length === 0) return null;
+  return { title, url };
+}
+
+/** Parse an `artifact.peek` payload into an ArtifactPeek, or null when there is no
+ *  usable artifact (a blank `kind` — the daemon always sends one, so a blank frame
+ *  is junk and dropped). Citations are coerced item-by-item (a citation with no
+ *  usable locator is dropped, never fabricated) and bounded. `uncited` is RE-DERIVED
+ *  from the surviving citations — never trusted from the wire — so a spoofed
+ *  `uncited: false` over an empty citation list still shows honest UNCITED, and a
+ *  spoofed `uncited: true` over real citations still surfaces them. `citationCount`
+ *  is the daemon's honest total, floored at the surviving count. SECRET-FREE: only
+ *  the kind, title, ts, preview, agent, and citation locators are read. Never
+ *  throws. */
+export function parseArtifactPeek(data: Record<string, unknown>): ArtifactPeek | null {
+  const kind = (str(data, "kind") ?? "").trim();
+  if (kind.length === 0) return null;
+  const rawCitations = data["citations"];
+  const citations = Array.isArray(rawCitations)
+    ? rawCitations
+        .filter(isPlainObject)
+        .map(coerceArtifactCitation)
+        .filter((c): c is ArtifactCitation => c !== null)
+        .slice(0, ARTIFACT_CITATIONS_CAP)
+    : [];
+  // The daemon's honest total, but never LESS than the citations we actually hold.
+  const citationCount = Math.max(nonNegIntOr0(data, "citation_count"), citations.length);
+  return {
+    id: nonNegIntOr0(data, "id"),
+    kind,
+    title: (str(data, "title") ?? "").trim(),
+    ts: (str(data, "ts") ?? "").trim(),
+    preview: (str(data, "preview") ?? "").trim(),
+    agent: (str(data, "agent") ?? "").trim(),
+    // Honest UNCITED re-derived from the surviving citations — never the wire flag.
+    uncited: citations.length === 0,
+    citationCount,
+    citations,
+  };
+}
+
+/* ------------------------------------------------------------------------ *
+ * HERALD-EARS LIVE CAPTIONS (daemon/src/captions.rs -> `captions.line`).      *
+ *                                                                            *
+ * The daemon's run_pipeline emits one `captions.line` per diarized turn of a  *
+ * freshly-transcribed utterance, built by captions::assemble_captions. It is  *
+ * the HONEST caption stream for the HUD's LIVE CAPTIONS band:                 *
+ *   - `text`    — the transcript text of the turn (what was heard);          *
+ *   - `speaker` — the speaker label VERBATIM from diarize.rs ("speaker_0", …) *
+ *     or "unknown" on the on-device single stream (NEVER a fabricated         *
+ *     speaker); a missing/blank speaker reads honestly as "unknown";          *
+ *   - `translation` — the on-device Babel translation when [captions].        *
+ *     translate_to is set AND a real translation landed; `null` on            *
+ *     passthrough (no target) or an honest offline degrade (never fabricated);*
+ *   - `ts`      — an epoch-ms timestamp for ordering within the band.         *
+ * SHIPS OFF ([captions].enabled=false): no frame arrives until enabled.       *
+ * ------------------------------------------------------------------------ */
+
+/** The honest speaker label for a caption whose `speaker` is missing/blank —
+ *  mirrors diarize::UNKNOWN_SPEAKER. NEVER a fabricated distinct speaker. */
+export const CAPTION_UNKNOWN_SPEAKER = "unknown";
+
+/** One parsed `captions.line` (the wire shape, pre-`seq`). `translation` is null on
+ *  passthrough / an honest degrade — never a fabricated rendering. */
+export interface CaptionLine {
+  text: string;
+  speaker: string;
+  translation: string | null;
+  ts: number;
+}
+
+/** Parse a `captions.line` payload into a CaptionLine, or null when there is NO
+ *  usable `text` (a blank/absent transcript is dropped, never rendered as an empty
+ *  caption). The `speaker` is carried VERBATIM; a missing/blank speaker reads
+ *  honestly as "unknown" (never a fabricated distinct speaker). `translation` is a
+ *  non-blank string or null (a blank/absent translation is an honest passthrough,
+ *  never an empty translation). `ts` is the epoch-ms wire value or 0. SECRET-FREE
+ *  beyond the caption content the band exists to display; never throws. */
+export function parseCaptionLine(data: Record<string, unknown>): CaptionLine | null {
+  const text = (str(data, "text") ?? "").trim();
+  if (text.length === 0) return null;
+  const rawSpeaker = (str(data, "speaker") ?? "").trim();
+  const speaker = rawSpeaker.length > 0 ? rawSpeaker : CAPTION_UNKNOWN_SPEAKER;
+  const rawTranslation = (str(data, "translation") ?? "").trim();
+  const translation = rawTranslation.length > 0 ? rawTranslation : null;
+  const ts = num(data, "ts") ?? 0;
+  return { text, speaker, translation, ts };
 }

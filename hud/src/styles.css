@@ -1443,6 +1443,64 @@ svg.tri circle {
   color: var(--ice-dim);
 }
 
+/* HERALD-EARS LIVE CAPTIONS band (CaptionBand.tsx) — mirrors the transcript scroll,
+   one row per diarized turn: a monospace speaker chip, the heard text, and an
+   optional on-device translation on its own line. Read-only presentation. */
+.captions-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(26, 214, 255, 0.35) transparent;
+}
+
+.caption-line {
+  font-size: 13px;
+  line-height: 1.4;
+  animation: lineIn 200ms cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.caption-speaker {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  display: block;
+  margin-bottom: 2px;
+  color: var(--cyan);
+}
+
+/* The honest single stream: an "unknown" speaker is shown muted, never dressed up
+   as a named speaker. */
+.caption-line.unknown .caption-speaker {
+  color: var(--ice-dim);
+}
+
+.caption-text {
+  color: var(--ice);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* The optional on-device translation — a distinct accent + indent so it reads as a
+   rendering of the heard text, not the heard text itself. Present ONLY when the
+   daemon produced a real translation (offline it is simply absent). */
+.caption-translation {
+  display: block;
+  margin-top: 2px;
+  padding-left: 10px;
+  border-left: 2px solid var(--cloud-violet);
+  color: var(--cloud-violet);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.captions-foot {
+  padding: 6px 12px 10px;
+}
+
 .dim-note {
   color: #51707f;
   font-family: var(--mono);
@@ -6267,6 +6325,81 @@ svg.tri circle {
 .report-more { font-size: 0.74em; padding-top: 2px; }
 .report-foot { margin-top: 2px; line-height: 1.35; }
 
+/* --------------------------------------------------- ARTIFACT QUICKLOOK overlay */
+/* QUICKLOOK // <kind> — the single overlay that renders ANY artifact the assistant
+   produced, read back out of the on-device Artifact Registry (artifact.peek). A
+   kind-aware header + title + a compact redacted preview + a PROVENANCE FOOTER (the
+   REAL producing agent + the REAL citations, or a plain UNCITED verdict). HONESTY
+   is load-bearing (Share Guard rides on it): uncited shows the amber UNCITED pill
+   (an honest state — RED stays reserved for alerts), never a fabricated source.
+   REVIEW-ONLY (no button); armed by default behind [artifact].enabled. */
+.quicklook-body { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; }
+.quicklook-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.quicklook-kind {
+  font-size: 0.66em;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  color: var(--cyan-dim);
+  padding: 1px 6px;
+  border: 1px solid rgba(26, 214, 255, 0.28);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.quicklook-title {
+  font-size: 0.92em;
+  font-weight: 600;
+  color: var(--cyan-bright);
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
+}
+.quicklook-pill {
+  font-size: 0.66em;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.quicklook-pill.cited { color: var(--learn-green); }
+.quicklook-pill.uncited { color: var(--warn-amber); }
+.quicklook-preview {
+  font-size: 0.84em;
+  line-height: 1.4;
+  color: var(--text);
+  padding: 6px 8px;
+  border: 1px solid rgba(26, 214, 255, 0.14);
+  border-radius: 4px;
+  background: rgba(26, 214, 255, 0.03);
+  word-break: break-word;
+}
+.quicklook-provenance { display: flex; flex-direction: column; gap: 6px; }
+.quicklook-provenance-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.quicklook-provenance-title {
+  font-size: 0.72em;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  color: var(--cyan-bright);
+}
+.quicklook-agent { font-size: 0.78em; color: var(--cyan); word-break: break-word; }
+.quicklook-uncited { padding: 2px 0; line-height: 1.4; }
+.quicklook-citations { display: flex; flex-direction: column; gap: 6px; }
+.quicklook-citation-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.quicklook-citation {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid rgba(26, 214, 255, 0.18);
+  border-radius: 4px;
+  background: rgba(26, 214, 255, 0.03);
+}
+.quicklook-citation-title { font-size: 0.82em; font-weight: 600; color: var(--cyan); word-break: break-word; }
+.quicklook-citation-url { font-size: 0.74em; color: var(--cyan-dim); word-break: break-all; }
+.quicklook-more { font-size: 0.74em; padding-top: 2px; }
+.quicklook-foot { margin-top: 2px; line-height: 1.35; }
+
 /* ------------------------------------------------------------- CHART panel #41 */
 /* CHART // <title> — the EXACT renderer for a daemon ChartSpec (chart.data). It
    plots the series the daemon emitted, by kind (bar/line/sparkline): every
@@ -9610,6 +9743,22 @@ body,
 .presence-pill.away { color: var(--fg-dim, rgba(255,255,255,0.4)); }
 .presence-signal.on { color: var(--learn-green); }
 .presence-signal.off { opacity: 0.4; text-decoration: line-through; }
+
+/* Semantic pasteboard (pasteboard.status): opt-in, redacted clipboard recall. */
+.pasteboard-body { display: flex; flex-direction: column; gap: 6px; }
+.pasteboard-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.pasteboard-pill {
+  font-size: 0.66em; letter-spacing: 0.06em; padding: 1px 6px;
+  border-radius: 3px; border: 1px solid currentColor; white-space: nowrap;
+}
+.pasteboard-pill.on { color: var(--learn-green); }
+.pasteboard-pill.off { color: var(--fg-dim, rgba(255,255,255,0.4)); }
+.pasteboard-clips { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.pasteboard-clip {
+  font-size: 0.72em; opacity: 0.85; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; max-width: 100%;
+}
+.pasteboard-empty { font-style: italic; }
 
 /* At-rest ambient mirror (F8): a calm fullscreen overlay shown when the daemon
    reports presence "away" and there's no local activity. Fades over the HUD. */

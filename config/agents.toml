@@ -142,7 +142,7 @@ role = "Personal EA + Reflection: scheduling, reminders, reflective consolidatio
 voice = "bf_alice"
 hue = 300
 persona_file = "inference/personas/pepper.txt"
-tools = ["conversation", "memory.store", "memory.recall", "remember_fact", "recall_facts", "gcal_list_events", "gcal_create_event", "gmail_list_recent", "gmail_read_message", "gmail_send", "gdrive_list_files", "gdrive_search", "gdrive_upload_text", "world_query", "world_update"]
+tools = ["conversation", "memory.store", "memory.recall", "remember_fact", "recall_facts", "gcal_list_events", "gcal_create_event", "gmail_list_recent", "gmail_read_message", "gmail_send", "gdrive_list_files", "gdrive_search", "gdrive_upload_text", "pasteboard_recall", "pasteboard_put", "world_query", "world_update"]
 namespace = "agent.pepper"
 
 [[agent]]
@@ -246,7 +246,7 @@ persona_file = "inference/personas/mnemosyne.txt"
 # Mnemosyne is retrieval only. She also holds the generic recall_facts read tool.
 # The ranking is lexical-semantic (BM25), NOT neural embeddings — the persona and
 # tool copy say so; recall is keyword-semantic, not vector-semantic.
-tools = ["conversation", "memory.recall", "recall_facts", "mnemosyne_recall", "episodic_recall", "world_query", "world_update", "user_model_query", "user_model_correct", "user_model_forget", "skill_list", "skill_invoke", "doc_search", "unified_search", "docsearch.index", "docsearch.forget", "docsearch.build_graph", "knowledge.build"]
+tools = ["conversation", "memory.recall", "recall_facts", "mnemosyne_recall", "episodic_recall", "world_query", "world_update", "user_model_query", "user_model_correct", "user_model_forget", "skill_list", "skill_invoke", "doc_search", "unified_search", "artifact_peek", "pasteboard_recall", "docsearch.index", "docsearch.forget", "docsearch.build_graph", "knowledge.build"]
 namespace = "agent.mnemosyne"
 
 [[agent]]

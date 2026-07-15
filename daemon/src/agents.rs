@@ -1699,6 +1699,13 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
             "gcal_list_events", "gcal_create_event",
             "gmail_list_recent", "gmail_read_message", "gmail_send",
             "gdrive_list_files", "gdrive_search", "gdrive_upload_text",
+            // SEMANTIC PASTEBOARD: Pepper (the EA who acts on the user's behalf)
+            // may recall the clipboard history (pasteboard_recall, read-only) and
+            // SET the clipboard for the user (pasteboard_put). pasteboard_put is
+            // CONSEQUENTIAL but BENIGN (a pasteboard set only — never a keystroke/
+            // file/network); it parks for a spoken yes like her other consequential
+            // tools (it never auto-copies).
+            "pasteboard_recall", "pasteboard_put",
             // WORLD MODEL: Pepper is the EA + Reflection/consolidation agent — the
             // natural curator of the shared world picture. She READS it
             // (world_query) and WRITES structured entities/relationships/state into
@@ -1888,6 +1895,21 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
             // the whole personal corpus. Scoping is preserved (own + shared only,
             // never another agent's private items); every hit cites a real item.
             "unified_search",
+            // ARTIFACT PEEK (artifact.rs): READ-ONLY recall over the in-memory,
+            // on-device Artifact Registry — "what did you just do" / "peek" reads the
+            // most recent (or an id'd) produced artifact back out with HONEST
+            // provenance (real agent + real citations, or UNCITED). Squarely
+            // Mnemosyne's recollective remit; the orchestrator also holds it via the
+            // tools wildcard. Read-only, opens no surface.
+            "artifact_peek",
+            // SEMANTIC PASTEBOARD: pasteboard_recall is READ-ONLY recall over the
+            // user's PII-redacted, bounded, transient clipboard history ("the thing
+            // I copied about the lease"). It ranks the stored clips by meaning via
+            // the SAME recall.rs path her other recall tools use, stores nothing,
+            // sends nothing — so it never touches integrations::gate(). Squarely her
+            // recollective remit. Ships OFF ([pasteboard].enabled=false); with it off
+            // / nothing copied, recall honestly returns an empty history.
+            "pasteboard_recall",
             // The file-RAG WRITE/FORGET triggers (the local intents the classifier
             // emits for "index my documents"/"reindex" and "forget my file index").
             // Both are CONFINED to the user's OWN allowlisted folders + the local

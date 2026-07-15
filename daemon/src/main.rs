@@ -11,6 +11,7 @@ mod agents;
 mod anthropic;
 mod anticipate;
 mod apps;
+mod artifact;
 mod atlas;
 mod attribution;
 mod audio;
@@ -23,6 +24,14 @@ mod brief;
 // the reduce-only clarify-band hook it exposes ships OFF ([calibrate].influence_routing).
 mod calibrate;
 mod capability;
+// HERALD-EARS LIVE CAPTIONS (captions.rs): the PURE caption-assembly seam that turns the
+// existing on-device STT transcript feed into a `captions.line` telemetry stream — one
+// line per diarized turn {text, speaker_label (diarize.rs), optional translation (the
+// on-device Babel path), ts} for the HUD's LIVE CAPTIONS band. SHIPS OFF ([captions]);
+// READ-ONLY DISPLAY, reuses the existing mic/TCC grant (no new recording). Wired on the
+// transcript path (run_pipeline); the pure assembly/label/translate logic is proven in
+// captions.rs.
+mod captions;
 mod cartographer;
 // DATA -> CHART (#41): a daemon ChartSpec {kind, series:[{label, points:[(x,y)]}],
 // x_axis, y_axis, title} emitted as a `chart.data` telemetry envelope from a data
@@ -144,6 +153,15 @@ mod knowledge_graph;
 mod journal;
 mod lifelog;
 mod lockdown;
+// LUMEN (lumen.rs): the accessibility SCREEN NARRATOR + hands-free VOICE
+// NAVIGATION. Narrates the focused element / on-screen controls through the
+// speech path (READ-ONLY), and pairs the READ-ONLY OCR/AX locate with the
+// EXISTING per-action-gated `ui_actuate` CAPSTONE to run ONE voice-named UI
+// action at a time. The PURE seam (narration composition + action selection) is
+// the substance + hermetically tested; the AX/OCR read + the actuation are the
+// device-gated runner. Continuous narration is EXPLICIT opt-in ([lumen].narrate,
+// ships off). It does NOT weaken the capstone gate.
+mod lumen;
 // MACRO RECORD/REPLAY (#27): record a NAMED sequence of commands (utterances +
 // intent names ONLY — never secrets) and replay it. Replay re-runs each command
 // through the NORMAL router path + the gate FRESH (a consequential step re-hits the
@@ -179,6 +197,12 @@ mod notebook;
 // optimize_task calls optimize::run_optimizer (propose-only, never mutates the
 // live config). Exercised in full by optimize.rs's own hermetic tests.
 mod optimize;
+// Semantic Pasteboard (pasteboard.rs): an OPT-IN (ships OFF) poller of the macOS
+// clipboard that PII-redacts each new clip and stores it in a bounded, transient
+// in-RAM ring, plus a read-only recall-by-meaning surface (via recall.rs) and a
+// confirm-gated pasteboard_put. With [pasteboard].enabled=false nothing is polled
+// or stored.
+mod pasteboard;
 // Persistence Sentinel ("Autoruns for the Mac", persistence.rs): a READ-ONLY
 // inventory of the host's autostart/persistence surfaces + per-binary
 // signing/notarization + Gatekeeper, with a pure baseline diff. It reports; it
@@ -1817,6 +1841,39 @@ async fn main() -> Result<()> {
             "interval_secs": cfg.screen_context.effective_interval_secs(),
         }),
     );
+    // LUMEN (lumen.rs): install the continuous-narration gate ONCE from
+    // [lumen].narrate (mirrors screen_context::install_settings). SHIPS OFF —
+    // continuous focus-change narration reads on-screen text aloud, so it is
+    // EXPLICIT opt-in; OFF is a strict no-op (Lumen speaks nothing on its own).
+    // The explicit "read me the screen" request path and the voice-navigation
+    // path (which selects ONE target and hands it to the UNCHANGED ui_actuate
+    // capstone) are unaffected by this gate. Only the bool is installed/logged.
+    lumen::install_settings(cfg.lumen.narrate, cfg.lumen.effective_max_controls());
+    telemetry::emit(
+        "system",
+        "lumen.configured",
+        // Secret-free: only the opt-in gate + the control bound (never any
+        // on-screen content).
+        lumen::status_frame(cfg.lumen.narrate),
+    );
+    // SEMANTIC PASTEBOARD (pasteboard.rs): install the [pasteboard] settings ONCE
+    // so the recall op + the poll loop read one process-global gate. SHIPS OFF
+    // (enabled=false) — with it off nothing is polled or stored and the poll loop
+    // below is never spawned. Only the bool + bounds are installed (no clip text).
+    pasteboard::install_settings(
+        cfg.pasteboard.enabled,
+        cfg.pasteboard.effective_retention(),
+        cfg.pasteboard.effective_poll_interval_secs(),
+    );
+    telemetry::emit(
+        "system",
+        "pasteboard.configured",
+        serde_json::json!({
+            "enabled": cfg.pasteboard.enabled,
+            "retention": cfg.pasteboard.effective_retention(),
+            "poll_interval_secs": cfg.pasteboard.effective_poll_interval_secs(),
+        }),
+    );
     // FURY's mission engine plans + dispatches with the heavy cloud model; wire
     // it from config ONCE so the fury_mission tool arm reads one process-global
     // (mirrors init_persona — no model threading through execute_tool).
@@ -2023,6 +2080,12 @@ async fn main() -> Result<()> {
     telemetry::init();
     tokio::spawn(telemetry::serve(cfg.telemetry.port));
     tokio::spawn(telemetry::system_load_task());
+
+    // ARTIFACT REGISTRY (artifact.rs): apply the [artifact] master gate + retention
+    // bound to the process-global registry the producers register into and the
+    // read-only `peek` surface reads back out. Armed by default; a bounded recency
+    // window — this only sets the gate + cap, it opens no surface.
+    artifact::configure(cfg.artifact.enabled, cfg.artifact.registry_size);
 
     // Micro-app runtime substrate (docs/SANDBOX.md): scan apps/ for manifests
     // so voice ("open global scan") and [apps].autostart can resolve them. The
@@ -2646,6 +2709,22 @@ async fn main() -> Result<()> {
         }
     }
 
+    // SEMANTIC PASTEBOARD (pasteboard.rs): if [pasteboard].enabled, spawn the
+    // OPT-IN clipboard poll loop. STRICTLY GATED — this block is skipped entirely
+    // when enabled=false (the shipped default), so nothing is ever polled or
+    // stored. The loop reads the pasteboard (device-gated), PII-redacts each new
+    // clip, stores it in the bounded in-RAM ring, and emits pasteboard.status.
+    if cfg.pasteboard.enabled {
+        let interval = cfg.pasteboard.effective_poll_interval_secs();
+        tokio::spawn(pasteboard::poll_loop(interval));
+        info!(poll_interval_secs = interval, "started semantic-pasteboard poll loop");
+        telemetry::emit(
+            "system",
+            "pasteboard.loop_started",
+            json!({"poll_interval_secs": interval}),
+        );
+    }
+
     // One utterance at a time, driven to completion (audit fix: see the
     // Event doc comment — no stage of a later utterance may start while an
     // earlier one's ReplySession is alive). `last_reply` carries DARWIN's most
@@ -2961,6 +3040,26 @@ async fn run_pipeline(
                 "from_scribe_labels": !scribe_words.is_empty(),
             }),
         );
+    }
+
+    // HERALD-EARS LIVE CAPTIONS (captions.rs), on the transcript path. OFF by default
+    // ([captions].enabled=false) — with it off this block is skipped and the transcript
+    // path is byte-for-byte today's (no captions.line). When ON, the freshly-transcribed
+    // utterance is turned into `captions.line` telemetry for the HUD's LIVE CAPTIONS band:
+    // one line per diarized turn (HONEST speaker labels via the SAME diarize.rs mapper — a
+    // single "unknown" stream when the backend cannot separate speakers, NEVER a fabricated
+    // speaker), each carrying an OPTIONAL translation via the on-device Babel path when
+    // [captions].translate_to is set (offline degrades HONESTLY — the line still shows,
+    // translation omitted). This is READ-ONLY DISPLAY: it reuses the SAME transcript (no new
+    // recording, no extra audio leaves the device), emits telemetry, and does NOT
+    // classify/route/early-return — the utterance flows on to the normal pipeline below.
+    // NOTE: placed BEFORE the interpret gate on purpose — interpret.live ships ON and
+    // early-returns, so captions must tap the transcript first; and like interpret, captions
+    // renders EVERY utterance (it is not "addressed to DARWIN" speech), so it sits before
+    // the wake gate too. The mic loop that produced `text` is DEVICE-GATED; only the pure
+    // assembly/label/translate-decision logic is proven headlessly (captions.rs).
+    if cfg.captions.enabled {
+        let _lines = captions::emit_captions_live(&text, &scribe_words, cfg).await;
     }
 
     // #30 CONTINUOUS LIVE INTERPRETATION (interpret.rs), the DEVICE-GATED live feed of

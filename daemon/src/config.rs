@@ -152,6 +152,12 @@ pub struct Config {
     /// Microphone consent. interpret.speak stays its own opt-in (render-only). The
     /// pure core is in interpret.rs.
     pub interpret: InterpretConfig,
+    /// [captions] — HERALD-EARS LIVE CAPTIONS (#, captions.rs). `enabled` SHIPS OFF
+    /// (opt-in): when ON the transcript path turns each utterance into a `captions.line`
+    /// stream for the HUD band (honest speaker labels via diarize.rs, optional on-device
+    /// translation via `translate_to`). READ-ONLY DISPLAY; reuses the existing mic/TCC
+    /// grant (no new recording). The pure assembly seam is in captions.rs.
+    pub captions: CaptionsConfig,
     pub docsearch: DocSearchConfig,
     pub code: CodeConfig,
     /// [shell] — SANDBOXED SHELL / TERMINAL (#43, shell.rs): the HIGHEST-RISK
@@ -184,6 +190,24 @@ pub struct Config {
     /// lifelong memory / optimizer / disk) + forgettable, with the WATCHING
     /// indicator; recall is read-only.
     pub screen_context: ScreenContextConfig,
+    /// [lumen] — LUMEN: the accessibility SCREEN NARRATOR + hands-free VOICE
+    /// NAVIGATION (lumen.rs). `narrate` (continuous focus-change narration) SHIPS
+    /// OFF (explicit opt-in; off is a strict no-op); `max_controls` bounds one
+    /// readout. Narration is READ-ONLY; a voice action only SELECTS the ONE target
+    /// and hands it to the UNCHANGED `ui_actuate` CAPSTONE, which owns every
+    /// actuation gate. DEVICE-gated (the locate is the Vision `read.screen`; the
+    /// actuation is the capstone's Accessibility-TCC seam).
+    pub lumen: LumenConfig,
+    /// [pasteboard] — SEMANTIC PASTEBOARD (pasteboard.rs), recall-by-MEANING over
+    /// the macOS clipboard. `enabled` SHIPS OFF (deliberate: capturing the
+    /// clipboard is privacy-sensitive, so nothing is polled or stored until the
+    /// user opts in). With it off nothing is polled, nothing is stored, and the
+    /// poll loop is never spawned. When on, each new clip is PII-REDACTED at the
+    /// source (optimize::redact) and kept in a BOUNDED, transient (in-RAM only, off
+    /// lifelong memory / optimizer / disk) ring; recall ranks clips by meaning via
+    /// the recall.rs path. `retention` caps the ring (evict-oldest);
+    /// `poll_interval_secs` sets the poll cadence.
+    pub pasteboard: PasteboardConfig,
     pub answers: AnswersConfig,
     pub audit: AuditConfig,
     /// [triage] — FORENSIC TRIAGE SNAPSHOT (triage.rs, aegis). The one-shot
@@ -265,6 +289,15 @@ pub struct Config {
     /// changes no gate, takes no action, reaches no network — safe to enable
     /// outright.
     pub chart: ChartConfig,
+    /// [artifact] — ARTIFACT REGISTRY + PEEK (artifact.rs). `enabled` SHIPS ON
+    /// (armed-by-default): producers register the last N things they made into a
+    /// BOUNDED, in-memory, on-device recency window with HONEST provenance (the
+    /// real producing agent + real citations, or UNCITED), and the read-only `peek`
+    /// surface (a voice op + the `artifact_peek` tool) reads them back out as an
+    /// `artifact.peek` frame the HUD's QuickLook overlay renders. It opens NO
+    /// outward surface, takes NO action, reaches NO network. `registry_size` is the
+    /// retention bound (kept last-N).
+    pub artifact: ArtifactConfig,
     /// [boundary] — CUSTOMS // EGRESS, a PRE-FLIGHT egress boundary gate
     /// (boundary.rs). `enabled` SHIPS ON (full-power default) as a NEUTRAL
     /// PREVIEW: before a CLOUD turn goes out, CUSTOMS builds a READ-ONLY manifest
@@ -619,6 +652,15 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // translation is also voiced through the single echo-safe speech path. Listed so
     // none reads as a typo.
     ("interpret", &["live", "speak", "source_lang", "target_lang"]),
+    // [captions] — HERALD-EARS LIVE CAPTIONS (captions.rs). `enabled` SHIPS OFF (opt-in):
+    // when ON the transcript path (main.rs run_pipeline) turns each freshly-transcribed
+    // utterance into a `captions.line` stream for the HUD's LIVE CAPTIONS band — one line
+    // per diarized turn (honest speaker labels via diarize.rs; a single "unknown" stream
+    // when the backend cannot separate speakers, never a fabricated speaker), each with an
+    // OPTIONAL on-device translation when `translate_to` is set (`source_lang` empty =>
+    // auto-detect). READ-ONLY DISPLAY; reuses the existing mic/TCC grant (no new
+    // recording). Listed so none reads as a typo.
+    ("captions", &["enabled", "translate_to", "source_lang"]),
     // [docsearch] — on-device file RAG (docsearch.rs): index + search the user's
     // OWN text-like files, 100% on-device. `enabled` SHIPS ON (full-power default) —
     // INERT WITHOUT ROOTS: the folder allowlist (`roots`) ships EMPTY and the
@@ -728,6 +770,22 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // The ring is redacted + transient (in-RAM only, off lifelong memory / optimizer /
     // disk) + forgettable; recall is read-only. Listed so no key reads as a typo.
     ("screen_context", &["enabled", "interval_secs", "cap"]),
+    // [lumen] — LUMEN: the accessibility SCREEN NARRATOR + hands-free VOICE
+    // NAVIGATION (lumen.rs).
+    //   - `narrate` (SHIPS OFF): CONTINUOUS focus-change narration is EXPLICIT
+    //     opt-in; off is a strict no-op (Lumen speaks nothing on its own). The
+    //     explicit "read me the screen" request path is unaffected.
+    //   - `max_controls` (DEFAULT 20, floored >= 1): the hard bound on how many
+    //     on-screen controls one readout narrates / offers for selection.
+    // Narration is READ-ONLY; a voice action only SELECTS the ONE target and hands
+    // it to the UNCHANGED `ui_actuate` CAPSTONE (which owns every actuation gate).
+    // Listed here so neither key reads as a typo.
+    ("lumen", &["narrate", "max_controls"]),
+    // [pasteboard] — SEMANTIC PASTEBOARD (pasteboard.rs). `enabled` SHIPS OFF
+    // (capturing the clipboard is privacy-sensitive; with it off nothing is polled
+    // or stored). `retention` is the evict-oldest ring cap and `poll_interval_secs`
+    // the poll cadence — both floored to >= 1 at use. Listed so none reads as a typo.
+    ("pasteboard", &["enabled", "retention", "poll_interval_secs"]),
     // [answers] — answer annotations (anthropic.rs `answers` module): the
     // always-cite source-tracking (#5) + the self-reported confidence (#8). ALL SHIP
     // ON (full-power default):
@@ -866,6 +924,13 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // point, honest axes/empty); it changes no gate, takes no action, reaches no
     // network — safe to enable outright. Listed so the key never reads as a typo.
     ("chart", &["enabled"]),
+    // [artifact] — ARTIFACT REGISTRY + PEEK (artifact.rs). `enabled` SHIPS ON
+    // (armed-by-default): producers register the last N results into a BOUNDED,
+    // in-memory, on-device recency window with HONEST provenance (real agent + real
+    // citations, or UNCITED), and the read-only `peek` surface reads them back out.
+    // `registry_size` is the retention bound (kept last-N). Opens no outward surface,
+    // takes no action, reaches no network. Listed so neither key reads as a typo.
+    ("artifact", &["enabled", "registry_size"]),
     // [boundary] — CUSTOMS // EGRESS (boundary.rs). `enabled` SHIPS ON (a neutral
     // READ-ONLY preview of the cloud egress manifest); `default_trim` SHIPS "none"
     // (the identity — send everything, today's behavior). A trim is REDUCE-ONLY
@@ -1483,6 +1548,42 @@ impl Default for InterpretConfig {
     }
 }
 
+/// [captions] — HERALD-EARS LIVE CAPTIONS (captions.rs). When `enabled` is ON the
+/// transcript path (main.rs run_pipeline) turns each freshly-transcribed utterance into a
+/// `captions.line` telemetry stream for the HUD's LIVE CAPTIONS band: one line per
+/// diarized turn (HONEST speaker labels via diarize.rs — a SINGLE "unknown" stream when
+/// the backend cannot separate speakers, NEVER a fabricated speaker), each carrying an
+/// OPTIONAL translation via the on-device Babel path when `translate_to` is set. SHIPS OFF
+/// (`enabled=false`, `translate_to=""`): with it off the transcript path is byte-for-byte
+/// today's (no captions.line, the HUD band shows nothing). READ-ONLY DISPLAY — no action,
+/// no routing, no network beyond the on-device translate; it reuses the EXISTING mic/TCC
+/// grant (the transcript already exists — NO new recording to disk). Even ON it is INERT
+/// WITHOUT MIC/TCC (it consumes the device-gated transcript feed). Translation quality is
+/// bounded by the local ~4B model; offline degrades HONESTLY (the line still shows,
+/// translation omitted — never a fabricated rendering).
+///
+/// The derived `Default` is the shipped, all-off/empty opt-in posture: `enabled=false`
+/// (no captions.line, HUD band empty), `translate_to=""` (passthrough — the transcript
+/// text with no translation), `source_lang=""` (auto-detect when a target is later set).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CaptionsConfig {
+    /// Master switch for the live captions band. SHIPS OFF (false): with it off the
+    /// transcript path emits no captions.line and the HUD band shows nothing. INERT
+    /// WITHOUT MIC/TCC even when ON (it consumes the device-gated transcript feed).
+    pub enabled: bool,
+    /// The TARGET language to translate each caption line INTO, via the on-device Babel
+    /// path. SHIPS EMPTY ("") => passthrough: captions carry the transcript text with NO
+    /// translation. A non-blank value adds an on-device translation per line; offline / an
+    /// empty model reply degrades HONESTLY (the line still shows, translation omitted —
+    /// never a fabricated rendering).
+    pub translate_to: String,
+    /// The SOURCE language of the captioned speech. Empty (the default) => auto-detect (the
+    /// translator is told the source is unknown — Babel never claims to KNOW a source it
+    /// only guessed). Only consulted when `translate_to` is set.
+    pub source_lang: String,
+}
+
 /// [inference] — server-side knobs mirrored for the shared contract.
 ///
 /// SPECULATIVE DECODING (#37) joins `preload` and SELECTABLE QUANTIZATION (#39)
@@ -1645,6 +1746,39 @@ impl Default for ChartConfig {
         // interpolation/invented point, honest-empty). Changes no gate, takes no
         // action, reaches no network — safe to enable outright.
         Self { enabled: true }
+    }
+}
+
+/// [artifact] — ARTIFACT REGISTRY + PEEK (artifact.rs). `enabled` SHIPS ON
+/// (armed-by-default): producers register the last N things they made (report /
+/// chart / code_diff / …) into a BOUNDED, in-memory, on-device recency window, each
+/// carrying an HONEST provenance (the real producing agent + the real citations, or
+/// UNCITED). The read-only `peek` surface (a voice op + the `artifact_peek` tool)
+/// reads the most recent (or an id) back out as an `artifact.peek` telemetry frame
+/// the HUD's QuickLook overlay renders. It opens NO outward surface, takes NO
+/// action, reaches NO network — it only remembers + shows what was already
+/// produced. `registry_size` is the retention bound (kept last-N; clamped to the
+/// module ceiling).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ArtifactConfig {
+    /// Master gate for the registry + peek surface. SHIPS ON (armed-by-default):
+    /// with it off, producers register nothing and peek finds nothing. Read-only
+    /// accountability — arming it loosens nothing.
+    pub enabled: bool,
+    /// Retention bound — the registry keeps this many most-recent artifacts, then
+    /// evicts the oldest. Clamped into `[1, artifact::MAX_REGISTRY_BOUND]`.
+    pub registry_size: usize,
+}
+
+impl Default for ArtifactConfig {
+    fn default() -> Self {
+        // Armed by default with the module's recency-window bound. Read-only,
+        // on-device, opens no outward surface — safe to arm outright.
+        Self {
+            enabled: true,
+            registry_size: crate::artifact::DEFAULT_REGISTRY_BOUND,
+        }
     }
 }
 
@@ -2550,6 +2684,106 @@ impl ScreenContextConfig {
     /// busy loop, so it is floored.
     pub fn effective_interval_secs(&self) -> u64 {
         self.interval_secs.max(1)
+    }
+}
+
+/// [lumen] — LUMEN: the accessibility SCREEN NARRATOR + hands-free VOICE
+/// NAVIGATION (lumen.rs). It NARRATES the focused element / on-screen controls
+/// through the speech path (READ-ONLY) and pairs the READ-ONLY OCR/AX locate with
+/// the EXISTING per-action-gated `ui_actuate` CAPSTONE (#44) to run ONE voice-named
+/// UI action at a time. Lumen only SELECTS the one target + builds the actuation
+/// request; the UNCHANGED capstone owns every actuation gate (the pure planner,
+/// the consequential spoken confirm PER ACTION, the master switch, voice-id,
+/// `!lockdown`). Lumen weakens none of it.
+///
+///   - `narrate` (SHIPS OFF, default false): CONTINUOUS focus-change narration is
+///     EXPLICIT opt-in. OFF => the focus-change path is a strict NO-OP (Lumen
+///     speaks nothing on its own); the explicit "read me the screen" request path
+///     is unaffected. Continuous narration reads on-screen text aloud, so it is
+///     off until the user asks for it.
+///   - `max_controls` (DEFAULT 20): the HARD bound on how many on-screen controls
+///     one readout narrates / offers for selection — a huge screen is never read
+///     wholesale. Floored to >= 1.
+///
+/// PRIVACY / HONESTY: narration is READ-ONLY and NEVER fabricates an element (an
+/// empty focus/screen is spoken honestly); selection NEVER fabricates a target (a
+/// miss / an ambiguity REFUSES — never a wrong click); the actuation is DEVICE-
+/// gated behind the UNCHANGED capstone (Accessibility TCC + a real display) and
+/// the locate is the Vision app's TCC-gated `read.screen` (Screen-Recording); the
+/// telemetry frame is SECRET-FREE (role + counts, never the raw label).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LumenConfig {
+    pub narrate: bool,
+    pub max_controls: usize,
+}
+
+impl Default for LumenConfig {
+    fn default() -> Self {
+        Self {
+            // SHIPS OFF — continuous narration reads on-screen text aloud, so it is
+            // EXPLICIT opt-in. Off is a strict no-op; the on-request read path still
+            // answers.
+            narrate: false,
+            // A hard bound on how many controls one readout narrates/offers, so a
+            // dense screen is never read wholesale. Floored to >= 1 at use.
+            max_controls: 20,
+        }
+    }
+}
+
+/// [pasteboard] — SEMANTIC PASTEBOARD (pasteboard.rs): recall-by-MEANING over the
+/// macOS clipboard, on-device.
+///
+///   - `enabled` (SHIPS OFF): the master switch. Capturing the clipboard is
+///     privacy-sensitive, so it ships OFF — with it false NOTHING is polled or
+///     stored and the poll loop is never spawned. When on, each new clip is
+///     PII-REDACTED at the source and stored in a bounded, transient (in-RAM only)
+///     ring; a read-only recall ranks clips by meaning via recall.rs.
+///   - `retention`: the evict-oldest ring cap (bounded memory; floored to >= 1).
+///   - `poll_interval_secs`: the poll cadence in seconds (floored to >= 1 so a 0
+///     never busy-loops).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PasteboardConfig {
+    pub enabled: bool,
+    pub retention: usize,
+    pub poll_interval_secs: u64,
+}
+
+impl Default for PasteboardConfig {
+    fn default() -> Self {
+        Self {
+            // SHIPS OFF — capturing the clipboard is privacy-sensitive; nothing is
+            // polled or stored until the user opts in.
+            enabled: false,
+            // A calm bound on the in-RAM ring; evict-oldest past it. Floored >= 1.
+            retention: 50,
+            // A calm cadence — poll every 3s when on. Floored to >= 1 at use.
+            poll_interval_secs: 3,
+        }
+    }
+}
+
+impl LumenConfig {
+    /// The effective control bound (>= 1) — a misconfigured 0 would read nothing,
+    /// so it is floored, never trusted raw.
+    pub fn effective_max_controls(&self) -> usize {
+        self.max_controls.max(1)
+    }
+}
+
+impl PasteboardConfig {
+    /// The effective ring cap (>= 1) — a misconfigured 0 would make the ring
+    /// useless, so it is floored, never trusted raw.
+    pub fn effective_retention(&self) -> usize {
+        self.retention.max(1)
+    }
+
+    /// The effective poll interval in seconds (>= 1) — a 0 would be a busy loop,
+    /// so it is floored.
+    pub fn effective_poll_interval_secs(&self) -> u64 {
+        self.poll_interval_secs.max(1)
     }
 }
 
@@ -3876,6 +4110,7 @@ impl Config {
             voice: section(&table, "voice", &mut issues),
             wake: section(&table, "wake", &mut issues),
             interpret: section(&table, "interpret", &mut issues),
+            captions: section(&table, "captions", &mut issues),
             docsearch: section(&table, "docsearch", &mut issues),
             code: section(&table, "code", &mut issues),
             shell: section(&table, "shell", &mut issues),
@@ -3883,6 +4118,8 @@ impl Config {
             vision: section(&table, "vision", &mut issues),
             image: section(&table, "image", &mut issues),
             screen_context: section(&table, "screen_context", &mut issues),
+            lumen: section(&table, "lumen", &mut issues),
+            pasteboard: section(&table, "pasteboard", &mut issues),
             answers: section(&table, "answers", &mut issues),
             audit: section(&table, "audit", &mut issues),
             triage: section(&table, "triage", &mut issues),
@@ -3898,6 +4135,7 @@ impl Config {
             power: section(&table, "power", &mut issues),
             report: section(&table, "report", &mut issues),
             chart: section(&table, "chart", &mut issues),
+            artifact: section(&table, "artifact", &mut issues),
             boundary: section(&table, "boundary", &mut issues),
             vault: section(&table, "vault", &mut issues),
             egress: section(&table, "egress", &mut issues),
@@ -4333,6 +4571,51 @@ mod tests {
         assert!(
             issues.iter().any(|i| i.contains("enable")),
             "a typo'd [screen_context] key must be diagnosed: {issues:?}"
+        );
+    }
+
+    /// SEMANTIC PASTEBOARD: [pasteboard] SHIPS OFF (privacy-sensitive), with sane
+    /// bounds (retention/interval floored to >= 1), and its keys are known
+    /// (lockstep with KNOWN_KEYS so a typo is diagnosed).
+    #[test]
+    fn pasteboard_ships_off_with_sane_bounds_and_known_keys() {
+        // The Default impl is OFF — capturing the clipboard is opt-in.
+        let d = super::PasteboardConfig::default();
+        assert!(!d.enabled, "the semantic pasteboard SHIPS OFF (privacy-sensitive; opt-in)");
+        assert_eq!(d.retention, 50);
+        assert_eq!(d.poll_interval_secs, 3);
+        assert!(d.effective_retention() >= 1);
+        assert!(d.effective_poll_interval_secs() >= 1);
+
+        // An empty config (no [pasteboard] block) parses to OFF, no diagnostic.
+        let (cfg, issues) = Config::parse("");
+        assert!(
+            !cfg.pasteboard.enabled,
+            "an absent [pasteboard] block falls back to the OFF default"
+        );
+        assert!(
+            issues.iter().all(|i| !i.contains("pasteboard")),
+            "the [pasteboard] keys must be known (no unknown-key diagnostic): {issues:?}"
+        );
+
+        // The keys take + a misconfigured 0 retention/interval is FLOORED.
+        let (cfg, issues) = Config::parse(
+            "[pasteboard]\nenabled = true\nretention = 0\npoll_interval_secs = 0\n",
+        );
+        assert!(issues.is_empty(), "valid keys parse clean: {issues:?}");
+        assert!(cfg.pasteboard.enabled);
+        assert_eq!(cfg.pasteboard.effective_retention(), 1, "a 0 retention is floored to 1");
+        assert_eq!(
+            cfg.pasteboard.effective_poll_interval_secs(),
+            1,
+            "a 0 interval is floored to 1 (never a busy loop)"
+        );
+
+        // A typo'd key under [pasteboard] IS flagged (lockstep with KNOWN_KEYS).
+        let (_cfg, issues) = Config::parse("[pasteboard]\nenable = true\n");
+        assert!(
+            issues.iter().any(|i| i.contains("enable")),
+            "a typo'd [pasteboard] key must be diagnosed: {issues:?}"
         );
     }
 

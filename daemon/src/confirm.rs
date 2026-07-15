@@ -211,6 +211,12 @@ pub const CONSEQUENTIAL_TOOLS: &[&str] = &[
     // visible UI side effect, so it is gated PER ACTION like every other actuator:
     // it parks for a spoken yes and never auto-opens.
     "open_settings_pane",
+    // Semantic Pasteboard SET (pasteboard.rs): pasteboard_put places text on the
+    // macOS clipboard. BENIGN by construction — a pasteboard SET only, never a
+    // keystroke, file mutation, or network call — but it is a VISIBLE side effect
+    // on the user's clipboard, so it is gated PER ACTION: it parks for a spoken
+    // yes and never auto-copies (one confirm authorizes exactly one set).
+    "pasteboard_put",
 ];
 
 /// Whether a tool name is consequential (side-effecting) and therefore must be
@@ -947,12 +953,16 @@ mod tests {
         // open_settings_pane opens an allowlisted System Settings pane (a visible UI
         // side effect) — it MUST be gated per action (it parks; it never auto-opens).
         assert!(is_consequential_tool("open_settings_pane"), "open_settings_pane must be gated (it parks, never auto-opens)");
-        // Exactly the 20 gate-routed tools, no dupes.
-        assert_eq!(CONSEQUENTIAL_TOOLS.len(), 20, "expected 20 consequential tools");
+        // pasteboard_put SETS the macOS clipboard (a visible side effect) — benign
+        // (a pasteboard set only, never a keystroke/file/network) but MUST be gated
+        // per action (it parks for a spoken yes; it never auto-copies).
+        assert!(is_consequential_tool("pasteboard_put"), "pasteboard_put must be gated (it parks, never auto-copies)");
+        // Exactly the 21 gate-routed tools, no dupes.
+        assert_eq!(CONSEQUENTIAL_TOOLS.len(), 21, "expected 21 consequential tools");
         let mut sorted = CONSEQUENTIAL_TOOLS.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(sorted.len(), 20, "no duplicate consequential tool names");
+        assert_eq!(sorted.len(), 21, "no duplicate consequential tool names");
     }
 
     #[test]

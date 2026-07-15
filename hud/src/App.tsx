@@ -42,6 +42,7 @@ import AmbientMode from "./components/AmbientMode";
 import { isAtRest } from "./core/ambient";
 import TccSentinelPanel from "./components/TccSentinelPanel";
 import IntrospectPanel from "./components/IntrospectPanel";
+import PasteboardPanel from "./components/PasteboardPanel";
 import PostureDashboardPanel from "./components/PostureDashboardPanel";
 import AttributionHealthPanel from "./components/AttributionHealthPanel";
 import AppDeckPanel from "./components/AppDeckPanel";
@@ -53,6 +54,7 @@ import OnboardingWizard from "./components/OnboardingWizard";
 import ProvenanceLedgerPanel from "./components/ProvenanceLedgerPanel";
 import ResearchNotebooksPanel from "./components/ResearchNotebooksPanel";
 import ReportPanel from "./components/ReportPanel";
+import QuickLookOverlay from "./components/QuickLookOverlay";
 import ReticleDial from "./components/ReticleDial";
 import SelfHealPanel from "./components/SelfHealPanel";
 import SettingsModal from "./components/SettingsModal";
@@ -74,6 +76,7 @@ import AnswerCrossCheckPanel from "./components/AnswerCrossCheckPanel";
 import TakeoverStage from "./components/TakeoverStage";
 import Toasts from "./components/Toasts";
 import TranscriptPanel from "./components/TranscriptPanel";
+import CaptionBand from "./components/CaptionBand";
 import VisionPanel, { VISION_APP } from "./components/VisionPanel";
 import Waveform from "./components/Waveform";
 import { audioStore } from "./core/audioStore";
@@ -601,6 +604,7 @@ export default function App() {
         <ErrorBoundary label="left column" resetKeys={[state.connected]}><div className="left-col">
           <ReticleDial cpuPercent={state.gauges.cpuPercent} coreState={state.coreState} />
           <TranscriptPanel lines={state.transcript} intent={state.lastIntent} />
+          <CaptionBand captions={state.captions} />
           <AudioIoPanel audio={state.audioIo} />
         </div></ErrorBoundary>
         {/* Center column: the R3F core stays visible up top; the intel-feed
@@ -663,6 +667,7 @@ export default function App() {
             alerts={state.introspectAlerts}
             capabilities={state.introspectCapabilities}
           />
+          <PasteboardPanel pasteboard={state.pasteboard} />
           <PostureDashboardPanel posture={state.posture} />
           <ConnectorMarketplacePanel mcp={state.mcp} />
           <ExtensibilityPanel webhooks={state.webhooks} plugins={state.plugins} />
@@ -690,6 +695,7 @@ export default function App() {
           <ResearchNotebooksPanel activity={state.notebook} />
           <ReportPanel report={state.report} />
           <ChartPanel spec={state.chart} />
+          <QuickLookOverlay artifact={state.artifactPeek} />
           <LifeLogPanel digest={state.lifelog} />
           <SessionRewindPanel rewind={state.sessionRewind} />
           <CausaTracePanel trace={state.causaTrace} />

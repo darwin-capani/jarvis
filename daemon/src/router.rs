@@ -497,6 +497,68 @@ pub async fn route(
         });
     }
 
+    // SEMANTIC PASTEBOARD VOICE COMMANDS (pasteboard.rs): "what did I copy about
+    // the lease" / "recall my clipboard" (RECALL) and "forget my clipboard"
+    // (FORGET). CONSERVATIVELY anchored (classify_pasteboard_intent requires an
+    // explicit clipboard/"copied" reference plus a recall/forget cue, so an
+    // ordinary sentence — and crucially an imperative "copy X to my clipboard"
+    // (which is the confirm-gated pasteboard_put tool, NOT a recall) — never reaches
+    // here). Handled BEFORE normal routing so a pasteboard utterance never falls
+    // through to the model. READ-ONLY: RECALL ranks the BOUNDED, PII-REDACTED clip
+    // ring by MEANING via the recall.rs path (an off / empty ring is an HONEST
+    // "nothing copied yet", never fabricated); FORGET wipes the ring. SHIPS OFF
+    // ([pasteboard].enabled=false) — with it off nothing was ever captured, so
+    // recall/forget honestly report an empty history. Runs after the owner voice-id
+    // all-scope gate, so an unrecognized bystander cannot recall or wipe the owner's
+    // clipboard history.
+    if let Some(intent) = crate::pasteboard::classify_pasteboard_intent(text) {
+        let prime = agents.orchestrator();
+        emit_agent_active(prime);
+        let (verb, response) = if !cfg.pasteboard.enabled {
+            // OFF (the shipped default): nothing was ever captured. Honest, not a
+            // fabricated recall — and never a claim the feature is running.
+            (
+                "off",
+                "The semantic pasteboard is off, sir — I'm not capturing your clipboard. \
+                 Enable [pasteboard] and I'll start remembering what you copy, on-device."
+                    .to_string(),
+            )
+        } else {
+            match intent {
+                crate::pasteboard::PasteboardIntent::Recall { subject } => {
+                    // Rank the redacted clip ring by meaning; a named subject
+                    // narrows the query, a bare recall ranks against the whole
+                    // utterance. Honest-empty on an off / un-fed ring.
+                    let query = subject.as_deref().unwrap_or(text);
+                    ("recall", crate::pasteboard::global_render_recall(query, 10))
+                }
+                crate::pasteboard::PasteboardIntent::Forget => {
+                    let cleared = crate::pasteboard::global_clear();
+                    let ack = if cleared {
+                        "Done, sir — I've wiped your clipboard history.".to_string()
+                    } else {
+                        "There was no clipboard history to forget, sir.".to_string()
+                    };
+                    ("forget", ack)
+                }
+            }
+        };
+        // SECRET-FREE telemetry: the verb + the gate only — never the recalled
+        // (already-redacted) clip text.
+        telemetry::emit(
+            "system",
+            "pasteboard.command",
+            json!({ "verb": verb, "enabled": cfg.pasteboard.enabled }),
+        );
+        return Ok(RouteOutcome {
+            routed_to: "local",
+            response,
+            agent: prime.name.clone(),
+            namespace: prime.namespace.clone(),
+            spoken: None,
+        });
+    }
+
     // RESEARCH NOTEBOOK VOICE COMMAND (#19): "save this research" / "show my
     // research notebook on X" / "what have I researched" / "forget my research on
     // X". CONSERVATIVELY anchored (classify_notebook_intent requires an explicit
@@ -666,6 +728,34 @@ pub async fn route(
                 "report.built",
                 json!({"verb": outcome.verb, "report": report_json}),
             );
+            // ARTIFACT REGISTRY: register a REAL (non-empty) built report so the
+            // peek surface can surface it. Provenance is HONEST — the real producing
+            // agent (prime) + the report's REAL citations (each a source ref an input
+            // claim carried, never fabricated); an empty report is not registered
+            // (nothing was produced). The registry is in-memory + on-device; this
+            // opens no surface.
+            if let Some(r) = outcome.report.as_ref() {
+                if !r.empty {
+                    let citations = r
+                        .all_citations
+                        .iter()
+                        .filter_map(|c| crate::artifact::Citation::new(c.title.clone(), c.url.clone()))
+                        .collect::<Vec<_>>();
+                    crate::artifact::register(
+                        crate::artifact::ArtifactKind::Report,
+                        r.title.clone(),
+                        prime.name.clone(),
+                        citations,
+                        format!(
+                            "{} section{}, {} citation{}",
+                            r.sections.len(),
+                            if r.sections.len() == 1 { "" } else { "s" },
+                            r.all_citations.len(),
+                            if r.all_citations.len() == 1 { "" } else { "s" },
+                        ),
+                    );
+                }
+            }
             return Ok(RouteOutcome {
                 routed_to: "local",
                 response: outcome.markdown,
@@ -695,6 +785,25 @@ pub async fn route(
             // exact metrics (honest-empty when no reading is available yet).
             let spec = crate::chart::chart_from_snapshot(telemetry::latest_snapshot());
             crate::chart::emit_chart(&spec);
+            // ARTIFACT REGISTRY: register a REAL (non-empty) chart. A chart of live
+            // system metrics genuinely cites nothing, so it is registered UNCITED —
+            // honest, never dressed up with a fabricated source. In-memory +
+            // on-device; opens no surface.
+            if !spec.is_empty() {
+                let points: usize = spec.series.iter().map(|s| s.points.len()).sum();
+                crate::artifact::register(
+                    crate::artifact::ArtifactKind::Chart,
+                    spec.title.clone(),
+                    prime.name.clone(),
+                    Vec::new(), // live system metrics carry no citation -> UNCITED
+                    format!(
+                        "{} series, {} point{}",
+                        spec.series.len(),
+                        points,
+                        if points == 1 { "" } else { "s" },
+                    ),
+                );
+            }
             let response = if spec.is_empty() {
                 "I don't have a system reading to chart yet, sir — give me a moment and ask again."
                     .to_string()
@@ -709,6 +818,33 @@ pub async fn route(
                 spoken: None,
             });
         }
+    }
+
+    // ARTIFACT PEEK VOICE COMMAND (artifact.rs): "what did you just do" / "peek".
+    // CONSERVATIVELY anchored (classify_peek_intent requires an explicit peek cue or
+    // a "what did you just <produce>" recall phrase, so an ordinary "what did you
+    // say" never trips it). GATED by [artifact].enabled (ships ON, armed-by-default)
+    // — when off this arm is skipped and the utterance routes normally. READ-ONLY:
+    // it reads the MOST RECENT artifact the producers registered back out of the
+    // in-memory, on-device registry and fire-and-forget emits it as an
+    // `artifact.peek` frame the HUD's QuickLook overlay renders — with HONEST
+    // provenance (the real producing agent + real citations, or UNCITED). It changes
+    // no gate, takes no action, reaches no network. An empty registry is answered
+    // honestly ("nothing to peek yet"), never a fabricated artifact.
+    if cfg.artifact.enabled && crate::artifact::classify_peek_intent(text) {
+        let prime = agents.orchestrator();
+        emit_agent_active(prime);
+        let response = match crate::artifact::peek_and_emit(None) {
+            Some(artifact) => artifact.summary(),
+            None => crate::artifact::empty_reply(),
+        };
+        return Ok(RouteOutcome {
+            routed_to: "local",
+            response,
+            agent: prime.name.clone(),
+            namespace: prime.namespace.clone(),
+            spoken: None,
+        });
     }
 
     // COMPOSE-MUSIC VOICE COMMAND (Phase-2 flagship "DARWIN, compose an 8-bit happy

@@ -49,6 +49,7 @@ import {
   TccSentinel,
   IntrospectStatus,
   IntrospectCapability,
+  PasteboardStatus,
   PostureSnapshot,
   AttributionHealth,
   McpStatus,
@@ -167,6 +168,7 @@ import {
   parseTccAnomalies,
   TCC_ANOMALY_CAP,
   parseIntrospectSnapshot,
+  parsePasteboardStatus,
   introspectDriftLine,
   introspectAnomalyLine,
   introspectModuleViolationLine,
@@ -211,6 +213,10 @@ import {
   ReportReadout,
   parseChartSpec,
   parseReportReadout,
+  ArtifactPeek,
+  parseArtifactPeek,
+  CaptionLine,
+  parseCaptionLine,
   str,
   strArr,
   sttTierInitial,
@@ -237,6 +243,14 @@ export interface TranscriptLine {
   text: string;
   ts: string; // envelope ts (verbatim from the daemon)
   routedTo?: string; // darwin lines: "local" | "cloud" per route.completed
+  seq: number;
+}
+
+/** One row in the HERALD-EARS LIVE CAPTIONS band (captions.rs -> `captions.line`).
+ *  A parsed CaptionLine plus a monotonic `seq` for a stable render key. The
+ *  `speaker` is VERBATIM from diarize.rs ("unknown" on the single stream, never a
+ *  fabricated speaker); `translation` is null on passthrough / an honest degrade. */
+export interface CaptionEntry extends CaptionLine {
   seq: number;
 }
 
@@ -600,6 +614,10 @@ export interface HudState {
   stateSince: number;
 
   transcript: TranscriptLine[]; // ring buffer, newest last
+  /** HERALD-EARS LIVE CAPTIONS band (captions.rs -> `captions.line`), a ring buffer
+   *  newest last. Fed one row per diarized turn (honest speaker labels; optional
+   *  on-device translation). Empty until [captions].enabled is turned on. */
+  captions: CaptionEntry[];
   gauges: SystemGauges;
   lastTimings: PipelineTimings | null;
 
@@ -686,6 +704,10 @@ export interface HudState {
   /** Per-app DECLARED capability inventory (introspect.capabilities): the static
    *  "what can each app do" audit from manifests. Secret-free. REVIEW-ONLY. */
   introspectCapabilities: IntrospectCapability[];
+  /** The semantic-pasteboard status (pasteboard.status): the enabled gate, the
+   *  clip count + cap + poll cadence, and up to a few ALREADY-redacted, truncated
+   *  clip previews. Null until the first status frame. SHIPS OFF (opt-in). */
+  pasteboard: PasteboardStatus | null;
   /** The machine security posture (posture.snapshot, 30-min cadence): FileVault /
    *  firewall / SIP / pending-updates verdicts from the read-only status
    *  commands. Null until the first frame. REVIEW-ONLY — the daemon reports;
@@ -1233,12 +1255,27 @@ export interface HudState {
    *  fabricated body. REVIEW-ONLY + SECRET-FREE — counts/headings/locators only. */
   report: ReportReadout | null;
 
+  /** The last ARTIFACT PEEK (artifact.rs, artifact.peek) — the HUD's honest view of
+   *  the most recent (or an id'd) thing the assistant produced, read back out of the
+   *  daemon's bounded, on-device Artifact Registry: the kind, title, ts, a redacted
+   *  preview, the REAL producing agent, and the REAL citations (or UNCITED, re-derived
+   *  from the surviving citations so a source is never fabricated). Null until the
+   *  first artifact.peek (summoned by "what did you just do" / "peek", or the
+   *  `artifact_peek` tool); the subsystem ships ARMED but the registry is empty until
+   *  a producer registers something. REVIEW-ONLY + SECRET-FREE — kind/title/preview/
+   *  agent/locators only. This is the surface Share Guard will ride. */
+  artifactPeek: ArtifactPeek | null;
+
   seq: number; // monotonic id source for lines/facts/actions/toasts
 }
 
 /* ------------------------------------------------------------------------ */
 
 export const TRANSCRIPT_CAP = 100;
+/** Ring cap on the LIVE CAPTIONS band — a bounded window of recent caption rows so
+ *  a long session never grows the render without limit (belt-and-suspenders; the
+ *  daemon emits one row per diarized turn). */
+export const CAPTIONS_CAP = 100;
 export const TICKER_CAP = 24;
 /** Cap on the episodic TIMELINE ring the HUD keeps in view (newest-first). This
  *  is a VIEW bound, independent of the daemon's own bounded [episodic].retention
@@ -1345,6 +1382,7 @@ export function initialState(): HudState {
     coreState: "offline",
     stateSince: 0,
     transcript: [],
+    captions: [],
     gauges: {
       cpuPercent: null,
       memUsedBytes: null,
@@ -1380,6 +1418,7 @@ export function initialState(): HudState {
     introspect: null,
     introspectAlerts: [],
     introspectCapabilities: [],
+    pasteboard: null,
     posture: null,
     attributionHealth: null,
     security: null,
@@ -1454,6 +1493,7 @@ export function initialState(): HudState {
     actionSurface: { drafts: [], missions: [], macros: [] },
     chart: null,
     report: null,
+    artifactPeek: null,
     seq: 0,
   };
 }
@@ -1509,6 +1549,15 @@ function pushTranscript(state: HudState, line: Omit<TranscriptLine, "seq">): Hud
   const seq = state.seq + 1;
   const transcript = [...state.transcript, { ...line, seq }];
   return { ...state, seq, transcript: transcript.slice(-TRANSCRIPT_CAP) };
+}
+
+/** Append one caption row to the LIVE CAPTIONS ring (newest last), stamping a
+ *  monotonic `seq` for a stable render key and bounding by CAPTIONS_CAP. Mirrors
+ *  pushTranscript — a pure ring push, no side effects. */
+function pushCaption(state: HudState, line: CaptionLine): HudState {
+  const seq = state.seq + 1;
+  const captions = [...state.captions, { ...line, seq }];
+  return { ...state, seq, captions: captions.slice(-CAPTIONS_CAP) };
 }
 
 /* micro-app feed helpers ---------------------------------------------------- */
@@ -2433,6 +2482,15 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       return { ...s, introspect: parseIntrospectSnapshot(env.data) };
     }
 
+    case "pasteboard.status": {
+      // Semantic pasteboard (pasteboard.rs): enabled gate + clip count/cap/cadence
+      // + up to a few ALREADY-redacted, truncated clip previews. Never null — a
+      // malformed payload yields an honest OFF/empty snapshot; when off, previews
+      // are dropped so the panel never renders text for a pasteboard that is not
+      // running. SHIPS OFF (opt-in) and REDACTED at the source.
+      return { ...s, pasteboard: parsePasteboardStatus(env.data) };
+    }
+
     case "introspect.profile_drift": {
       // The on-disk seatbelt profile was tampered/removed since launch — a
       // sandbox-integrity finding. Accumulate (deduped, capped). REVIEW-ONLY.
@@ -3018,6 +3076,22 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       return { ...s, chart: spec };
     }
 
+    case "captions.line": {
+      // HERALD-EARS LIVE CAPTIONS (captions.rs -> `captions.line`, emitted per
+      // diarized turn on the transcript path when [captions].enabled is ON). The
+      // parser drops a frame with NO usable text (a blank/absent transcript is never
+      // rendered as an empty caption), carries the `speaker` VERBATIM (missing/blank
+      // reads honestly as "unknown" — never a fabricated distinct speaker), and keeps
+      // `translation` only when non-blank (a passthrough / honest offline degrade rides
+      // translation:null, never a fabricated rendering). A valid row is appended to the
+      // bounded LIVE CAPTIONS ring; a malformed/empty frame is dropped (same reference)
+      // so junk never churns the tree. The op ships OFF ([captions].enabled), so nothing
+      // arrives until it is enabled.
+      const line = parseCaptionLine(env.data);
+      if (line === null) return s;
+      return pushCaption(s, line);
+    }
+
     case "report.built": {
       // A REPORT was assembled (#40, daemon/src/report.rs dispatch, emitted from
       // router.rs as report.built). parseReportReadout returns null when the
@@ -3038,6 +3112,25 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       const readout = parseReportReadout(env.data);
       if (readout === null) return s;
       return { ...s, report: readout };
+    }
+
+    case "artifact.peek": {
+      // The read-only ARTIFACT PEEK surface (artifact.rs, emitted from the peek
+      // voice op / the artifact_peek tool): the most recent (or an id'd) thing the
+      // assistant produced, read back out of the daemon's bounded, on-device
+      // Artifact Registry. parseArtifactPeek returns null ONLY for a junk frame with
+      // no usable `kind` (dropped, same reference) — otherwise it yields the kind,
+      // title, ts, redacted preview, the REAL producing agent, and the REAL
+      // citations. `uncited` is RE-DERIVED from the surviving citations (never
+      // trusted from the wire), so an artifact with no real source shows honest
+      // UNCITED and can never be dressed up — the honesty pivot Share Guard rides on.
+      //
+      // A fresh peek REPLACES the prior one (the QuickLook overlay shows the last
+      // thing peeked). A malformed frame is dropped (same reference) so junk never
+      // churns the tree. SECRET-FREE — kind/title/preview/agent/locators only.
+      const peek = parseArtifactPeek(env.data);
+      if (peek === null) return s;
+      return { ...s, artifactPeek: peek };
     }
 
     case "audit.snapshot": {

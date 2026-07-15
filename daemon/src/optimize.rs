@@ -198,10 +198,92 @@ pub fn redact(s: &str) -> String {
         first = false;
         out.push_str(&redact_token(token));
     }
-    // Final pass over the rebuilt string catches digit runs that were glued to
-    // punctuation INSIDE a token but not handled by the per-token rules
-    // (defense in depth; idempotent on already-redacted text).
-    redact_digit_runs(&out)
+    // Final passes over the rebuilt string. `redact_grouped_secrets` FIRST collapses
+    // SEPARATOR-GROUPED card/account numbers (Luhn-valid 13-19 digit) and SSNs
+    // (3-2-4 shape) — the normal displayed form "4242 4242 4242 4242" / "123 45 6789"
+    // that the whitespace split scatters into sub-6-digit tokens no other rule
+    // catches. Then `redact_digit_runs` collapses long CONTIGUOUS numeric ids. Both
+    // are idempotent on already-redacted text.
+    redact_digit_runs(&redact_grouped_secrets(&out))
+}
+
+/// Standard Luhn (mod-10) checksum over a pure-digit string — the industry check
+/// for a payment card number. Used to distinguish a real PAN from an incidental
+/// long numeric grouping (a year list rarely passes Luhn), so redaction stays
+/// precise. Empty / non-digit input is not valid.
+fn passes_luhn(digits: &str) -> bool {
+    if digits.len() < 13 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let mut sum = 0u32;
+    for (i, c) in digits.chars().rev().enumerate() {
+        let mut d = c.to_digit(10).unwrap_or(0);
+        if i % 2 == 1 {
+            d *= 2;
+            if d > 9 {
+                d -= 9;
+            }
+        }
+        sum += d;
+    }
+    sum.is_multiple_of(10)
+}
+
+/// Whether a digit-and-separator `span` is exactly the U.S. SSN shape: three groups
+/// of 3-2-4 digits separated by a single space or hyphen ("123 45 6789" /
+/// "123-45-6789"). SSNs carry no checksum, so the shape is the tell.
+fn is_ssn_shape(span: &str) -> bool {
+    let groups: Vec<&str> = span.split([' ', '-']).filter(|g| !g.is_empty()).collect();
+    groups.len() == 3
+        && [3usize, 2, 4] == [groups[0].len(), groups[1].len(), groups[2].len()]
+        && groups.iter().all(|g| g.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Collapse separator-grouped SECRETS the whitespace-token rules miss: a payment
+/// card (13-19 digits with single space/hyphen separators that passes [`passes_luhn`])
+/// or an SSN (the 3-2-4 shape). Only the digit-bounded span is replaced, so
+/// surrounding text/spacing is preserved. Precise by construction — a benign long
+/// numeric grouping (a list of years) fails both Luhn and the SSN shape, so it
+/// survives; a real card / SSN in its normal displayed form does not.
+fn redact_grouped_secrets(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        // Extend a maximal run of digits joined by SINGLE space/hyphen separators
+        // (a separator only continues the run when a digit follows it).
+        let start = i;
+        let mut last_digit = i;
+        let mut j = i;
+        while j < chars.len() {
+            if chars[j].is_ascii_digit() {
+                last_digit = j;
+                j += 1;
+            } else if matches!(chars[j], ' ' | '-')
+                && j + 1 < chars.len()
+                && chars[j + 1].is_ascii_digit()
+            {
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        let span: String = chars[start..=last_digit].iter().collect();
+        let digits: String = span.chars().filter(|c| c.is_ascii_digit()).collect();
+        let is_card = (13..=19).contains(&digits.len()) && passes_luhn(&digits);
+        if is_card || is_ssn_shape(&span) {
+            out.push_str(REDACTED);
+        } else {
+            out.push_str(&span);
+        }
+        i = last_digit + 1;
+    }
+    out
 }
 
 /// Per-token redaction: classify a single whitespace-delimited token and either
@@ -2606,6 +2688,32 @@ mod optimizer_tests {
         assert!(is_eligible_cue_word("abcdefghijklmnopqr"), "18 chars: at the cap, eligible");
         assert!(!is_eligible_cue_word("ab"), "below the >= 4 floor");
         assert_eq!(CUE_MAX_LEN, 18);
+    }
+
+    #[test]
+    fn redact_catches_separator_grouped_cards_and_ssns() {
+        // REGRESSION (Semantic Pasteboard privacy): the NORMAL displayed form of a
+        // card / SSN — grouped by spaces or hyphens — must be redacted, not just the
+        // contiguous run. Uses a Luhn-valid test PAN (4242…, the canonical Visa test
+        // number).
+        for card in [
+            "pay 4242 4242 4242 4242 today",
+            "4242-4242-4242-4242",
+            "4242424242424242",
+        ] {
+            assert!(
+                redact(card).contains(REDACTED),
+                "a Luhn-valid card must be redacted in every form: {card:?} -> {:?}",
+                redact(card)
+            );
+            assert!(!redact(card).contains("4242"), "no card digits survive: {card:?}");
+        }
+        // SSN in both grouped forms.
+        assert!(redact("ssn 123 45 6789 on file").contains(REDACTED));
+        assert!(redact("123-45-6789").contains(REDACTED));
+        // PRECISION: a benign non-card long numeric grouping (a year list) is NOT a
+        // Luhn card and NOT an SSN shape, so it survives — no over-redaction.
+        assert_eq!(redact("the years 2020 2021 2022 2023"), "the years 2020 2021 2022 2023");
     }
 
     #[test]

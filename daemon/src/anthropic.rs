@@ -1209,6 +1209,30 @@ fn tool_defs() -> &'static Value {
                 }
             },
             {
+                "name": "pasteboard_recall",
+                "description": "Recall from the SEMANTIC PASTEBOARD — DARWIN's on-device, PII-REDACTED, bounded history of what the user COPIED to their clipboard. READ-ONLY: it ranks the stored clips by MEANING against a query and returns the most relevant, most-relevant first. It stores nothing, sends nothing to the cloud, and changes nothing. Call this when the user asks about something they COPIED ('the thing I copied about the lease', 'what did I copy earlier about the invoice', 'find that snippet I copied'). PRIVACY + HONESTY: the semantic pasteboard SHIPS OFF and only captures once the user has enabled it — when it is off, or nothing has been copied yet, it honestly says the clipboard history is empty; do NOT invent a clip. Every stored clip was PII-REDACTED at capture (emails/secrets/card+phone numbers stripped), so a recalled clip may show '[redacted]' spans. Ranking is RUNTIME-SELECTED: neural on-device embeddings when the inference server is up, else lexical BM25 — the report NAMES whichever actually ran; report it the same way and never claim neural on fallback.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "What to recall from the clipboard history — the topic or phrase, in the user's own words."},
+                        "k": {"type": "integer", "description": "Max number of clips to return (default 5; capped). The most relevant come first."}
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "pasteboard_put",
+                "description": "Place text on the user's macOS clipboard (a pasteboard SET) so they can paste it. CONSEQUENTIAL but BENIGN: it ONLY sets the clipboard — it never types a keystroke, mutates a file, or reaches the network. It defaults to a DRY-RUN PREVIEW and copies nothing. Set confirm=true ONLY after the user has explicitly approved copying THIS exact text — never on your own initiative. Even with confirm=true it still will NOT copy unless the operator has separately enabled consequential actions; otherwise it returns a preview. Call this when the user asks you to copy / put something on their clipboard for them to paste.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "The exact text to place on the clipboard."},
+                        "confirm": {"type": "boolean", "description": "true ONLY after the user explicitly approved copying this exact text; otherwise a dry-run preview"}
+                    },
+                    "required": ["text"]
+                }
+            },
+            {
                 "name": "episodic_recall",
                 "description": "Recall past EPISODES — DARWIN's durable, redacted, bounded record of completed interactions (one episode per past turn: what was said, the topic, a short summary). READ-ONLY: it ranks/returns only REAL recorded episodes and never fabricates one. Call this when the user asks what you talked about, what happened recently, or to surface a past conversation on a topic ('what did we discuss about the launch', 'remind me what I asked you yesterday', 'recap our recent chats'). TWO recall modes, combined: TEMPORAL (leave 'query' empty to get the most RECENT episodes newest-first; optionally narrow with 'since' or the 'from'/'to' window) and TOPICAL (give a 'query' to RANK episodes by relevance to it). HONESTY ABOUT SCOPE + METHOD: recall is AGENT-SCOPED — you see only this agent's own episodes plus shared ones, never another agent's. Topical ranking is RUNTIME-SELECTED: neural on-device embeddings when the inference server is up, else lexical BM25 — the report NAMES whichever ran; report it the same way and never claim neural on fallback. The store is BOUNDED (it keeps the recent past, not everything forever) and REDACTED (secrets/PII are stripped before store). When nothing matches (or nothing is recorded yet) it honestly says so — do not invent an episode. Returns the matched episodes (time + summary) most-relevant (or most-recent) first.",
                 "input_schema": {
@@ -1254,6 +1278,16 @@ fn tool_defs() -> &'static Value {
                         "request": {"type": "string", "description": "The change to make, in the user's own words (e.g. 'rename parse_config to load_config', 'add input validation to the handler')."}
                     },
                     "required": ["request"]
+                }
+            },
+            {
+                "name": "artifact_peek",
+                "description": "Peek at the LAST thing you produced — READ-ONLY recall over the in-memory, on-device Artifact Registry (the last N results the assistant made this session: reports, charts, code-diff proposals, drafts, notebooks, forecasts, docsearch answers). Call this when the user asks 'what did you just do', 'what did you just make/produce', 'peek', or 'show me that again'. It returns WHAT was produced (kind + title), WHO/WHAT backs it (the real producing agent + the real citations — or plainly UNCITED when the artifact carried no source), and a compact preview, and it surfaces the artifact on the HUD's QuickLook overlay. HONEST: an uncited artifact is reported as uncited, never dressed up with a fabricated source; when nothing has been produced yet it says so plainly and never invents an artifact. READ-ONLY + ON-DEVICE: it reads back what was already produced — it opens no network, takes no action, and changes nothing. Armed by default; with no id it returns the MOST RECENT artifact.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer", "description": "Optional registry id of a specific artifact to peek. Omit to peek the MOST RECENT artifact."}
+                    }
                 }
             },
             {
@@ -3453,6 +3487,32 @@ struct MnemosyneRecallArgs {
     k: Option<usize>,
 }
 
+// -- SEMANTIC PASTEBOARD tool args (crate::pasteboard) ---------------------------
+// pasteboard_recall is READ-ONLY: rank the stored (PII-redacted) clipboard clips
+// by relevance to `query` and return the top `k`. Ranking is RUNTIME-SELECTED
+// (neural on-device embeddings when the inference server is up, else lexical BM25),
+// and the report names whichever ran. Nothing is stored/changed.
+#[derive(Deserialize)]
+struct PasteboardRecallArgs {
+    /// What to recall from the clipboard history — the topic in the user's words.
+    query: String,
+    /// Max number of clips to return. Default 5; clamped to a safe ceiling.
+    #[serde(default)]
+    k: Option<usize>,
+}
+
+// pasteboard_put is CONSEQUENTIAL but BENIGN: it SETS the clipboard (a pasteboard
+// set only — never a keystroke/file/network). It defaults to a DryRun preview;
+// `confirm` (only ever set by the confirmation replay) gates the real set.
+#[derive(Deserialize)]
+struct PasteboardPutArgs {
+    /// The exact text to place on the clipboard.
+    text: String,
+    /// Only ever true via the confirmation replay; a first call previews.
+    #[serde(default)]
+    confirm: bool,
+}
+
 // -- DOC SEARCH tool args (crate::docsearch) -------------------------------------
 // READ-ONLY on-device file RAG: rank the indexed file CHUNKS by relevance to
 // `query` and return the top `k` CITED results (file path + offset + snippet).
@@ -3483,6 +3543,18 @@ struct CodeExplainArgs {
 struct CodeProposeDiffArgs {
     /// The change to make, in the user's own words.
     request: String,
+}
+
+// -- ARTIFACT PEEK tool args (crate::artifact) -----------------------------------
+// artifact_peek is READ-ONLY: it reads the most recent (or an id'd) artifact the
+// producers registered back out of the in-memory, on-device registry and emits an
+// `artifact.peek` frame for the HUD's QuickLook overlay. It changes nothing, sends
+// nothing, and reaches no network.
+#[derive(Deserialize)]
+struct ArtifactPeekArgs {
+    /// Optional registry id to peek. Absent => the MOST RECENT artifact.
+    #[serde(default)]
+    id: Option<u64>,
 }
 
 // shell_run (crate::shell) is the HIGHEST-RISK tool — arbitrary command
@@ -5491,6 +5563,7 @@ fn tool_carries_citation(name: &str) -> bool {
             | "mnemosyne_recall"
             | "recall_facts"
             | "episodic_recall"
+            | "pasteboard_recall"
             | "web_search"
             | "open_url"
             | "karen_triage"
@@ -5521,6 +5594,7 @@ fn citation_for_tool(name: &str, input: &Value, outcome: &str) -> Option<(String
         "unified_search" => "personal search".to_string(),
         "mnemosyne_recall" | "recall_facts" => "stored memory".to_string(),
         "episodic_recall" => "past episodes".to_string(),
+        "pasteboard_recall" => "clipboard history".to_string(),
         "karen_triage" => "comms triage".to_string(),
         "web_search" | "open_url" => input
             .get("url")
@@ -5555,6 +5629,8 @@ fn is_empty_retrieval(outcome: &str) -> bool {
         "i couldn't complete that explanation", // code_explain aborted
         "i have nothing recorded", // episodic_recall empty
         "no facts stored yet",     // recall_facts empty
+        "nothing has been copied", // pasteboard_recall empty (no history yet)
+        "i have nothing in your clipboard history", // pasteboard_recall no-match
         "tell me what to search",  // unified_search empty query
         "no comms surfaces were available", // karen_triage all-disconnected
     ];
@@ -7587,6 +7663,35 @@ async fn dispatch_tool(
             }
             Err(e) => Err(anyhow!("invalid mnemosyne_recall arguments: {e}")),
         },
+        // -- SEMANTIC PASTEBOARD (crate::pasteboard) --------------------------
+        // pasteboard_recall is READ-ONLY: rank the stored (PII-redacted, bounded,
+        // transient in-RAM) clipboard clips by relevance and return the top
+        // matches. Nothing is stored/sent — so it never touches
+        // integrations::gate(). Ranking is RUNTIME-SELECTED (neural on-device
+        // embeddings via the LOCAL inference socket when up, else lexical BM25);
+        // the report names whichever ran. When the pasteboard is off / empty it
+        // honestly says so — never a fabricated clip.
+        "pasteboard_recall" => match serde_json::from_value::<PasteboardRecallArgs>(input.clone()) {
+            Ok(args) => {
+                let k = args.k.unwrap_or(MNEMOSYNE_DEFAULT_K).clamp(1, MNEMOSYNE_MAX_K);
+                let embedder = InferenceEmbedder::over_inference_socket();
+                Ok(crate::pasteboard::global_rank_render_runtime(&args.query, k, &embedder).await)
+            }
+            Err(e) => Err(anyhow!("invalid pasteboard_recall arguments: {e}")),
+        },
+        // pasteboard_put SETS the clipboard — CONSEQUENTIAL but BENIGN (a pasteboard
+        // set only, never a keystroke/file/network). It is in CONSEQUENTIAL_TOOLS,
+        // so execute_tool PARKS it for a spoken human yes; here gate(confirm) is
+        // DryRun (a faithful preview) unless the master switch is ON AND this is the
+        // confirmation replay (confirm=true), in which case it Executes the pbcopy
+        // set. The set itself is device-gated (macOS) and built-not-run in tests.
+        "pasteboard_put" => match serde_json::from_value::<PasteboardPutArgs>(input.clone()) {
+            Ok(args) => {
+                let mode = crate::integrations::gate(args.confirm);
+                crate::pasteboard::put_actuator(&args.text, mode).await
+            }
+            Err(e) => Err(anyhow!("invalid pasteboard_put arguments: {e}")),
+        },
         // -- DOC SEARCH (crate::docsearch) -----------------------------------
         // READ-ONLY on-device file RAG: rank the indexed file CHUNKS and return
         // CITED results (file path + offset + snippet). The index is built only
@@ -7631,6 +7736,19 @@ async fn dispatch_tool(
         "code_propose_diff" => match serde_json::from_value::<CodeProposeDiffArgs>(input.clone()) {
             Ok(args) => Ok(code_propose_diff_tool(&args.request).await),
             Err(e) => Err(anyhow!("invalid code_propose_diff arguments: {e}")),
+        },
+        // -- ARTIFACT PEEK (crate::artifact) ----------------------------------
+        // READ-ONLY recall over the in-memory, on-device Artifact Registry: read
+        // the most recent (or an id'd) artifact the producers registered back out,
+        // emit its `artifact.peek` frame for the HUD's QuickLook overlay, and return
+        // an honest text summary. Provenance is REAL — the producing agent + real
+        // citations, or plainly UNCITED. Changes nothing, sends nothing, reaches no
+        // network, so it never touches integrations::gate(). Gated by
+        // [artifact].enabled (armed-by-default); off/empty => an honest "nothing to
+        // peek" reply, never a fabricated artifact.
+        "artifact_peek" => match serde_json::from_value::<ArtifactPeekArgs>(input.clone()) {
+            Ok(args) => Ok(artifact_peek_tool(args.id)),
+            Err(e) => Err(anyhow!("invalid artifact_peek arguments: {e}")),
         },
         // -- SANDBOXED SHELL / TERMINAL (crate::shell, #43) -------------------
         // The HIGHEST-RISK tool: arbitrary command execution. It ships ON
@@ -9016,6 +9134,56 @@ fn load_code_config() -> crate::config::CodeConfig {
     cfg.code
 }
 
+/// Load the live [artifact] config from the on-disk darwin.toml (one source of
+/// truth, like load_code_config). When no root is resolved, returns the armed
+/// default.
+fn load_artifact_config() -> crate::config::ArtifactConfig {
+    let Some(root) = ROOT.get() else {
+        return crate::config::ArtifactConfig::default();
+    };
+    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("darwin.toml"));
+    cfg.artifact
+}
+
+/// ARTIFACT_PEEK tool: READ-ONLY recall over the in-memory, on-device Artifact
+/// Registry. Reads the most recent (or an id'd) artifact the producers registered
+/// back out, emits its `artifact.peek` frame for the HUD's QuickLook overlay, and
+/// returns an HONEST text summary (the real producing agent + real citations, or
+/// UNCITED). Gated by [artifact].enabled (armed-by-default): with it off it reads
+/// nothing and says so. An empty registry (nothing produced yet) is answered
+/// honestly, never a fabricated artifact. Changes nothing, sends nothing, reaches
+/// no network.
+fn artifact_peek_tool(id: Option<u64>) -> String {
+    let cfg = load_artifact_config();
+    if !cfg.enabled {
+        return "The artifact registry is off, sir — enable [artifact] to let me peek at what \
+                I produced. While it is off I remember nothing and peek at nothing."
+            .to_string();
+    }
+    match crate::artifact::peek_and_emit(id) {
+        Some(artifact) => {
+            let mut reply = artifact.summary();
+            // Honest, secret-free citation locators appended so the model can relay
+            // the real backing (or the plain UNCITED verdict) faithfully.
+            if artifact.provenance.is_uncited() {
+                reply.push_str(" It carries no citation — I'm showing it as uncited, not dressing it up.");
+            } else {
+                let locators = artifact
+                    .provenance
+                    .citations
+                    .iter()
+                    .map(|c| if c.url.is_empty() { c.title.clone() } else { format!("{} — {}", c.title, c.url) })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                reply.push_str(&format!(" Sources: {locators}."));
+            }
+            reply.push_str(" It's on the QuickLook overlay.");
+            reply
+        }
+        None => crate::artifact::empty_reply(),
+    }
+}
+
 /// Production CodeBrain: the heavy Anthropic model via [`complete_plain`]. The
 /// system prompt PINS the grounding contract — answer/diff ONLY from the provided
 /// cited code, never fabricate code not present, and (for propose) emit a unified
@@ -9185,6 +9353,32 @@ async fn code_propose_diff_tool(request: &str) -> String {
                 "system",
                 "code.proposed",
                 json!({"ts": ts, "grounded_hits": hits.len()}),
+            );
+            // ARTIFACT REGISTRY: register the code-diff proposal so the peek surface
+            // can surface it. Provenance is HONEST — the producing agent is `steve`
+            // (the CTO/Builds agent who owns code_propose_diff), and the citations
+            // are the REAL grounding hits (file + byte-offset locators). An UNGROUNDED
+            // diff (no hits) is registered UNCITED — never given a fabricated source.
+            // The preview is a SECRET-FREE structural summary (line + hunk counts),
+            // NEVER the raw code. In-memory + on-device; opens no surface.
+            let citations = hits
+                .iter()
+                .filter_map(|h| {
+                    crate::artifact::Citation::new(
+                        h.file_path.clone(),
+                        format!("{}:{}", h.file_path, h.byte_offset),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let added = diff.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count();
+            let removed = diff.lines().filter(|l| l.starts_with('-') && !l.starts_with("---")).count();
+            let hunks = diff.lines().filter(|l| l.starts_with("@@")).count();
+            crate::artifact::register(
+                crate::artifact::ArtifactKind::CodeDiff,
+                format!("proposal {ts}"),
+                "steve",
+                citations,
+                format!("diff: +{added}/-{removed} lines, {hunks} hunk{}", if hunks == 1 { "" } else { "s" }),
             );
             let mut reply = format!(
                 "I drafted a reviewable change and wrote it to the proposal store — I have NOT \
@@ -12848,10 +13042,13 @@ mod tests {
                 "cassandra_forecast",
                 "cassandra_simulate",
                 "mnemosyne_recall",
+                "pasteboard_recall",
+                "pasteboard_put",
                 "episodic_recall",
                 "doc_search",
                 "code_explain",
                 "code_propose_diff",
+                "artifact_peek",
                 "shell_run",
                 "ui_actuate",
                 "unified_search",
