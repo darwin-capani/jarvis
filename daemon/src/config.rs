@@ -184,6 +184,14 @@ pub struct Config {
     /// lifelong memory / optimizer / disk) + forgettable, with the WATCHING
     /// indicator; recall is read-only.
     pub screen_context: ScreenContextConfig,
+    /// [lumen] — LUMEN: the accessibility SCREEN NARRATOR + hands-free VOICE
+    /// NAVIGATION (lumen.rs). `narrate` (continuous focus-change narration) SHIPS
+    /// OFF (explicit opt-in; off is a strict no-op); `max_controls` bounds one
+    /// readout. Narration is READ-ONLY; a voice action only SELECTS the ONE target
+    /// and hands it to the UNCHANGED `ui_actuate` CAPSTONE, which owns every
+    /// actuation gate. DEVICE-gated (the locate is the Vision `read.screen`; the
+    /// actuation is the capstone's Accessibility-TCC seam).
+    pub lumen: LumenConfig,
     pub answers: AnswersConfig,
     pub audit: AuditConfig,
     /// [triage] — FORENSIC TRIAGE SNAPSHOT (triage.rs, aegis). The one-shot
@@ -737,6 +745,17 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // The ring is redacted + transient (in-RAM only, off lifelong memory / optimizer /
     // disk) + forgettable; recall is read-only. Listed so no key reads as a typo.
     ("screen_context", &["enabled", "interval_secs", "cap"]),
+    // [lumen] — LUMEN: the accessibility SCREEN NARRATOR + hands-free VOICE
+    // NAVIGATION (lumen.rs).
+    //   - `narrate` (SHIPS OFF): CONTINUOUS focus-change narration is EXPLICIT
+    //     opt-in; off is a strict no-op (Lumen speaks nothing on its own). The
+    //     explicit "read me the screen" request path is unaffected.
+    //   - `max_controls` (DEFAULT 20, floored >= 1): the hard bound on how many
+    //     on-screen controls one readout narrates / offers for selection.
+    // Narration is READ-ONLY; a voice action only SELECTS the ONE target and hands
+    // it to the UNCHANGED `ui_actuate` CAPSTONE (which owns every actuation gate).
+    // Listed here so neither key reads as a typo.
+    ("lumen", &["narrate", "max_controls"]),
     // [answers] — answer annotations (anthropic.rs `answers` module): the
     // always-cite source-tracking (#5) + the self-reported confidence (#8). ALL SHIP
     // ON (full-power default):
@@ -2602,6 +2621,59 @@ impl ScreenContextConfig {
     }
 }
 
+/// [lumen] — LUMEN: the accessibility SCREEN NARRATOR + hands-free VOICE
+/// NAVIGATION (lumen.rs). It NARRATES the focused element / on-screen controls
+/// through the speech path (READ-ONLY) and pairs the READ-ONLY OCR/AX locate with
+/// the EXISTING per-action-gated `ui_actuate` CAPSTONE (#44) to run ONE voice-named
+/// UI action at a time. Lumen only SELECTS the one target + builds the actuation
+/// request; the UNCHANGED capstone owns every actuation gate (the pure planner,
+/// the consequential spoken confirm PER ACTION, the master switch, voice-id,
+/// `!lockdown`). Lumen weakens none of it.
+///
+///   - `narrate` (SHIPS OFF, default false): CONTINUOUS focus-change narration is
+///     EXPLICIT opt-in. OFF => the focus-change path is a strict NO-OP (Lumen
+///     speaks nothing on its own); the explicit "read me the screen" request path
+///     is unaffected. Continuous narration reads on-screen text aloud, so it is
+///     off until the user asks for it.
+///   - `max_controls` (DEFAULT 20): the HARD bound on how many on-screen controls
+///     one readout narrates / offers for selection — a huge screen is never read
+///     wholesale. Floored to >= 1.
+///
+/// PRIVACY / HONESTY: narration is READ-ONLY and NEVER fabricates an element (an
+/// empty focus/screen is spoken honestly); selection NEVER fabricates a target (a
+/// miss / an ambiguity REFUSES — never a wrong click); the actuation is DEVICE-
+/// gated behind the UNCHANGED capstone (Accessibility TCC + a real display) and
+/// the locate is the Vision app's TCC-gated `read.screen` (Screen-Recording); the
+/// telemetry frame is SECRET-FREE (role + counts, never the raw label).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LumenConfig {
+    pub narrate: bool,
+    pub max_controls: usize,
+}
+
+impl Default for LumenConfig {
+    fn default() -> Self {
+        Self {
+            // SHIPS OFF — continuous narration reads on-screen text aloud, so it is
+            // EXPLICIT opt-in. Off is a strict no-op; the on-request read path still
+            // answers.
+            narrate: false,
+            // A hard bound on how many controls one readout narrates/offers, so a
+            // dense screen is never read wholesale. Floored to >= 1 at use.
+            max_controls: 20,
+        }
+    }
+}
+
+impl LumenConfig {
+    /// The effective control bound (>= 1) — a misconfigured 0 would read nothing,
+    /// so it is floored, never trusted raw.
+    pub fn effective_max_controls(&self) -> usize {
+        self.max_controls.max(1)
+    }
+}
+
 /// [answers] — answer annotations (anthropic.rs `answers` module): the
 /// always-cite source-tracking (#5) and the self-reported confidence (#8). An
 /// ADDED honesty layer over the answer, never a change to any safety gate.
@@ -3932,6 +4004,7 @@ impl Config {
             vision: section(&table, "vision", &mut issues),
             image: section(&table, "image", &mut issues),
             screen_context: section(&table, "screen_context", &mut issues),
+            lumen: section(&table, "lumen", &mut issues),
             answers: section(&table, "answers", &mut issues),
             audit: section(&table, "audit", &mut issues),
             triage: section(&table, "triage", &mut issues),

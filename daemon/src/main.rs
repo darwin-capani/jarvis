@@ -145,6 +145,15 @@ mod knowledge_graph;
 mod journal;
 mod lifelog;
 mod lockdown;
+// LUMEN (lumen.rs): the accessibility SCREEN NARRATOR + hands-free VOICE
+// NAVIGATION. Narrates the focused element / on-screen controls through the
+// speech path (READ-ONLY), and pairs the READ-ONLY OCR/AX locate with the
+// EXISTING per-action-gated `ui_actuate` CAPSTONE to run ONE voice-named UI
+// action at a time. The PURE seam (narration composition + action selection) is
+// the substance + hermetically tested; the AX/OCR read + the actuation are the
+// device-gated runner. Continuous narration is EXPLICIT opt-in ([lumen].narrate,
+// ships off). It does NOT weaken the capstone gate.
+mod lumen;
 // MACRO RECORD/REPLAY (#27): record a NAMED sequence of commands (utterances +
 // intent names ONLY — never secrets) and replay it. Replay re-runs each command
 // through the NORMAL router path + the gate FRESH (a consequential step re-hits the
@@ -1817,6 +1826,21 @@ async fn main() -> Result<()> {
             "cap": cfg.screen_context.effective_cap(),
             "interval_secs": cfg.screen_context.effective_interval_secs(),
         }),
+    );
+    // LUMEN (lumen.rs): install the continuous-narration gate ONCE from
+    // [lumen].narrate (mirrors screen_context::install_settings). SHIPS OFF —
+    // continuous focus-change narration reads on-screen text aloud, so it is
+    // EXPLICIT opt-in; OFF is a strict no-op (Lumen speaks nothing on its own).
+    // The explicit "read me the screen" request path and the voice-navigation
+    // path (which selects ONE target and hands it to the UNCHANGED ui_actuate
+    // capstone) are unaffected by this gate. Only the bool is installed/logged.
+    lumen::install_settings(cfg.lumen.narrate, cfg.lumen.effective_max_controls());
+    telemetry::emit(
+        "system",
+        "lumen.configured",
+        // Secret-free: only the opt-in gate + the control bound (never any
+        // on-screen content).
+        lumen::status_frame(cfg.lumen.narrate),
     );
     // FURY's mission engine plans + dispatches with the heavy cloud model; wire
     // it from config ONCE so the fury_mission tool arm reads one process-global
