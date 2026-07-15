@@ -42,6 +42,13 @@ fn sticky_key(event: &str, data: &Value) -> Option<String> {
             "app.manifest_invalid:{}",
             data.get("name").and_then(Value::as_str).unwrap_or("?")
         )),
+        // MIRROR self-model belief list: retain ONLY the periodic SNAPSHOT so a HUD
+        // that connects after startup gets the current beliefs. The transient
+        // explain/contest acknowledgements are live-only (a replayed stale ack would
+        // mislead), so they are deliberately NOT retained.
+        "mirror.belief" if data.get("action").and_then(Value::as_str) == Some("snapshot") => {
+            Some("mirror.belief".to_string())
+        }
         _ => None,
     }
 }
@@ -309,6 +316,15 @@ mod tests {
         for e in ["audit.snapshot", "sync.status", "capability.map", "system.load", "scene.status"] {
             assert!(sticky_key(e, &serde_json::json!({})).is_none(), "{e} must not be sticky");
         }
+        // MIRROR: only the periodic SNAPSHOT frame is retained (a fresh HUD needs
+        // the belief list); the transient explain/contest acks are live-only.
+        assert_eq!(
+            sticky_key("mirror.belief", &serde_json::json!({"action": "snapshot"})).as_deref(),
+            Some("mirror.belief"),
+        );
+        assert!(sticky_key("mirror.belief", &serde_json::json!({"action": "explain"})).is_none());
+        assert!(sticky_key("mirror.belief", &serde_json::json!({"action": "contest"})).is_none());
+        assert!(sticky_key("mirror.belief", &serde_json::json!({})).is_none());
     }
 
     #[test]

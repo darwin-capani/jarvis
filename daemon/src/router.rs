@@ -880,6 +880,85 @@ pub async fn route(
         }
     }
 
+    // MIRROR (belief-audit + contest over the SELF-MODEL, user_model.rs): "why do you
+    // think I prefer X" surfaces the STORED observation, provenance, and observed-count
+    // for that belief (never a fabricated reason); "that's wrong about X" DROPS the
+    // belief AND writes a suppression tombstone so the consolidation pass never
+    // re-derives it. GATED by [mirror].enabled (ships ON, read-only/reduce-only surface).
+    // Placed right after CAUSA so the two "explain" families stay together — MIRROR's
+    // cues are SELF-MODEL-specific ("why do you THINK I…"), distinct from CAUSA's
+    // turn-decision asks, so it never steals a "why did you do that". REDUCE-ONLY:
+    // explain reads the shared tier; contest only ever removes/suppresses a shared
+    // `user.model.*` belief and is structurally unable to touch a private agent.* note.
+    // Emits the secret-free `mirror.belief` telemetry frame.
+    if cfg.mirror.enabled {
+        if let Some(intent) = crate::user_model::classify_mirror_intent(text) {
+            let prime = agents.orchestrator();
+            emit_agent_active(prime);
+            let response = match intent {
+                crate::user_model::MirrorIntent::Explain(subject) => {
+                    let explanation = crate::user_model::explain_belief(memory, &subject)
+                        .await
+                        .unwrap_or(crate::user_model::Explanation {
+                            asked: subject.clone(),
+                            entries: Vec::new(),
+                        });
+                    crate::user_model::emit_belief_frame(
+                        memory,
+                        "explain",
+                        &subject,
+                        explanation.found(),
+                    )
+                    .await;
+                    explanation.text()
+                }
+                crate::user_model::MirrorIntent::Contest(subject) => {
+                    let contest = crate::user_model::contest_belief(memory, &subject)
+                        .await
+                        .unwrap_or_default();
+                    crate::user_model::emit_belief_frame(
+                        memory,
+                        "contest",
+                        &subject,
+                        contest.any(),
+                    )
+                    .await;
+                    contest.text(&subject)
+                }
+                crate::user_model::MirrorIntent::Clear(subject) => {
+                    // The tombstone is user-clearable: lifting a prior contest lets
+                    // the consolidation pass learn the belief afresh.
+                    let cleared = crate::user_model::clear_suppression(memory, &subject)
+                        .await
+                        .unwrap_or(0);
+                    crate::user_model::emit_belief_frame(
+                        memory,
+                        "clear",
+                        &subject,
+                        cleared > 0,
+                    )
+                    .await;
+                    if cleared > 0 {
+                        "Done, sir — I have lifted that suppression; I may learn it again \
+                         if I keep observing it.".to_string()
+                    } else {
+                        format!(
+                            "There was no suppression on \"{}\" to lift, sir.",
+                            subject.trim()
+                        )
+                    }
+                }
+            };
+            return Ok(RouteOutcome {
+                routed_to: "local",
+                response,
+                agent: prime.name.clone(),
+                namespace: prime.namespace.clone(),
+                spoken: None,
+            });
+        }
+    }
+
     // Roll-call (item 3, the reel centerpiece): "introduce the team" / "roll
     // call" / "assemble" -> each agent speaks its one-line self-introduction in
     // ITS OWN voice, in order, emitting agent.active per agent so the HUD

@@ -8298,6 +8298,97 @@ export function parseCausaTrace(data: Record<string, unknown>): CausaTrace | nul
 }
 
 /* ------------------------------------------------------------------------ *
+ * MIRROR — the SELF-MODEL belief-audit surface (user_model.rs -> mirror.belief). *
+ * A read-only / reduce-only view of what DARWIN believes about the user. Each   *
+ * belief carries its STORED observation, the compounding observed-count, and the *
+ * real provenance ids it was derived from — the "why do you think I…" evidence.  *
+ * The "that's wrong" control contests a belief (the daemon DROPS it + writes a   *
+ * suppression tombstone the consolidation pass consults, so it is never          *
+ * re-derived). SECRET-FREE: every field is the user's OWN already-redacted       *
+ * profile, the same content the daemon speaks — nothing is fabricated.           *
+ * ------------------------------------------------------------------------ */
+
+/** One belief in the MIRROR self-model panel — a stored (facet, subject) entry
+ *  with its human observation, the compounding observed-count, and the real
+ *  provenance ids it was derived from. */
+export interface MirrorBelief {
+  /** "user.model.<facet>.<subject>" — also the handle the contest control sends. */
+  key: string;
+  facet: string; // preference | pattern | topic | style
+  subject: string;
+  observation: string;
+  observedCount: number;
+  provenance: string[];
+}
+
+/** A parsed `mirror.belief` frame. `action` is the context ("snapshot" on the
+ *  periodic/startup refresh; "explain" | "contest" | "clear" on a voice turn);
+ *  `beliefs` is the bounded, strongest-first current profile; `suppressed` is the
+ *  set of currently-contested belief slugs (`<facet>_<subject>`). */
+export interface MirrorFrame {
+  action: string;
+  subject: string;
+  found: boolean;
+  beliefs: MirrorBelief[];
+  suppressed: string[];
+}
+
+/** Defensive caps mirroring the daemon's bounds — the wire is never trusted. */
+export const MIRROR_BELIEFS_CAP = 64;
+const MIRROR_STR_CAP = 240;
+const MIRROR_PROV_CAP = 8;
+
+function boundMirrorStr(v: string | null): string {
+  return v === null ? "" : v.trim().slice(0, MIRROR_STR_CAP);
+}
+
+/** Coerce one belief row; a row without a key + subject is meaningless and dropped. */
+function coerceMirrorBelief(o: Record<string, unknown>): MirrorBelief | null {
+  const key = str(o, "key");
+  const subject = str(o, "subject");
+  if (key === null || key.trim() === "" || subject === null || subject.trim() === "") {
+    return null;
+  }
+  const provenance = (strArr(o, "provenance") ?? [])
+    .slice(0, MIRROR_PROV_CAP)
+    .map((p) => p.trim().slice(0, MIRROR_STR_CAP));
+  return {
+    key: boundMirrorStr(key),
+    facet: boundMirrorStr(str(o, "facet")),
+    subject: boundMirrorStr(subject),
+    observation: boundMirrorStr(str(o, "observation")),
+    observedCount: nonNegInt(o, "observed_count"),
+    provenance,
+  };
+}
+
+/** Parse a `mirror.belief` payload, or null when it carries no `action` (a frame
+ *  with no action is dropped, never rendered). Beliefs are capped + degrade
+ *  individually; a malformed belief row is dropped, never fatal. Never throws. */
+export function parseMirrorFrame(data: Record<string, unknown>): MirrorFrame | null {
+  const action = str(data, "action");
+  if (action === null || action.trim() === "") return null;
+  const raw = data["beliefs"];
+  const beliefs = Array.isArray(raw)
+    ? raw
+        .slice(0, MIRROR_BELIEFS_CAP)
+        .filter(isPlainObject)
+        .map(coerceMirrorBelief)
+        .filter((b): b is MirrorBelief => b !== null)
+    : [];
+  const suppressed = (strArr(data, "suppressed") ?? [])
+    .slice(0, MIRROR_BELIEFS_CAP)
+    .map((s) => s.trim().slice(0, MIRROR_STR_CAP));
+  return {
+    action: boundMirrorStr(action),
+    subject: boundMirrorStr(str(data, "subject")),
+    found: bool(data, "found") === true,
+    beliefs,
+    suppressed,
+  };
+}
+
+/* ------------------------------------------------------------------------ *
  * ACTION SURFACE (#25 auto-draft / #26 durable missions / #27 macros) —      *
  * the read-only HUD view of the three OFF-default, gated, wired-live action  *
  * features. The daemon emits all of these via telemetry::emit("system", …)   *

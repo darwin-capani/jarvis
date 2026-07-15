@@ -97,6 +97,16 @@ pub struct Config {
     /// make DARWIN ask MORE clarifying questions in a measurably-overconfident bucket,
     /// never act more boldly — off by default so the first landing is pure analytics.
     pub calibrate: CalibrateConfig,
+    /// [mirror] — MIRROR, belief-audit + contest over the SELF-MODEL (user_model.rs).
+    /// `enabled` SHIPS ON (full-power default): it is a READ-ONLY / REDUCE-ONLY
+    /// surface — "why do you think I prefer X" surfaces the STORED observation,
+    /// provenance, and observed-count (never a fabricated reason); "that's wrong
+    /// about X" DROPS the belief and writes a suppression tombstone so the
+    /// consolidation pass never re-derives it. Contesting only ever REMOVES a shared
+    /// `user.model.*` belief and suppresses it — it is structurally unable to touch a
+    /// private `agent.*` note, and does nothing consequential. Off => the voice arm
+    /// falls through to the model.
+    pub mirror: MirrorConfig,
     pub voice_id: VoiceIdConfig,
     pub episodic: EpisodicConfig,
     pub notebooks: NotebookConfig,
@@ -428,6 +438,12 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
         "calibrate",
         &["enabled", "influence_routing", "n_bins", "min_sample", "overconfidence_margin", "max_widen"],
     ),
+    // [mirror] — MIRROR, belief-audit + contest over the self-model (user_model.rs).
+    // `enabled` SHIPS ON (read-only / reduce-only self-model surface: explain a
+    // belief with its stored provenance, or contest it — dropping it + writing a
+    // suppression tombstone the consolidation pass consults so it is never
+    // re-derived). Listed so it never reads as a typo.
+    ("mirror", &["enabled"]),
     // [voice_id] — on-device speaker verification (voiceid.rs). `enabled` is the
     // master switch and SHIPS OFF (deliberate: voice-id is a fail-closed GATE, not a
     // feature; enrollment is always explicit). With it false (or with no enrolled
@@ -1759,6 +1775,32 @@ impl Default for ExplainConfig {
             enabled: true,
             ring_size: crate::explain::RING_CAP_DEFAULT,
         }
+    }
+}
+
+/// [mirror] — MIRROR, belief-audit + contest over the SELF-MODEL (user_model.rs). A
+/// READ-ONLY / REDUCE-ONLY, ARMED-BY-DEFAULT surface. "why do you think I prefer X"
+/// surfaces the STORED observation, provenance, and observed-count of that belief
+/// (never a fabricated reason); "that's wrong about X" DROPS the belief AND writes a
+/// `user.model.suppressed.*` tombstone that the consolidation pass consults so the
+/// belief is NEVER silently re-derived (the tombstone is user-clearable). It emits
+/// the secret-free `mirror.belief` telemetry frame.
+///
+///   - `enabled` (SHIPS ON, full-power default): master gate for the explain +
+///     contest voice arm. Off => "why do you think…" / "that's wrong…" fall through
+///     to the model. Contest is REDUCE-ONLY (removes/suppresses a SHARED belief; it
+///     is structurally unable to touch a private `agent.*` note) — no autonomy.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct MirrorConfig {
+    pub enabled: bool,
+}
+
+impl Default for MirrorConfig {
+    fn default() -> Self {
+        // SHIPS ON — a read-only / reduce-only self-model surface: it only ever
+        // EXPLAINS a stored belief or REMOVES + suppresses one at the user's word.
+        Self { enabled: true }
     }
 }
 
@@ -3502,6 +3544,7 @@ impl Config {
             optimize: section(&table, "optimize", &mut issues),
             explain: section(&table, "explain", &mut issues),
             calibrate: section(&table, "calibrate", &mut issues),
+            mirror: section(&table, "mirror", &mut issues),
             voice_id: section(&table, "voice_id", &mut issues),
             episodic: section(&table, "episodic", &mut issues),
             notebooks: section(&table, "notebooks", &mut issues),

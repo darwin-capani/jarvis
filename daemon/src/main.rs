@@ -2074,6 +2074,16 @@ async fn main() -> Result<()> {
     // Self-learning reflection: periodically consolidates facts from recent
     // transcripts (own InferenceClient; never blocks or panics the pipeline).
     tokio::spawn(reflect::reflection_task(sock_path.clone(), memory.clone()));
+    // MIRROR: emit the initial self-model belief SNAPSHOT so a HUD that connects at
+    // startup populates its MIRROR panel immediately (the snapshot frame is
+    // sticky-retained + replayed on connect). Best-effort + read-only; the reflection
+    // pass refreshes it each cycle and every explain/contest emits a fresh frame.
+    {
+        let mem = memory.clone();
+        tokio::spawn(async move {
+            crate::user_model::emit_belief_frame(&mem, "snapshot", "", false).await;
+        });
+    }
     // EDITH anticipation: the runtime-only proactive loop. The pure evaluator
     // (anticipate.rs) is what the tests cover; this live tick surfaces a HUD
     // card unprompted and, ONLY when [proactive].speak is on (ships ON) and the

@@ -45,13 +45,32 @@
 //! Nothing here speaks, acts, or reaches the network. It consolidates observed
 //! rows and renders them.
 
+use std::collections::HashSet;
+
 use anyhow::Result;
+use serde_json::{json, Value};
 
 use crate::memory::{Episode, Memory};
+use crate::telemetry;
 
 /// The shared tier prefix. Anything under here is visible to EVERY agent via
 /// `agent_scoped_facts` (it is not an `agent.*` key, so it is classified SHARED).
 pub const MODEL_PREFIX: &str = "user.model.";
+
+/// MIRROR: the SUPPRESSION-TOMBSTONE prefix. Contesting a belief writes exactly one
+/// `user.model.suppressed.<facet>_<subject>` row here, and the consolidation pass
+/// CONSULTS these so a contested belief is NEVER silently re-derived. It lives under
+/// the SHARED `user.model.` tier (like every profile row), so it inherits the same
+/// namespace-isolation semantics for free — and because `suppressed` is NOT a
+/// [`Facet`] token, [`parse_entry_key`] skips it, so a tombstone never counts as, or
+/// renders as, a belief (nor against the entry cap). User-clearable via
+/// [`clear_suppression`] / [`forget`].
+pub const SUPPRESSED_PREFIX: &str = "user.model.suppressed.";
+
+/// Max beliefs carried in one `mirror.belief` HUD telemetry frame. The profile is
+/// already entry-capped ([`MAX_ENTRIES`]); this bounds the WIRE frame so a large
+/// profile can never bloat a single broadcast. Strongest-first.
+pub const MIRROR_HUD_MAX: usize = 64;
 
 // -- BOUNDS (all enforced before any write / on render) ----------------------
 
@@ -396,15 +415,19 @@ pub async fn correct(
     Ok(true)
 }
 
-/// FORGET the whole user model: delete every `user.model.*` row. The forgettable
-/// contract. Returns how many entries were removed.
+/// FORGET the whole user model: delete every `user.model.*` row — both real belief
+/// entries AND suppression tombstones. The forgettable contract, and the BULK
+/// clear of suppressions (a full reset lets the model rebuild from scratch, so a
+/// once-contested belief may be re-derived afresh). Returns how many rows removed.
 pub async fn forget(memory: &Memory) -> Result<u64> {
     let rows = memory
         .recall_facts_limited(MODEL_PREFIX, MODEL_READ_WINDOW)
         .await?;
     let mut deleted = 0u64;
     for (key, _) in rows {
-        if parse_entry_key(&key).is_some() && memory.delete_fact(&key).await? {
+        let is_belief = parse_entry_key(&key).is_some();
+        let is_tombstone = key.starts_with(SUPPRESSED_PREFIX);
+        if (is_belief || is_tombstone) && memory.delete_fact(&key).await? {
             deleted += 1;
         }
     }
@@ -674,6 +697,15 @@ pub async fn consolidate(
     // 2. Pure consolidation against the existing counts (compounding).
     let result = consolidate_inputs(episodes, facts, &existing_counts);
 
+    // 2b. MIRROR CONSULT (the load-bearing behavior): NEVER re-derive a belief the
+    // user CONTESTED. The reflection/consolidation pass calls THIS function, so this
+    // is where "a contested belief stays gone" is enforced — the suppression
+    // tombstones are read from the SHARED tier and any matching (facet, subject) is
+    // dropped from the result BEFORE the apply loop. Without this consult a
+    // contested belief silently comes back the next time its signal is observed.
+    let suppressed = suppressed_set(memory).await?;
+    let result = drop_suppressed(result, &suppressed);
+
     // 3. Apply, enforcing the entry cap for NEW entries and merging provenance.
     let mut written = 0u64;
     for (facet, subject, count, new_prov, observation) in result.entries {
@@ -779,6 +811,526 @@ pub fn summary(profile: &Profile) -> String {
         out.push_str(&line);
     }
     out
+}
+
+// ============================================================================
+// MIRROR — belief-audit + contest-my-inference over the self-model.
+//
+// Two user-facing verbs over the SHARED profile, both HONEST and REDUCE-ONLY:
+//   * EXPLAIN ("why do you think I prefer X"): surface the STORED observation,
+//     provenance, and observed-count already held — never a fabricated reason.
+//   * CONTEST ("that's wrong about X"): DROP the belief AND write a suppression
+//     tombstone so the consolidation pass never re-derives it (consulted in
+//     [`consolidate`]). Reduce-only: it removes a shared belief + writes a shared
+//     tombstone, and is STRUCTURALLY unable to touch a private `agent.*` note.
+// ============================================================================
+
+/// Whether a key is under the SHARED user-model tier — the structural gate every
+/// MIRROR write/delete passes through, so a contest can NEVER reach an `agent.*`
+/// private note (or any non-model row).
+fn is_model_key(key: &str) -> bool {
+    key.starts_with(MODEL_PREFIX)
+}
+
+/// The suppression-tombstone KEY for a belief. The `<facet>_<subject>` segment is
+/// dot-free (one key segment) and unique per belief — the four facet tokens are
+/// distinct, non-overlapping prefixes and the subject is already a slug. ALWAYS
+/// under [`SUPPRESSED_PREFIX`] (hence [`MODEL_PREFIX`]).
+fn suppressed_key(facet: Facet, subject: &str) -> String {
+    format!("{SUPPRESSED_PREFIX}{}_{}", facet.as_str(), subject)
+}
+
+/// Encode a tombstone VALUE as `<facet>|<subject>|<contested_at_unix>`. The facet +
+/// subject live in the VALUE (not re-parsed from the compound key) so decode is
+/// unambiguous even when a subject slug itself contains underscores. Pure.
+fn encode_tombstone(facet: Facet, subject: &str, contested_at: u64) -> String {
+    format!("{}|{}|{}", facet.as_str(), subject, contested_at)
+}
+
+/// Decode a tombstone value into (facet, subject). Tolerant: a malformed value is
+/// `None` (the caller falls back to the key). Pure.
+fn decode_tombstone(value: &str) -> Option<(Facet, String)> {
+    let mut parts = value.splitn(3, '|');
+    let facet = Facet::parse(parts.next()?.trim())?;
+    let subject = parts.next()?.trim();
+    if subject.is_empty() {
+        return None;
+    }
+    Some((facet, subject.to_string()))
+}
+
+/// Parse a tombstone KEY (`user.model.suppressed.<facet>_<subject>`) into
+/// (facet, subject) — the fallback when the value is unreadable. Splits the compound
+/// slug on the FIRST underscore (the facet token never contains one). Pure.
+fn parse_suppressed_key(key: &str) -> Option<(Facet, String)> {
+    let slug = key.strip_prefix(SUPPRESSED_PREFIX)?;
+    let (facet_tok, subject) = slug.split_once('_')?;
+    let facet = Facet::parse(facet_tok)?;
+    if subject.is_empty() {
+        return None;
+    }
+    Some((facet, subject.to_string()))
+}
+
+/// PURE: fold raw suppressed-tier rows into the set of (facet, subject) beliefs the
+/// consolidation must NOT re-derive. Each row decodes from its VALUE first
+/// (unambiguous) and falls back to its KEY; a row that decodes neither way is
+/// skipped. Exposed for direct unit testing.
+pub fn parse_suppressed_rows(rows: Vec<(String, String)>) -> HashSet<(Facet, String)> {
+    rows.into_iter()
+        .filter_map(|(k, v)| decode_tombstone(&v).or_else(|| parse_suppressed_key(&k)))
+        .collect()
+}
+
+/// Read the current SUPPRESSION set from the SHARED tier. Reads ONLY
+/// `user.model.suppressed.*`, so it can never reach a private note.
+pub async fn suppressed_set(memory: &Memory) -> Result<HashSet<(Facet, String)>> {
+    let rows = memory
+        .recall_facts_limited(SUPPRESSED_PREFIX, MODEL_READ_WINDOW)
+        .await?;
+    Ok(parse_suppressed_rows(rows))
+}
+
+/// PURE: remove any entry whose (facet, subject) is SUPPRESSED from a consolidation
+/// result — the CONSULT that keeps a contested belief from being re-derived. Applied
+/// by [`consolidate`] after mining; exposed for direct unit testing.
+pub fn drop_suppressed(
+    mut consolidation: Consolidation,
+    suppressed: &HashSet<(Facet, String)>,
+) -> Consolidation {
+    consolidation
+        .entries
+        .retain(|(facet, subject, _, _, _)| !suppressed.contains(&(*facet, subject.clone())));
+    consolidation
+}
+
+/// Resolve the belief(s) a caller-supplied key/term names, against a profile read
+/// from the SHARED tier. Tries, in order: an EXACT `user.model.<facet>.<subject>`
+/// key; an EXACT subject slug (any facet); then a loose term match on subject +
+/// observation. Returns matches from the PROFILE ONLY — so it can NEVER name a row
+/// outside `user.model.*` (structural isolation: an `agent.*` note is not in the
+/// profile, so it is unreachable here). Pure; exposed for testing.
+pub fn resolve_belief(profile: &Profile, key_or_term: &str) -> Vec<ProfileEntry> {
+    let q = key_or_term.trim();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    if let Some((facet, subject)) = parse_entry_key(q) {
+        return profile
+            .entries
+            .iter()
+            .filter(|e| e.facet == facet && e.subject == subject)
+            .cloned()
+            .collect();
+    }
+    if let Some(slug) = slugify(q) {
+        let exact: Vec<ProfileEntry> = profile
+            .entries
+            .iter()
+            .filter(|e| e.subject == slug)
+            .cloned()
+            .collect();
+        if !exact.is_empty() {
+            return exact;
+        }
+    }
+    filter_profile(profile.clone(), q).entries
+}
+
+/// One belief's EXPLANATION — the STORED observation, provenance, and observed-count
+/// for a belief the user asked about. Carries ONLY what is stored; an unknown belief
+/// is an honest empty (`entries` empty), never a fabricated reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Explanation {
+    /// The key/subject/term the user asked about (echoed back).
+    pub asked: String,
+    /// The matching stored belief(s) — usually one; empty when nothing matched.
+    pub entries: Vec<ProfileEntry>,
+}
+
+impl Explanation {
+    pub fn found(&self) -> bool {
+        !self.entries.is_empty()
+    }
+
+    /// HONEST spoken/rendered explanation. Surfaces ONLY the stored observation,
+    /// observed-count, and provenance — no invention. An empty match => an explicit
+    /// "I have not recorded that", so the surface never implies a reason it lacks.
+    pub fn text(&self) -> String {
+        if self.entries.is_empty() {
+            return format!(
+                "I have no recorded belief about \"{}\", sir — I only explain what I have \
+                 actually observed, and nothing here met the bar. I invent nothing.",
+                self.asked.trim()
+            );
+        }
+        let mut out = String::from(
+            "Here is why I believe that, sir — it is only what I have OBSERVED, with how \
+             many times and from where:\n",
+        );
+        for e in &self.entries {
+            out.push_str(&format!(
+                "- [{}] {} (observed {}x; from {}). Say \"that's wrong\" to contest it.\n",
+                e.facet.label(),
+                e.observation,
+                e.observed_count,
+                e.provenance.join(", "),
+            ));
+        }
+        out
+    }
+}
+
+/// EXPLAIN a belief: surface the STORED observation, provenance, and observed-count
+/// for the belief the caller names. Reads ONLY the SHARED `user.model.*` tier, so it
+/// can never surface a private note, and NEVER fabricates — an unknown key yields an
+/// honest empty. `key` may be a full `user.model.<facet>.<subject>` key (exact), a
+/// bare subject slug (exact), or a looser term (matched like a query).
+pub async fn explain_belief(memory: &Memory, key: &str) -> Result<Explanation> {
+    let profile = snapshot(memory).await?;
+    let entries = resolve_belief(&profile, key);
+    Ok(Explanation {
+        asked: key.trim().to_string(),
+        entries,
+    })
+}
+
+/// The result of a CONTEST — a REDUCE-ONLY operation. Lists the belief(s) DROPPED
+/// and the tombstone key(s) WRITTEN. Contesting only ever REMOVES a shared-tier
+/// belief and WRITES a shared-tier suppression tombstone; it writes NOTHING
+/// consequential and — by construction (see [`contest_belief`]) — can touch NOTHING
+/// outside `user.model.*`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Contest {
+    /// The (facet, subject) beliefs removed.
+    pub dropped: Vec<(Facet, String)>,
+    /// The suppression tombstone keys written (one per dropped belief).
+    pub suppressed: Vec<String>,
+}
+
+impl Contest {
+    pub fn any(&self) -> bool {
+        !self.dropped.is_empty()
+    }
+
+    /// HONEST spoken confirmation. A no-op (nothing matched) says so plainly.
+    pub fn text(&self, asked: &str) -> String {
+        if self.dropped.is_empty() {
+            return format!(
+                "I had no recorded belief about \"{}\" to drop, sir — nothing changed.",
+                asked.trim()
+            );
+        }
+        let what = self
+            .dropped
+            .iter()
+            .map(|(f, s)| format!("{} · {}", f.label(), s.replace('_', " ")))
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "Noted, sir — I have dropped that ({what}) and will not re-derive it. You can \
+             clear that suppression any time to let me learn it afresh."
+        )
+    }
+}
+
+/// CONTEST a belief: DROP it from the SHARED profile AND write a suppression
+/// tombstone so the consolidation pass never re-derives it. REDUCE-ONLY and
+/// STRUCTURALLY ISOLATED:
+///   * the belief(s) to drop are RESOLVED from the SHARED snapshot ([`resolve_belief`]),
+///     so a caller key can only ever name a `user.model.*` belief — an `agent.*`
+///     private note is not in the profile and is unreachable;
+///   * both the DELETE and the tombstone WRITE are composed from the resolved
+///     (facet, subject) via [`entry_key`] / [`suppressed_key`], which ALWAYS start
+///     with [`MODEL_PREFIX`]; a hard guard ([`is_model_key`]) refuses anything else,
+///     so this can never delete or write outside the shared tier.
+///
+/// Returns what was dropped + suppressed. An unknown key is a no-op (honest).
+pub async fn contest_belief(memory: &Memory, key: &str) -> Result<Contest> {
+    let profile = snapshot(memory).await?;
+    let matched = resolve_belief(&profile, key);
+    let now = now_secs();
+    let mut contest = Contest::default();
+    for e in matched {
+        let belief_key = entry_key(e.facet, &e.subject);
+        // Structural guard: only ever touch the SHARED model tier.
+        if !is_model_key(&belief_key) {
+            continue;
+        }
+        let _ = delete_model_key(memory, &belief_key).await?;
+        let tomb_key = suppressed_key(e.facet, &e.subject);
+        if !is_model_key(&tomb_key) {
+            continue;
+        }
+        memory
+            .upsert_user_fact(&tomb_key, &encode_tombstone(e.facet, &e.subject, now))
+            .await?;
+        contest.dropped.push((e.facet, e.subject.clone()));
+        contest.suppressed.push(tomb_key);
+    }
+    Ok(contest)
+}
+
+/// Delete a SHARED model-tier row, refusing STRUCTURALLY to touch anything that is
+/// not a `user.model.*` key — belt-and-suspenders isolation for the contest path (a
+/// contest can never delete an `agent.*` private note even if a key slipped through).
+async fn delete_model_key(memory: &Memory, key: &str) -> Result<bool> {
+    if !is_model_key(key) {
+        return Ok(false);
+    }
+    memory.delete_fact(key).await
+}
+
+/// Resolve which SUPPRESSED (facet, subject) tombstones a key/term names — the read
+/// half of [`clear_suppression`]. Same precedence as [`resolve_belief`]: exact
+/// belief/tombstone key, exact subject slug, then a loose term match. Pure.
+fn resolve_suppressed(
+    suppressed: &HashSet<(Facet, String)>,
+    key_or_term: &str,
+) -> Vec<(Facet, String)> {
+    let q = key_or_term.trim();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    if let Some((facet, subject)) = parse_entry_key(q).or_else(|| parse_suppressed_key(q)) {
+        return if suppressed.contains(&(facet, subject.clone())) {
+            vec![(facet, subject)]
+        } else {
+            Vec::new()
+        };
+    }
+    if let Some(slug) = slugify(q) {
+        let hits: Vec<(Facet, String)> = suppressed
+            .iter()
+            .filter(|(_, s)| *s == slug)
+            .cloned()
+            .collect();
+        if !hits.is_empty() {
+            return hits;
+        }
+    }
+    let terms = query_terms(q);
+    suppressed
+        .iter()
+        .filter(|(_, s)| terms.iter().any(|t| s.contains(t.as_str())))
+        .cloned()
+        .collect()
+}
+
+/// CLEAR a suppression tombstone — the user un-contests a belief so the model MAY
+/// re-derive it afresh (the tombstone is user-clearable). Accepts the same key/term
+/// forms as [`explain_belief`]. Reduce-only + shared-tier only. Returns how many
+/// tombstones were cleared.
+pub async fn clear_suppression(memory: &Memory, key: &str) -> Result<u64> {
+    let current = suppressed_set(memory).await?;
+    let mut cleared = 0u64;
+    for (facet, subject) in resolve_suppressed(&current, key) {
+        let tomb_key = suppressed_key(facet, &subject);
+        if is_model_key(&tomb_key) && memory.delete_fact(&tomb_key).await? {
+            cleared += 1;
+        }
+    }
+    Ok(cleared)
+}
+
+/// PURE: build the `mirror.belief` HUD telemetry frame from a profile + the current
+/// suppression set. Carries the bounded, STRONGEST-FIRST belief list (each with its
+/// key, facet, subject, observation, observed-count, provenance) plus the current
+/// suppressed slugs and the action context. Every field is the user's OWN,
+/// already-redacted profile — the same content [`render`] surfaces. Exposed for
+/// direct unit testing.
+pub fn mirror_frame_json(
+    profile: &Profile,
+    suppressed: &HashSet<(Facet, String)>,
+    action: &str,
+    subject: &str,
+    found: bool,
+) -> Value {
+    let mut entries: Vec<&ProfileEntry> = profile.entries.iter().collect();
+    entries.sort_by(|a, b| {
+        b.observed_count
+            .cmp(&a.observed_count)
+            .then(a.facet.as_str().cmp(b.facet.as_str()))
+            .then(a.subject.cmp(&b.subject))
+    });
+    let beliefs: Vec<Value> = entries
+        .into_iter()
+        .take(MIRROR_HUD_MAX)
+        .map(|e| {
+            json!({
+                "key": entry_key(e.facet, &e.subject),
+                "facet": e.facet.as_str(),
+                "subject": e.subject,
+                "observation": e.observation,
+                "observed_count": e.observed_count,
+                "provenance": e.provenance,
+            })
+        })
+        .collect();
+    let mut supp: Vec<String> = suppressed
+        .iter()
+        .map(|(f, s)| format!("{}_{}", f.as_str(), s))
+        .collect();
+    supp.sort();
+    json!({
+        "action": action,
+        "subject": subject,
+        "found": found,
+        "beliefs": beliefs,
+        "suppressed": supp,
+    })
+}
+
+/// Read the current profile + suppression set and EMIT the `mirror.belief` HUD
+/// telemetry frame. Best-effort: a read error simply skips the frame (never wedges
+/// anything). SECRET-FREE by the same standard as [`render`] — it is the user's own
+/// already-redacted profile.
+pub async fn emit_belief_frame(memory: &Memory, action: &str, subject: &str, found: bool) {
+    let profile = match snapshot(memory).await {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let suppressed = suppressed_set(memory).await.unwrap_or_default();
+    telemetry::emit(
+        "system",
+        "mirror.belief",
+        mirror_frame_json(&profile, &suppressed, action, subject, found),
+    );
+}
+
+/// A recognized MIRROR voice intent (belief-audit): EXPLAIN a belief ("why do you
+/// think I prefer X"), CONTEST one ("that's wrong about X"), or CLEAR a prior
+/// contest ("you were right about X" — the tombstone is user-clearable). The carried
+/// string is the subject phrase after the cue; [`resolve_belief`] /
+/// [`clear_suppression`] match it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MirrorIntent {
+    Explain(String),
+    Contest(String),
+    Clear(String),
+}
+
+/// EXPLAIN cues — asking WHY the model believes something about the USER. Distinct
+/// from CAUSA's "why did you do that" (a turn-decision ask): these are about the
+/// SELF-MODEL. Deliberately specific ("why do you THINK I…") so an ordinary "why"
+/// question never triggers.
+const MIRROR_EXPLAIN_CUES: &[&str] = &[
+    "why do you think that i",
+    "why do you think i'm",
+    "why do you think i am",
+    "why do you think i",
+    "why do you believe that i",
+    "why do you believe i",
+    "why do you say that i",
+    "why do you say i",
+    "why do you assume i",
+    "how do you know that i",
+    "how do you know i",
+    "what makes you think that i",
+    "what makes you think i",
+];
+
+/// CONTEST cues — telling the model a stored belief is WRONG. Any match DROPS the
+/// belief + writes a suppression tombstone. The `* about`/`* that i` variants carry
+/// a subject; the bare "that's wrong" forms rely on the trailing phrase (or resolve
+/// to a no-op honest reply when there is none).
+const MIRROR_CONTEST_CUES: &[&str] = &[
+    "that's wrong about",
+    "thats wrong about",
+    "that is wrong about",
+    "that's not true about",
+    "that is not true about",
+    "you're wrong about",
+    "you are wrong about",
+    "you're wrong that i",
+    "stop thinking i",
+    "stop assuming i",
+    "stop believing i",
+    "i don't actually",
+    "i do not actually",
+    "i never said i",
+    "forget that i",
+    "that's wrong",
+    "that is wrong",
+    "you're mistaken",
+    "you are mistaken",
+];
+
+/// CLEAR cues — the user lifts a prior contest so the model MAY re-derive the belief
+/// afresh (un-contest). Checked before CONTEST; none is a substring of a contest cue
+/// ("you were RIGHT" vs "you're WRONG"), so the families never collide.
+const MIRROR_CLEAR_CUES: &[&str] = &[
+    "you were right about",
+    "actually you were right about",
+    "you were right that i",
+    "clear the suppression on",
+    "clear the suppression",
+    "un-suppress",
+    "unsuppress",
+    "stop suppressing",
+    "you can learn about",
+    "let yourself learn about",
+    "reconsider what you think about",
+    "reconsider my",
+];
+
+/// Classify a MIRROR belief-audit intent from an utterance, or `None`. Pure. EXPLAIN
+/// is checked first (a "why do you think…" is a question), then CLEAR (un-contest),
+/// then CONTEST. The subject phrase is the text AFTER the matched cue, lightly
+/// cleaned.
+pub fn classify_mirror_intent(text: &str) -> Option<MirrorIntent> {
+    let lowered = text.trim().to_lowercase();
+    let lower = lowered.trim_end_matches(['.', '!', '?', ',']).trim();
+    for cue in MIRROR_EXPLAIN_CUES {
+        if let Some(idx) = lower.find(cue) {
+            let phrase = clean_subject_phrase(&lower[idx + cue.len()..]);
+            return Some(MirrorIntent::Explain(phrase));
+        }
+    }
+    for cue in MIRROR_CLEAR_CUES {
+        if let Some(idx) = lower.find(cue) {
+            let phrase = clean_subject_phrase(&lower[idx + cue.len()..]);
+            return Some(MirrorIntent::Clear(phrase));
+        }
+    }
+    for cue in MIRROR_CONTEST_CUES {
+        if let Some(idx) = lower.find(cue) {
+            let phrase = clean_subject_phrase(&lower[idx + cue.len()..]);
+            return Some(MirrorIntent::Contest(phrase));
+        }
+    }
+    None
+}
+
+/// Strip leading filler/preposition/verb tokens + surrounding punctuation from the
+/// phrase after a cue so "prefer neovim" / "about my editor" both reduce to the
+/// salient subject words. Pure.
+fn clean_subject_phrase(rest: &str) -> String {
+    const LEAD_FILLER: &[&str] = &[
+        "that", "about", "i", "i'm", "im", "am", "my", "the", "a", "an", "is", "was",
+        "prefer", "prefers", "like", "likes", "liked", "really", "actually", "even",
+        "to", "of", "do", "does", "have", "having", "any", "some",
+    ];
+    let mut words: Vec<&str> = rest
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|w| !w.is_empty())
+        .collect();
+    while let Some(first) = words.first() {
+        if LEAD_FILLER.contains(&first.to_lowercase().as_str()) {
+            words.remove(0);
+        } else {
+            break;
+        }
+    }
+    words.join(" ")
+}
+
+/// Unix seconds now (0 on a clock error) — the tombstone's `contested_at` stamp.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -1226,5 +1778,246 @@ mod tests {
         assert!(s.contains("neovim"), "the observation is surfaced: {s}");
         assert!(!s.contains("fact:"), "provenance noise stays OUT of the prompt summary: {s}");
         assert!(s.contains("Preference"), "the facet labels the line");
+    }
+
+    // ===================================================================
+    // MIRROR — explain / contest / suppression tombstone consult / isolation
+    // ===================================================================
+
+    /// Seed one explicit editor preference into a fresh store (helper).
+    async fn seeded(mem: &Memory) {
+        let facts = vec![("user.preference.editor".to_string(), "neovim".to_string())];
+        consolidate(mem, &[], &facts).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn explain_surfaces_stored_provenance_and_never_invents() {
+        let db = TempDb::new("mirror-explain");
+        let mem = Memory::open(&db.0).unwrap();
+        seeded(&mem).await;
+
+        // A known belief: the explanation carries the STORED observation, count,
+        // and provenance — nothing else.
+        let ex = explain_belief(&mem, "editor").await.unwrap();
+        assert!(ex.found(), "the editor belief is explained");
+        let e = &ex.entries[0];
+        assert_eq!(e.subject, "editor");
+        assert!(e.observation.contains("neovim"));
+        assert!(
+            e.provenance.iter().any(|p| p.contains("user.preference.editor")),
+            "provenance is the real source fact: {:?}",
+            e.provenance
+        );
+        let text = ex.text();
+        assert!(text.contains("neovim"), "text surfaces the stored observation: {text}");
+        assert!(text.contains("observed"), "text surfaces the observed-count");
+        assert!(text.contains("from "), "text surfaces provenance");
+
+        // An UNKNOWN belief is an honest empty — no fabricated reason.
+        let none = explain_belief(&mem, "quantum-basket-weaving").await.unwrap();
+        assert!(!none.found(), "nothing matched");
+        let nt = none.text();
+        assert!(nt.contains("no recorded belief"), "honest empty: {nt}");
+        assert!(!nt.contains("neovim"), "it invents nothing about the ask: {nt}");
+    }
+
+    #[tokio::test]
+    async fn contest_drops_the_belief_and_writes_a_suppression_tombstone() {
+        let db = TempDb::new("mirror-contest");
+        let mem = Memory::open(&db.0).unwrap();
+        seeded(&mem).await;
+        assert!(!query(&mem, "editor").await.unwrap().is_empty(), "belief present first");
+
+        let c = contest_belief(&mem, "editor").await.unwrap();
+        assert!(c.any(), "a belief was contested");
+        assert_eq!(c.dropped, vec![(Facet::Preference, "editor".to_string())]);
+        assert_eq!(c.suppressed.len(), 1, "exactly one tombstone written");
+        assert!(
+            c.suppressed[0].starts_with(SUPPRESSED_PREFIX),
+            "the tombstone is under the shared suppressed tier: {}",
+            c.suppressed[0]
+        );
+
+        // The belief is GONE from the profile...
+        assert!(
+            query(&mem, "editor").await.unwrap().is_empty(),
+            "the contested belief is dropped from the profile"
+        );
+        // ...and the tombstone is recorded in the suppression set.
+        let supp = suppressed_set(&mem).await.unwrap();
+        assert!(
+            supp.contains(&(Facet::Preference, "editor".to_string())),
+            "the suppression tombstone is present: {supp:?}"
+        );
+    }
+
+    #[test]
+    fn drop_suppressed_removes_only_the_contested_entry() {
+        // Pure: a consolidation carrying two entries, one suppressed.
+        let consolidation = Consolidation {
+            entries: vec![
+                (Facet::Topic, "rust".to_string(), 3, vec!["ep:1".into()], "rust".into()),
+                (Facet::Preference, "editor".to_string(), 2, vec!["fact:x".into()], "editor = neovim".into()),
+            ],
+        };
+        let mut suppressed = HashSet::new();
+        suppressed.insert((Facet::Preference, "editor".to_string()));
+        let out = drop_suppressed(consolidation, &suppressed);
+        assert!(
+            out.entries.iter().any(|(f, s, ..)| *f == Facet::Topic && s == "rust"),
+            "the un-contested topic survives"
+        );
+        assert!(
+            out.entries.iter().all(|(f, s, ..)| !(*f == Facet::Preference && s == "editor")),
+            "the contested preference is dropped: {:?}",
+            out.entries
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidate_never_re_derives_a_contested_belief() {
+        // The load-bearing behavior: contest a belief, then run consolidation over
+        // an input that WOULD re-derive it — it must stay gone (the tombstone is
+        // consulted), until the suppression is cleared.
+        let db = TempDb::new("mirror-no-rederive");
+        let mem = Memory::open(&db.0).unwrap();
+        // rust raised across two episodes -> a topic belief.
+        let episodes = vec![ep(1, "rust work", &["rust"]), ep(2, "rust again", &["rust"])];
+        consolidate(&mem, &episodes, &[]).await.unwrap();
+        assert!(!query(&mem, "rust").await.unwrap().is_empty(), "rust topic derived");
+
+        // The user contests it.
+        let c = contest_belief(&mem, "rust").await.unwrap();
+        assert!(c.any());
+        assert!(query(&mem, "rust").await.unwrap().is_empty(), "dropped");
+
+        // Re-run consolidation over the SAME rust-heavy inputs: it must NOT come back.
+        let more = vec![ep(3, "rust", &["rust"]), ep(4, "rust", &["rust"])];
+        consolidate(&mem, &more, &[]).await.unwrap();
+        assert!(
+            query(&mem, "rust").await.unwrap().is_empty(),
+            "a contested belief is NEVER re-derived while its tombstone stands"
+        );
+
+        // Clearing the suppression lets it be learned afresh (user-clearable).
+        let cleared = clear_suppression(&mem, "rust").await.unwrap();
+        assert_eq!(cleared, 1, "the tombstone is cleared");
+        consolidate(&mem, &more, &[]).await.unwrap();
+        assert!(
+            !query(&mem, "rust").await.unwrap().is_empty(),
+            "after clearing the suppression, the belief may be re-derived"
+        );
+    }
+
+    #[tokio::test]
+    async fn contest_cannot_suppress_or_write_a_private_agent_note() {
+        // ISOLATION guard: a contest is STRUCTURALLY confined to the shared
+        // user.model.* tier — it can neither delete nor tombstone a private
+        // agent.* note, whatever key is passed.
+        let db = TempDb::new("mirror-isolation");
+        let mem = Memory::open(&db.0).unwrap();
+        seeded(&mem).await;
+        // A specialist's private note + a plain user fact.
+        mem.upsert_fact("agent.friday.secret", "friday private intel").await.unwrap();
+        mem.upsert_fact("user.name", "Darwin").await.unwrap();
+
+        // Try to contest by the AGENT's key AND by its terms — both must be no-ops
+        // against the private note (resolve_belief only ever names profile rows).
+        for probe in ["agent.friday.secret", "friday private intel", "user.name"] {
+            let c = contest_belief(&mem, probe).await.unwrap();
+            assert!(
+                c.dropped.iter().all(|(_, s)| s != "secret" && s != "name"),
+                "a private/foreign row is never contested via '{probe}': {:?}",
+                c.dropped
+            );
+        }
+
+        // The private note + the plain fact are UNTOUCHED.
+        assert_eq!(
+            mem.get_fact("agent.friday.secret").await.unwrap().as_deref(),
+            Some("friday private intel"),
+            "the private agent note is intact"
+        );
+        assert_eq!(
+            mem.get_fact("user.name").await.unwrap().as_deref(),
+            Some("Darwin"),
+            "the plain user fact is intact"
+        );
+        // No tombstone was written outside the shared model tier, and none names
+        // the private note.
+        let supp = suppressed_set(&mem).await.unwrap();
+        assert!(
+            supp.iter().all(|(_, s)| s != "secret" && s != "name"),
+            "no suppression tombstone names a private/foreign row: {supp:?}"
+        );
+        // The real belief IS contestable — proving the path works, only the tier is fenced.
+        let real = contest_belief(&mem, "editor").await.unwrap();
+        assert!(real.any(), "the shared editor belief IS contestable");
+        assert!(
+            real.suppressed.iter().all(|k| k.starts_with(MODEL_PREFIX)),
+            "every write stays under the shared model tier: {:?}",
+            real.suppressed
+        );
+    }
+
+    #[test]
+    fn classify_mirror_intent_distinguishes_explain_from_contest() {
+        // EXPLAIN — the self-model "why do you think" family, subject extracted.
+        match classify_mirror_intent("why do you think I prefer neovim?") {
+            Some(MirrorIntent::Explain(s)) => assert_eq!(s, "neovim"),
+            other => panic!("expected Explain(neovim), got {other:?}"),
+        }
+        match classify_mirror_intent("how do you know I like tea") {
+            Some(MirrorIntent::Explain(s)) => assert_eq!(s, "tea"),
+            other => panic!("expected Explain(tea), got {other:?}"),
+        }
+        // CONTEST — the "that's wrong" family, subject extracted.
+        match classify_mirror_intent("that's wrong about my editor") {
+            Some(MirrorIntent::Contest(s)) => assert_eq!(s, "editor"),
+            other => panic!("expected Contest(editor), got {other:?}"),
+        }
+        // CLEAR — un-contest ("you were right"), distinct from CONTEST ("you're wrong").
+        match classify_mirror_intent("actually you were right about rust") {
+            Some(MirrorIntent::Clear(s)) => assert_eq!(s, "rust"),
+            other => panic!("expected Clear(rust), got {other:?}"),
+        }
+        // A plain question is NOT a mirror intent (must not steal ordinary turns).
+        assert!(classify_mirror_intent("why did you do that").is_none());
+        assert!(classify_mirror_intent("what's the weather").is_none());
+    }
+
+    #[test]
+    fn mirror_frame_json_carries_bounded_strongest_first_beliefs_and_suppressed() {
+        let profile = Profile {
+            entries: vec![
+                ProfileEntry {
+                    facet: Facet::Topic,
+                    subject: "rust".to_string(),
+                    observation: "keeps coming back to rust".to_string(),
+                    observed_count: 5,
+                    provenance: vec!["ep:1".to_string()],
+                },
+                ProfileEntry {
+                    facet: Facet::Preference,
+                    subject: "editor".to_string(),
+                    observation: "editor = neovim".to_string(),
+                    observed_count: 2,
+                    provenance: vec!["fact:user.preference.editor".to_string()],
+                },
+            ],
+        };
+        let mut suppressed = HashSet::new();
+        suppressed.insert((Facet::Style, "tone".to_string()));
+        let frame = mirror_frame_json(&profile, &suppressed, "explain", "rust", true);
+        assert_eq!(frame["action"], "explain");
+        assert_eq!(frame["subject"], "rust");
+        assert_eq!(frame["found"], true);
+        let beliefs = frame["beliefs"].as_array().unwrap();
+        assert_eq!(beliefs.len(), 2);
+        // Strongest (observed_count desc) first.
+        assert_eq!(beliefs[0]["subject"], "rust");
+        assert_eq!(beliefs[0]["key"], "user.model.topic.rust");
+        assert_eq!(beliefs[0]["observed_count"], 5);
+        assert_eq!(frame["suppressed"][0], "style_tone");
     }
 }

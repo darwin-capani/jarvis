@@ -189,6 +189,10 @@ async fn consolidate_user_model(memory: &Memory, facts: &[(String, String)]) {
             return;
         }
     };
+    // consolidate() CONSULTS the MIRROR suppression tombstones internally, so a
+    // belief the user contested is NEVER re-derived here — the reflection pass can
+    // strengthen the profile every cycle without silently resurrecting a dropped
+    // belief.
     match crate::user_model::consolidate(memory, &episodes, facts).await {
         Ok(written) => {
             info!(written, "user model consolidated");
@@ -197,6 +201,9 @@ async fn consolidate_user_model(memory: &Memory, facts: &[(String, String)]) {
                 "user_model.consolidated",
                 json!({ "entries_written": written }),
             );
+            // Refresh the HUD's MIRROR panel with the post-consolidation belief list
+            // (the snapshot frame is sticky-retained for replay-on-connect).
+            crate::user_model::emit_belief_frame(memory, "snapshot", "", false).await;
         }
         Err(e) => {
             warn!(error = %e, "reflection: user-model consolidation failed; will retry next cycle");

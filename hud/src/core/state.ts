@@ -37,6 +37,7 @@ import {
   LifeLogDigest,
   SessionRewind,
   CausaTrace,
+  MirrorFrame,
   LiveGateEvent,
   ConsensusAdvisory,
   LocalToolsStatus,
@@ -152,6 +153,7 @@ import {
   parseLifeLogDigest,
   parseSessionRewind,
   parseCausaTrace,
+  parseMirrorFrame,
   parseLockdownStatus,
   parseNotebookActivity,
   parseUnifiedSearchResult,
@@ -910,6 +912,15 @@ export interface HudState {
    *  you do that" / "why <Agent>". Null until the first ask. REVIEW-ONLY: nothing
    *  here re-executes; an honest-empty frame rides when the turn wasn't recorded. */
   causaTrace: CausaTrace | null;
+  /** The MIRROR self-model surface (mirror.belief): what DARWIN believes about the
+   *  user — each belief with its stored observation, the compounding observed-count,
+   *  the real provenance, plus the currently-contested (suppressed) slugs. Fed by the
+   *  periodic/startup "snapshot" frame and refreshed on every explain/contest/clear
+   *  voice turn. Null until the first frame. REVIEW-ONLY here; the "that's wrong"
+   *  control contests a belief through the EXISTING gated `ask` command channel (the
+   *  daemon drops it + writes a suppression tombstone it never re-derives past).
+   *  SECRET-FREE — the user's own already-redacted profile, never a private note. */
+  mirror: MirrorFrame | null;
   /** The CONSEQUENTIAL-GATE AUDIT surface (audit.snapshot): the daemon's
    *  hash-chained, tamper-EVIDENT log of every consequential decision — recent
    *  entries (newest-first, SECRET-FREE: agent/tool/REDACTED target/decision/
@@ -1390,6 +1401,7 @@ export function initialState(): HudState {
     lifelog: null,
     sessionRewind: null,
     causaTrace: null,
+    mirror: null,
     audit: null,
     liveGate: [],
     consensusAdvisory: null,
@@ -1901,6 +1913,16 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // The pass could not run this cycle (busy/locked DB). Honest "the profile
       // may be stale" affordance — the prior entry count stays shown, flagged.
       return { ...s, memory: { ...s.memory, userModelStale: true } };
+    }
+
+    case "mirror.belief": {
+      // MIRROR self-model: the current belief list (+ contested/suppressed slugs)
+      // with the action context. Replaces wholesale (each frame carries the whole
+      // bounded snapshot). A malformed frame (no `action`) is dropped rather than
+      // blanking the panel — the prior belief list stays shown.
+      const frame = parseMirrorFrame(env.data);
+      if (frame === null) return s;
+      return { ...s, mirror: frame };
     }
 
     case "memory.retention": {

@@ -205,6 +205,18 @@ min_sample = 20              # per-bucket honesty floor: below this many GRADED 
 overconfidence_margin = 0.1  # dead-band: a bucket counts as "overconfident" (and eligible for the reduce-only widen) only if actual success lags the claimed confidence by MORE than this, so ordinary sampling noise never widens the clarify band.
 max_widen = 0.15             # cap on the reduce-only hook's widen: it never raises the clarify threshold by more than this, and the result is always capped at 1.0.
 
+[mirror]
+# MIRROR (user_model.rs): belief-audit + contest over the SELF-MODEL. "why do you
+# think I prefer X" surfaces the STORED observation, provenance, and observed-count
+# of that belief — never a fabricated reason. "that's wrong about X" DROPS the belief
+# AND writes a `user.model.suppressed.*` tombstone that the reflection/consolidation
+# pass CONSULTS, so a contested belief is NEVER silently re-derived (the tombstone is
+# user-clearable). Emits the secret-free `mirror.belief` telemetry frame for the HUD.
+# READ-ONLY / REDUCE-ONLY: contesting only ever REMOVES a shared `user.model.*` belief
+# and suppresses it — it is structurally unable to touch a private `agent.*` note, and
+# does nothing consequential.
+enabled = true      # master gate, SHIPS ON (full-power default). Off => "why do you think…" / "that's wrong…" fall through to the model. Set false to disable.
+
 [standing]
 # Standing Missions (standing.rs): durable, scheduled, autonomous goals that run
 # on the standing-missions scheduler tick (a dedicated runtime loop, separate from

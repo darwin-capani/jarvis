@@ -27,6 +27,8 @@ import LatencyStrip from "./components/LatencyStrip";
 import LifeLogPanel from "./components/LifeLogPanel";
 import SessionRewindPanel from "./components/SessionRewindPanel";
 import CausaTracePanel from "./components/CausaTracePanel";
+import MirrorPanel from "./components/MirrorPanel";
+import type { MirrorBelief } from "./core/events";
 import MarkForgePanel, { MARK_FORGE_APP_NAME } from "./components/MarkForgePanel";
 import McpPanel from "./components/McpPanel";
 import CapabilityAtlasPanel from "./components/CapabilityAtlasPanel";
@@ -241,6 +243,19 @@ export default function App() {
     (id: string) => dispatch({ type: "suggestion.dismiss", id }),
     [],
   );
+
+  // MIRROR "that's wrong" (contest a self-model belief). This is NOT a direct model
+  // write: the panel hands us the belief's subject and we send the natural-language
+  // contest over the SAME gated `ask` command channel a spoken "that's wrong about X"
+  // takes. The daemon's MIRROR arm (router.rs) resolves the belief in the SHARED
+  // user.model tier, DROPS it, and writes a suppression tombstone the consolidation
+  // pass never re-derives past — reduce-only, and structurally unable to touch a
+  // private agent.* note. The refreshed mirror.belief frame updates this panel.
+  const contestBelief = useCallback((belief: MirrorBelief) => {
+    const subject = belief.subject.replace(/_/g, " ").trim();
+    if (subject === "") return;
+    void sendCommand({ cmd: "ask", text: `that's wrong about ${subject}` });
+  }, []);
 
   // Dev-only: lets `vite dev` sessions inject actions/envelopes without a
   // daemon (the HUD never binds 7177 itself). Stripped from prod builds.
@@ -676,6 +691,7 @@ export default function App() {
           <LifeLogPanel digest={state.lifelog} />
           <SessionRewindPanel rewind={state.sessionRewind} />
           <CausaTracePanel trace={state.causaTrace} />
+          <MirrorPanel mirror={state.mirror} onContest={contestBelief} />
           <MemoryPanel memory={state.memory} />
           <EvalPanel report={state.evalReport} proposal={state.optimizerProposal} />
           <SkillsPanel skills={state.skills} />
