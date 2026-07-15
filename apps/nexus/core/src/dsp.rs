@@ -98,6 +98,10 @@ impl Smoother {
 
     /// Advance one sample, returning the smoothed value. Linear ramp; lands
     /// exactly on the target on the final step (no float drift past it).
+    // Deliberately named `next`: this is a per-sample advance on the realtime
+    // audio path, not an `Iterator` (it mutates in place and never terminates).
+    // Renaming would churn the RT call sites; the name reads correctly in situ.
+    #[allow(clippy::should_implement_trait)]
     #[inline]
     pub fn next(&mut self) -> f32 {
         if self.remaining > 0 {

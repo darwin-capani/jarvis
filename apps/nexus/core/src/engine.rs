@@ -521,12 +521,14 @@ mod tests {
         // correct in isolation.
         let input = sine(40.0, 0.5, 4096, FS);
 
-        let mut on = ChannelDsp::default();
-        on.enabled = true;
-        on.hpf = FilterParams { enabled: true, cutoff_hz: 80.0, order: 2 };
-        on.gate = GateParams { enabled: false, ..Default::default() };
-        on.deesser = DeEsserParams { enabled: false, ..Default::default() };
-        on.compressor = CompressorParams { enabled: false, ..Default::default() };
+        let on = ChannelDsp {
+            enabled: true,
+            hpf: FilterParams { enabled: true, cutoff_hz: 80.0, order: 2 },
+            gate: GateParams { enabled: false, ..Default::default() },
+            deesser: DeEsserParams { enabled: false, ..Default::default() },
+            compressor: CompressorParams { enabled: false, ..Default::default() },
+            ..Default::default()
+        };
 
         let off = ChannelDsp::default(); // master bypass
 
@@ -548,12 +550,14 @@ mod tests {
         // monitored output when the gate is enabled vs bypassed.
         let quiet = sine(1000.0, db_to_linear(-60.0), 24_000, FS); // -60 dBFS, < -45 thr
 
-        let mut on = ChannelDsp::default();
-        on.enabled = true;
-        on.hpf = FilterParams { enabled: false, ..Default::default() };
-        on.gate = GateParams::default(); // -45 dB threshold, -80 floor
-        on.deesser = DeEsserParams { enabled: false, ..Default::default() };
-        on.compressor = CompressorParams { enabled: false, ..Default::default() };
+        let on = ChannelDsp {
+            enabled: true,
+            hpf: FilterParams { enabled: false, ..Default::default() },
+            gate: GateParams::default(), // -45 dB threshold, -80 floor
+            deesser: DeEsserParams { enabled: false, ..Default::default() },
+            compressor: CompressorParams { enabled: false, ..Default::default() },
+            ..Default::default()
+        };
 
         let off = ChannelDsp::default();
 
@@ -572,19 +576,21 @@ mod tests {
         // vs bypassed — proving gain reduction lands on the metered path.
         let hot = sine(1000.0, db_to_linear(-6.0), 9600, FS); // -6 dBFS, over -18 thr
 
-        let mut on = ChannelDsp::default();
-        on.enabled = true;
-        on.hpf = FilterParams { enabled: false, ..Default::default() };
-        on.gate = GateParams { enabled: false, ..Default::default() };
-        on.deesser = DeEsserParams { enabled: false, ..Default::default() };
-        on.compressor = CompressorParams {
+        let on = ChannelDsp {
             enabled: true,
-            threshold_db: -18.0,
-            ratio: 3.0,
-            attack_ms: 10.0,
-            release_ms: 120.0,
-            knee_db: 0.0,
-            makeup_db: 0.0,
+            hpf: FilterParams { enabled: false, ..Default::default() },
+            gate: GateParams { enabled: false, ..Default::default() },
+            deesser: DeEsserParams { enabled: false, ..Default::default() },
+            compressor: CompressorParams {
+                enabled: true,
+                threshold_db: -18.0,
+                ratio: 3.0,
+                attack_ms: 10.0,
+                release_ms: 120.0,
+                knee_db: 0.0,
+                makeup_db: 0.0,
+            },
+            ..Default::default()
         };
 
         let off = ChannelDsp::default();
@@ -605,19 +611,21 @@ mod tests {
         // bypassed chain on the same input.
         let hot = sine(1000.0, db_to_linear(-6.0), 9600, FS);
 
-        let mut on = ChannelDsp::default();
-        on.enabled = true;
-        on.hpf = FilterParams { enabled: false, ..Default::default() };
-        on.gate = GateParams { enabled: false, ..Default::default() };
-        on.deesser = DeEsserParams { enabled: false, ..Default::default() };
-        on.compressor = CompressorParams {
+        let on = ChannelDsp {
             enabled: true,
-            threshold_db: -18.0,
-            ratio: 3.0,
-            attack_ms: 10.0,
-            release_ms: 120.0,
-            knee_db: 0.0,
-            makeup_db: 0.0,
+            hpf: FilterParams { enabled: false, ..Default::default() },
+            gate: GateParams { enabled: false, ..Default::default() },
+            deesser: DeEsserParams { enabled: false, ..Default::default() },
+            compressor: CompressorParams {
+                enabled: true,
+                threshold_db: -18.0,
+                ratio: 3.0,
+                attack_ms: 10.0,
+                release_ms: 120.0,
+                knee_db: 0.0,
+                makeup_db: 0.0,
+            },
+            ..Default::default()
         };
 
         let meter_for = |params: ChannelDsp| -> ChannelMeter {

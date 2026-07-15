@@ -927,9 +927,9 @@ impl SpectrumState {
         let mut re = vec![0.0f32; FFT_SIZE];
         let mut im = vec![0.0f32; FFT_SIZE];
         if self.filled >= FFT_SIZE {
-            for n in 0..FFT_SIZE {
+            for (n, re_n) in re.iter_mut().enumerate() {
                 let idx = (self.pos + n) % FFT_SIZE;
-                re[n] = self.ring[idx] * self.window[n];
+                *re_n = self.ring[idx] * self.window[n];
             }
         } else {
             // Not yet full: place the `filled` samples (written at indices

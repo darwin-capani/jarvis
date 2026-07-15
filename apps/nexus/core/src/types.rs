@@ -130,7 +130,7 @@ impl BlockRef<'_> {
     /// if the format declares 0 channels (degenerate; the FFI edge rejects it).
     pub fn frames(&self) -> usize {
         let ch = self.format.channels as usize;
-        if ch == 0 { 0 } else { self.data.len() / ch }
+        self.data.len().checked_div(ch).unwrap_or(0)
     }
 }
 
@@ -138,7 +138,7 @@ impl BlockMut<'_> {
     /// Frames per channel; see [`BlockRef::frames`].
     pub fn frames(&self) -> usize {
         let ch = self.format.channels as usize;
-        if ch == 0 { 0 } else { self.data.len() / ch }
+        self.data.len().checked_div(ch).unwrap_or(0)
     }
 }
 

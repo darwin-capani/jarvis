@@ -6,7 +6,7 @@
 //! built as both:
 //!   - `cdylib` — the `.dylib`/`.so` Python loads (the C-ABI surface in [`ffi`]).
 //!   - `rlib`   — so `cargo test` exercises the pure DSP/matrix/metering math
-//!                headlessly, with SYNTHESIZED in-memory buffers only.
+//!     headlessly, with SYNTHESIZED in-memory buffers only.
 //!
 //! Module map (one module per concern; the FROZEN shared types vs. the
 //! module-agent stubs are called out so parallel agents fill disjoint files):

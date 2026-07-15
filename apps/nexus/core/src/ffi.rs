@@ -105,6 +105,11 @@ pub extern "C" fn nexus_engine_create(inputs: usize, outputs: usize, sample_rate
 
 /// `void nexus_engine_destroy(Engine* engine);` — free the engine. NULL is a
 /// no-op. After this the pointer is dangling; Python must not reuse it.
+///
+/// # Safety
+/// `engine` must be either NULL or a live handle returned by
+/// [`nexus_engine_create`] that has not already been destroyed. It must not be
+/// used again after this call.
 #[no_mangle]
 pub unsafe extern "C" fn nexus_engine_destroy(engine: *mut Engine) {
     if engine.is_null() {
@@ -117,6 +122,10 @@ pub unsafe extern "C" fn nexus_engine_destroy(engine: *mut Engine) {
 }
 
 /// `int32_t nexus_engine_inputs(const Engine* engine, size_t* out_inputs);`
+///
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`];
+/// `out_inputs` must be NULL or valid for one `usize` write.
 #[no_mangle]
 pub unsafe extern "C" fn nexus_engine_inputs(engine: *const Engine, out_inputs: *mut usize) -> i32 {
     guard(|| {
@@ -130,6 +139,10 @@ pub unsafe extern "C" fn nexus_engine_inputs(engine: *const Engine, out_inputs: 
 }
 
 /// `int32_t nexus_engine_outputs(const Engine* engine, size_t* out_outputs);`
+///
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`];
+/// `out_outputs` must be NULL or valid for one `usize` write.
 #[no_mangle]
 pub unsafe extern "C" fn nexus_engine_outputs(engine: *const Engine, out_outputs: *mut usize) -> i32 {
     guard(|| {
@@ -148,6 +161,9 @@ pub unsafe extern "C" fn nexus_engine_outputs(engine: *const Engine, out_outputs
 
 /// `int32_t nexus_set_crosspoint(Engine*, size_t in, size_t out, float gain_db);`
 /// SPEC §5 `route.set`. `gain_db == -INFINITY` clears the route.
+///
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`].
 #[no_mangle]
 pub unsafe extern "C" fn nexus_set_crosspoint(engine: *mut Engine, input: usize, output: usize, gain_db: f32) -> i32 {
     guard(|| {
@@ -158,6 +174,9 @@ pub unsafe extern "C" fn nexus_set_crosspoint(engine: *mut Engine, input: usize,
 
 /// `int32_t nexus_set_input_trim(Engine*, size_t channel, float gain_db);`
 /// SPEC §5 `gain.set` (input stage).
+///
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`].
 #[no_mangle]
 pub unsafe extern "C" fn nexus_set_input_trim(engine: *mut Engine, channel: usize, gain_db: f32) -> i32 {
     guard(|| {
@@ -168,6 +187,9 @@ pub unsafe extern "C" fn nexus_set_input_trim(engine: *mut Engine, channel: usiz
 
 /// `int32_t nexus_set_output_trim(Engine*, size_t channel, float gain_db);`
 /// SPEC §5 `gain.set` (output stage).
+///
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`].
 #[no_mangle]
 pub unsafe extern "C" fn nexus_set_output_trim(engine: *mut Engine, channel: usize, gain_db: f32) -> i32 {
     guard(|| {
@@ -178,6 +200,9 @@ pub unsafe extern "C" fn nexus_set_output_trim(engine: *mut Engine, channel: usi
 
 /// `int32_t nexus_set_input_mute(Engine*, size_t channel, bool muted);`
 /// "mute the mic" lands here (voice -> daemon -> gain.set).
+///
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`].
 #[no_mangle]
 pub unsafe extern "C" fn nexus_set_input_mute(engine: *mut Engine, channel: usize, muted: bool) -> i32 {
     guard(|| {
@@ -187,6 +212,9 @@ pub unsafe extern "C" fn nexus_set_input_mute(engine: *mut Engine, channel: usiz
 }
 
 /// `int32_t nexus_set_output_mute(Engine*, size_t channel, bool muted);`
+///
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`].
 #[no_mangle]
 pub unsafe extern "C" fn nexus_set_output_mute(engine: *mut Engine, channel: usize, muted: bool) -> i32 {
     guard(|| {
@@ -198,6 +226,9 @@ pub unsafe extern "C" fn nexus_set_output_mute(engine: *mut Engine, channel: usi
 /// `int32_t nexus_set_monitor_output(Engine*, int32_t output);`
 /// SPEC §5 `monitor.set`. A NEGATIVE `output` clears the monitor assignment;
 /// otherwise it assigns that output index.
+///
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`].
 #[no_mangle]
 pub unsafe extern "C" fn nexus_set_monitor_output(engine: *mut Engine, output: i32) -> i32 {
     guard(|| {
@@ -221,9 +252,11 @@ pub unsafe extern "C" fn nexus_set_monitor_output(engine: *mut Engine, output: i
 /// (written in place). The core borrows every buffer only for this call. Each
 /// per-channel buffer must be exactly `frames * channels` long.
 ///
-/// SAFETY: every pointer in `inputs[0..input_count]` and
-/// `outputs[0..output_count]` must be valid for `frames * channels` `f32`s.
-/// Python passes ctypes arrays it keeps alive across the call.
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`]. Every
+/// pointer in `inputs[0..input_count]` and `outputs[0..output_count]` must be
+/// valid for `frames * channels` `f32`s. Python passes ctypes arrays it keeps
+/// alive across the call.
 #[no_mangle]
 pub unsafe extern "C" fn nexus_process_block(
     engine: *mut Engine,
@@ -280,6 +313,11 @@ pub unsafe extern "C" fn nexus_process_block(
 /// `int32_t nexus_get_channel_meter(const Engine*, size_t channel,`
 /// `    float* out_peak_dbfs, float* out_rms_dbfs);`
 /// SPEC §6 `audio.levels` per-channel entry. Writes both out-params.
+///
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`];
+/// `out_peak_dbfs` and `out_rms_dbfs` must each be NULL or valid for one `f32`
+/// write.
 #[no_mangle]
 pub unsafe extern "C" fn nexus_get_channel_meter(
     engine: *const Engine,
@@ -304,6 +342,11 @@ pub unsafe extern "C" fn nexus_get_channel_meter(
 /// `int32_t nexus_get_loudness(const Engine*,`
 /// `    float* out_lufs_m, float* out_lufs_s, float* out_lufs_i);`
 /// SPEC §6 BS.1770-4 loudness triplet.
+///
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`];
+/// `out_lufs_m`, `out_lufs_s` and `out_lufs_i` must each be NULL or valid for
+/// one `f32` write.
 #[no_mangle]
 pub unsafe extern "C" fn nexus_get_loudness(
     engine: *const Engine,
@@ -331,6 +374,10 @@ pub unsafe extern "C" fn nexus_get_loudness(
 /// `out_bands`. `cap` must be >= [`crate::types::SPECTRUM_BANDS`] (96) or it
 /// returns OUT_OF_BOUNDS without writing. Use [`nexus_spectrum_band_count`] to
 /// size the buffer.
+///
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`];
+/// `out_bands` must be NULL or valid for at least `cap` `f32` writes.
 #[no_mangle]
 pub unsafe extern "C" fn nexus_get_spectrum(engine: *const Engine, out_bands: *mut f32, cap: usize) -> i32 {
     guard(|| {
@@ -377,8 +424,10 @@ pub extern "C" fn nexus_clip_capacity() -> usize {
 /// The parallel-array form (not an array-of-structs) keeps the ctypes side free
 /// of struct-layout/alignment concerns, like the other getters' scalar out-params.
 ///
-/// SAFETY: `out_channels` and `out_true_peaks` must each be valid for `cap`
-/// writes (`uint16_t`/`float` respectively) and `out_count` for one `size_t`.
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`].
+/// `out_channels` and `out_true_peaks` must each be valid for `cap` writes
+/// (`uint16_t`/`float` respectively) and `out_count` for one `size_t`.
 #[no_mangle]
 pub unsafe extern "C" fn nexus_drain_clips(
     engine: *mut Engine,
@@ -417,6 +466,10 @@ pub unsafe extern "C" fn nexus_drain_clips(
 
 /// `int32_t nexus_get_crosspoint(const Engine*, size_t in, size_t out, float* out_gain_db);`
 /// Read one crosspoint (for `state.get` serialization on the Python side).
+///
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`];
+/// `out_gain_db` must be NULL or valid for one `f32` write.
 #[no_mangle]
 pub unsafe extern "C" fn nexus_get_crosspoint(
     engine: *const Engine,
@@ -443,6 +496,9 @@ pub unsafe extern "C" fn nexus_get_crosspoint(
 /// counter so the Python `audio.routes` publisher can skip unchanged snapshots.
 /// Returns 0 on a null handle (indistinguishable from a fresh engine, which is
 /// acceptable: the caller validates the handle once at create).
+///
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`].
 #[no_mangle]
 pub unsafe extern "C" fn nexus_matrix_revision(engine: *const Engine) -> u64 {
     if engine.is_null() {
@@ -461,7 +517,9 @@ pub unsafe extern "C" fn nexus_matrix_revision(engine: *const Engine) -> u64 {
 /// the body. STUB returns PRESET_ERROR so an un-filled build cannot silently
 /// "succeed".
 ///
-/// SAFETY: `path` must be a valid NUL-terminated C string for the call.
+/// # Safety
+/// `engine` must be NULL or a live handle from [`nexus_engine_create`]; `path`
+/// must be NULL or a valid NUL-terminated C string for the call.
 #[no_mangle]
 pub unsafe extern "C" fn nexus_preset_save_path(engine: *mut Engine, path: *const c_char) -> i32 {
     guard(|| {
@@ -475,7 +533,10 @@ pub unsafe extern "C" fn nexus_preset_save_path(engine: *mut Engine, path: *cons
     })
 }
 
-/// See [`nexus_preset_save_path`]. SAFETY: same `path` contract.
+/// See [`nexus_preset_save_path`].
+///
+/// # Safety
+/// Same handle/`path` contract as [`nexus_preset_save_path`].
 #[no_mangle]
 pub unsafe extern "C" fn nexus_preset_load_path(engine: *mut Engine, path: *const c_char) -> i32 {
     guard(|| {
