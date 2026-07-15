@@ -70,6 +70,14 @@ mod drafts;
 // Hermetically tested in durable_missions.rs.
 mod durable_missions;
 mod egress;
+// EGRESS BASELINE + BEACON DETECTOR (egress_beacon.rs): the longitudinal
+// follow-on to the read-only Egress Sentinel. Keeps a BOUNDED baseline of
+// outbound talkers and runs two PURE classifiers — new-host diff + beacon
+// cadence (regular C2-callback intervals) — over rising-edge samples. Alerts
+// RIDE EDITH's quiet-hours + cooldown + debounce so they never spam. Any
+// "block" is PROPOSE-ONLY: a pf rule rendered as TEXT the user applies with
+// sudo — the module never mutates the firewall. ON by default ([egress].enabled).
+mod egress_beacon;
 mod episodic;
 // LIVE ENDPOINT SECURITY NOTIFY client (feature `endpoint-security`, DEVICE-GATED).
 // OFF by default — the normal build never compiles it. When on, it feeds kernel
@@ -2192,6 +2200,18 @@ async fn main() -> Result<()> {
         // the entitlement/root aren't present the light path above is unaffected.
         #[cfg(feature = "endpoint-security")]
         es::start_and_report();
+    }
+    // Ambient EGRESS BASELINE + BEACON loop: a slow, READ-ONLY sampler over the
+    // host's outbound connections (the same lsof snapshot the Egress Sentinel
+    // uses). It folds each sample into a BOUNDED longitudinal baseline and runs
+    // two PURE classifiers — first-seen talker + regular-interval beacon cadence
+    // — emitting a guarded, PROPOSE-ONLY egress.newhost/egress.beacon frame for
+    // any survivor. Alerts ride EDITH's quiet-hours + cooldown + debounce so
+    // they never spam; any "block" is TEXT the user applies with sudo — this
+    // loop never mutates the firewall. Ships ON ([egress].enabled). UID-scoped:
+    // unprivileged lsof sees only same-UID processes (stated in every frame).
+    if cfg.egress.enabled {
+        tokio::spawn(egress_beacon::run_task(cfg.clone()));
     }
     // Ambient CAPABILITY-HEALTH loop: a slow, READ-ONLY periodic pass over the
     // optimizer's own trace corpus that emits the PROPOSE-ONLY `attribution.health`
