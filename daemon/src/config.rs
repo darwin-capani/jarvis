@@ -378,10 +378,14 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("integrations", &["allow_consequential"]),
     // [standing] — Standing Missions (standing.rs). `enabled` is the subsystem
     // master switch and SHIPS ON (full-power default). Even on, establishing a
-    // mission is itself a confirmation-gated action, and every consequential step a
-    // run takes still parks behind the confirm gate + allow_consequential, bounded to
-    // <=8 active missions under FURY caps — so it can never auto-send/post/spend.
-    ("standing", &["enabled"]),
+    // mission (incl. ARMING a TRIPWIRE) is itself a confirmation-gated action, and
+    // every consequential step a run takes still parks behind the confirm gate +
+    // allow_consequential, bounded to <=8 active missions under FURY caps — so it can
+    // never auto-send/post/spend. The TRIPWIRE (condition-trigger) knobs
+    // `condition_eval_secs` (evaluation cadence) + `condition_debounce_secs`
+    // (anti-flap re-fire floor) tune the reactive path; listed so neither reads as a
+    // typo.
+    ("standing", &["enabled", "condition_eval_secs", "condition_debounce_secs"]),
     // [drafts] — AUTO-DRAFT (#25, drafts.rs). `enabled` SHIPS ON (full-power default).
     // A draft is always a reviewable suggestion — the module has no send path, so this
     // flag never enables an autonomous send. `retention` bounds the pending-draft
@@ -3197,16 +3201,35 @@ impl Default for PluginSdkConfig {
 #[serde(default)]
 pub struct StandingConfig {
     pub enabled: bool,
+    /// TRIPWIRE (condition-trigger) EVALUATION CADENCE, seconds: the minimum interval
+    /// between evaluations of condition triggers ([`crate::standing::Schedule::Condition`])
+    /// against a fresh signal snapshot on the standing scheduler tick. Default 60s.
+    /// The standing tick itself bounds the practical maximum frequency; lowering this
+    /// only makes tripwires no LESS responsive than the tick. A condition trigger may
+    /// only READ + REASON — evaluating it never actuates anything.
+    pub condition_eval_secs: u64,
+    /// TRIPWIRE DEBOUNCE / RATE-LIMIT, seconds: the minimum interval between successive
+    /// FIRES of the SAME condition trigger after it clears — so a flapping signal can
+    /// never spam. Combined with the built-in Schmitt hysteresis dead-band, this keeps
+    /// a jittery reading from re-firing. Clamped UP to a 5-minute floor
+    /// ([`crate::standing::MIN_CONDITION_DEBOUNCE_SECS`]). Default 3600s (1h).
+    pub condition_debounce_secs: u64,
 }
 
 impl Default for StandingConfig {
     fn default() -> Self {
-        // SHIPS ON (full-power default). Even on: establishing a mission is itself
-        // confirmation-gated (standing_create is in CONSEQUENTIAL_TOOLS), every
-        // consequential step a run takes still parks behind the confirm gate +
-        // allow_consequential, and it is bounded to <=8 active missions under FURY
-        // caps. A standing mission can never auto-send/post/spend.
-        Self { enabled: true }
+        // SHIPS ON (full-power default). Even on: establishing a mission (including
+        // ARMING a tripwire) is itself confirmation-gated (standing_create is in
+        // CONSEQUENTIAL_TOOLS), every consequential step a run takes still parks
+        // behind the confirm gate + allow_consequential, and it is bounded to <=8
+        // active missions under FURY caps. A standing mission can never
+        // auto-send/post/spend. The tripwire cadence/debounce default to a
+        // conservative 60s evaluation / 1h re-fire floor.
+        Self {
+            enabled: true,
+            condition_eval_secs: 60,
+            condition_debounce_secs: 3600,
+        }
     }
 }
 
@@ -4387,6 +4410,34 @@ mod tests {
         assert!(
             issues.iter().any(|i| i.contains("standing.enabledd")),
             "typo'd standing key must be reported: {issues:?}"
+        );
+    }
+
+    /// TRIPWIRE (condition-trigger) config: the evaluation cadence + anti-flap
+    /// re-fire debounce default conservatively, parse as known keys, and are
+    /// operator-overridable; a typo is diagnosed.
+    #[test]
+    fn standing_tripwire_keys_default_and_are_known() {
+        let (cfg, issues) = Config::parse("");
+        assert!(issues.is_empty());
+        assert_eq!(cfg.standing.condition_eval_secs, 60, "eval cadence defaults to 60s");
+        assert_eq!(cfg.standing.condition_debounce_secs, 3600, "re-fire debounce defaults to 1h");
+
+        let raw = r#"
+            [standing]
+            condition_eval_secs = 30
+            condition_debounce_secs = 1800
+        "#;
+        let (cfg, issues) = Config::parse(raw);
+        assert!(issues.is_empty(), "tripwire keys must be known: {issues:?}");
+        assert_eq!(cfg.standing.condition_eval_secs, 30);
+        assert_eq!(cfg.standing.condition_debounce_secs, 1800);
+
+        // A typo'd tripwire key is reported, not silently swallowed.
+        let (_cfg, issues) = Config::parse("[standing]\ncondition_evl_secs = 30\n");
+        assert!(
+            issues.iter().any(|i| i.contains("standing.condition_evl_secs")),
+            "typo'd tripwire key must be reported: {issues:?}"
         );
     }
 

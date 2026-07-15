@@ -1396,6 +1396,15 @@ async fn standing_task(root: PathBuf, cfg: Arc<Config>, memory: Arc<Memory>, soc
     // event loop's client (mirrors anticipation_task / reflect.rs).
     let mut infer = InferenceClient::new(sock);
     let registry = agents::AgentRegistry::canonical();
+    // TRIPWIRE (condition-trigger) state carried across ticks at the loop edge (like
+    // the anticipation loop's FiredState/CollectorState): the debounce/hysteresis
+    // ledger, the throttle cache for the network signals the snapshot needs, and the
+    // last-eval stamp for the condition-eval cadence. The pure tripwire scheduler
+    // (`standing::due_condition_missions`) threads the ledger; nothing here is
+    // persisted (a restart safely re-arms).
+    let mut tripwire_ledger = standing::TripwireLedger::default();
+    let mut collector = signals::CollectorState::new();
+    let mut last_condition_eval: u64 = 0;
 
     loop {
         tokio::time::sleep(STANDING_INTERVAL).await;
@@ -1407,10 +1416,14 @@ async fn standing_task(root: PathBuf, cfg: Arc<Config>, memory: Arc<Memory>, soc
         // master_enabled=false, so NOTHING is ever due (no recurring autonomy
         // fires when locked). With lockdown OFF this is byte-for-byte the
         // configured `[standing].enabled`.
-        let enabled = {
+        let (enabled, condition_eval_secs, condition_debounce_secs) = {
             let (live, _issues) =
                 Config::load(&root.join("config").join("darwin.toml"));
-            live.standing.enabled && !lockdown::is_locked_down()
+            (
+                live.standing.enabled && !lockdown::is_locked_down(),
+                live.standing.condition_eval_secs,
+                live.standing.condition_debounce_secs,
+            )
         };
 
         let now = SystemTime::now()
@@ -1440,13 +1453,71 @@ async fn standing_task(root: PathBuf, cfg: Arc<Config>, memory: Arc<Memory>, soc
             &signals_present,
             enabled,
         );
-        if due.is_empty() {
-            continue; // OFF, or nothing due this tick.
+
+        // TRIPWIRE (condition) triggers: fire on a threshold crossing of the verified
+        // signal snapshot rather than the clock. Only evaluated when the subsystem is
+        // enabled, at least one enabled condition mission exists, and the configured
+        // eval cadence has elapsed — so NO snapshot is built (no network read) when
+        // there are no tripwires. A firing tripwire launches the SAME bounded run as
+        // a time mission (RE-REASONED each fire), and its consequential steps still
+        // park. The pure scheduler `standing::due_condition_missions` applies the
+        // hysteresis/debounce via the ledger and honors the same master-switch guard.
+        let mut condition_due: Vec<&standing::StandingMission> = Vec::new();
+        let have_tripwires = missions
+            .iter()
+            .any(|m| m.enabled && m.schedule.is_condition());
+        if enabled
+            && have_tripwires
+            && now.saturating_sub(last_condition_eval) >= condition_eval_secs
+        {
+            last_condition_eval = now;
+            let present = secs_since_last_interaction(&memory)
+                .await
+                .is_some_and(|s| s <= ANTICIPATE_PRESENCE_WINDOW_SECS);
+            let now_rfc3339 = chrono::Utc::now().to_rfc3339();
+            let signals = signals::collect_signals(
+                &mut collector,
+                telemetry::latest_snapshot(),
+                present,
+                now,
+                &now_rfc3339,
+                signals::DEFAULT_REFRESH_SECS,
+            )
+            .await;
+            condition_due = standing::due_condition_missions(
+                &missions,
+                &signals,
+                now,
+                &mut tripwire_ledger,
+                enabled,
+                condition_debounce_secs,
+            );
+        }
+
+        if due.is_empty() && condition_due.is_empty() {
+            continue; // OFF, or nothing due on either axis this tick.
         }
 
         let cloud_reachable = anthropic::resolve_api_key().await.is_some();
         let model = cfg.cloud.heavy_model.clone();
-        for mission in due {
+        // Run the time-due and tripwire-due missions through the SAME bounded engine.
+        // The two sets are disjoint (a Condition schedule is never clock-due), so no
+        // mission runs twice; the flag only decides whether to surface the extra
+        // `standing.tripwire` "why it fired" frame first.
+        let to_run = due
+            .into_iter()
+            .map(|m| (m, false))
+            .chain(condition_due.into_iter().map(|m| (m, true)));
+        for (mission, is_tripwire) in to_run {
+            // TRIPWIRE: surface WHY it fired (the condition that tripped) before the
+            // run, so the HUD can distinguish a reactive fire from a scheduled one.
+            if is_tripwire {
+                telemetry::emit(
+                    "agent.fury",
+                    "standing.tripwire",
+                    standing::tripwire_fired_telemetry(mission),
+                );
+            }
             // Run through the SAME cloud-backed planner/dispatcher fury_mission
             // uses — each sub-task runs as its OWNING specialist under that
             // specialist's allowlist + the consequential gate. No escalation.

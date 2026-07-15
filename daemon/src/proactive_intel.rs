@@ -132,7 +132,9 @@ fn episode_local_hour(ts: &str) -> Option<u32> {
 
 /// The KIND of a proactive suggestion, with the data each kind carries. Both are
 /// SUGGESTIONS — surfaced, dismissible, never auto-acted.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// (Not `Eq`: it can carry a [`StandingMission`], whose [`Schedule::Condition`]
+/// threshold is an `f64` — so the whole tree is `PartialEq` only.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SuggestionKind {
     /// HABIT-AUTOMATION OFFER (#13): a recurring intent we offer to turn into a
@@ -163,7 +165,9 @@ pub enum SuggestionKind {
 /// under (scope), the kind+evidence, and the honest human copy. NEVER carries an
 /// executed action — accepting a habit offer routes through the gated standing
 /// path; a predictive suggestion carries nothing to accept.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// (Not `Eq`: it can carry a [`StandingMission`] with an `f64`-threshold
+/// [`Schedule::Condition`] — `PartialEq` only.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Suggestion {
     /// Stable content id — dedup key. Reproducible from (agent, kind, topic[,
     /// time-of-day]) so a dismissed suggestion stays dismissed across passes.
@@ -460,7 +464,9 @@ impl DismissLedger {
 /// accepting an offer is byte-for-byte an ordinary gated establish, NOT a new
 /// ungated create. A predictive suggestion has NO accept request (returns `None`
 /// from [`accept_request`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// (Not `Eq`: it carries a [`Schedule`], whose [`Schedule::Condition`] threshold is
+/// an `f64` — so this is `PartialEq` only.)
+#[derive(Debug, Clone, PartialEq)]
 pub struct AcceptRequest {
     /// The proposed standing-mission goal (what `standing_create` establishes).
     pub goal: String,
