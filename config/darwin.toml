@@ -211,6 +211,9 @@ max_widen = 0.15             # cap on the reduce-only hook's widen: it never rai
 # EDITH's anticipation tick) and reason over the shared World Model — the
 # self-heal/forge gated-autonomy pattern applied to "a recurring goal".
 enabled = true    # subsystem MASTER switch, SHIPS ON (full-power default). Even on: ESTABLISHING a standing mission is itself a cross-turn confirmation-gated action (standing_create is in CONSEQUENTIAL_TOOLS; DARWIN never silently spawns recurring autonomy), and every CONSEQUENTIAL step a running mission proposes (post/send/spend/control) STILL parks behind the confirmation gate + the [integrations] master switch — a standing mission can never auto-send/post/spend. Bounded: at most 8 active missions; each run is bounded by FURY's per-mission caps. Set false to disable.
+# TRIPWIRE (condition triggers): a standing mission may fire when a threshold on the verified signal snapshot is crossed ("free disk below 10%", "unread above 5", "calendar event within 15m") instead of on a clock. A tripwire may only READ + REASON — it holds no actuator, is INERT when this subsystem is off, and every consequential step the fired mission proposes STILL parks behind the confirm gate. Arming one routes through the SAME gated standing_create path. These two knobs tune the reactive path:
+condition_eval_secs = 60        # evaluation cadence: min seconds between condition-trigger evaluations against a fresh snapshot on the standing tick (the tick bounds the real max frequency).
+condition_debounce_secs = 3600  # anti-flap re-fire floor: min seconds between successive FIRES of the same tripwire after it clears. Combined with the built-in Schmitt hysteresis dead-band; clamped up to a 5-minute floor.
 
 [drafts]
 # AUTO-DRAFT (#25, drafts.rs): compose a REVIEWABLE pending draft (an email reply /
