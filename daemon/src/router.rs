@@ -8476,8 +8476,29 @@ mod tests {
         let spec = crate::chart::chart_from_snapshot(Some(snap));
         let mut rx = crate::telemetry::subscribe_for_test();
         crate::chart::emit_chart(&spec);
-        let raw = rx.try_recv().expect("a chart.data envelope was published");
-        let env: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        // The telemetry hub is a SHARED broadcast bus, so under parallel test load
+        // OTHER tests' frames interleave into this receiver. Drain and pick OUR
+        // `chart.data` frame (the only chart.data emitter in a test run) instead of
+        // assuming it arrives first — the previous single try_recv() flaked when a
+        // sibling test's frame was buffered ahead of ours.
+        let mut env: Option<serde_json::Value> = None;
+        for _ in 0..512 {
+            match rx.try_recv() {
+                Ok(raw) => {
+                    let e: serde_json::Value = serde_json::from_str(&raw).unwrap();
+                    if e["event"] == "chart.data" {
+                        env = Some(e);
+                        break;
+                    }
+                }
+                // A lagged receiver dropped some frames under load — keep draining.
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                // Empty or Closed: our synchronous emit is already buffered, so if we
+                // reach here without finding it that IS a real failure.
+                Err(_) => break,
+            }
+        }
+        let env = env.expect("a chart.data envelope was published");
         assert_eq!(env["event"], "chart.data");
         let pts = env["data"]["series"][0]["points"].as_array().unwrap();
         // EXACTLY the two real metrics: cpu 25 at x=0, mem 25% at x=1.
