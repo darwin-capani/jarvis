@@ -266,6 +266,14 @@ enabled = true    # SHIPS ON (full-power default). KEY SAFETY preserved: replay 
 max_steps = 12   # max commands one macro may hold (a bounded sequence)
 retention = 100   # evict-oldest cap on stored macros (bounded store)
 
+[runbook]
+# RUNBOOKS (runbook.rs): a benign-only, TYPED, INSPECTABLE automation DAG (a step up
+# from opaque macros). Each step names a capability it `uses` (a tool/skill/agent), a
+# typed `with` input map, the step ids it `needs`, and an optional `out` that can feed a
+# later step's `with`.
+enabled = false   # SHIPS OFF. KEY SAFETY: the parser/typechecker/planner are PURE (they only inspect); `run` walks the DAG topologically and re-issues EACH step through the NORMAL router + the gate FRESH, one at a time — a consequential step PARKS for a spoken confirm + master switch + voice-id + lockdown FRESH, exactly as if issued live (NO pre-approval, NO batching). Data flow (`out` -> a later `with`) passes a VALUE only, never authority: a parked step produces nothing, so its consumer BLOCKS rather than run on a fabricated value. Set true to enable planning/running.
+max_steps = 32   # max steps one runbook may hold (a bounded DAG)
+
 [telemetry]
 port = 7177   # WebSocket server hosted by darwind on 127.0.0.1
 

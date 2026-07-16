@@ -295,6 +295,7 @@ mod sync;
 // master switch + lockdown. Ships OFF (rides sync, also OFF). Hermetically tested.
 mod handoff;
 mod router;
+mod runbook;
 mod screen_context;
 mod secret_scan;
 mod selector;
@@ -2199,6 +2200,15 @@ async fn main() -> Result<()> {
     // panel can render the external-tool surface read-only. Shipped-OFF default
     // (enabled=false, no servers) yields an empty, honest "MCP off" snapshot.
     telemetry::emit("system", "mcp.status", mcp_status);
+    // RUNBOOK subsystem status (runbook.rs; secret-free): whether the benign-only,
+    // typed automation-DAG subsystem is enabled and its step bound. SHIPS OFF; a
+    // runbook carries no authority (every consequential step PARKS fresh, one at a
+    // time), so the frame just reports the master switch + bound for the HUD.
+    telemetry::emit(
+        "system",
+        "runbook.status",
+        crate::runbook::status_frame(cfg.runbook.enabled, cfg.runbook.max_steps),
+    );
     // AT-REST ENCRYPTION status (#11; secret-free — NEVER the key). Drives the HUD
     // ENCRYPTED AT REST / NOT ENCRYPTED indicator + the honest scope copy. `active`
     // is the GROUND TRUTH (the master key actually resolved this run), not just the
