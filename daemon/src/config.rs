@@ -93,6 +93,14 @@ pub struct Config {
     /// through the normal router + the gate FRESH — enabling only allows
     /// recording/replay, never bypasses the gate.
     pub macros: MacrosConfig,
+    /// [runbook] — RUNBOOKS (runbook.rs): a benign-only, TYPED, INSPECTABLE automation
+    /// DAG (a step up from opaque macros). `enabled` SHIPS OFF (false): with it off
+    /// nothing plans or runs. A runbook carries NO authority — `run` re-issues EACH
+    /// step through the NORMAL router + gate FRESH, one at a time, so a consequential
+    /// step PARKS for a spoken confirm exactly as if issued live (no pre-approval, no
+    /// batching); data flow (`out` -> a later `with`) passes VALUES only, never a gate
+    /// bypass. Parser/typechecker/planner are PURE. `max_steps` bounds one runbook.
+    pub runbook: RunbookConfig,
     pub mcp: McpConfig,
     pub skills: SkillsConfig,
     pub optimize: OptimizeConfig,
@@ -514,6 +522,12 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // utterances + intent names (never a secret). `max_steps` bounds one macro;
     // `retention` bounds the store. Listed so none reads as a typo.
     ("macros", &["enabled", "max_steps", "retention"]),
+    // [runbook] — RUNBOOKS (runbook.rs). `enabled` SHIPS OFF (false). A runbook is a
+    // benign-only, typed, inspectable automation DAG; `run` re-issues each step through
+    // the NORMAL router + gate FRESH (a consequential step PARKS one at a time — no
+    // pre-approval, no batching), and data flow passes values only, never a gate bypass.
+    // `max_steps` bounds one runbook. Listed so neither key reads as a typo.
+    ("runbook", &["enabled", "max_steps"]),
     // [mcp] — Model Context Protocol client (mcp.rs). `enabled` is the subsystem
     // master switch and SHIPS ON (full-power default) — INERT WITHOUT SERVERS: with an
     // empty `servers` list nothing connects (the installer must NOT add any). The
@@ -3960,6 +3974,35 @@ impl Default for MacrosConfig {
     }
 }
 
+/// [runbook] — RUNBOOKS (runbook.rs): a benign-only, TYPED, INSPECTABLE automation DAG
+/// where each step names a capability it `uses` (a tool/skill/agent), a typed `with`
+/// input map, the step ids it `needs`, and an optional `out` that can feed a later
+/// step's `with`. `enabled` SHIPS OFF (false).
+///
+/// KEY SAFETY (enforced in runbook.rs + the router, not here): the parser/typechecker/
+/// planner are PURE (they only inspect); `run` walks the DAG topologically and re-issues
+/// EACH step through the NORMAL router + the gate FRESH, one at a time — a consequential
+/// step hits the confirmation gate + master switch + voice-id + lockdown FRESH, exactly
+/// as if issued live (NO pre-approval, NO batching). Data flow (`out` -> a later `with`)
+/// passes a VALUE only, never authority: a parked step produces nothing, so its consumer
+/// BLOCKS rather than run on a fabricated value. `max_steps` bounds one runbook.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RunbookConfig {
+    /// Master switch for planning/running runbooks. SHIPS OFF (false).
+    pub enabled: bool,
+    /// Max steps one runbook may hold (a bounded DAG).
+    pub max_steps: usize,
+}
+
+impl Default for RunbookConfig {
+    fn default() -> Self {
+        // SHIPS OFF (false): a conservative first landing. Enabling never bypasses the
+        // gate — every consequential step still PARKS fresh, one at a time. Bounded.
+        Self { enabled: false, max_steps: crate::runbook::DEFAULT_MAX_STEPS }
+    }
+}
+
 /// [skills] — the skill library (skills/). SHIPS ON: the in-tree skills are PURE +
 /// read-only, so offering them is safe by default. `enabled` only governs whether
 /// the `skill_list` / `skill_invoke` meta-tools are surfaced — a CONSEQUENTIAL skill
@@ -4223,6 +4266,7 @@ impl Config {
             drafts: section(&table, "drafts", &mut issues),
             missions: section(&table, "missions", &mut issues),
             macros: section(&table, "macros", &mut issues),
+            runbook: section(&table, "runbook", &mut issues),
             mcp: section(&table, "mcp", &mut issues),
             skills: section(&table, "skills", &mut issues),
             optimize: section(&table, "optimize", &mut issues),
