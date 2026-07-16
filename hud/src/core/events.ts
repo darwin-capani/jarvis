@@ -7943,6 +7943,84 @@ export function parseConsensusAdvisory(
   return { tool, agent: str(data, "agent") ?? "", notes };
 }
 
+/* ------------------------------------------------------------------------ *
+ * PLAN-APPLY (plan.diff) — the structured, STATE-BOUND diff for the parked   *
+ * consequential action (daemon plan.rs). It upgrades the confirmation        *
+ * PREVIEW from prose to a field-level DIFF: each change names a `resource`    *
+ * moving from `before` to `after`, and the whole plan is bound to a          *
+ * `stateHash` of the current state. On a spoken "yes" the daemon RECOMPUTES  *
+ * that hash and re-parks (phase="confirm", drift=true) if the state changed  *
+ * since the plan was shown — TOCTOU-safe. HONESTY: this is ADVISORY on the    *
+ * HUD (the daemon owns the gate); the state-hash can only make the daemon     *
+ * gate STRICTER, never approve a drifted action. SECRET-FREE: the daemon      *
+ * ships only human-readable summaries; the wire is bounded again here.       *
+ * ------------------------------------------------------------------------ */
+
+/** One field-level change in a plan: a named resource moving before -> after. */
+export interface PlanChange {
+  resource: string;
+  before: string;
+  after: string;
+}
+
+/** The structured, state-bound diff for the currently parked action. `phase` is
+ *  "park" (a fresh plan) or "confirm" (a drift re-park); `drift` marks whether
+ *  the state changed since the plan was first shown. */
+export interface PlanDiff {
+  tool: string;
+  agent: string;
+  summary: string;
+  changes: PlanChange[];
+  stateHash: string;
+  phase: "park" | "confirm";
+  drift: boolean;
+}
+
+/** Defensive caps mirroring the daemon's bounds — the wire is never trusted. */
+const PLAN_CHANGES_CAP = 8;
+const PLAN_FIELD_CHARS = 240;
+const PLAN_SUMMARY_CHARS = 240;
+
+/** Bound a wire string to a max length (empty when absent/non-string). */
+function planField(v: unknown): string {
+  return typeof v === "string" ? v.slice(0, PLAN_FIELD_CHARS) : "";
+}
+
+/** Parse a `plan.diff` payload, or null when it names no tool or carries no
+ *  well-formed change (an empty plan is meaningless — the reducer drops it
+ *  rather than clearing or fabricating state). Each change must carry a
+ *  non-empty `resource`; before/after are bounded (never trusted from the wire).
+ *  `phase` narrows to the closed set (unknown -> "park"); `drift` defaults false. */
+export function parsePlanDiff(data: Record<string, unknown>): PlanDiff | null {
+  const tool = str(data, "tool");
+  if (tool === null || tool === "") return null;
+  const raw = data["changes"];
+  const changes: PlanChange[] = Array.isArray(raw)
+    ? raw
+        .slice(0, PLAN_CHANGES_CAP)
+        .map((c): PlanChange | null => {
+          if (typeof c !== "object" || c === null) return null;
+          const rec = c as Record<string, unknown>;
+          const resource = planField(rec["resource"]);
+          if (resource === "") return null;
+          return { resource, before: planField(rec["before"]), after: planField(rec["after"]) };
+        })
+        .filter((c): c is PlanChange => c !== null)
+    : [];
+  if (changes.length === 0) return null;
+  const phaseRaw = str(data, "phase");
+  const phase: "park" | "confirm" = phaseRaw === "confirm" ? "confirm" : "park";
+  return {
+    tool,
+    agent: str(data, "agent") ?? "",
+    summary: (str(data, "summary") ?? "").slice(0, PLAN_SUMMARY_CHARS),
+    changes,
+    stateHash: str(data, "state_hash") ?? "",
+    phase,
+    drift: bool(data, "drift") ?? false,
+  };
+}
+
 /* ======================================================================== *
  * CONSEQUENTIAL GATE — AUDIT LOG + POLICY                                    *
  *                                                                            *

@@ -188,11 +188,21 @@ pub async fn route(
                     anthropic::replay_confirmed_action(&pending, memory).await;
                 let agent = agent_for_namespace(agents, &namespace);
                 emit_agent_active(agent);
-                telemetry::emit(
-                    "system",
-                    "confirm.affirmed",
-                    json!({"tool": tool, "is_error": is_error}),
-                );
+                // PLAN-APPLY: a replay can RE-PARK instead of executing when the
+                // action's state drifted since its plan was shown (plan.rs). In that
+                // case a FRESH pending now sits in the slot (and the re-park already
+                // published its own `confirm.parked` + drift `plan.diff`), so we must
+                // NOT emit `confirm.affirmed` — that HUD event clears the just-shown
+                // diff and would blank the panel for an action still awaiting confirm.
+                // The action resolved (executed/errored) iff the slot is now EMPTY.
+                let reparked = crate::confirm::peek_pending(Instant::now()).is_some();
+                if !reparked {
+                    telemetry::emit(
+                        "system",
+                        "confirm.affirmed",
+                        json!({"tool": tool, "is_error": is_error}),
+                    );
+                }
                 return Ok(RouteOutcome {
                     routed_to: "local",
                     response: outcome,

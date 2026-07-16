@@ -2422,6 +2422,7 @@ mod tests {
             preview: "Would do the thing".to_string(),
             created_at: Instant::now(),
             id: String::new(),
+            plan: None,
         });
         // The id is what `pending` would surface and `confirm {id}` names.
         confirm::peek_pending(Instant::now()).expect("just parked").id

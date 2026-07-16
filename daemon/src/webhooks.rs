@@ -273,6 +273,9 @@ fn apply_decision(decision: &WebhookDecision) -> Option<String> {
                 preview,
                 created_at: std::time::Instant::now(),
                 id: String::new(),
+                // A webhook-parked intent carries no replay input, so no structured
+                // planner applies -> text preview path, unchanged.
+                plan: None,
             });
             None
         }

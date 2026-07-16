@@ -377,6 +377,17 @@ pub struct Config {
     /// human-gated `apply_code_diff.sh`). It reports honest UNVERIFIED — never a
     /// faked pass — when the sandbox/tooling is unavailable or no verify command is set.
     pub realm: RealmConfig,
+    /// [plan] — PLAN-APPLY (plan.rs). `enabled` SHIPS ON (armed-by-default). It
+    /// upgrades the cross-turn confirmation PREVIEW from prose to a field-level DIFF
+    /// (before/after) for the consequential tools whose effect is a concrete state
+    /// change (connector_add, standing_create), and BINDS the diff to a hash of the
+    /// CURRENT relevant state: at confirm time the hash is recomputed and the action
+    /// only proceeds if it still matches, else it RE-PARKS a fresh plan (TOCTOU-safe).
+    /// STRICTLY ADDITIVE: the state-hash is an EXTRA precondition on top of the master
+    /// switch + spoken confirm + voice-id + !lockdown — it can only make the gate
+    /// STRICTER, never replace a check. With it off (or a tool with no planner) the
+    /// confirmation falls back to today's text preview, byte-for-byte unchanged.
+    pub plan: PlanConfig,
 }
 
 /// Every section and key the config knows, for unknown-key diagnostics
@@ -1015,6 +1026,13 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // command; empty => an honest UNVERIFIED, never a faked pass). Listed here so
     // neither key reads as a typo.
     ("realm", &["enabled", "verify_command", "timeout_secs"]),
+    // [plan] — PLAN-APPLY (plan.rs). `enabled` SHIPS ON (armed-by-default) — it
+    // upgrades the confirmation preview to a STATE-BOUND field-level diff for the
+    // concrete-state-change consequential tools (connector_add, standing_create)
+    // and re-parks on state drift (TOCTOU-safe). STRICTLY ADDITIVE — never loosens
+    // a gate; falls back to today's text preview where off or no planner exists.
+    // Listed so the key never reads as a typo.
+    ("plan", &["enabled"]),
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2502,6 +2520,33 @@ impl Default for RealmConfig {
             // verdict is reachable instead of always timing out to UNVERIFIED.
             timeout_secs: 300,
         }
+    }
+}
+
+/// [plan] — PLAN-APPLY (plan.rs). `enabled` SHIPS ON (armed-by-default). It upgrades
+/// the cross-turn confirmation PREVIEW from prose to a field-level, STATE-BOUND diff
+/// for the concrete-state-change consequential tools (connector_add, standing_create)
+/// and re-parks the confirmation when the underlying state DRIFTS between the plan and
+/// the spoken "yes" (TOCTOU-safe by construction). It is STRICTLY ADDITIVE — the
+/// state-hash is an EXTRA precondition on top of the master switch + spoken confirm +
+/// voice-id + !lockdown; it can only make the gate STRICTER, never replace a check.
+/// With it off (or for a tool that has no structured planner) the confirmation falls
+/// back to today's text preview, byte-for-byte unchanged.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PlanConfig {
+    /// Master gate for the structured, state-bound diff. SHIPS ON (armed-by-default):
+    /// with it off, every consequential confirmation uses the unchanged text preview.
+    /// Turning it ON only ADDS the state-drift re-park — it loosens nothing.
+    pub enabled: bool,
+}
+
+impl Default for PlanConfig {
+    fn default() -> Self {
+        // SHIPS ON (armed-by-default). ADDITIVE-ONLY: the state-hash re-park can only
+        // make the confirmation stricter (re-park on drift), never approve a drifted
+        // action and never bypass the master switch / spoken confirm / voice-id.
+        Self { enabled: true }
     }
 }
 
@@ -4271,6 +4316,7 @@ impl Config {
             egress: section(&table, "egress", &mut issues),
             precog: section(&table, "precog", &mut issues),
             realm: section(&table, "realm", &mut issues),
+            plan: section(&table, "plan", &mut issues),
         };
 
         // SELECTABLE QUANTIZATION (#39) value validation: an unknown [inference]

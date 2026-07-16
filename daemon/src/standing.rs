@@ -1290,6 +1290,7 @@ mod tests {
             preview,
             created_at: std::time::Instant::now(),
             id: String::new(),
+            plan: None,
         });
         // The spoken prompt invites a yes/no and names the action — and the
         // off-mode boilerplate is stripped.
@@ -1727,6 +1728,7 @@ mod tests {
             preview,
             created_at: std::time::Instant::now(),
             id: String::new(),
+            plan: None,
         });
         assert!(prompt.contains("confirm"), "prompt invites a yes: {prompt}");
         assert!(!prompt.contains("[dry run]"), "lead-in stripped: {prompt}");

@@ -95,6 +95,16 @@ pub struct PendingConfirmation {
     /// without already knowing the exact parked action, and stable across a
     /// `pending` listing and the follow-up `confirm`.
     pub id: String,
+    /// PLAN-APPLY (plan.rs): the structured, STATE-BOUND diff computed at park time
+    /// for a tool with a per-tool planner (connector_add / standing_create), or
+    /// `None` for a tool that falls back to the text `preview` (unchanged path).
+    /// When present it carries the `state_hash` of the relevant state at park time;
+    /// the confirm path (`anthropic::replay_confirmed_action`) recomputes that hash
+    /// and RE-PARKS on drift, so a plan is a purely ADDITIVE precondition — it never
+    /// replaces the voice-id / master-switch / allowlist checks below. BOXED so a
+    /// plan-carrying pending stays small in the single-slot store and the enums that
+    /// wrap it (`ByIdConfirm`, `Resolution`) keep their tight variant sizes.
+    pub plan: Option<Box<crate::plan::Plan>>,
 }
 
 /// Derive the stable content id for a parked action: a short hex prefix of
@@ -761,6 +771,8 @@ mod tests {
             // park() (re)derives this; the field is set so direct-store tests
             // that bypass park() still have a well-formed id.
             id: String::new(),
+            // No structured plan on this generic sample (text-preview path).
+            plan: None,
         }
     }
 
@@ -1064,6 +1076,7 @@ mod tests {
             preview: "Would send an email to alice@example.com".into(),
             created_at: Instant::now(),
             id: String::new(),
+            plan: None,
         };
         let _ = park(parked);
 

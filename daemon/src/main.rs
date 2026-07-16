@@ -217,6 +217,13 @@ mod aperture;
 // signing/notarization + Gatekeeper, with a pure baseline diff. It reports; it
 // never remediates.
 mod persistence;
+// PLAN-APPLY: a structured, STATE-BOUND diff for a parked consequential action
+// (connector_add / standing_create). Upgrades the confirm PREVIEW from prose to a
+// field-level DIFF bound to a hash of the current state; the confirm path re-checks
+// the hash and RE-PARKS on drift (TOCTOU-safe). ADDITIVE — it can only make the
+// gate stricter, never replace the master switch / voice-id / confirm. Pure core
+// (planners + bind) is hermetically tested in plan.rs.
+mod plan;
 mod playback;
 mod plugin_sdk;
 mod policy;
@@ -4846,6 +4853,7 @@ mod tests {
             preview: "Send an email to a@b.com.".to_string(),
             created_at: Instant::now(),
             id: String::new(),
+            plan: None,
         };
         let prompt = confirm::park(pending);
         let last_reply = Some(prompt.as_str());

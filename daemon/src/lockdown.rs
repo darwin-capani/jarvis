@@ -613,6 +613,7 @@ mod tests {
             preview: "Would send an email".into(),
             created_at: std::time::Instant::now(),
             id: String::new(),
+            plan: None,
         });
         assert!(confirm::peek_pending(std::time::Instant::now()).is_some(), "armed before panic");
         let _ = panic().await;
