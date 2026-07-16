@@ -414,6 +414,16 @@ pub struct Config {
     /// STRICTER, never replace a check. With it off (or a tool with no planner) the
     /// confirmation falls back to today's text preview, byte-for-byte unchanged.
     pub plan: PlanConfig,
+    /// [dls] — DARWIN LANGUAGE SERVER (dls.rs). A READ-ONLY, LOOPBACK-ONLY LSP-style
+    /// endpoint grounded in the LIVE capability graph: it completes config keys from
+    /// this module's `KNOWN_KEYS`, hovers config sections against the capability atlas
+    /// (capability.rs / atlas.rs), and lints with the daemon's REAL rules
+    /// (plugin_sdk::validate_manifest, the agent tool allowlist, KNOWN_KEYS,
+    /// mode=auto). `enabled` SHIPS OFF (opt-in — a listening socket is a surface, even
+    /// loopback + read-only). It NEVER writes config and takes NO action; it only
+    /// assists the human who edits, preserving the intentional absence of any
+    /// config-write primitive.
+    pub dls: DlsConfig,
 }
 
 /// Every section and key the config knows, for unknown-key diagnostics
@@ -1072,7 +1082,26 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // a gate; falls back to today's text preview where off or no planner exists.
     // Listed so the key never reads as a typo.
     ("plan", &["enabled"]),
+    // [dls] — DARWIN LANGUAGE SERVER (dls.rs): a READ-ONLY, LOOPBACK-ONLY LSP-style
+    // endpoint that assists a human editing DARWIN's config/manifests. It completes
+    // config keys from THIS registry, hovers config sections against the live
+    // capability atlas, and lints (unknown key/section, mode=auto, over-privileged
+    // manifest, unknown agent tool) using the daemon's REAL rules. `enabled` SHIPS OFF
+    // (opt-in: a listening socket is a surface, even loopback + read-only). It NEVER
+    // writes config and takes NO action — the intentional absence of a config-write
+    // primitive is preserved. `port` is the 127.0.0.1 bind for the editor shim. Listed
+    // so neither key reads as a typo.
+    ("dls", &["enabled", "port"]),
 ];
+
+/// READ-ONLY accessor to the section/key registry for in-daemon tooling (the
+/// DARWIN Language Server, [`crate::dls`]). Exposes the SAME `KNOWN_KEYS` the
+/// parser validates against, so a completion / diagnostic surface stays in exact
+/// lockstep with the daemon's own unknown-key rule — the registry is the single
+/// source of truth, never a second static schema that could drift.
+pub fn known_keys() -> &'static [(&'static str, &'static [&'static str])] {
+    KNOWN_KEYS
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -2647,6 +2676,34 @@ impl Default for PlanConfig {
         // make the confirmation stricter (re-park on drift), never approve a drifted
         // action and never bypass the master switch / spoken confirm / voice-id.
         Self { enabled: true }
+    }
+}
+
+/// [dls] — DARWIN LANGUAGE SERVER (dls.rs): a READ-ONLY, LOOPBACK-ONLY LSP-style
+/// endpoint that assists a human editing DARWIN's config/manifests, grounded in
+/// the LIVE registry/atlas rather than a static schema. `enabled` SHIPS OFF
+/// (opt-in): a listening socket — even loopback + strictly read-only — is a
+/// surface, so it stays off until the operator turns it on for their editor. Even
+/// on, the server NEVER writes config and takes NO action (the intentional absence
+/// of a config-write primitive is preserved); it only computes completions,
+/// hovers, and diagnostics. `port` is the 127.0.0.1 bind for the thin editor shim.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DlsConfig {
+    /// Master gate for the loopback LSP endpoint. SHIPS OFF (opt-in). With it off
+    /// the serve loop is never spawned and no socket is opened.
+    pub enabled: bool,
+    /// The loopback (127.0.0.1) TCP port the editor shim connects to. Distinct from
+    /// the telemetry port (7177) and the webhook port (8723).
+    pub port: u16,
+}
+
+impl Default for DlsConfig {
+    fn default() -> Self {
+        // SHIPS OFF: read-only + loopback is low-risk, but a listening socket is a
+        // surface, so default-off is the defensible posture. The port is inert until
+        // enabled.
+        Self { enabled: false, port: 7346 }
     }
 }
 
@@ -4449,6 +4506,7 @@ impl Config {
             precog: section(&table, "precog", &mut issues),
             realm: section(&table, "realm", &mut issues),
             plan: section(&table, "plan", &mut issues),
+            dls: section(&table, "dls", &mut issues),
         };
 
         // SELECTABLE QUANTIZATION (#39) value validation: an unknown [inference]

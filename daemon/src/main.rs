@@ -72,6 +72,12 @@ mod diarize;
 // auto-promotes a trained adapter into the live model; training is inert without
 // Apple Silicon + mlx-lm. Hermetically tested in distill.rs.
 mod distill;
+// DARWIN LANGUAGE SERVER (dls.rs): a READ-ONLY, LOOPBACK-ONLY LSP-style endpoint
+// grounded in the LIVE capability graph — config-key completion (KNOWN_KEYS),
+// section hovers (capability atlas), and diagnostics from the daemon's REAL rules
+// (validate_manifest / agent allowlist / mode=auto / unknown key). SHIPS OFF
+// ([dls].enabled). NEVER writes config, takes NO action. Hermetically tested in dls.rs.
+mod dls;
 mod docsearch;
 // AUTO-DRAFT (#25): compose a REVIEWABLE pending draft (email reply / message /
 // doc) the user reads and sends THEMSELVES via the existing gated send. The draft
@@ -2339,6 +2345,29 @@ async fn main() -> Result<()> {
             )
             .await;
             telemetry::emit("system", "capability.atlas", snap);
+        });
+    }
+    // DARWIN LANGUAGE SERVER (dls.rs; secret-free, CONFIG-DERIVED status). Always
+    // emit the `dls.status` frame so the HUD learns the state (the shipped default
+    // is enabled=false). When ON, gather the READ-ONLY context (config snapshot +
+    // dependency probes + the capability atlas + the tool allowlist) in a spawned
+    // task — the Keychain probes must never block boot — then serve the LSP-style
+    // endpoint on 127.0.0.1:[dls].port. STRICTLY READ-ONLY + LOOPBACK: it never
+    // writes config and takes no action; it only assists a human editing DARWIN's
+    // config/manifests.
+    telemetry::emit("system", "dls.status", dls::status_frame(&cfg.dls));
+    if cfg.dls.enabled {
+        let dls_cfg = cfg.clone();
+        let dls_agents = agents.clone();
+        let dls_apps = app_registry.clone();
+        tokio::spawn(async move {
+            let ctx = dls::build_context(
+                dls_cfg.as_ref(),
+                dls_agents.as_ref(),
+                dls_apps.as_ref(),
+            )
+            .await;
+            dls::serve(std::sync::Arc::new(ctx)).await;
         });
     }
     // The watchdog owns the heal pipeline; it needs Memory for the

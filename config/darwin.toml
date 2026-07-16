@@ -840,6 +840,21 @@ poll_interval_secs = 5         # seconds between frontmost-app/window samples (f
 [handoff]                      # CONTINUITY HANDOFF (handoff.rs) — resume a LIVE cognitive session on ANOTHER of your Macs. A session capsule (transcript window, active agent, mission ref, world-model deltas, draft ids, focus profile) is sealed over the SAME [sync] AES-256-GCM path under a Keychain-paired handoff_shared_key; the receiver restores context and PARKS. AUTHORITY NEVER TRANSFERS: the capsule carries NO credential/bearer (redacted), and every consequential step re-hits the fresh confirm + voice-id + master switch + lockdown on the receiving device.
 enabled = false                # SHIPS OFF (rides [sync], also OFF). Set true (with sync paired) to seal/resume session capsules between your own devices.
 
+# DARWIN LANGUAGE SERVER (daemon/src/dls.rs) — a READ-ONLY, LOOPBACK-ONLY LSP-style
+# endpoint for a human editing DARWIN's config/manifests, grounded in the LIVE
+# capability graph (never a static schema): it COMPLETES config keys from the daemon's
+# own KNOWN_KEYS registry, HOVERS a config section against the live capability atlas
+# (capability.rs/atlas.rs), and DIAGNOSES with the daemon's REAL rules — an
+# over-privileged/malformed manifest (plugin_sdk::validate_manifest), a `net` scope
+# without net_hosts, an unknown agent tool (the agents.rs allowlist), a `mode = "auto"`
+# autonomy lint, and an unknown config key/section (KNOWN_KEYS). It NEVER writes config
+# and takes NO action (the intentional absence of a config-write primitive is preserved);
+# it only assists the human who edits. Point a thin editor shim at 127.0.0.1:<port> and
+# send one JSON request per line ({"id":N,"method":"completion|hover|diagnostics","params":{…}}).
+[dls]
+enabled = false                # SHIPS OFF (opt-in). A read-only loopback socket is low-risk, but a listening socket is still a surface, so it stays off until you point an editor at it. true = serve the LSP-style endpoint on the loopback port below.
+port = 7346                    # loopback (127.0.0.1) bind for the editor shim. Distinct from telemetry (7177) and webhooks (8723). Inert until enabled.
+
 [voice.voices]
 # Per-agent ElevenLabs voice ids: agent name -> EL voice id. An UNMAPPED agent
 # falls back to that agent's on-device Kokoro voice. DARWIN ships mapped to the

@@ -226,9 +226,12 @@ pub fn snapshot(entries: &[CapEntry]) -> Value {
 }
 
 /// LIVE wrapper: gather the four enumeration surfaces (one async credential probe
-/// per unique required account) and return the snapshot. Run from a spawned task
-/// at startup — the Keychain probes must never block the boot path.
-pub async fn build_snapshot(cfg: &Config, agents: &AgentRegistry, apps: &AppRegistry) -> Value {
+/// per unique required account) and return the assembled [`CapEntry`] rows. Run
+/// from a spawned task at startup — the Keychain probes must never block the boot
+/// path. Shared by [`build_snapshot`] (the `capability.atlas` telemetry) and the
+/// DARWIN Language Server ([`crate::dls`], capability-name hovers) so both read the
+/// SAME live, honest capability set.
+pub async fn build_entries(cfg: &Config, agents: &AgentRegistry, apps: &AppRegistry) -> Vec<CapEntry> {
     let reg = crate::skills::global();
     let skills_enabled = cfg.skills.enabled;
     let skill_rows: Vec<SkillRow> = reg
@@ -260,8 +263,14 @@ pub async fn build_snapshot(cfg: &Config, agents: &AgentRegistry, apps: &AppRegi
         }
     }
 
-    let entries = assemble(&skill_rows, skills_enabled, &agent_rows, &app_rows, &present);
-    snapshot(&entries)
+    assemble(&skill_rows, skills_enabled, &agent_rows, &app_rows, &present)
+}
+
+/// LIVE wrapper: gather the four enumeration surfaces and return the snapshot. Run
+/// from a spawned task at startup — the Keychain probes must never block the boot
+/// path.
+pub async fn build_snapshot(cfg: &Config, agents: &AgentRegistry, apps: &AppRegistry) -> Value {
+    snapshot(&build_entries(cfg, agents, apps).await)
 }
 
 #[cfg(test)]
