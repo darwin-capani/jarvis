@@ -10085,3 +10085,61 @@ body,
 .overnight-item-prompt { color: var(--fg, rgba(255, 255, 255, 0.85)); }
 .overnight-item-result { font-size: 0.9em; overflow-wrap: anywhere; }
 .overnight-foot { margin-top: 4px; }
+
+/* ------------------------------------------------------- CHANGE QUEUE panel */
+/* CHANGE QUEUE // REVIEW LANE — the read-only surface for the unified git-native
+   review lane over every PROPOSE-ONLY artifact (self-heal / code / forge /
+   optimize). Same posture as the code/forge/heal review panels: each proposal is
+   shown READ-ONLY with its EXACT MANUAL apply command (amber dashed command box —
+   NO one-click apply). Cyan = neutral/structural; green = mirrored-on-branch;
+   amber = queued + the manual command (RED stays reserved for alerts). */
+.changeq-body { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; }
+.changeq-head { line-height: 1.35; }
+.changeq-head code, .changeq-foot code { color: var(--cyan-bright); }
+.changeq-list { display: flex; flex-direction: column; gap: 8px; }
+.changeq-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--cyan-dim);
+  background: rgba(26, 214, 255, 0.04);
+  border-radius: 2px;
+}
+.changeq-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.changeq-pill {
+  font-size: 0.64em;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  color: var(--cyan-bright);
+}
+.changeq-pill-heal { color: var(--warn-amber); }
+.changeq-pill-forge { color: var(--learn-green); }
+.changeq-ts { font-size: 0.68em; color: var(--cyan-dim); font-variant-numeric: tabular-nums; }
+.changeq-status {
+  margin-left: auto;
+  font-size: 0.6em;
+  letter-spacing: 0.08em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+.changeq-status.mirrored { color: var(--learn-green); }
+.changeq-status.queued { color: var(--warn-amber); }
+.changeq-summary { font-size: 0.82em; color: var(--ice); line-height: 1.35; }
+.changeq-artifact, .changeq-prov { font-size: 0.7em; line-height: 1.35; overflow-wrap: anywhere; }
+.changeq-artifact-label { color: var(--cyan-dim); letter-spacing: 0.06em; font-weight: 600; }
+.changeq-artifact code, .changeq-prov code { color: var(--cyan-bright); }
+.changeq-apply { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
+.changeq-apply-label { font-size: 0.62em; letter-spacing: 0.06em; }
+.changeq-apply-cmd {
+  font-size: 0.74em;
+  color: var(--warn-amber);
+  border: 1px dashed var(--warn-amber);
+  border-radius: 3px;
+  padding: 3px 6px;
+  overflow-wrap: anywhere;
+}
+.changeq-foot { margin-top: 2px; line-height: 1.4; }

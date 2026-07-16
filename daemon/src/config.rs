@@ -18,6 +18,14 @@ pub struct Config {
     pub inference: InferenceConfig,
     pub self_heal: SelfHealConfig,
     pub forge: ForgeConfig,
+    /// [changeq] — the CHANGE QUEUE (changeq.rs): ONE git-native review lane that
+    /// unifies every propose-only artifact (heal / code / forge / optimize). PURE
+    /// bookkeeping over already-propose-only stores — it invents NO new apply
+    /// authority (changeq_apply routes to each type's EXISTING gated apply script +
+    /// re-validation) and NEVER changes any writer's propose-only contract. Armed
+    /// by default; INERT WITHOUT A REPO (with no git repo the branch commit is a
+    /// no-op — the in-memory queue + read-only list still work).
+    pub changeq: ChangeqConfig,
     pub telemetry: TelemetryConfig,
     pub proactive: ProactiveConfig,
     /// [focus] — FOCUS PROFILES (#24, focus.rs). `profile` ships "default" (the
@@ -426,6 +434,10 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // "auto" NEVER deploys a forged app into apps/ — deploy is ALWAYS a separate
     // human step (scripts/apply_forge.sh); see ForgeConfig.
     ("forge", &["enabled", "mode"]),
+    // [changeq] — the Change Queue (changeq.rs): ONE git-native review lane over
+    // every propose-only artifact. "enabled" is the master gate; "max_pending"
+    // bounds the in-memory review window. See ChangeqConfig.
+    ("changeq", &["enabled", "max_pending"]),
     ("telemetry", &["port"]),
     (
         "proactive",
@@ -2038,6 +2050,40 @@ impl Default for OptimizeConfig {
             // review+apply, adopted only if it beats baseline on held-out traces.
             // There is no auto-apply-to-live path; NEVER ship "auto" as the default.
             mode: "propose".to_string(),
+        }
+    }
+}
+
+/// [changeq] — the CHANGE QUEUE (changeq.rs). ONE git-native review lane that
+/// unifies every propose-only artifact (heal / code / forge / optimize) onto a
+/// dedicated LOCAL git branch (`darwin/changeq`) with secret-free provenance
+/// trailers, exposes a read-only `changeq_list`, and routes `changeq_apply` to
+/// each type's EXISTING gated apply script + re-validation (it invents NO new
+/// authority). PURE bookkeeping — it never changes any writer's propose-only
+/// contract.
+///
+///   - `enabled` (SHIPS ON, full-power default): master gate. INERT WITHOUT A
+///     REPO — with no git repo the branch commit is a no-op; the in-memory queue
+///     + the read-only list still work. Off => nothing is registered.
+///   - `max_pending`: the BOUND on the in-memory review window (clamped to
+///     `[1, changeq::MAX_QUEUE_BOUND]`); past it the OLDEST pending proposal is
+///     evicted so the lane can never grow without bound.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ChangeqConfig {
+    pub enabled: bool,
+    pub max_pending: usize,
+}
+
+impl Default for ChangeqConfig {
+    fn default() -> Self {
+        Self {
+            // SHIPS ON (full-power default) — INERT WITHOUT A REPO. Pure bookkeeping
+            // over already-propose-only artifacts; the git commit is device-gated
+            // (the runner), and apply still routes to each type's own gated script.
+            enabled: true,
+            // A bounded review window (mirrors changeq::DEFAULT_QUEUE_BOUND).
+            max_pending: crate::changeq::DEFAULT_QUEUE_BOUND,
         }
     }
 }
@@ -4210,6 +4256,7 @@ impl Config {
             inference: section(&table, "inference", &mut issues),
             self_heal: section(&table, "self_heal", &mut issues),
             forge: section(&table, "forge", &mut issues),
+            changeq: section(&table, "changeq", &mut issues),
             telemetry: section(&table, "telemetry", &mut issues),
             proactive: section(&table, "proactive", &mut issues),
             focus: section(&table, "focus", &mut issues),

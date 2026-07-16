@@ -39,6 +39,13 @@ mod cartographer;
 // interpolation, no invented/extrapolated point, honest axes), with an honest-empty
 // state. NEUTRAL presentation (fire-and-forget telemetry, dropped with no HUD); the
 // "chart this" op ships ON ([chart].enabled; a neutral presentation act, safe to enable). Hermetically tested in chart.rs.
+// CHANGE QUEUE (changeq.rs): ONE git-native review lane unifying every propose-only
+// artifact (heal / code / forge / optimize). Pure bookkeeping over already-propose-only
+// stores — it invents NO new apply authority: changeq_apply routes to each type's
+// EXISTING gated apply script + re-validation, and rollback is a safe `git revert`.
+// Armed by default ([changeq].enabled), INERT WITHOUT A REPO. The git exec is the
+// device-gated runner (built, never invoked under test — like realm.rs).
+mod changeq;
 mod chart;
 mod code;
 mod command;
@@ -2148,6 +2155,14 @@ async fn main() -> Result<()> {
     // window — this only sets the gate + cap, it opens no surface.
     artifact::configure(cfg.artifact.enabled, cfg.artifact.registry_size);
 
+    // CHANGE QUEUE (changeq.rs): apply the [changeq] master gate + the bounded
+    // review-window cap to the process-global queue every propose-only writer
+    // registers into (heal / code / forge / optimize) and the read-only
+    // `changeq_list` reads back out. Pure bookkeeping — this only sets the gate +
+    // cap; the git mirror is the device-gated runner and apply still routes to each
+    // type's own gated script.
+    changeq::configure(cfg.changeq.enabled, cfg.changeq.max_pending);
+
     // Micro-app runtime substrate (docs/SANDBOX.md): scan apps/ for manifests
     // so voice ("open global scan") and [apps].autostart can resolve them. The
     // session HMAC key is initialized lazily on first token mint and never
@@ -2275,6 +2290,16 @@ async fn main() -> Result<()> {
     // The watchdog owns the heal pipeline; it needs Memory for the
     // meta.heal_last_attempt rate limit and the meta.heal_pending marker.
     tokio::spawn(heal::watchdog(root.clone(), cfg.clone(), memory.clone()));
+
+    // CHANGE QUEUE (changeq.rs): the device-gated mirror task. When [changeq] is
+    // armed AND the project is a git repo, it periodically mirrors each pending
+    // propose-only proposal (registered by the writers) onto the dedicated LOCAL
+    // darwin/changeq review branch via bounded, fixed-arg git plumbing that NEVER
+    // touches the working tree or HEAD. INERT WITHOUT A REPO (no-ops until
+    // <root>/.git exists); it applies nothing and invents no apply authority.
+    if cfg.changeq.enabled {
+        tokio::spawn(changeq::mirror_task(root.clone()));
+    }
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     // The capture thread gets the ONLY sender: if audio capture ever dies

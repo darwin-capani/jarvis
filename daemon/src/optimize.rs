@@ -1478,6 +1478,27 @@ pub fn run_optimizer(
             // Propose-only: write the reviewable artifact, emit telemetry, STOP.
             // (mode="auto" still only proposes this round — same artifact path.)
             let _ = write_proposal(optimize_root, ts, &proposal);
+            // CHANGE QUEUE (changeq.rs): ALSO register this propose-only artifact into
+            // the unified git-native review lane. Pure bookkeeping — the measured
+            // proposal.md was already written to state/optimize/proposals/<ts>/; this
+            // mirrors it into the queue (and, on-device, onto darwin/changeq) with
+            // secret-free provenance. It changes NOTHING about the propose-only
+            // contract; apply still routes to scripts/apply_optimization.sh.
+            crate::changeq::on_proposal(
+                crate::changeq::ChangeKind::Optimize,
+                ts,
+                crate::changeq::Provenance::new(
+                    "optimizer",
+                    "routing-optimizer",
+                    ts.to_string(),
+                    crate::changeq::fingerprint(proposal.diff.join("\n").as_bytes()),
+                ),
+                format!(
+                    "routing tuning, {} change(s), +{:.1}% held-out accuracy",
+                    proposal.diff.len(),
+                    proposal.improvement() * 100.0
+                ),
+            );
             telemetry::emit(
                 "system",
                 "optimize.proposed",

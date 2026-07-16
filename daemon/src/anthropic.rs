@@ -1293,6 +1293,28 @@ fn tool_defs() -> &'static Value {
                 }
             },
             {
+                "name": "changeq_list",
+                "description": "List the CHANGE QUEUE — every PENDING propose-only proposal DARWIN has produced this session, unified into one git-native review lane. Call this when the user asks 'what changes are pending', 'show the change queue', 'what proposals are waiting for review', 'what's queued to apply', or similar. It returns, READ-ONLY and SECRET-FREE, each pending proposal's kind (self-heal patch / code diff / forged app / routing optimization), its proposal timestamp, the artifact locator (the proposal-store path under state/), a short summary, its provenance (the agent + model that produced it, the run id, and a content fingerprint — NEVER a secret/token), and the EXACT existing apply command for it. Each proposal is also mirrored onto a dedicated LOCAL git branch (darwin/changeq) for review. READ-ONLY: it applies nothing, changes nothing, reaches no network — it only lists what is already proposed. When nothing is pending it says so plainly and never invents a proposal. Armed by default.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string", "description": "Optional filter — one of 'heal', 'code', 'forge', 'optimize'. Omit to list ALL pending proposals."}
+                    }
+                }
+            },
+            {
+                "name": "changeq_apply",
+                "description": "Resolve a PENDING change-queue proposal to its apply route — the EXACT EXISTING human-gated apply command for that proposal type. Call this when the user asks to apply/deploy a specific queued proposal ('apply the code proposal from <ts>', 'deploy the forged app', 'apply the pending heal patch'). PROPOSE-ONLY + HUMAN-GATED: this does NOT apply anything itself and invents NO new authority. It looks up the chosen proposal (by kind + timestamp) and returns the SAME existing, confined apply script the proposal type has always used (scripts/apply_heal.sh / scripts/apply_code_diff.sh / scripts/apply_forge.sh / scripts/apply_optimization.sh <ts>) — which re-validates the change and applies it under that type's own gate, plus the safe git-revert rollback command. The human runs the apply command after reviewing; nothing is applied until they do. When no such proposal is queued it says so honestly and never fabricates an apply route. Be explicit that you are surfacing the manual, re-validating apply command — never claim a change was applied.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string", "description": "The proposal type: 'heal', 'code', 'forge', or 'optimize'."},
+                        "ts": {"type": "integer", "description": "The proposal timestamp (<ts>) shown by changeq_list."}
+                    },
+                    "required": ["kind", "ts"]
+                }
+            },
+            {
                 "name": "artifact_peek",
                 "description": "Peek at the LAST thing you produced — READ-ONLY recall over the in-memory, on-device Artifact Registry (the last N results the assistant made this session: reports, charts, code-diff proposals, drafts, notebooks, forecasts, docsearch answers). Call this when the user asks 'what did you just do', 'what did you just make/produce', 'peek', or 'show me that again'. It returns WHAT was produced (kind + title), WHO/WHAT backs it (the real producing agent + the real citations — or plainly UNCITED when the artifact carried no source), and a compact preview, and it surfaces the artifact on the HUD's QuickLook overlay. HONEST: an uncited artifact is reported as uncited, never dressed up with a fabricated source; when nothing has been produced yet it says so plainly and never invents an artifact. READ-ONLY + ON-DEVICE: it reads back what was already produced — it opens no network, takes no action, and changes nothing. Armed by default; with no id it returns the MOST RECENT artifact.",
                 "input_schema": {
@@ -3569,6 +3591,26 @@ struct CodeExplainArgs {
 struct CodeProposeDiffArgs {
     /// The change to make, in the user's own words.
     request: String,
+}
+
+// -- CHANGE QUEUE tool args (crate::changeq) -------------------------------------
+// changeq_list is READ-ONLY: it lists pending propose-only proposals (kind + ts +
+// artifact locator + provenance + the existing apply command). changeq_apply is
+// PROPOSE-ONLY + human-gated: it resolves a chosen proposal to THAT type's EXISTING
+// apply script (never a new authority) + the safe git-revert rollback. Neither
+// applies anything or reaches the network.
+#[derive(Deserialize)]
+struct ChangeqListArgs {
+    /// Optional kind filter ('heal'/'code'/'forge'/'optimize'). Absent => list ALL.
+    #[serde(default)]
+    kind: Option<String>,
+}
+#[derive(Deserialize)]
+struct ChangeqApplyArgs {
+    /// The proposal type: 'heal' / 'code' / 'forge' / 'optimize'.
+    kind: String,
+    /// The proposal timestamp (<ts>) shown by changeq_list.
+    ts: u64,
 }
 
 // -- ARTIFACT PEEK tool args (crate::artifact) -----------------------------------
@@ -7781,6 +7823,23 @@ async fn dispatch_tool(
             Ok(args) => Ok(code_propose_diff_tool(&args.request).await),
             Err(e) => Err(anyhow!("invalid code_propose_diff arguments: {e}")),
         },
+        // -- CHANGE QUEUE (crate::changeq) ------------------------------------
+        // changeq_list is READ-ONLY: it lists the pending propose-only proposals
+        // (heal / code / forge / optimize) unified into one git-native review lane,
+        // with each one's provenance + the EXISTING apply command. It applies
+        // nothing, changes nothing, reaches no network. Armed by default.
+        "changeq_list" => match serde_json::from_value::<ChangeqListArgs>(input.clone()) {
+            Ok(args) => Ok(changeq_list_tool(args.kind.as_deref())),
+            Err(e) => Err(anyhow!("invalid changeq_list arguments: {e}")),
+        },
+        // changeq_apply is PROPOSE-ONLY + human-gated: it resolves a chosen pending
+        // proposal to THAT type's EXISTING gated apply script (never a new
+        // authority) + the safe git-revert rollback. It applies NOTHING itself —
+        // the human runs the surfaced, re-validating apply command.
+        "changeq_apply" => match serde_json::from_value::<ChangeqApplyArgs>(input.clone()) {
+            Ok(args) => Ok(changeq_apply_tool(&args.kind, args.ts)),
+            Err(e) => Err(anyhow!("invalid changeq_apply arguments: {e}")),
+        },
         // -- ARTIFACT PEEK (crate::artifact) ----------------------------------
         // READ-ONLY recall over the in-memory, on-device Artifact Registry: read
         // the most recent (or an id'd) artifact the producers registered back out,
@@ -9424,6 +9483,23 @@ async fn code_propose_diff_tool(request: &str) -> String {
                 citations,
                 format!("diff: +{added}/-{removed} lines, {hunks} hunk{}", if hunks == 1 { "" } else { "s" }),
             );
+            // CHANGE QUEUE (changeq.rs): ALSO register this propose-only artifact into
+            // the unified git-native review lane. Pure bookkeeping — the diff was
+            // already written to state/code/proposals/<ts>/; this mirrors it into the
+            // queue (and, on-device, onto the darwin/changeq branch) with secret-free
+            // provenance. It changes NOTHING about the propose-only contract; apply
+            // still routes to scripts/apply_code_diff.sh (the existing gate).
+            crate::changeq::on_proposal(
+                crate::changeq::ChangeKind::Code,
+                ts,
+                crate::changeq::Provenance::new(
+                    "steve",
+                    load_heavy_model(),
+                    ts.to_string(),
+                    crate::changeq::fingerprint(diff.as_bytes()),
+                ),
+                format!("diff: +{added}/-{removed} lines, {hunks} hunk{}", if hunks == 1 { "" } else { "s" }),
+            );
             let mut reply = format!(
                 "I drafted a reviewable change and wrote it to the proposal store — I have NOT \
                  touched your code. Review the diff, then run `{apply_cmd}` to apply it (it \
@@ -9458,6 +9534,102 @@ async fn code_propose_diff_tool(request: &str) -> String {
         // code_propose_diff never produces the explain-only verdicts.
         _ => "I couldn't complete that change proposal just now, sir.".to_string(),
     }
+}
+
+// -- CHANGE QUEUE (crate::changeq) -----------------------------------------------
+
+/// changeq_list core: a READ-ONLY listing of the pending propose-only proposals in
+/// the unified git-native review lane. Optionally filtered by `kind`. Re-emits the
+/// `changeq.list` frame so the HUD panel reflects the read, and returns an honest
+/// secret-free text summary (kind, ts, summary, the EXISTING apply command, and
+/// whether it is mirrored onto the review branch). Never applies anything.
+fn changeq_list_tool(kind_filter: Option<&str>) -> String {
+    // A kind filter that names an unknown type is an honest miss (never guessed).
+    let filter = match kind_filter.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(k) => match crate::changeq::ChangeKind::from_wire(k) {
+            Some(kind) => Some(kind),
+            None => {
+                return format!(
+                    "'{k}' isn't a change-queue kind, sir — it is one of heal, code, forge, or optimize."
+                );
+            }
+        },
+        None => None,
+    };
+    // Re-emit the current lane so the HUD Change Queue panel reflects this read.
+    crate::changeq::emit_list();
+    let pending: Vec<_> = crate::changeq::list()
+        .into_iter()
+        .filter(|c| filter.is_none_or(|k| c.kind == k))
+        .collect();
+    if pending.is_empty() {
+        return match filter {
+            Some(k) => format!(
+                "The change queue has no pending {} proposals, sir — nothing is waiting for review.",
+                k.as_str()
+            ),
+            None => "The change queue is empty, sir — I have no propose-only proposals pending review."
+                .to_string(),
+        };
+    }
+    let mut out = format!(
+        "{} proposal{} pending in the change queue (review branch {}):",
+        pending.len(),
+        if pending.len() == 1 { "" } else { "s" },
+        crate::changeq::BRANCH,
+    );
+    for c in &pending {
+        let mirrored = if c.commit.is_some() { "mirrored" } else { "queued" };
+        out.push_str(&format!(
+            "\n- [{}] {} #{} ({mirrored}) — {} — apply: {}",
+            c.kind.as_str(),
+            c.artifact_rel,
+            c.ts,
+            c.summary,
+            c.apply_command(),
+        ));
+    }
+    out.push_str(
+        "\nAll are PROPOSE-ONLY — nothing is applied. Review a proposal, then run its apply \
+         command (it re-validates + applies under that type's own gate).",
+    );
+    out
+}
+
+/// changeq_apply core: PROPOSE-ONLY + human-gated. Resolves the chosen pending
+/// proposal (`kind` + `ts`) and returns THAT type's EXISTING gated apply command
+/// (never a new authority) plus the safe `git revert` rollback for the mirrored
+/// commit. It applies NOTHING itself — the human runs the surfaced, re-validating
+/// apply command. An unknown kind / an unqueued proposal is an honest miss.
+fn changeq_apply_tool(kind: &str, ts: u64) -> String {
+    let Some(kind) = crate::changeq::ChangeKind::from_wire(kind.trim()) else {
+        return format!(
+            "'{kind}' isn't a change-queue kind, sir — it is one of heal, code, forge, or optimize."
+        );
+    };
+    let Some(change) = crate::changeq::find(kind, ts) else {
+        return format!(
+            "I have no {} proposal queued at {ts}, sir — check `changeq_list` for the pending \
+             proposals. I won't fabricate an apply route for one that isn't there.",
+            kind.as_str()
+        );
+    };
+    let mut reply = format!(
+        "The {} proposal {ts} is PROPOSE-ONLY, sir — I have NOT applied it. To apply it, YOU run \
+         its existing, re-validating apply command:\n  {}\nThat script re-validates the change \
+         and applies it under {}'s own gate; nothing is applied until you run it.",
+        kind.as_str(),
+        change.apply_command(),
+        kind.as_str(),
+    );
+    if let Some(commit) = &change.commit {
+        let rollback = crate::changeq::revert_command(commit).arg_strs().join(" ");
+        reply.push_str(&format!(
+            "\nIt is mirrored onto the {} review branch; to roll it back safely: git {rollback}.",
+            crate::changeq::BRANCH,
+        ));
+    }
+    reply
 }
 
 // -- SANDBOXED SHELL / TERMINAL (crate::shell, #43) ------------------------------
@@ -13093,6 +13265,8 @@ mod tests {
                 "doc_search",
                 "code_explain",
                 "code_propose_diff",
+                "changeq_list",
+                "changeq_apply",
                 "artifact_peek",
                 "shell_run",
                 "ui_actuate",

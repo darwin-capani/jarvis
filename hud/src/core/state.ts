@@ -232,6 +232,7 @@ import {
   voiceModeInitial,
 } from "./events";
 import { agentProfile, normalizeHue } from "./agents";
+import { type ChangeqState, changeqReduce, parseChangeqList } from "./changeq";
 
 /* ------------------------------------------------------------------------ */
 
@@ -663,6 +664,13 @@ export interface HudState {
    *  a codebase root allowlisted. REVIEW-ONLY + SECRET-FREE — no one-click apply,
    *  no token field on the wire. */
   codeIntel: CodeIntel | null;
+  /** The CHANGE QUEUE surface (changeq.list, changeq.rs): the pending PROPOSE-ONLY
+   *  proposals (self-heal / code / forge / optimize) unified into one git-native
+   *  review lane, each with its EXISTING apply command + secret-free provenance.
+   *  Null until the first changeq.list frame (nothing is pending). REVIEW-ONLY —
+   *  the panel shows each proposal's manual, re-validating apply command; there is
+   *  NO one-click apply, and the frame carries no secret/token. */
+  changeq: ChangeqState | null;
   /** The SANDBOXED SHELL surface (shell.blocked / shell.denied / shell.preview /
    *  shell.executing / shell.ran): the last command's HONEST outcome — OFF/locked,
    *  refused-denylisted, parked-awaiting-confirm, executing, or the faithful run
@@ -1430,6 +1438,7 @@ export function initialState(): HudState {
     forgeProposal: null,
     forgeAlert: null,
     codeIntel: null,
+    changeq: null,
     shell: null,
     uiActuate: null,
     mcp: null,
@@ -2369,6 +2378,15 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
           note: { kind: "blocked", detail: reason, at: env.ts },
         },
       };
+    }
+
+    case "changeq.list": {
+      // The CHANGE QUEUE (changeq.rs) broadcast its FULL current pending set of
+      // propose-only proposals. parseChangeqList is DEFENSIVE (a malformed item is
+      // dropped, never guessed) and changeqReduce is authoritative + pure (dedup by
+      // (kind, ts), newest-first, capped); a garbled frame (parse -> null) is
+      // ignored so the last good state is preserved rather than blanking the panel.
+      return { ...s, changeq: changeqReduce(s.changeq, parseChangeqList(env.data)) };
     }
 
     case "shell.blocked": {

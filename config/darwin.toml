@@ -194,6 +194,22 @@ mode = "propose"  # "propose" (default): write the validated app + report to sta
 enabled = true    # master gate, SHIPS ON (full-power default). Live trace recording is runtime-gated (traces accrue only while the daemon runs with this on); traces are PII-REDACTED before storage (emails / phone numbers / >=6-digit runs / URLs with embedded credentials / api-key- and token-shaped strings are stripped) and NEVER contain a secret or token; retention is bounded (oldest rows evicted past the cap). The optimizer still only PROPOSES diffs a human applies (mode below stays "propose"). Set false to disable.
 mode = "propose"  # "propose" (default): the downstream Optimizer reuses the self-heal posture — it writes a measured config/prompt/example diff for a HUMAN to review+apply and NEVER silently mutates a live config or behavior; an optimization is adopted ONLY IF it MEASURABLY beats the current baseline on held-out traces, and every adoption is reversible. "auto" is reserved and behaves as "propose" for now — there is no auto-apply-to-live path. Unknown values behave as "propose".
 
+[changeq]
+# Change Queue (changeq.rs): ONE git-native review lane unifying every propose-only
+# artifact DARWIN produces (self-heal patches, code diffs, forged micro-apps,
+# routing-optimization proposals). PURE bookkeeping over stores that are ALREADY
+# propose-only: when a writer produces a proposal the queue ALSO registers it and, on
+# a git repo, commits that artifact onto a dedicated LOCAL branch (darwin/changeq) with
+# secret-free provenance trailers (Darwin-Agent / Darwin-Model / Darwin-Run /
+# Darwin-State-Hash) via bounded, fixed-arg git subprocesses that NEVER touch your
+# working tree or HEAD (git plumbing over a separate index). The read-only changeq_list
+# tool lists every pending proposal with its diff/artifact locator + provenance;
+# changeq_apply resolves a chosen proposal to THAT type's EXISTING gated apply script
+# (scripts/apply_heal.sh / apply_code_diff.sh / apply_forge.sh / apply_optimization.sh)
+# + re-validation — it invents NO new apply authority — and rollback is a safe git revert.
+enabled = true       # master gate, SHIPS ON (full-power default) — INERT WITHOUT A REPO: with no git repo the branch commit is a no-op (the in-memory queue + the read-only list still work); it never fabricates a branch it could not create. It changes NOTHING about any writer's propose-only contract — apply still runs each type's mandatory re-validation + human confirmation. Set false to register nothing.
+max_pending = 64     # BOUND on the in-memory review window (clamped to [1, 512]); past it the OLDEST pending proposal is evicted so the lane can never grow without bound.
+
 [explain]
 # CAUSA (explain.rs): the causal decision-trace explainer — "why did you do that" /
 # "why <Agent>". At the end of each turn the loop folds the branch signals it ALREADY
