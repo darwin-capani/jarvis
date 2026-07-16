@@ -1552,7 +1552,16 @@ pub async fn route(
             // describe DARWIN's agents when asked instead of denying the team
             // exists (the cloud persona carries no static roster). Grounded —
             // the persona prompt forbids inventing agents not in this list.
-            let roster = agents.roster_brief();
+            // GUEST GATE: withhold the owner's configured agent roster from a guest
+            // turn — consistent with the facts/world/personalization/history feeds
+            // above (all empty for a guest) and with guest_denied_fast_path refusing
+            // the roll-call / agent-query fast paths. A guest gets no owner config
+            // (agents.toml can carry owner-chosen agent names/roles).
+            let roster = if crate::threshold::is_guest_turn() {
+                String::new()
+            } else {
+                agents.roster_brief()
+            };
             // The first-contact brief is converse data — fold it into the
             // utterance so the persona still phrases it on the cloud chat path
             // (the proactive brief never rides a tool loop; this plain

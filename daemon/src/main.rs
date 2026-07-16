@@ -819,7 +819,10 @@ fn discard_wav(path: &Path) {
 /// Apply a spoken guest-mode toggle to the persistent `guest_mode` flag under the
 /// SPEAKER GUARD, then return the EXPLICIT guest flag that feeds `threshold::decide`
 /// (auto-guest from an Unrecognized voice is folded in by `decide` itself):
-///   * "guest mode on"  — ANY speaker may set the flag (it can only NARROW).
+///   * "guest mode on"  — ONLY the verified OWNER (or an unenforced voice-id) may
+///     LATCH the persistent flag. A non-owner is ALREADY voice-scoped to guest by
+///     `decide` this turn, so their ON is a no-op on the flag — otherwise a bystander
+///     could latch it and silently degrade the OWNER's own later turns.
 ///   * "guest mode off" — ONLY the verified OWNER (or an unenforced voice-id) may
 ///     clear it; a bystander's OFF is IGNORED, so they can neither un-scope
 ///     themselves (auto-guest still holds) nor strip the owner's explicit protection
@@ -838,7 +841,14 @@ fn resolve_explicit_guest(
         threshold::SpeakerState::OwnerVerified | threshold::SpeakerState::Unenforced
     );
     match toggle {
-        Some(threshold::GuestToggle::On) => *guest_mode = true,
+        // ON latches the PERSISTENT (cross-turn) flag ONLY for the owner / unenforced
+        // voice-id. A non-owner is already voice-scoped to guest by decide() this turn,
+        // so their ON is a no-op on the flag — otherwise the OWNER's next turn inherits
+        // the latched flag and is silently degraded until they toggle off.
+        Some(threshold::GuestToggle::On) if owner_or_unenforced => *guest_mode = true,
+        Some(threshold::GuestToggle::On) => {
+            info!("THRESHOLD: a non-owner guest-mode-on toggle does not latch the persistent flag (they are already voice-scoped)");
+        }
         Some(threshold::GuestToggle::Off) if owner_or_unenforced => *guest_mode = false,
         Some(threshold::GuestToggle::Off) => {
             info!("THRESHOLD: ignoring a guest-mode-off toggle from a non-owner speaker");
@@ -5085,11 +5095,20 @@ mod tests {
         assert!(flag, "a bystander's OFF must NOT clear the owner's explicit flag");
         assert!(!eff, "the explicit flag never takes effect for an Unrecognized speaker");
 
-        // A bystander CAN turn guest mode ON (it can only narrow).
+        // A bystander's ON does NOT latch the PERSISTENT flag (the fix for the LOW
+        // finding): otherwise the OWNER's next turn would inherit it and be silently
+        // degraded. The bystander is still guest-scoped THIS turn by decide()'s
+        // auto-guest (via their Unrecognized voice), so no confidentiality is lost.
         let mut flag = false;
         let eff = resolve_explicit_guest(Some(GuestToggle::On), SpeakerState::Unrecognized, &mut flag);
-        assert!(flag, "any speaker may turn guest mode ON");
-        assert!(!eff, "an Unrecognized speaker's explicit flag still defers to auto-guest, not Explicit");
+        assert!(!flag, "a non-owner ON must NOT latch the persistent flag (owner never degraded)");
+        assert!(!eff, "an Unrecognized speaker's explicit flag never takes effect (auto-guest scopes them)");
+
+        // The verified OWNER (or an unenforced voice-id) MAY latch guest mode ON.
+        let mut flag = false;
+        let eff = resolve_explicit_guest(Some(GuestToggle::On), SpeakerState::OwnerVerified, &mut flag);
+        assert!(flag, "the owner may latch guest mode ON");
+        assert!(eff, "owner ON -> explicit guest takes effect");
 
         // The verified OWNER may turn guest mode OFF and un-scope themselves.
         let mut flag = true;
