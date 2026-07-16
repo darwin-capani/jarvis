@@ -60,6 +60,8 @@
 //! guards; the tests exercise every item.
 #![allow(dead_code)]
 
+use std::sync::Mutex;
+
 use serde_json::json;
 
 use crate::focus::{apply_profile, BaseBehavior, FocusProfile, TunedBehavior};
@@ -396,6 +398,193 @@ pub fn guest_telemetry(decision: &GuestDecision) -> serde_json::Value {
 /// emit seam the router calls once per turn after [`decide`].
 pub fn emit_guest(decision: &GuestDecision) {
     crate::telemetry::emit("threshold", "threshold.guest", guest_telemetry(decision));
+}
+
+// ---------------------------------------------------------------------------
+// The per-turn GUEST SCOPE — how the installed [`Scope`] threads into the deep
+// recall dispatch, the tool loop, and the anticipation tick WITHOUT parameter
+// threading, EXACTLY mirroring `voiceid`'s per-turn `TURN_GATE` global.
+// ---------------------------------------------------------------------------
+
+/// Process-global current-turn GUEST SCOPE. `None` = no guest scope installed
+/// this turn, which reads as the OWNER PATH (no restriction): the recall
+/// dispatch uses the owner namespace, the tool loop offers the full agent
+/// allowlist, and the anticipation tick uses the owner's tuned behavior — all
+/// byte-for-byte unchanged. `Some(scope)` = a guest turn is scoped by `scope`.
+///
+/// Set once per turn near the top of `run_pipeline` (after voice-id, via
+/// [`set_turn_scope`] on an active guest decision, else [`clear_turn_scope`]),
+/// read at the deep recall/tool-loop sites + the anticipation tick
+/// ([`current_turn_scope`]), and REPLACED every full turn so an owner turn never
+/// inherits a stale guest scope. Mirrors `voiceid::TURN_GATE` (a `Scope` is not
+/// `Copy`, so this is a `Mutex<Option<Scope>>` cloned on read rather than a
+/// `Cell`).
+static TURN_SCOPE: Mutex<Option<Scope>> = Mutex::new(None);
+
+// Test-only thread-local override, mirroring `voiceid`'s `GATE_OVERRIDE`: a test
+// forces the current-turn scope on its OWN thread without touching the
+// process-global slot other (parallel) tests read. The outer `Option` is "is an
+// override installed", the inner `Option<Scope>` is the forced value (Some =
+// guest scope, None = owner path). Compiled out in release.
+#[cfg(test)]
+thread_local! {
+    static SCOPE_OVERRIDE: std::cell::RefCell<Option<Option<Scope>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install THIS turn's guest scope (called once near the top of `run_pipeline`
+/// when the decision is active). Poison-tolerant.
+pub fn set_turn_scope(scope: Scope) {
+    *TURN_SCOPE.lock().unwrap_or_else(|p| p.into_inner()) = Some(scope);
+}
+
+/// Clear the per-turn guest scope (called on an OWNER-path turn, and any time no
+/// guest scope should be in force) so a later turn never inherits a stale guest
+/// scope. Poison-tolerant.
+pub fn clear_turn_scope() {
+    *TURN_SCOPE.lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+/// The current turn's installed guest scope — `None` (the OWNER path) when none
+/// is installed. This is the deep read consulted by the recall dispatch, the
+/// tool loop, and the anticipation tick.
+pub fn current_turn_scope() -> Option<Scope> {
+    #[cfg(test)]
+    {
+        if let Some(over) = SCOPE_OVERRIDE.with(|c| c.borrow().clone()) {
+            return over;
+        }
+    }
+    TURN_SCOPE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+}
+
+/// The memory namespace to recall under THIS turn, honoring an installed guest
+/// scope: when a guest scope is active the reserved shared-only [`GUEST_NAMESPACE`]
+/// sentinel (so the EXISTING own+shared guard returns only the SHARED tier), else
+/// the owner namespace UNCHANGED. This is the single seam the live recall
+/// dispatch (`grounded_facts`, the `recall_facts` / `mnemosyne_recall` /
+/// `episodic_recall` tools, `router::agent_facts`) calls so a guest NEVER reads
+/// the owner's private `agent.*` facts — while the owner path is byte-for-byte
+/// today's (returns `owner_namespace` verbatim).
+pub fn recall_namespace_for_turn(owner_namespace: &str) -> String {
+    match current_turn_scope() {
+        Some(scope) => scope.recall_namespace(owner_namespace).to_string(),
+        None => owner_namespace.to_string(),
+    }
+}
+
+/// `#[cfg(test)]`-only RAII guard forcing [`current_turn_scope`] to a value on the
+/// current thread, restoring the prior state on drop (so the override never leaks
+/// into another test). Mirrors `voiceid::GateOverride`; the whole seam is
+/// `cfg(test)`. Tests use THIS (never [`set_turn_scope`]) so the process-global
+/// slot the live path uses stays untouched across parallel tests.
+#[cfg(test)]
+pub(crate) struct ScopeOverride {
+    prev: Option<Option<Scope>>,
+}
+
+#[cfg(test)]
+impl ScopeOverride {
+    /// Force a GUEST scope in force on this thread.
+    pub(crate) fn guest(scope: Scope) -> Self {
+        let prev = SCOPE_OVERRIDE.with(|c| c.replace(Some(Some(scope))));
+        Self { prev }
+    }
+
+    /// Force the OWNER path (no guest scope) on this thread.
+    pub(crate) fn owner() -> Self {
+        let prev = SCOPE_OVERRIDE.with(|c| c.replace(Some(None)));
+        Self { prev }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ScopeOverride {
+    fn drop(&mut self) {
+        SCOPE_OVERRIDE.with(|c| *c.borrow_mut() = self.prev.take());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The explicit "guest mode on/off" toggle — a CONSERVATIVE, anchored-imperative
+// spoken classifier (mirrors `vault::classify_vault_command`). An ordinary
+// sentence that merely MENTIONS "guest mode" never toggles it.
+// ---------------------------------------------------------------------------
+
+/// An explicit guest-mode toggle parsed from a spoken utterance. Only these
+/// anchored imperative phrasings ever flip guest mode; a bare mention never does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestToggle {
+    /// "guest mode on" / "enable guest mode" / … — hand the mic to a guest.
+    On,
+    /// "guest mode off" / "disable guest mode" / … — the owner takes the mic back.
+    Off,
+}
+
+/// Normalize an utterance for anchored matching: lowercase, strip surrounding
+/// whitespace + trailing sentence punctuation, and collapse internal whitespace
+/// runs to single spaces. Pure. Mirrors `vault::normalize`.
+fn normalize(text: &str) -> String {
+    let lowered = text.trim().trim_end_matches(['.', '!', '?', ',']).to_lowercase();
+    lowered.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether the normalized utterance IS one of `phrases` — the whole thing or its
+/// leading imperative (so "guest mode on please" matches, but a sentence that
+/// merely mentions guest mode does not). Mirrors `vault::matches_phrase`.
+fn matches_phrase(norm: &str, phrases: &[&str]) -> bool {
+    phrases.iter().any(|p| {
+        norm == *p
+            || norm
+                .strip_prefix(p)
+                .is_some_and(|rest| rest.starts_with(' '))
+    })
+}
+
+/// The OFF anchor phrases — checked FIRST so a "guest mode off" utterance (which
+/// contains "guest mode") never reads as ON. Mirrors vault's off-precedence.
+const GUEST_OFF_PHRASES: &[&str] = &[
+    "guest mode off",
+    "turn off guest mode",
+    "disable guest mode",
+    "exit guest mode",
+    "leave guest mode",
+    "end guest mode",
+];
+
+/// The ON anchor phrases. NOTE: the BARE "guest mode" is deliberately absent —
+/// `matches_phrase` treats a phrase as a leading imperative, so "guest mode, what
+/// is that?" would otherwise engage guest mode when the user is merely ASKING. An
+/// intentional toggle uses an explicit verb / on-off form.
+const GUEST_ON_PHRASES: &[&str] = &[
+    "guest mode on",
+    "turn on guest mode",
+    "enable guest mode",
+    "enter guest mode",
+    "start guest mode",
+];
+
+/// CONSERVATIVELY classify a spoken guest-mode toggle. Anchored on the imperative
+/// phrase set (an ordinary sentence that merely mentions "guest" never triggers),
+/// with OFF taking precedence over ON. `None` for anything that is not a clear
+/// toggle. PURE — the boundary is unit-tested. Handled BEFORE normal routing, the
+/// exact discipline `vault::classify_vault_command` / `voiceid::classify_intent`
+/// use.
+pub fn classify_guest_toggle(text: &str) -> Option<GuestToggle> {
+    let norm = normalize(text);
+    if norm.is_empty() {
+        return None;
+    }
+    if matches_phrase(&norm, GUEST_OFF_PHRASES) {
+        return Some(GuestToggle::Off);
+    }
+    if matches_phrase(&norm, GUEST_ON_PHRASES) {
+        return Some(GuestToggle::On);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -822,5 +1011,195 @@ mod tests {
         });
         let wt = apply_profile(&weird.guest_profile, &BaseBehavior::default());
         assert!(wt.is_no_broader_than(&BaseBehavior::default()), "a typo'd guest profile can only quiet");
+    }
+
+    // =====================================================================
+    // LIVE WIRING: the per-turn scope global + the recall seam
+    // =====================================================================
+
+    #[test]
+    fn current_turn_scope_defaults_to_the_owner_path_and_the_override_restores() {
+        // Default (no install / no override) reads as the OWNER path (None) — so the
+        // recall dispatch, tool loop, and anticipation tick are all byte-for-byte
+        // today's until a guest scope is installed.
+        assert!(current_turn_scope().is_none(), "no scope installed -> owner path");
+        {
+            let guest = guest_from(&orchestrator_owner(), &FocusProfile::DeepFocus);
+            let _o = ScopeOverride::guest(guest.clone());
+            assert_eq!(current_turn_scope(), Some(guest), "override installs a guest scope on this thread");
+        }
+        // Restored on drop — the override never leaks into the next test.
+        assert!(current_turn_scope().is_none(), "override restored the owner path on drop");
+        // An explicit OWNER override also reads as the owner path.
+        {
+            let _o = ScopeOverride::owner();
+            assert!(current_turn_scope().is_none(), "owner override -> owner path");
+        }
+        assert!(current_turn_scope().is_none());
+    }
+
+    #[test]
+    fn recall_namespace_for_turn_is_the_owner_ns_on_the_owner_path_and_the_sentinel_for_a_guest() {
+        // OWNER PATH (no guest scope): recall_namespace_for_turn returns the owner
+        // namespace VERBATIM — the recall dispatch is byte-for-byte unchanged.
+        {
+            let _o = ScopeOverride::owner();
+            assert_eq!(recall_namespace_for_turn("agent.darwin"), "agent.darwin");
+            assert_eq!(recall_namespace_for_turn("agent.friday"), "agent.friday");
+        }
+        // GUEST PATH: the shared-only sentinel, so the EXISTING own+shared guard
+        // yields only the shared tier — never the owner's private agent.* facts.
+        {
+            let guest = guest_from(&orchestrator_owner(), &FocusProfile::DeepFocus);
+            let _o = ScopeOverride::guest(guest);
+            assert_eq!(recall_namespace_for_turn("agent.darwin"), GUEST_NAMESPACE);
+            assert_eq!(recall_namespace_for_turn("agent.friday"), GUEST_NAMESPACE);
+        }
+    }
+
+    #[tokio::test]
+    async fn live_recall_seam_hides_the_owners_private_fact_from_a_guest_end_to_end() {
+        // END-TO-END proof of the WIRING: the LIVE recall dispatch feeds
+        // `recall_namespace_for_turn(owner_ns)` to the EXISTING own+shared guard.
+        // With a guest scope installed that routes to the sentinel, so the owner's
+        // private agent.* fact is invisible; with no scope (owner path) both facts
+        // are visible — byte-for-byte today's recall.
+        let path = std::env::temp_dir().join(format!("darwin-threshold-wire-recall-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mem = crate::memory::Memory::open(&path).expect("open temp memory");
+        mem.upsert_fact("user.name", "Darwin").await.unwrap();
+        mem.upsert_fact("agent.darwin.secret_note", "the owner's private note").await.unwrap();
+
+        // OWNER PATH: recall_namespace_for_turn("agent.darwin") == "agent.darwin",
+        // so the guard returns own + shared — both facts visible (unchanged).
+        {
+            let _o = ScopeOverride::owner();
+            let ns = recall_namespace_for_turn("agent.darwin");
+            let view = mem.agent_scoped_facts(&ns, 50).await.unwrap();
+            let keys: Vec<&str> = view.iter().map(|(k, _)| k.as_str()).collect();
+            assert!(keys.contains(&"user.name"), "owner sees shared knowledge");
+            assert!(keys.contains(&"agent.darwin.secret_note"), "owner path sees the private fact (unchanged)");
+        }
+
+        // GUEST PATH: the live seam routes to the sentinel, so the guard returns
+        // SHARED-only — the owner's private note is invisible to the guest.
+        {
+            let guest = guest_from(&orchestrator_owner(), &FocusProfile::DeepFocus);
+            let _o = ScopeOverride::guest(guest);
+            let ns = recall_namespace_for_turn("agent.darwin");
+            let view = mem.agent_scoped_facts(&ns, 50).await.unwrap();
+            let keys: Vec<&str> = view.iter().map(|(k, _)| k.as_str()).collect();
+            assert!(keys.contains(&"user.name"), "guest still sees shared knowledge");
+            assert!(
+                !keys.contains(&"agent.darwin.secret_note"),
+                "guest MUST NOT see the owner's private fact via the LIVE recall seam: {keys:?}"
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn install_site_invariant_holds_the_guest_scope_is_never_broader_than_the_owner() {
+        // The install-site SAFETY RAIL, exactly as `run_pipeline` evaluates it: the
+        // decided guest scope is asserted NO BROADER than the owner scope it was
+        // derived from, over the base the anticipation tick composes on. Proven here
+        // for every guest reason (auto + explicit) and a spread of guest profiles.
+        let owner_scope = Scope::owner(vec!["*".to_string()], FocusProfile::Default);
+        let base = BaseBehavior::default();
+        for gp in guest_profiles() {
+            let cfg = ThresholdConfigView { enabled: true, guest_profile: gp.clone() };
+            for (speaker, flag) in [
+                (SpeakerState::Unrecognized, false),
+                (SpeakerState::OwnerVerified, true),
+                (SpeakerState::Unenforced, true),
+            ] {
+                let d = decide(speaker, flag, &cfg, &owner_scope);
+                assert!(d.active, "guest should be active for ({speaker:?}, flag={flag})");
+                assert!(
+                    d.scope.is_no_broader_than(&owner_scope, &base),
+                    "install-site rail: guest scope broadened the owner ({gp:?}, {speaker:?}, flag={flag})"
+                );
+            }
+        }
+    }
+
+    // =====================================================================
+    // The explicit "guest mode on/off" toggle classifier
+    // =====================================================================
+
+    #[test]
+    fn guest_toggle_is_anchored_and_does_not_over_trigger() {
+        use GuestToggle::*;
+        // ON phrasings.
+        for u in [
+            "guest mode on",
+            "turn on guest mode",
+            "enable guest mode",
+            "enter guest mode please",
+            "start guest mode",
+            "Guest mode on.",
+        ] {
+            assert_eq!(classify_guest_toggle(u), Some(On), "{u:?} should turn guest mode ON");
+        }
+        // OFF phrasings (off wins even though they contain "guest mode").
+        for u in [
+            "guest mode off",
+            "turn off guest mode",
+            "disable guest mode",
+            "exit guest mode",
+            "leave guest mode",
+            "end guest mode.",
+        ] {
+            assert_eq!(classify_guest_toggle(u), Some(Off), "{u:?} should turn guest mode OFF");
+        }
+        // Ordinary sentences — including ones that MENTION guest mode — must NOT trip
+        // it. A bystander must never be able to widen anything, and a mere QUESTION
+        // about guest mode must not silently scope the turn.
+        for u in [
+            "what is guest mode",
+            "guest mode, what does that do?",
+            "tell me about guest mode",
+            "is guest mode on right now",
+            "a guest is coming over later",
+            "send an email to my guest",
+            "",
+            "   ",
+        ] {
+            assert_eq!(classify_guest_toggle(u), None, "{u:?} must not toggle guest mode");
+        }
+    }
+
+    // =====================================================================
+    // ANTICIPATION TICK composition (WIRING POINT 4)
+    // =====================================================================
+
+    #[test]
+    fn anticipation_guest_composition_can_only_quiet_the_owners_tuned_behavior() {
+        use crate::focus::SignalCategory;
+        // The EXACT composition the anticipation tick performs when a guest scope is
+        // installed: apply_profile(&scope.profile, &owner_tuned.as_base()) — the guest
+        // focus profile layered ON TOP of the owner's tuned behavior. It must be NO
+        // BROADER than the owner's tuned behavior (it can only quiet further, never
+        // surface more) for EVERY owner behavior a tick could be running under.
+        let owner_bases = [
+            BaseBehavior::default(),
+            apply_profile(&FocusProfile::Work, &BaseBehavior::default()).as_base(),
+            apply_profile(&FocusProfile::Sleep, &BaseBehavior::default()).as_base(),
+        ];
+        for owner_base in owner_bases {
+            let owner_tuned = apply_profile(&FocusProfile::Default, &owner_base);
+            let scope = guest_from(&orchestrator_owner(), &FocusProfile::DeepFocus);
+            // This is precisely `main.rs`'s WIRING POINT 4 expression.
+            let guest_tuned = apply_profile(&scope.profile, &owner_tuned.as_base());
+            assert!(
+                guest_tuned.is_no_broader_than(&owner_tuned.as_base()),
+                "the guest anticipation composition must never surface more than the owner's tuned behavior"
+            );
+            // The Critical floor still holds (a genuinely critical signal is never
+            // withheld even from the guest-quieted tick); ordinary intel is quieted.
+            assert!(guest_tuned.surfaces(SignalCategory::Critical), "critical floor holds for a guest tick");
+            assert!(!guest_tuned.surfaces(SignalCategory::News), "the guest tick quiets ordinary intel");
+        }
     }
 }

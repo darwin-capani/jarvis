@@ -2876,11 +2876,18 @@ fn enforce_tool<'a>(agents: &'a AgentRegistry, agent: &'a Agent, intent: &str) -
 /// filtered. Failures degrade to an empty list (a busy DB must never kill a
 /// reply) — same policy fetch_history uses for history.
 async fn agent_facts(memory: &Memory, namespace: &str) -> Vec<(String, String)> {
+    // THRESHOLD — GUEST MODE recall routing (WIRING POINT 2): when a guest scope is
+    // installed this turn, `recall_namespace_for_turn` returns the reserved
+    // shared-only sentinel, so the EXISTING own+shared guard yields ONLY shared
+    // facts — the LOCAL-path prompt feed can never carry the owner's private agent.*
+    // facts to a guest. On the owner path it returns `namespace` verbatim, so the
+    // feed is byte-for-byte today's.
+    let recall_ns = crate::threshold::recall_namespace_for_turn(namespace);
     memory
-        .agent_scoped_facts(namespace, FACTS_LIMIT)
+        .agent_scoped_facts(&recall_ns, FACTS_LIMIT)
         .await
         .unwrap_or_else(|e| {
-            warn!(error = %e, namespace, "failed to load namespaced facts for prompt");
+            warn!(error = %e, namespace = %recall_ns, "failed to load namespaced facts for prompt");
             Vec::new()
         })
 }

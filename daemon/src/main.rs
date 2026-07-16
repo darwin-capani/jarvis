@@ -1342,6 +1342,18 @@ async fn anticipation_task(root: PathBuf, cfg: Arc<Config>, memory: Arc<Memory>,
         // else the once-resolved configured profile (identical to today).
         let tuned: &focus::TunedBehavior = auto_tuned.as_ref().unwrap_or(&configured_tuned);
 
+        // THRESHOLD — GUEST MODE (threshold.rs), WIRING POINT 4. When a guest scope
+        // is installed (a bystander at the mic), compose the guest focus profile ON
+        // TOP of the owner's tuned behavior through the SAME restrict-only
+        // `apply_profile` path Auto-Focus uses (`owner_tuned.as_base()`), so EDITH is
+        // at least as QUIET for a guest and its private surfaces are withheld — it
+        // can only ever narrow further, never broaden, never enable or loosen a gate.
+        // With no guest scope in force (the owner path) this is skipped and the tick
+        // is byte-for-byte today's.
+        let guest_tuned = threshold::current_turn_scope()
+            .map(|scope| focus::apply_profile(&scope.profile, &tuned.as_base()));
+        let tuned: &focus::TunedBehavior = guest_tuned.as_ref().unwrap_or(tuned);
+
         // PROACTIVE-INTELLIGENCE SUGGESTIONS (#13 habit detector + #14 predictive
         // suggester). Runs every tick, INDEPENDENT of the EDITH brief decision
         // below (a suggestion is a separate surface). GATED by [proactive].suggest
@@ -3029,6 +3041,14 @@ async fn main() -> Result<()> {
     // re-saved on a confirmed clone / forget). Consent-gated, never automatic.
     let mut clone_state: voiceclone::CloneState = voiceclone::CloneState::Idle;
     let mut cloned_voices: voiceclone::ClonedVoices = voiceclone::load_clones(&root);
+    // THRESHOLD (guest mode): the EXPLICIT "guest mode on/off" toggle, held across
+    // turns exactly like `owner_profile` — the owner hands the mic to a guest and it
+    // stays scoped until the owner explicitly ends it (an ordinary utterance never
+    // flips it). Starts OFF, so the shipped behavior is byte-for-byte today's until
+    // the owner toggles it (or voice-id auto-scopes an unrecognized speaker per
+    // turn, which needs no persistent flag). AUTO-guest (an Unrecognized speaker)
+    // is derived per-turn from the voice gate and needs no state here.
+    let mut guest_mode = false;
     // CROSS-TURN CORRECTION LABELING (optimizer): the PRIOR turn's recorded trace
     // (row id + intent + agent), carried forward so THIS turn can re-label it
     // Corrected IFF it corrected the prior routing (see optimize::is_correction).
@@ -3055,6 +3075,7 @@ async fn main() -> Result<()> {
             &mut enrollment,
             &mut clone_state,
             &mut cloned_voices,
+            &mut guest_mode,
         )
         .await;
         // Keep the last NON-empty spoken reply; a turn that produced nothing
@@ -3091,6 +3112,10 @@ async fn run_pipeline(
     enrollment: &mut Option<voiceid::Enrollment>,
     clone_state: &mut voiceclone::CloneState,
     cloned_voices: &mut voiceclone::ClonedVoices,
+    // THRESHOLD (guest mode): the persistent EXPLICIT guest-mode toggle, held by the
+    // turn loop across turns (like `owner_profile`). An explicit "guest mode on/off"
+    // utterance flips it; it is read as the `guest_flag` into `threshold::decide`.
+    guest_mode: &mut bool,
 ) -> Option<String> {
     let started = Instant::now();
     let wav_str = wav.display().to_string();
@@ -3413,6 +3438,63 @@ async fn run_pipeline(
             let _ = report;
             discard_wav(&wav);
             return Some(resp);
+        }
+    }
+
+    // THRESHOLD — GUEST MODE (threshold.rs), WIRING POINT 1. Decided ONCE per turn,
+    // right after voice-id installs this turn's owner gate and BEFORE routing (so
+    // the recall dispatch, the tool loop, and the anticipation tick all read the
+    // scope it installs). Map the SAME per-turn voice-id gate to a speaker signal,
+    // fold in the persistent EXPLICIT "guest mode on/off" toggle, decide the
+    // effective scope via the PURE `threshold::decide`, emit the secret-free HUD
+    // frame, and INSTALL a guest scope (or CLEAR to the owner path). On the OWNER
+    // path — a recognized owner, voice-id off/unenforced, `[threshold]` disabled,
+    // and no explicit toggle — NO scope is installed, so recall + tools + the
+    // anticipation tick are byte-for-byte unchanged. Guest mode holds NO handle to
+    // the master switch / per-action confirm / voice-id / lockdown gates: it can
+    // only ever NARROW (fewer tools, shared-only recall, a quieter profile).
+    {
+        // The EXPLICIT toggle persists across turns (like the owner profile): an
+        // owner who hands the mic to a guest stays scoped until they explicitly end
+        // it. CONSERVATIVE, anchored-imperative classifier — an ordinary utterance
+        // never flips it, and a bystander can only ever turn it ON (which merely
+        // narrows), never widen anything. AUTO-guest (an Unrecognized speaker) needs
+        // no persistent state — it is derived per turn from the voice gate below, so
+        // a guest can never un-scope themselves by saying "guest mode off".
+        match threshold::classify_guest_toggle(&text) {
+            Some(threshold::GuestToggle::On) => *guest_mode = true,
+            Some(threshold::GuestToggle::Off) => *guest_mode = false,
+            None => {}
+        }
+        let speaker = threshold::SpeakerState::from_owner_gate(&voiceid::current_turn_gate());
+        let cfg_view = threshold::ThresholdConfigView::from_config(&cfg.threshold);
+        // The owner scope this turn would run under: the orchestrator wildcard tools
+        // + the identity focus profile — the WIDEST owner baseline, so the guest
+        // projection (and the subset check below) is the sharpest. Downstream the
+        // tool loop re-intersects the guest tools with the ACTIVE agent's allowlist.
+        let owner_scope =
+            threshold::Scope::owner(vec!["*".to_string()], focus::FocusProfile::Default);
+        let decision = threshold::decide(speaker, *guest_mode, &cfg_view, &owner_scope);
+        threshold::emit_guest(&decision);
+        if decision.active {
+            // HARD SAFETY RAIL: the installed guest scope can only ever NARROW the
+            // owner scope — guest mode NEVER widens or weakens a gate. Asserted here,
+            // at the install site, before it can gate anything. Provable by
+            // construction (a `Scope` carries only restrict-only knobs and
+            // `guest_from` confines every axis; the property test pins it), so this
+            // debug assertion is defense-in-depth that fires in every test/debug
+            // build if a future change ever regressed the invariant.
+            debug_assert!(
+                decision
+                    .scope
+                    .is_no_broader_than(&owner_scope, &focus::BaseBehavior::default()),
+                "THRESHOLD: a guest scope must never be broader than the owner scope"
+            );
+            threshold::set_turn_scope(decision.scope);
+        } else {
+            // OWNER PATH: no guest scope in force — recall + tools + anticipation are
+            // byte-for-byte unchanged.
+            threshold::clear_turn_scope();
         }
     }
 
