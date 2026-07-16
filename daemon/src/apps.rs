@@ -639,8 +639,15 @@ pub fn generate_sbpl(
     let runtime_read_prefixes: Vec<PathBuf> = match manifest.app.runtime {
         Runtime::Python => {
             let mut v = vec![
-                // The project venv (interpreter symlink + site-packages).
-                abs(root, &root.join(".venv")),
+                // The interpreter + site-packages read root. SUBSTRATE LOCK
+                // (envlock.rs) NARROWING SEAM: when the interpreter lives inside a
+                // pinned content-addressed closure (state/envstore/<hash>/…) this is
+                // that CLOSURE dir — app-specific, read-only, exactly the pinned
+                // files — replacing the shared project .venv and closing the
+                // shared-.venv reach + venv-drift caveats. For an UNPINNED app
+                // (interpreter under .venv, the legacy path) it returns the project
+                // .venv, byte-for-byte the prior behavior.
+                crate::envlock::python_runtime_read_root(root, &interp_abs),
                 // The system Python framework, when used directly.
                 PathBuf::from("/Library/Frameworks/Python.framework"),
             ];
@@ -1621,7 +1628,32 @@ async fn run_once(
     token: &str,
     stop_notify: &Arc<tokio::sync::Notify>,
 ) -> RunResult {
-    let interp = registry.interpreter(manifest);
+    // SUBSTRATE LOCK (envlock.rs) spawn gate. Armed-by-default ([envlock].enabled).
+    // If this app is PINNED (has apps/<name>/env.lock), re-hash its materialized
+    // closure under state/envstore/<hash>/ and verify it against the lock
+    // FAIL-CLOSED: a mismatch REFUSES to spawn (never a silent fall-back to the
+    // shared .venv). On a verified pin the interpreter is the one INSIDE the pinned
+    // closure, so generate_sbpl narrows exec/read to that closure instead of the
+    // shared .venv. An UNPINNED app (no env.lock — every app that ships today)
+    // resolves to the legacy interpreter unchanged.
+    let legacy_interp = registry.interpreter(manifest);
+    let interp = if crate::envlock::verify_enabled() {
+        let pin = crate::envlock::pin_state(&registry.project_root, app_dir);
+        crate::envlock::emit_verdict(name, &pin);
+        if let crate::envlock::PinState::Pinned {
+            verdict: crate::envlock::SpawnVerdict::Refused { reason, .. },
+            ..
+        } = &pin
+        {
+            return RunResult::LaunchFailed(anyhow!(
+                "envlock: refusing to spawn {name}: pinned dependency closure failed verification ({})",
+                reason.as_str()
+            ));
+        }
+        crate::envlock::effective_interpreter(&pin, &legacy_interp, manifest.app.runtime)
+    } else {
+        legacy_interp
+    };
 
     // The HOST -> APP op queue handle for this app (shared across reconnects):
     // handle_conn moves the receiver out for the life of a connection and puts

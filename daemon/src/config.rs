@@ -436,6 +436,15 @@ pub struct Config {
     /// assists the human who edits, preserving the intentional absence of any
     /// config-write primitive.
     pub dls: DlsConfig,
+    /// [envlock] — SUBSTRATE LOCK (envlock.rs): reproducible env pins with
+    /// lockfile-verified dependency closures. `enabled` (the VERIFY + SBPL-narrow
+    /// half) SHIPS ON (armed-by-default) — at spawn it verifies a pinned app's
+    /// closure against its env.lock FAIL-CLOSED and narrows the sandbox to the
+    /// pinned path instead of the shared .venv; it can only ever make the sandbox
+    /// STRICTER, and an app with no env.lock is unaffected. The FETCH half
+    /// (`fetch_enabled`, materializing a closure over the network) is a separate,
+    /// user-originated, human-run step and is GATED — see below.
+    pub envlock: EnvlockConfig,
 }
 
 /// Every section and key the config knows, for unknown-key diagnostics
@@ -1113,6 +1122,14 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // primitive is preserved. `port` is the 127.0.0.1 bind for the editor shim. Listed
     // so neither key reads as a typo.
     ("dls", &["enabled", "port"]),
+    // [envlock] — SUBSTRATE LOCK (envlock.rs). `enabled` SHIPS ON (armed-by-default)
+    // — the spawn-time VERIFY + SBPL-narrow (pinned closure instead of the shared
+    // .venv), which can only make the sandbox stricter and leaves unpinned apps
+    // unchanged. `fetch_enabled` gates the ONE network step (materializing a
+    // closure via `darwind --env-build <app>`) and SHIPS OFF — that fetch is
+    // additionally user-originated (egress-gated) + human-run. Listed so neither
+    // key reads as a typo.
+    ("envlock", &["enabled", "fetch_enabled"]),
 ];
 
 /// READ-ONLY accessor to the section/key registry for in-daemon tooling (the
@@ -3347,6 +3364,43 @@ impl Default for ForgeConfig {
     }
 }
 
+/// [envlock] — SUBSTRATE LOCK (envlock.rs): reproducible env pins with
+/// lockfile-verified dependency closures. Two independently-gated halves:
+///   - `enabled` — the spawn-time VERIFY + SBPL-narrow. SHIPS ON (armed-by-default):
+///     a PINNED app (one with `apps/<name>/env.lock`) has its materialized closure
+///     under `state/envstore/<hash>/` re-hashed and compared to the lock FAIL-CLOSED
+///     (any mismatch refuses to spawn), and its sandbox is narrowed to grant
+///     exec/read of ONLY that pinned closure instead of the shared `.venv`. This can
+///     only make the sandbox STRICTER; an app with no env.lock is byte-for-byte the
+///     legacy behavior.
+///   - `fetch_enabled` — the ONE network step: MATERIALIZING a closure
+///     (`darwind --env-build <app>`, envlock::env_build). SHIPS OFF. Even ON it is
+///     ADDITIONALLY user-originated (the same egress gate as open_url/web_search — an
+///     injected/autonomous build is refused) and a human-run CLI step; it verifies
+///     every downloaded artifact against the lock's hash before writing. Authoring a
+///     lock stays a human step, exactly like forge's scripts/apply_forge.sh.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct EnvlockConfig {
+    /// Master switch for the spawn-time VERIFY + SBPL-narrow. SHIPS ON. Off => the
+    /// launcher skips the closure verify + narrowing (legacy shared-.venv for all).
+    pub enabled: bool,
+    /// Gate for the ONE network step (materializing a closure). SHIPS OFF. The
+    /// fetch is ALSO user-originated (egress-gated) + human-run even when ON.
+    pub fetch_enabled: bool,
+}
+
+impl Default for EnvlockConfig {
+    fn default() -> Self {
+        // VERIFY/narrow armed-by-default (STRICT-ONLY, unpinned apps unaffected);
+        // the network FETCH is OFF (and additionally user-originated + human-run).
+        Self {
+            enabled: true,
+            fetch_enabled: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct TelemetryConfig {
@@ -4561,6 +4615,7 @@ impl Config {
             realm: section(&table, "realm", &mut issues),
             plan: section(&table, "plan", &mut issues),
             dls: section(&table, "dls", &mut issues),
+            envlock: section(&table, "envlock", &mut issues),
         };
 
         // SELECTABLE QUANTIZATION (#39) value validation: an unknown [inference]

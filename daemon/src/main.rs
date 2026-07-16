@@ -107,6 +107,7 @@ mod egress_beacon;
 // unchanged OS-protected Keychain — never a fabricated enclave claim. ARMED by
 // default ([enclave].enabled), inert without its hardware/entitlement dependency.
 mod enclave;
+mod envlock;
 mod episodic;
 // LIVE ENDPOINT SECURITY NOTIFY client (feature `endpoint-security`, DEVICE-GATED).
 // OFF by default — the normal build never compiles it. When on, it feeds kernel
@@ -1832,6 +1833,52 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Operator entrypoint: `darwind --env-build <app_name>` MATERIALIZES an app's
+    // pinned dependency closure — the ONE network step of Substrate Lock
+    // (envlock.rs). It is USER-ORIGINATED by construction (a human runs the CLI),
+    // so it passes the egress gate; it still respects [envlock].fetch_enabled
+    // (does nothing when OFF) and needs an apps/<name>/env.lock to work from. It
+    // downloads each locked artifact, verifies its sha256 FAIL-CLOSED, writes the
+    // closure into state/envstore/<hash>/, and re-verifies the whole closure
+    // before promoting it. It NEVER runs at spawn (verify does no fetch) and never
+    // authors a lock (that stays a human step, like scripts/apply_forge.sh).
+    if let Some(pos) = std::env::args().position(|a| a == "--env-build") {
+        let app_name = std::env::args().nth(pos + 1).unwrap_or_default();
+        if app_name.trim().is_empty() {
+            eprintln!("usage: darwind --env-build <app_name>");
+            std::process::exit(2);
+        }
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(std::io::stderr)
+            .init();
+        let root = resolve_root();
+        let (cfg, _issues) = Config::load(&root.join("config").join("darwin.toml"));
+        // user_originated = true: the human invoked this CLI directly.
+        match envlock::env_build(&root, &app_name, cfg.envlock.fetch_enabled, true).await {
+            envlock::BuildOutcome::Disabled => {
+                println!("envlock fetch is disabled ([envlock].fetch_enabled = false); nothing was built.");
+            }
+            envlock::BuildOutcome::Refused { message } => {
+                println!("env_build refused: {message}");
+                std::process::exit(1);
+            }
+            envlock::BuildOutcome::NoLock => {
+                println!("app {app_name:?} has no apps/{app_name}/env.lock to materialize.");
+            }
+            envlock::BuildOutcome::Built { closure_hash } => {
+                println!(
+                    "envlock BUILT + verified the closure for {app_name} at state/envstore/{closure_hash}/"
+                );
+            }
+            envlock::BuildOutcome::Failed { reason } => {
+                eprintln!("envlock BUILD FAILED for {app_name}: {reason}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
     let root = resolve_root();
     for sub in ["state/ipc", "state/logs", "state/tmp"] {
         std::fs::create_dir_all(root.join(sub))
@@ -1895,6 +1942,11 @@ async fn main() -> Result<()> {
     // allow_consequential, default false) ONCE at startup, so every integration
     // call site reads one process-global. Only the bool is logged.
     integrations::init(&cfg);
+    // SUBSTRATE LOCK (envlock.rs): install the [envlock].enabled flag ONCE so the
+    // app launcher reads one process-global (mirrors integrations::init). Armed by
+    // default — the spawn-time closure verify + SBPL-narrow is STRICT-ONLY and a
+    // no-op for unpinned apps, so arming it never changes today's launches.
+    envlock::set_verify_enabled(cfg.envlock.enabled);
     // CONTINUOUS SCREEN CONTEXT (#42): install the [screen_context] settings ONCE
     // so the relay-side continuous-snapshot push path reads one process-global gate
     // (mirrors integrations::init). SHIPS ON (enabled=true) but INERT WITHOUT
