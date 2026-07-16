@@ -26,6 +26,14 @@ pub struct Config {
     /// by default; INERT WITHOUT A REPO (with no git repo the branch commit is a
     /// no-op — the in-memory queue + read-only list still work).
     pub changeq: ChangeqConfig,
+    /// [registry] — ATTESTED REGISTRY + SBOM (registry.rs): verify plugin bytes on
+    /// YOUR OWN machine instead of trusting the publisher. ARMED BY DEFAULT for
+    /// VERIFY but INERT until the owner adds a trusted signer — the allowlist ships
+    /// EMPTY, so with no allowlisted ed25519 key NO attestation can verify and
+    /// admission is FAIL-CLOSED (nothing is admitted). Adds NO new install
+    /// authority: install stays the human-gated step; the registry only decides
+    /// eligibility.
+    pub registry: RegistryConfig,
     pub telemetry: TelemetryConfig,
     pub proactive: ProactiveConfig,
     /// [focus] — FOCUS PROFILES (#24, focus.rs). `profile` ships "default" (the
@@ -318,6 +326,18 @@ pub struct Config {
     /// or serious thermal pressure — it never loosens a gate, never makes a cloud
     /// call. The LIVE pmset/thermal reader is device-gated behind this flag.
     pub power: PowerConfig,
+    /// [snapshot] — SAFETY SNAPSHOT (snapshot.rs). `enabled` SHIPS ON
+    /// (armed-by-default). BENIGN-ONLY: before a consequential, hard-to-reverse
+    /// step (a self-heal apply, a consequential mission step) DARWIN takes a
+    /// bounded, device-gated `tmutil localsnapshot` and records the resulting
+    /// APFS restore point into the reversible journal so "undo that" can name a
+    /// concrete OS-level rollback target. Snapshot CREATION writes/deletes NONE
+    /// of the user's data (a COW marker macOS thins automatically), so it ships
+    /// on within the benign-only contract. RESTORE is NEVER automated — DARWIN
+    /// only SURFACES the restore point + the exact user-run `tmutil` command.
+    /// INERT WITHOUT APFS: a non-APFS / no-space / no-permission volume degrades
+    /// to an honest "would-have" and changes nothing.
+    pub snapshot: SnapshotConfig,
     /// [obol] — CLOUD-SPEND LEDGER + DOLLAR-CAP ROUTING BUDGET (obol.rs). A durable,
     /// bounded, secret-free spend ledger (one row per cloud call: model + token
     /// counts + dollar estimate + agent + ts) fed from the SAME point eval.rs records
@@ -414,6 +434,25 @@ pub struct Config {
     /// STRICTER, never replace a check. With it off (or a tool with no planner) the
     /// confirmation falls back to today's text preview, byte-for-byte unchanged.
     pub plan: PlanConfig,
+    /// [dls] — DARWIN LANGUAGE SERVER (dls.rs). A READ-ONLY, LOOPBACK-ONLY LSP-style
+    /// endpoint grounded in the LIVE capability graph: it completes config keys from
+    /// this module's `KNOWN_KEYS`, hovers config sections against the capability atlas
+    /// (capability.rs / atlas.rs), and lints with the daemon's REAL rules
+    /// (plugin_sdk::validate_manifest, the agent tool allowlist, KNOWN_KEYS,
+    /// mode=auto). `enabled` SHIPS OFF (opt-in — a listening socket is a surface, even
+    /// loopback + read-only). It NEVER writes config and takes NO action; it only
+    /// assists the human who edits, preserving the intentional absence of any
+    /// config-write primitive.
+    pub dls: DlsConfig,
+    /// [envlock] — SUBSTRATE LOCK (envlock.rs): reproducible env pins with
+    /// lockfile-verified dependency closures. `enabled` (the VERIFY + SBPL-narrow
+    /// half) SHIPS ON (armed-by-default) — at spawn it verifies a pinned app's
+    /// closure against its env.lock FAIL-CLOSED and narrows the sandbox to the
+    /// pinned path instead of the shared .venv; it can only ever make the sandbox
+    /// STRICTER, and an app with no env.lock is unaffected. The FETCH half
+    /// (`fetch_enabled`, materializing a closure over the network) is a separate,
+    /// user-originated, human-run step and is GATED — see below.
+    pub envlock: EnvlockConfig,
 }
 
 /// Every section and key the config knows, for unknown-key diagnostics
@@ -467,6 +506,11 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // every propose-only artifact. "enabled" is the master gate; "max_pending"
     // bounds the in-memory review window. See ChangeqConfig.
     ("changeq", &["enabled", "max_pending"]),
+    // [registry] — ATTESTED REGISTRY + SBOM (registry.rs). `verify` is the master
+    // switch; `require_rebuild_match` also demands a matching local staging rebuild;
+    // `signers` is the ed25519 allowlist (key-id -> hex pubkey), which ships EMPTY so
+    // the gate is inert until the owner adds a trusted key. See RegistryConfig.
+    ("registry", &["verify", "require_rebuild_match", "signers"]),
     ("telemetry", &["port"]),
     (
         "proactive",
@@ -998,6 +1042,15 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // below which (on battery) DARWIN prefers Fast + defers heavy work. Listed so
     // neither reads as a typo.
     ("power", &["adaptive", "low_battery_pct"]),
+    // [snapshot] — SAFETY SNAPSHOT (snapshot.rs). `enabled` SHIPS ON (armed-by-
+    // default). BENIGN-ONLY: before a consequential step (a self-heal apply, a
+    // consequential mission step) DARWIN takes a bounded `tmutil localsnapshot`
+    // and records the APFS restore point into the reversible journal so "undo
+    // that" can name a concrete OS-level rollback target. Creation writes/deletes
+    // nothing (macOS thins snapshots automatically); RESTORE is never automated —
+    // it only surfaces the user-run `tmutil` command. Listed so it never reads as
+    // a typo.
+    ("snapshot", &["enabled"]),
     // [obol] — CLOUD-SPEND LEDGER + DOLLAR-CAP BUDGET. `daily_usd_cap` ships 0.0
     // (no cap == inert; the budget is REDUCE-ONLY once a cap is set).
     ("obol", &["daily_usd_cap"]),
@@ -1072,7 +1125,34 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // a gate; falls back to today's text preview where off or no planner exists.
     // Listed so the key never reads as a typo.
     ("plan", &["enabled"]),
+    // [dls] — DARWIN LANGUAGE SERVER (dls.rs): a READ-ONLY, LOOPBACK-ONLY LSP-style
+    // endpoint that assists a human editing DARWIN's config/manifests. It completes
+    // config keys from THIS registry, hovers config sections against the live
+    // capability atlas, and lints (unknown key/section, mode=auto, over-privileged
+    // manifest, unknown agent tool) using the daemon's REAL rules. `enabled` SHIPS OFF
+    // (opt-in: a listening socket is a surface, even loopback + read-only). It NEVER
+    // writes config and takes NO action — the intentional absence of a config-write
+    // primitive is preserved. `port` is the 127.0.0.1 bind for the editor shim. Listed
+    // so neither key reads as a typo.
+    ("dls", &["enabled", "port"]),
+    // [envlock] — SUBSTRATE LOCK (envlock.rs). `enabled` SHIPS ON (armed-by-default)
+    // — the spawn-time VERIFY + SBPL-narrow (pinned closure instead of the shared
+    // .venv), which can only make the sandbox stricter and leaves unpinned apps
+    // unchanged. `fetch_enabled` gates the ONE network step (materializing a
+    // closure via `darwind --env-build <app>`) and SHIPS OFF — that fetch is
+    // additionally user-originated (egress-gated) + human-run. Listed so neither
+    // key reads as a typo.
+    ("envlock", &["enabled", "fetch_enabled"]),
 ];
+
+/// READ-ONLY accessor to the section/key registry for in-daemon tooling (the
+/// DARWIN Language Server, [`crate::dls`]). Exposes the SAME `KNOWN_KEYS` the
+/// parser validates against, so a completion / diagnostic surface stays in exact
+/// lockstep with the daemon's own unknown-key rule — the registry is the single
+/// source of truth, never a second static schema that could drift.
+pub fn known_keys() -> &'static [(&'static str, &'static [&'static str])] {
+    KNOWN_KEYS
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -1797,6 +1877,38 @@ impl Default for PowerConfig {
             // Conservative discharge threshold: below 20% on battery, prefer the
             // cheaper local Fast sub-tier + defer heavy work.
             low_battery_pct: 20,
+        }
+    }
+}
+
+/// [snapshot] — SAFETY SNAPSHOT (snapshot.rs). BENIGN-ONLY, armed by default.
+///
+///   - `enabled` (SHIPS ON, armed-by-default): the master gate. Before a
+///     consequential, hard-to-reverse step (a self-heal apply, a consequential
+///     mission step) DARWIN takes a bounded, fixed-arg `tmutil localsnapshot`
+///     and records the resulting APFS restore point into the reversible journal
+///     so "undo that" can name a concrete OS-level rollback target. Snapshot
+///     CREATION is ADDITIVE-BENIGN (a COW marker that writes/deletes NONE of the
+///     user's data; macOS thins local snapshots automatically), so it ships on
+///     within the benign-only contract. RESTORE is NEVER automated — DARWIN only
+///     SURFACES the restore point + the exact user-run `tmutil` command; it never
+///     rolls back on its own. Off => no snapshot is taken and no anchor recorded.
+///     INERT WITHOUT APFS: a non-APFS / no-space / no-permission volume degrades
+///     to an honest "would-have" and changes nothing.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SnapshotConfig {
+    pub enabled: bool,
+}
+
+impl Default for SnapshotConfig {
+    fn default() -> Self {
+        Self {
+            // SHIPS ON (armed-by-default). BENIGN-ONLY: snapshot CREATION writes/
+            // deletes none of the user's data (a COW APFS marker macOS thins
+            // automatically), and RESTORE is never automated — DARWIN only ever
+            // surfaces the restore point + the user-run `tmutil` command.
+            enabled: true,
         }
     }
 }
@@ -2650,6 +2762,34 @@ impl Default for PlanConfig {
     }
 }
 
+/// [dls] — DARWIN LANGUAGE SERVER (dls.rs): a READ-ONLY, LOOPBACK-ONLY LSP-style
+/// endpoint that assists a human editing DARWIN's config/manifests, grounded in
+/// the LIVE registry/atlas rather than a static schema. `enabled` SHIPS OFF
+/// (opt-in): a listening socket — even loopback + strictly read-only — is a
+/// surface, so it stays off until the operator turns it on for their editor. Even
+/// on, the server NEVER writes config and takes NO action (the intentional absence
+/// of a config-write primitive is preserved); it only computes completions,
+/// hovers, and diagnostics. `port` is the 127.0.0.1 bind for the thin editor shim.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DlsConfig {
+    /// Master gate for the loopback LSP endpoint. SHIPS OFF (opt-in). With it off
+    /// the serve loop is never spawned and no socket is opened.
+    pub enabled: bool,
+    /// The loopback (127.0.0.1) TCP port the editor shim connects to. Distinct from
+    /// the telemetry port (7177) and the webhook port (8723).
+    pub port: u16,
+}
+
+impl Default for DlsConfig {
+    fn default() -> Self {
+        // SHIPS OFF: read-only + loopback is low-risk, but a listening socket is a
+        // surface, so default-off is the defensible posture. The port is inert until
+        // enabled.
+        Self { enabled: false, port: 7346 }
+    }
+}
+
 /// [ui_automation] — GATED UI AUTOMATION (#44, the CAPSTONE), the SINGLE MOST
 /// DANGEROUS capability: actually ACTUATING the macOS UI (a synthetic click /
 /// type / key combo). It SHIPS ON (full-power default) and is maximally gated by
@@ -3233,6 +3373,84 @@ impl Default for ForgeConfig {
             // NO auto-deploy path even in mode=auto; deploying into apps/ is always the
             // human apply_forge.sh step. NEVER ship "auto" as the default.
             mode: "propose".to_string(),
+        }
+    }
+}
+
+/// [envlock] — SUBSTRATE LOCK (envlock.rs): reproducible env pins with
+/// lockfile-verified dependency closures. Two independently-gated halves:
+///   - `enabled` — the spawn-time VERIFY + SBPL-narrow. SHIPS ON (armed-by-default):
+///     a PINNED app (one with `apps/<name>/env.lock`) has its materialized closure
+///     under `state/envstore/<hash>/` re-hashed and compared to the lock FAIL-CLOSED
+///     (any mismatch refuses to spawn), and its sandbox is narrowed to grant
+///     exec/read of ONLY that pinned closure instead of the shared `.venv`. This can
+///     only make the sandbox STRICTER; an app with no env.lock is byte-for-byte the
+///     legacy behavior.
+///   - `fetch_enabled` — the ONE network step: MATERIALIZING a closure
+///     (`darwind --env-build <app>`, envlock::env_build). SHIPS OFF. Even ON it is
+///     ADDITIONALLY user-originated (the same egress gate as open_url/web_search — an
+///     injected/autonomous build is refused) and a human-run CLI step; it verifies
+///     every downloaded artifact against the lock's hash before writing. Authoring a
+///     lock stays a human step, exactly like forge's scripts/apply_forge.sh.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct EnvlockConfig {
+    /// Master switch for the spawn-time VERIFY + SBPL-narrow. SHIPS ON. Off => the
+    /// launcher skips the closure verify + narrowing (legacy shared-.venv for all).
+    pub enabled: bool,
+    /// Gate for the ONE network step (materializing a closure). SHIPS OFF. The
+    /// fetch is ALSO user-originated (egress-gated) + human-run even when ON.
+    pub fetch_enabled: bool,
+}
+
+impl Default for EnvlockConfig {
+    fn default() -> Self {
+        // VERIFY/narrow armed-by-default (STRICT-ONLY, unpinned apps unaffected);
+        // the network FETCH is OFF (and additionally user-originated + human-run).
+        Self {
+            enabled: true,
+            fetch_enabled: false,
+        }
+    }
+}
+
+/// [registry] — ATTESTED REGISTRY + SBOM (registry.rs): verify plugin bytes on
+/// YOUR OWN machine instead of trusting the publisher.
+///
+///   - `verify` (ships true): the VERIFY master switch. ARMED BY DEFAULT — a
+///     read-only verification gate, like [introspect]/[audit] — but INERT UNTIL
+///     THE OWNER ADDS A TRUSTED SIGNER: `signers` ships EMPTY, so with no
+///     allowlisted ed25519 key NO attestation can verify and admission refuses
+///     everything (fail-closed, not a bypass).
+///   - `require_rebuild_match` (ships true): also require a LOCAL staging rebuild
+///     whose artifact + dependency-closure (SBOM) hash MATCH the attestation (the
+///     reproducible-build check). Fail-closed: no rebuild / any mismatch => no
+///     admission.
+///   - `signers`: the allowlisted ed25519 signers, `key_id -> hex(32-byte
+///     public key)`. EMPTY by default. A malformed entry is ignored (never
+///     trusted), so a typo can only make the gate refuse more, never admit.
+///
+/// This gate adds NO NEW INSTALL AUTHORITY. Admission is ELIGIBILITY for the
+/// signed local index; the actual install stays the human-gated step (apps.rs /
+/// scripts/apply_forge.sh), exactly like forge's propose-only contract.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RegistryConfig {
+    pub verify: bool,
+    pub require_rebuild_match: bool,
+    pub signers: std::collections::BTreeMap<String, String>,
+}
+
+impl Default for RegistryConfig {
+    fn default() -> Self {
+        Self {
+            // ARMED for VERIFY (full-power default) — INERT WITHOUT A TRUSTED SIGNER:
+            // the empty `signers` allowlist admits nothing until the owner adds a key.
+            verify: true,
+            // Reproducible-build check ON: a local rebuild must match the attestation.
+            require_rebuild_match: true,
+            // EMPTY: no signer is trusted until the owner adds one (the gate is inert).
+            signers: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -4385,6 +4603,7 @@ impl Config {
             self_heal: section(&table, "self_heal", &mut issues),
             forge: section(&table, "forge", &mut issues),
             changeq: section(&table, "changeq", &mut issues),
+            registry: section(&table, "registry", &mut issues),
             telemetry: section(&table, "telemetry", &mut issues),
             proactive: section(&table, "proactive", &mut issues),
             focus: section(&table, "focus", &mut issues),
@@ -4439,6 +4658,7 @@ impl Config {
             webhooks: section(&table, "webhooks", &mut issues),
             plugin_sdk: section(&table, "plugin_sdk", &mut issues),
             power: section(&table, "power", &mut issues),
+            snapshot: section(&table, "snapshot", &mut issues),
             obol: section(&table, "obol", &mut issues),
             report: section(&table, "report", &mut issues),
             chart: section(&table, "chart", &mut issues),
@@ -4449,6 +4669,8 @@ impl Config {
             precog: section(&table, "precog", &mut issues),
             realm: section(&table, "realm", &mut issues),
             plan: section(&table, "plan", &mut issues),
+            dls: section(&table, "dls", &mut issues),
+            envlock: section(&table, "envlock", &mut issues),
         };
 
         // SELECTABLE QUANTIZATION (#39) value validation: an unknown [inference]
@@ -4699,6 +4921,30 @@ mod tests {
         );
         assert!(cfg.power.adaptive);
         assert_eq!(cfg.power.low_battery_pct, 15);
+    }
+
+    /// SAFETY SNAPSHOT: [snapshot].enabled SHIPS ON (armed-by-default; benign-only
+    /// — snapshot creation writes/deletes nothing and RESTORE is never automated),
+    /// the key is KNOWN (no unknown-key diagnostic), and it round-trips off.
+    #[test]
+    fn snapshot_defaults_on_and_key_known() {
+        let (cfg, issues) = Config::parse("");
+        assert!(issues.is_empty(), "{issues:?}");
+        assert!(
+            cfg.snapshot.enabled,
+            "[snapshot].enabled SHIPS ON (armed-by-default; benign create, restore never automated)"
+        );
+
+        let raw = r#"
+            [snapshot]
+            enabled = false
+        "#;
+        let (cfg, issues) = Config::parse(raw);
+        assert!(
+            !issues.iter().any(|i| i.contains("snapshot")),
+            "[snapshot] keys must be KNOWN (no diagnostic): {issues:?}"
+        );
+        assert!(!cfg.snapshot.enabled, "an explicit off must take");
     }
 
     /// AUTO-FOCUS: [focus].profile ships "default" (the identity) and [focus].auto

@@ -41,6 +41,11 @@ fn sticky_key(event: &str, data: &Value) -> Option<String> {
         // 15s cadence), so retain the latest frame — a HUD that connects after a
         // toggle must still learn the current vault state to render its indicator.
         "vault.status" => Some(event.to_string()),
+        // SAFETY SNAPSHOT (snapshot.rs): an anchored APFS restore point is a rare,
+        // event-driven state (not a 15s cadence), so retain the LATEST frame — a
+        // HUD that connects after a snapshot must still learn the current restore
+        // point to render "you can roll back to 14:32". Latest wins.
+        "snapshot.anchor" => Some(event.to_string()),
         // Per-app diagnostic: one retained frame per offending app.
         "app.manifest_invalid" => Some(format!(
             "app.manifest_invalid:{}",
@@ -314,6 +319,12 @@ mod tests {
         assert_eq!(
             sticky_key("app.manifest_invalid", &serde_json::json!({"name": "fab-link"})).as_deref(),
             Some("app.manifest_invalid:fab-link"),
+        );
+        // SAFETY SNAPSHOT: the anchored restore point is event-driven state a fresh
+        // HUD must still learn (to render "you can roll back to …"), so it retains.
+        assert_eq!(
+            sticky_key("snapshot.anchor", &serde_json::json!({"status": "created"})).as_deref(),
+            Some("snapshot.anchor"),
         );
         // Cadence topics are NEVER retained — the 15s pass self-heals them and a
         // replayed stale frame would contradict the next tick.

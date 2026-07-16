@@ -107,6 +107,57 @@ fn lock() -> std::sync::MutexGuard<'static, JournalState> {
     JOURNAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+// ---------------------------------------------------------------------------
+// OS-level restore-point anchor (snapshot.rs) — the reversible journal also
+// remembers the LAST APFS restore point DARWIN anchored before a consequential
+// step, so "undo that" / "what can you undo" can name a CONCRETE OS-level
+// rollback target. DARWIN never rolls back on its own — the anchor is surfaced,
+// with the exact user-run `tmutil` command, and nothing more (see snapshot.rs).
+// ---------------------------------------------------------------------------
+
+/// An OS-level restore point anchored before a consequential step (a self-heal
+/// apply or a consequential mission step). SECRET-FREE: it holds only the APFS
+/// snapshot date label, the wall-clock ts, and the FIXED reason string — never
+/// a path or its contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreAnchor {
+    /// The APFS local-snapshot date label `tmutil` printed (e.g.
+    /// "2026-07-15-143200").
+    pub label: String,
+    /// RFC3339 wall-clock time the snapshot was taken.
+    pub ts: String,
+    /// Why it was taken (a fixed, secret-free fragment: "before a self-heal
+    /// apply" / "before a consequential mission step").
+    pub reason: String,
+}
+
+/// The latest anchored restore point — latest wins (the newest anchor is the
+/// one "undo that" names). Its own small slot, separate from the action ledger,
+/// so recording an anchor never contends the ledger lock. A daemon restart
+/// starts empty (the local snapshots still exist on-disk; DARWIN just re-learns
+/// them the next time it anchors).
+static RESTORE_ANCHOR: Mutex<Option<RestoreAnchor>> = Mutex::new(None);
+
+fn anchor_lock() -> std::sync::MutexGuard<'static, Option<RestoreAnchor>> {
+    RESTORE_ANCHOR.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Record the OS restore point taken before a consequential step (called by
+/// snapshot.rs after a successful `tmutil localsnapshot`). Latest wins.
+pub fn anchor_restore_point(label: &str, ts: &str, reason: &str) {
+    *anchor_lock() = Some(RestoreAnchor {
+        label: label.to_string(),
+        ts: ts.to_string(),
+        reason: reason.to_string(),
+    });
+}
+
+/// The latest anchored restore point, if any — the retrievable seam the undo
+/// path reads to name a concrete OS-level rollback target.
+pub fn latest_restore_anchor() -> Option<RestoreAnchor> {
+    anchor_lock().clone()
+}
+
 /// Test-only reset. Tests that touch this process-global store serialize on
 /// `confirm::PENDING_TEST_LOCK` (the crate-wide global-state lock): the
 /// anthropic replay tests that hold it are exactly the tests that also write
@@ -117,6 +168,8 @@ pub(crate) fn clear_for_test() {
     g.next_seq = 1;
     g.entries.clear();
     g.expected = None;
+    drop(g);
+    *anchor_lock() = None;
 }
 
 // ---------------------------------------------------------------------------
@@ -514,26 +567,35 @@ pub fn prepare_undo() -> UndoPrep {
     }
 }
 
-/// The honest spoken answer for "what can you undo". Read-only.
+/// The honest spoken answer for "what can you undo". Read-only. When an
+/// OS-level restore point has been anchored this session (snapshot.rs), it is
+/// NAMED alongside the action verdict — even a mechanically-irreversible action
+/// may still have a concrete APFS snapshot the user can roll back to.
 pub fn status_line() -> String {
-    let g = lock();
-    match g.entries.last() {
-        None => "Nothing consequential has executed this session, so there's nothing to undo.".to_string(),
-        Some(e) if e.undone => format!(
-            "The last consequential action ({}) was already undone.",
-            short_desc(&e.preview, &e.tool)
-        ),
-        Some(e) => match &e.inverse {
-            Inverse::Ready { .. } => format!(
-                "The last consequential action was {} — say 'undo that' and I'll arm the inverse for your confirmation.",
+    let base = {
+        let g = lock();
+        match g.entries.last() {
+            None => "Nothing consequential has executed this session, so there's nothing to undo.".to_string(),
+            Some(e) if e.undone => format!(
+                "The last consequential action ({}) was already undone.",
                 short_desc(&e.preview, &e.tool)
             ),
-            Inverse::None { why } => format!(
-                "The last consequential action was {} — I can't undo it: {}.",
-                short_desc(&e.preview, &e.tool),
-                why
-            ),
-        },
+            Some(e) => match &e.inverse {
+                Inverse::Ready { .. } => format!(
+                    "The last consequential action was {} — say 'undo that' and I'll arm the inverse for your confirmation.",
+                    short_desc(&e.preview, &e.tool)
+                ),
+                Inverse::None { why } => format!(
+                    "The last consequential action was {} — I can't undo it: {}.",
+                    short_desc(&e.preview, &e.tool),
+                    why
+                ),
+            },
+        }
+    };
+    match latest_restore_anchor() {
+        Some(anchor) => format!("{base} {}", crate::snapshot::describe_anchor(&anchor)),
+        None => base,
     }
 }
 

@@ -8577,6 +8577,17 @@ pub(crate) async fn run_fury_mission(goal: &str, memory: &Memory, trusted: bool)
     // dispatch to the Anthropic cloud (the review's HIGH leak). deny_cloud can only
     // REMOVE cloud (returns key_present && !vault_active), never add it.
     let cloud_reachable = crate::vault::deny_cloud(resolve_api_key().await.is_some());
+    // SAFETY SNAPSHOT (snapshot.rs): before a consequential mission dispatches its
+    // steps, anchor an APFS restore point so a later "undo that" can name a
+    // concrete OS-level rollback target. Additive-benign (a COW marker; touches
+    // none of the user's data) and armed by default; a non-APFS/no-space volume
+    // degrades to an honest would-have. Only when a real (cloud-reachable) mission
+    // is about to run, and only when a root resolves — so hermetic tests, which
+    // set no ROOT and resolve no key, NEVER spawn tmutil.
+    if let Some(root) = cloud_reachable.then(|| ROOT.get()).flatten() {
+        let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("darwin.toml"));
+        crate::snapshot::anchor_before(crate::snapshot::Reason::MissionStep, &cfg).await;
+    }
     let registry = crate::agents::AgentRegistry::canonical();
     let model = mission_model().to_string();
     let planner = crate::mission::CloudPlanner {

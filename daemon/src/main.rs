@@ -72,6 +72,12 @@ mod diarize;
 // auto-promotes a trained adapter into the live model; training is inert without
 // Apple Silicon + mlx-lm. Hermetically tested in distill.rs.
 mod distill;
+// DARWIN LANGUAGE SERVER (dls.rs): a READ-ONLY, LOOPBACK-ONLY LSP-style endpoint
+// grounded in the LIVE capability graph — config-key completion (KNOWN_KEYS),
+// section hovers (capability atlas), and diagnostics from the daemon's REAL rules
+// (validate_manifest / agent allowlist / mode=auto / unknown key). SHIPS OFF
+// ([dls].enabled). NEVER writes config, takes NO action. Hermetically tested in dls.rs.
+mod dls;
 mod docsearch;
 // AUTO-DRAFT (#25): compose a REVIEWABLE pending draft (email reply / message /
 // doc) the user reads and sends THEMSELVES via the existing gated send. The draft
@@ -101,6 +107,7 @@ mod egress_beacon;
 // unchanged OS-protected Keychain — never a fabricated enclave claim. ARMED by
 // default ([enclave].enabled), inert without its hardware/entitlement dependency.
 mod enclave;
+mod envlock;
 mod episodic;
 // LIVE ENDPOINT SECURITY NOTIFY client (feature `endpoint-security`, DEVICE-GATED).
 // OFF by default — the normal build never compiles it. When on, it feeds kernel
@@ -279,6 +286,16 @@ mod proactive_intel;
 mod realm;
 mod recall;
 mod reflect;
+// ATTESTED REGISTRY + SBOM (registry.rs): verify plugin bytes ON YOUR OWN MACHINE
+// instead of trusting the publisher. A plugin is ADMITTED to the signed LOCAL index
+// only when (a) a STAGING rebuild's artifact + dependency-closure (SBOM) hash MATCH
+// the plugin's attestation AND (b) an allowlisted ed25519 signature over the
+// attestation verifies (reuses `ring`). PURE + FAIL-CLOSED: any mismatch / a
+// non-allowlisted or invalid signature REFUSES admission. Adds NO new install
+// authority — install stays the human-gated step (apps.rs / apply_forge.sh); the
+// registry only decides eligibility. Armed by default; INERT until the owner adds a
+// trusted signer (empty allowlist admits nothing).
+mod registry;
 // REPORT GENERATION (#40): a PURE build_report(title, sources:[SourcedClaim], cfg)
 // -> Report {sections:[{heading, body, citations}], all_citations, empty} +
 // render_markdown. Assembles already-cited notebook/research material into one
@@ -330,6 +347,15 @@ mod shell;
 mod signals;
 mod simulate;
 mod skills;
+// SAFETY SNAPSHOT (snapshot.rs): before a consequential, hard-to-reverse step (a
+// self-heal apply, a consequential mission step) DARWIN takes a bounded, device-
+// gated `tmutil localsnapshot` and records the resulting APFS restore point into
+// the reversible journal, so "undo that" can name a concrete OS-level rollback
+// target. BENIGN-ONLY (creation writes/deletes nothing; macOS thins snapshots) so
+// it ships ON; RESTORE is NEVER automated — DARWIN only surfaces the user-run
+// `tmutil` command. Non-APFS/no-space/no-permission => an honest "would-have".
+// Hermetically tested (tmutil exec injected; never spawned under test).
+mod snapshot;
 mod speech;
 mod standing;
 mod tcc;
@@ -1817,6 +1843,52 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Operator entrypoint: `darwind --env-build <app_name>` MATERIALIZES an app's
+    // pinned dependency closure — the ONE network step of Substrate Lock
+    // (envlock.rs). It is USER-ORIGINATED by construction (a human runs the CLI),
+    // so it passes the egress gate; it still respects [envlock].fetch_enabled
+    // (does nothing when OFF) and needs an apps/<name>/env.lock to work from. It
+    // downloads each locked artifact, verifies its sha256 FAIL-CLOSED, writes the
+    // closure into state/envstore/<hash>/, and re-verifies the whole closure
+    // before promoting it. It NEVER runs at spawn (verify does no fetch) and never
+    // authors a lock (that stays a human step, like scripts/apply_forge.sh).
+    if let Some(pos) = std::env::args().position(|a| a == "--env-build") {
+        let app_name = std::env::args().nth(pos + 1).unwrap_or_default();
+        if app_name.trim().is_empty() {
+            eprintln!("usage: darwind --env-build <app_name>");
+            std::process::exit(2);
+        }
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(std::io::stderr)
+            .init();
+        let root = resolve_root();
+        let (cfg, _issues) = Config::load(&root.join("config").join("darwin.toml"));
+        // user_originated = true: the human invoked this CLI directly.
+        match envlock::env_build(&root, &app_name, cfg.envlock.fetch_enabled, true).await {
+            envlock::BuildOutcome::Disabled => {
+                println!("envlock fetch is disabled ([envlock].fetch_enabled = false); nothing was built.");
+            }
+            envlock::BuildOutcome::Refused { message } => {
+                println!("env_build refused: {message}");
+                std::process::exit(1);
+            }
+            envlock::BuildOutcome::NoLock => {
+                println!("app {app_name:?} has no apps/{app_name}/env.lock to materialize.");
+            }
+            envlock::BuildOutcome::Built { closure_hash } => {
+                println!(
+                    "envlock BUILT + verified the closure for {app_name} at state/envstore/{closure_hash}/"
+                );
+            }
+            envlock::BuildOutcome::Failed { reason } => {
+                eprintln!("envlock BUILD FAILED for {app_name}: {reason}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
     let root = resolve_root();
     for sub in ["state/ipc", "state/logs", "state/tmp"] {
         std::fs::create_dir_all(root.join(sub))
@@ -1880,6 +1952,11 @@ async fn main() -> Result<()> {
     // allow_consequential, default false) ONCE at startup, so every integration
     // call site reads one process-global. Only the bool is logged.
     integrations::init(&cfg);
+    // SUBSTRATE LOCK (envlock.rs): install the [envlock].enabled flag ONCE so the
+    // app launcher reads one process-global (mirrors integrations::init). Armed by
+    // default — the spawn-time closure verify + SBPL-narrow is STRICT-ONLY and a
+    // no-op for unpinned apps, so arming it never changes today's launches.
+    envlock::set_verify_enabled(cfg.envlock.enabled);
     // CONTINUOUS SCREEN CONTEXT (#42): install the [screen_context] settings ONCE
     // so the relay-side continuous-snapshot push path reads one process-global gate
     // (mirrors integrations::init). SHIPS ON (enabled=true) but INERT WITHOUT
@@ -2341,6 +2418,29 @@ async fn main() -> Result<()> {
             telemetry::emit("system", "capability.atlas", snap);
         });
     }
+    // DARWIN LANGUAGE SERVER (dls.rs; secret-free, CONFIG-DERIVED status). Always
+    // emit the `dls.status` frame so the HUD learns the state (the shipped default
+    // is enabled=false). When ON, gather the READ-ONLY context (config snapshot +
+    // dependency probes + the capability atlas + the tool allowlist) in a spawned
+    // task — the Keychain probes must never block boot — then serve the LSP-style
+    // endpoint on 127.0.0.1:[dls].port. STRICTLY READ-ONLY + LOOPBACK: it never
+    // writes config and takes no action; it only assists a human editing DARWIN's
+    // config/manifests.
+    telemetry::emit("system", "dls.status", dls::status_frame(&cfg.dls));
+    if cfg.dls.enabled {
+        let dls_cfg = cfg.clone();
+        let dls_agents = agents.clone();
+        let dls_apps = app_registry.clone();
+        tokio::spawn(async move {
+            let ctx = dls::build_context(
+                dls_cfg.as_ref(),
+                dls_agents.as_ref(),
+                dls_apps.as_ref(),
+            )
+            .await;
+            dls::serve(std::sync::Arc::new(ctx)).await;
+        });
+    }
     // The watchdog owns the heal pipeline; it needs Memory for the
     // meta.heal_last_attempt rate limit and the meta.heal_pending marker.
     tokio::spawn(heal::watchdog(root.clone(), cfg.clone(), memory.clone()));
@@ -2663,6 +2763,17 @@ async fn main() -> Result<()> {
         #[cfg(feature = "endpoint-security")]
         es::start_and_report();
     }
+    // ATTESTED REGISTRY + SBOM (registry.rs): announce the verify-gate posture
+    // ONCE so a HUD that connects after boot learns whether plugin-byte
+    // verification is armed and how many trusted signers exist (0 => INERT). This
+    // is a SECRET-FREE status frame (a count, never a key); the verification gate
+    // itself is consulted at the human-gated install site (reconciled at
+    // integration). Read-only announce — it admits/installs nothing.
+    registry::announce_status(
+        cfg.registry.verify,
+        cfg.registry.require_rebuild_match,
+        &cfg.registry.signers,
+    );
     // Ambient EGRESS BASELINE + BEACON loop: a slow, READ-ONLY sampler over the
     // host's outbound connections (the same lsof snapshot the Egress Sentinel
     // uses). It folds each sample into a BOUNDED longitudinal baseline and runs

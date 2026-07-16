@@ -1088,6 +1088,15 @@ async fn run_pipeline(
                 );
             }
             HealAction::Auto => {
+                // SAFETY SNAPSHOT (snapshot.rs): anchor an APFS restore point
+                // BEFORE the validated diff is applied to the live daemon/, so a
+                // later "undo that" can name a concrete OS-level rollback target.
+                // Additive-benign (a COW marker; writes/deletes none of the user's
+                // data) and armed by default; a non-APFS/no-space/no-permission
+                // volume degrades to an honest would-have and changes nothing. It
+                // NEVER rolls back on its own — auto_apply still applies exactly as
+                // before; the snapshot is only a recorded restore point.
+                crate::snapshot::anchor_before(crate::snapshot::Reason::HealApply, cfg).await;
                 auto_apply(&daemon_dir, &heal_root, ts, &diff, &report).await;
             }
             HealAction::Disabled => unreachable!("gated above"),

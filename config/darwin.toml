@@ -56,6 +56,9 @@ quant = "auto"          # #39 SELECTABLE QUANTIZATION for the local model load. 
 adaptive = true         # master gate. SHIPS ON (full-power default). PERF-ONLY: the conservative policy may prefer the cheaper local Fast sub-tier + defer heavy work on low battery (discharging) or serious/critical thermal pressure. Never loosens a gate, never makes a cloud call. The live pmset/thermal read is DEVICE-GATED behind this flag. Set false to disable.
 low_battery_pct = 20    # #38 discharge threshold: below this % ON BATTERY, prefer the cheaper local Fast sub-tier + defer heavy work. On AC + nominal thermal the policy never throttles regardless.
 
+[snapshot]               # SAFETY SNAPSHOT — APFS restore-point anchoring in the reversible journal. Before a consequential, hard-to-reverse step (a self-heal apply, a consequential mission step) DARWIN takes a bounded, device-gated `tmutil localsnapshot` and records the resulting APFS restore point into the journal so "undo that" can name a concrete OS-level rollback target.
+enabled = true           # SHIPS ON (armed-by-default). BENIGN-ONLY: snapshot CREATION writes/deletes NONE of your data (a COW APFS marker macOS thins automatically). RESTORE is NEVER automated — DARWIN only SURFACES the restore point + the exact user-run `tmutil` command; it never rolls back on its own. INERT WITHOUT APFS: a non-APFS / no-space / no-permission volume degrades to an honest "would-have" and changes nothing. Set false to disable.
+
 [obol]                   # OBOL — CLOUD-SPEND LEDGER + DOLLAR-CAP ROUTING BUDGET. A durable, bounded, SECRET-FREE spend ledger (one row per cloud call: model + token counts + $ estimate + agent + ts) fed from the SAME point eval.rs records cloud usage. The budget is REDUCE-ONLY: Override > Budget-floor > Auto > Fallback — it can ONLY step a near/over-cap turn DOWN to a cheaper/on-device tier. It NEVER loosens a gate, NEVER escalates to a pricier model, and NEVER blocks a call you EXPLICITLY force (a voice/HUD override beats the budget-floor).
 daily_usd_cap = 0.0     # daily cloud-spend cap in USD. SHIPS 0.0 == NO CAP (INERT): budget_pressure is always None, so routing is byte-for-byte today's; the ledger still records honest accounting. Set a positive value to arm the budget-floor — at ~80% of the cap a Heavy turn eases down to Fast; at/over the cap the turn is floored to the on-device Local path (no further cloud spend). It only ever routes cheaper.
 
@@ -187,6 +190,14 @@ mode = "propose"  # "propose" (default): write the validated patch + report to s
 enabled = true    # master gate, SHIPS ON (full-power default) — INERT WITHOUT A CLOUD KEY: forge_draft requires the cloud key (emits forge.blocked{reason:"no_api_key"} otherwise). When active: forge_draft(goal) asks the heavy cloud model to author a complete micro-app (manifest with MINIMAL permissions + source file(s) + tests) -> stage to state/forge/staging-<ts>/ (NEVER apps/) -> validate the manifest (safe name, permissions on the allowed minimal set, default-deny SBPL generates) + build/test the app under a timeout cap -> on pass, PROPOSE to state/forge/proposals/<ts>/ + stamp meta.forge_pending and STOP; on fail, quarantine to state/forge/rejected/<ts>/. The proposed app is NOT in apps/, NOT registered, NOT running. Set false to disable.
 mode = "propose"  # "propose" (default): write the validated app + report to state/forge/proposals/<ts>/, stamp meta.forge_pending, and wait for a human to run scripts/apply_forge.sh <ts>. "auto" (additionally requires enabled = true) ONLY governs the forge's own staged artifact — IT NEVER DEPLOYS. DEPLOYING a forged app into apps/ (where AppRegistry::discover would pick it up and run it on next start) is ALWAYS a separate human step: there is no auto-deploy path in the daemon, period. Unknown values behave as "propose".
 
+[envlock]
+# SUBSTRATE LOCK (envlock.rs): reproducible env pins with lockfile-verified dependency closures.
+# NARROWS (never widens) two documented docs/SANDBOX.md caveats — the shared-.venv reach and venv drift.
+# A micro-app may be PINNED to a CONTENT-ADDRESSED closure materialized at state/envstore/<hash>/,
+# described by apps/<name>/env.lock (the per-file hashes the closure is the content address of).
+enabled = true         # VERIFY + SBPL-narrow half, SHIPS ON (armed-by-default). At SPAWN a pinned app's on-disk closure is re-hashed and compared to env.lock FAIL-CLOSED (any changed/missing/extra file or tampered lock REFUSES to spawn — never a silent fall-back to the shared .venv), and the sandbox is narrowed to grant exec/read of ONLY the pinned closure instead of the whole shared .venv (strictly narrower, read-only, app-specific). An app with NO env.lock is unaffected (legacy shared-.venv). This half is READ + VERIFY + NARROW only — zero network. Set false to skip verify/narrow.
+fetch_enabled = false  # The ONE network step: MATERIALIZING a closure (darwind --env-build <app>, envlock::env_build). SHIPS OFF. Even ON it is ADDITIONALLY user-originated — the SAME egress gate as open_url/web_search, so an injected or autonomous build is REFUSED — and a human-run CLI step; it downloads each locked artifact, verifies its sha256 against env.lock FAIL-CLOSED, and re-verifies the whole closure before promoting it. Authoring a lock stays a human step, exactly like forge's scripts/apply_forge.sh. The sandboxed app itself still gets ZERO network regardless.
+
 [optimize]
 # Optimization-from-usage loop (optimize.rs): DARWIN records a local, PII-redacted
 # trace of each interaction + its outcome (did the user correct/redirect on the
@@ -215,6 +226,23 @@ mode = "propose"  # "propose" (default): the downstream Optimizer reuses the sel
 # + re-validation — it invents NO new apply authority — and rollback is a safe git revert.
 enabled = true       # master gate, SHIPS ON (full-power default) — INERT WITHOUT A REPO: with no git repo the branch commit is a no-op (the in-memory queue + the read-only list still work); it never fabricates a branch it could not create. It changes NOTHING about any writer's propose-only contract — apply still runs each type's mandatory re-validation + human confirmation. Set false to register nothing.
 max_pending = 64     # BOUND on the in-memory review window (clamped to [1, 512]); past it the OLDEST pending proposal is evicted so the lane can never grow without bound.
+
+[registry]
+# ATTESTED REGISTRY + SBOM (registry.rs): verify plugin bytes ON YOUR OWN MACHINE
+# instead of trusting the publisher. A plugin is ADMITTED to DARWIN's signed LOCAL
+# index only when BOTH gates clear: (a) a re-derived build in the STAGING sandbox
+# produces an artifact hash + a dependency-closure (SBOM) hash that MATCH the plugin's
+# attestation (the reproducible-build check), AND (b) an allowlisted ed25519 signature
+# over the attestation verifies (reuses `ring`, the vetted crate already in the tree).
+# FAIL-CLOSED: any hash mismatch, a non-allowlisted signer, or an invalid/tampered
+# signature REFUSES admission. This is a VERIFICATION GATE and adds NO new install
+# authority — install stays the human-gated step (apps.rs / scripts/apply_forge.sh); the
+# registry only decides ELIGIBILITY. "Trust the publisher" becomes "verify the bytes on
+# my own machine".
+verify = true                 # VERIFY master switch. ARMED BY DEFAULT (read-only verification gate, like [introspect]/[audit]) — but INERT WITHOUT A TRUSTED SIGNER: the [registry.signers] allowlist ships EMPTY, so with no allowlisted ed25519 key NO attestation can verify and admission is FAIL-CLOSED (nothing is admitted) until the owner adds a trusted key. Set false to disable.
+require_rebuild_match = true  # also require a LOCAL staging rebuild whose artifact + dependency-closure (SBOM) hash MATCH the attestation before admission (the reproducible-build check). SHIPS ON; fail-closed (no rebuild / any mismatch => no admission).
+# [registry.signers]          # allowlisted ed25519 signers: <key-id> = "<hex-encoded 32-byte public key>". EMPTY by default (the gate is inert until the owner adds a trusted key). A malformed entry is ignored (never trusted). Example:
+# owner-key-1 = "3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29"
 
 [explain]
 # CAUSA (explain.rs): the causal decision-trace explainer — "why did you do that" /
@@ -839,6 +867,21 @@ poll_interval_secs = 5         # seconds between frontmost-app/window samples (f
 
 [handoff]                      # CONTINUITY HANDOFF (handoff.rs) — resume a LIVE cognitive session on ANOTHER of your Macs. A session capsule (transcript window, active agent, mission ref, world-model deltas, draft ids, focus profile) is sealed over the SAME [sync] AES-256-GCM path under a Keychain-paired handoff_shared_key; the receiver restores context and PARKS. AUTHORITY NEVER TRANSFERS: the capsule carries NO credential/bearer (redacted), and every consequential step re-hits the fresh confirm + voice-id + master switch + lockdown on the receiving device.
 enabled = false                # SHIPS OFF (rides [sync], also OFF). Set true (with sync paired) to seal/resume session capsules between your own devices.
+
+# DARWIN LANGUAGE SERVER (daemon/src/dls.rs) — a READ-ONLY, LOOPBACK-ONLY LSP-style
+# endpoint for a human editing DARWIN's config/manifests, grounded in the LIVE
+# capability graph (never a static schema): it COMPLETES config keys from the daemon's
+# own KNOWN_KEYS registry, HOVERS a config section against the live capability atlas
+# (capability.rs/atlas.rs), and DIAGNOSES with the daemon's REAL rules — an
+# over-privileged/malformed manifest (plugin_sdk::validate_manifest), a `net` scope
+# without net_hosts, an unknown agent tool (the agents.rs allowlist), a `mode = "auto"`
+# autonomy lint, and an unknown config key/section (KNOWN_KEYS). It NEVER writes config
+# and takes NO action (the intentional absence of a config-write primitive is preserved);
+# it only assists the human who edits. Point a thin editor shim at 127.0.0.1:<port> and
+# send one JSON request per line ({"id":N,"method":"completion|hover|diagnostics","params":{…}}).
+[dls]
+enabled = false                # SHIPS OFF (opt-in). A read-only loopback socket is low-risk, but a listening socket is still a surface, so it stays off until you point an editor at it. true = serve the LSP-style endpoint on the loopback port below.
+port = 7346                    # loopback (127.0.0.1) bind for the editor shim. Distinct from telemetry (7177) and webhooks (8723). Inert until enabled.
 
 [voice.voices]
 # Per-agent ElevenLabs voice ids: agent name -> EL voice id. An UNMAPPED agent
