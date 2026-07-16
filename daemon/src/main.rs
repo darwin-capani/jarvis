@@ -39,6 +39,13 @@ mod cartographer;
 // interpolation, no invented/extrapolated point, honest axes), with an honest-empty
 // state. NEUTRAL presentation (fire-and-forget telemetry, dropped with no HUD); the
 // "chart this" op ships ON ([chart].enabled; a neutral presentation act, safe to enable). Hermetically tested in chart.rs.
+// CHANGE QUEUE (changeq.rs): ONE git-native review lane unifying every propose-only
+// artifact (heal / code / forge / optimize). Pure bookkeeping over already-propose-only
+// stores — it invents NO new apply authority: changeq_apply routes to each type's
+// EXISTING gated apply script + re-validation, and rollback is a safe `git revert`.
+// Armed by default ([changeq].enabled), INERT WITHOUT A REPO. The git exec is the
+// device-gated runner (built, never invoked under test — like realm.rs).
+mod changeq;
 mod chart;
 mod code;
 mod command;
@@ -190,6 +197,12 @@ mod model_tier;
 // store — so the intent reaches the notebook end-to-end. Hermetically tested in
 // notebook.rs.
 mod notebook;
+// OBOL (obol.rs): a durable, bounded, secret-free cloud-spend LEDGER + a dollar-cap
+// ROUTING BUDGET. Fed from the SAME point eval.rs records cloud usage; the budget is
+// a REDUCE-ONLY tier precedence input (Override > Budget-floor > Auto > Fallback)
+// that can only route cheaper/more-local under a daily cap. Ships INERT
+// ([obol].daily_usd_cap = 0.0). Exercised by obol.rs's own hermetic tests.
+mod obol;
 // The Trace Store + Optimizer: the local, PII-redacted record the
 // optimization-from-usage loop learns from, plus the propose-only optimizer that
 // reads it. Now WIRED LIVE: the turn loop calls optimize::record_trace at the
@@ -217,6 +230,13 @@ mod aperture;
 // signing/notarization + Gatekeeper, with a pure baseline diff. It reports; it
 // never remediates.
 mod persistence;
+// PLAN-APPLY: a structured, STATE-BOUND diff for a parked consequential action
+// (connector_add / standing_create). Upgrades the confirm PREVIEW from prose to a
+// field-level DIFF bound to a hash of the current state; the confirm path re-checks
+// the hash and RE-PARKS on drift (TOCTOU-safe). ADDITIVE — it can only make the
+// gate stricter, never replace the master switch / voice-id / confirm. Pure core
+// (planners + bind) is hermetically tested in plan.rs.
+mod plan;
 mod playback;
 mod plugin_sdk;
 mod policy;
@@ -295,6 +315,7 @@ mod sync;
 // master switch + lockdown. Ships OFF (rides sync, also OFF). Hermetically tested.
 mod handoff;
 mod router;
+mod runbook;
 mod screen_context;
 mod secret_scan;
 mod selector;
@@ -535,12 +556,13 @@ fn resolve_root() -> PathBuf {
 
 /// The four sensitive SQLite stores that whole-file SQLCipher encryption covers,
 /// as paths under `state/`. The migration on enable re-keys each existing one.
-fn sensitive_db_paths(state_dir: &Path) -> [PathBuf; 4] {
+fn sensitive_db_paths(state_dir: &Path) -> [PathBuf; 5] {
     [
         state_dir.join("darwin.db"),            // memory.rs main Db
         state_dir.join("docsearch.db"),         // docsearch.rs
         state_dir.join("audit.db"),             // audit.rs
         state_dir.join("optimize").join("optimize.db"), // optimize.rs trace store
+        state_dir.join("obol").join("obol.db"), // obol.rs spend ledger (secret-free, custody-consistent)
     ]
 }
 
@@ -623,6 +645,15 @@ fn open_trace_store(path: &Path, key: Option<&crypto::SecretKey>) -> Result<opti
     match key {
         Some(k) => optimize::TraceStore::open_encrypted(path, k),
         None => optimize::TraceStore::open(path),
+    }
+}
+
+/// Open the OBOL spend ledger honoring the resolved encryption state (same custody
+/// seam as the trace store; the ledger is secret-free but stays custody-consistent).
+fn open_spend_ledger(path: &Path, key: Option<&crypto::SecretKey>) -> Result<obol::SpendLedger> {
+    match key {
+        Some(k) => obol::SpendLedger::open_encrypted(path, k),
+        None => obol::SpendLedger::open(path),
     }
 }
 
@@ -2092,6 +2123,27 @@ async fn main() -> Result<()> {
     // Install the global trace store so the read-only `oracle_ask` query tool can
     // reach the corpus without threading it through the whole tool-dispatch chain.
     optimize::set_global_trace_store(trace_store.clone());
+
+    // OBOL spend ledger: a durable, bounded, secret-free record of every cloud call
+    // in its OWN dedicated SQLite file (state/obol/obol.db), opened + held for the
+    // daemon's life exactly like the trace store. It is fed from the SAME point
+    // eval.rs records cloud usage (eval::record_cloud_usage -> obol::record_cloud_spend),
+    // so it needs no per-call threading — just the process-global sink. The in-memory
+    // day total (driving the REDUCE-ONLY dollar-budget) is seeded from the ledger so a
+    // restart does not briefly under-count today's spend, and a periodic meter task
+    // emits the read-only `obol.spend` report the HUD SPEND // CLOUD METER renders.
+    let obol_root = root.join("state").join("obol");
+    if let Err(e) = std::fs::create_dir_all(&obol_root) {
+        warn!(error = %e, "obol: failed to create state/obol dir");
+    }
+    let spend_ledger = Arc::new(open_spend_ledger(
+        &obol_root.join("obol.db"),
+        master_key.as_ref(),
+    )?);
+    obol::install_ledger(spend_ledger.clone());
+    obol::seed_day_cache(&spend_ledger).await;
+    tokio::spawn(obol::spend_meter_task(cfg.clone(), spend_ledger.clone()));
+
     // Install the config path so the CONSEQUENTIAL `connector_add` tool can append
     // a vetted [[mcp.servers]] block to darwin.toml (same OnceLock pattern).
     connector::set_config_path(root.join("config").join("darwin.toml"));
@@ -2148,6 +2200,14 @@ async fn main() -> Result<()> {
     // window — this only sets the gate + cap, it opens no surface.
     artifact::configure(cfg.artifact.enabled, cfg.artifact.registry_size);
 
+    // CHANGE QUEUE (changeq.rs): apply the [changeq] master gate + the bounded
+    // review-window cap to the process-global queue every propose-only writer
+    // registers into (heal / code / forge / optimize) and the read-only
+    // `changeq_list` reads back out. Pure bookkeeping — this only sets the gate +
+    // cap; the git mirror is the device-gated runner and apply still routes to each
+    // type's own gated script.
+    changeq::configure(cfg.changeq.enabled, cfg.changeq.max_pending);
+
     // Micro-app runtime substrate (docs/SANDBOX.md): scan apps/ for manifests
     // so voice ("open global scan") and [apps].autostart can resolve them. The
     // session HMAC key is initialized lazily on first token mint and never
@@ -2199,6 +2259,15 @@ async fn main() -> Result<()> {
     // panel can render the external-tool surface read-only. Shipped-OFF default
     // (enabled=false, no servers) yields an empty, honest "MCP off" snapshot.
     telemetry::emit("system", "mcp.status", mcp_status);
+    // RUNBOOK subsystem status (runbook.rs; secret-free): whether the benign-only,
+    // typed automation-DAG subsystem is enabled and its step bound. SHIPS OFF; a
+    // runbook carries no authority (every consequential step PARKS fresh, one at a
+    // time), so the frame just reports the master switch + bound for the HUD.
+    telemetry::emit(
+        "system",
+        "runbook.status",
+        crate::runbook::status_frame(cfg.runbook.enabled, cfg.runbook.max_steps),
+    );
     // AT-REST ENCRYPTION status (#11; secret-free — NEVER the key). Drives the HUD
     // ENCRYPTED AT REST / NOT ENCRYPTED indicator + the honest scope copy. `active`
     // is the GROUND TRUTH (the master key actually resolved this run), not just the
@@ -2275,6 +2344,16 @@ async fn main() -> Result<()> {
     // The watchdog owns the heal pipeline; it needs Memory for the
     // meta.heal_last_attempt rate limit and the meta.heal_pending marker.
     tokio::spawn(heal::watchdog(root.clone(), cfg.clone(), memory.clone()));
+
+    // CHANGE QUEUE (changeq.rs): the device-gated mirror task. When [changeq] is
+    // armed AND the project is a git repo, it periodically mirrors each pending
+    // propose-only proposal (registered by the writers) onto the dedicated LOCAL
+    // darwin/changeq review branch via bounded, fixed-arg git plumbing that NEVER
+    // touches the working tree or HEAD. INERT WITHOUT A REPO (no-ops until
+    // <root>/.git exists); it applies nothing and invents no apply authority.
+    if cfg.changeq.enabled {
+        tokio::spawn(changeq::mirror_task(root.clone()));
+    }
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     // The capture thread gets the ONLY sender: if audio capture ever dies
@@ -4846,6 +4925,7 @@ mod tests {
             preview: "Send an email to a@b.com.".to_string(),
             created_at: Instant::now(),
             id: String::new(),
+            plan: None,
         };
         let prompt = confirm::park(pending);
         let last_reply = Some(prompt.as_str());

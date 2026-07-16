@@ -1065,6 +1065,27 @@ async fn run_pipeline(
         AttemptResult::Proposed { diff, report, files, confidence, .. } => match action {
             HealAction::Propose => {
                 propose(memory, &heal_root, ts, &diff, &report, &files, confidence).await;
+                // CHANGE QUEUE (changeq.rs): ALSO register this propose-only artifact
+                // into the unified git-native review lane. Pure bookkeeping — the
+                // validated patch was already written to state/heal/proposals/<ts>/;
+                // this mirrors it into the queue (and, on-device, onto darwin/changeq)
+                // with secret-free provenance. It changes NOTHING about the
+                // propose-only contract; apply still routes to scripts/apply_heal.sh.
+                crate::changeq::on_proposal(
+                    crate::changeq::ChangeKind::Heal,
+                    ts,
+                    crate::changeq::Provenance::new(
+                        "self-heal",
+                        cfg.cloud.heavy_model.clone(),
+                        ts.to_string(),
+                        crate::changeq::fingerprint(diff.as_bytes()),
+                    ),
+                    format!(
+                        "validated patch, {} file{}, review confidence {confidence:.2}",
+                        files.len(),
+                        if files.len() == 1 { "" } else { "s" }
+                    ),
+                );
             }
             HealAction::Auto => {
                 auto_apply(&daemon_dir, &heal_root, ts, &diff, &report).await;

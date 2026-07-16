@@ -1293,6 +1293,28 @@ fn tool_defs() -> &'static Value {
                 }
             },
             {
+                "name": "changeq_list",
+                "description": "List the CHANGE QUEUE — every PENDING propose-only proposal DARWIN has produced this session, unified into one git-native review lane. Call this when the user asks 'what changes are pending', 'show the change queue', 'what proposals are waiting for review', 'what's queued to apply', or similar. It returns, READ-ONLY and SECRET-FREE, each pending proposal's kind (self-heal patch / code diff / forged app / routing optimization), its proposal timestamp, the artifact locator (the proposal-store path under state/), a short summary, its provenance (the agent + model that produced it, the run id, and a content fingerprint — NEVER a secret/token), and the EXACT existing apply command for it. Each proposal is also mirrored onto a dedicated LOCAL git branch (darwin/changeq) for review. READ-ONLY: it applies nothing, changes nothing, reaches no network — it only lists what is already proposed. When nothing is pending it says so plainly and never invents a proposal. Armed by default.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string", "description": "Optional filter — one of 'heal', 'code', 'forge', 'optimize'. Omit to list ALL pending proposals."}
+                    }
+                }
+            },
+            {
+                "name": "changeq_apply",
+                "description": "Resolve a PENDING change-queue proposal to its apply route — the EXACT EXISTING human-gated apply command for that proposal type. Call this when the user asks to apply/deploy a specific queued proposal ('apply the code proposal from <ts>', 'deploy the forged app', 'apply the pending heal patch'). PROPOSE-ONLY + HUMAN-GATED: this does NOT apply anything itself and invents NO new authority. It looks up the chosen proposal (by kind + timestamp) and returns the SAME existing, confined apply script the proposal type has always used (scripts/apply_heal.sh / scripts/apply_code_diff.sh / scripts/apply_forge.sh / scripts/apply_optimization.sh <ts>) — which re-validates the change and applies it under that type's own gate, plus the safe git-revert rollback command. The human runs the apply command after reviewing; nothing is applied until they do. When no such proposal is queued it says so honestly and never fabricates an apply route. Be explicit that you are surfacing the manual, re-validating apply command — never claim a change was applied.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string", "description": "The proposal type: 'heal', 'code', 'forge', or 'optimize'."},
+                        "ts": {"type": "integer", "description": "The proposal timestamp (<ts>) shown by changeq_list."}
+                    },
+                    "required": ["kind", "ts"]
+                }
+            },
+            {
                 "name": "artifact_peek",
                 "description": "Peek at the LAST thing you produced — READ-ONLY recall over the in-memory, on-device Artifact Registry (the last N results the assistant made this session: reports, charts, code-diff proposals, drafts, notebooks, forecasts, docsearch answers). Call this when the user asks 'what did you just do', 'what did you just make/produce', 'peek', or 'show me that again'. It returns WHAT was produced (kind + title), WHO/WHAT backs it (the real producing agent + the real citations — or plainly UNCITED when the artifact carried no source), and a compact preview, and it surfaces the artifact on the HUD's QuickLook overlay. HONEST: an uncited artifact is reported as uncited, never dressed up with a fabricated source; when nothing has been produced yet it says so plainly and never invents an artifact. READ-ONLY + ON-DEVICE: it reads back what was already produced — it opens no network, takes no action, and changes nothing. Armed by default; with no id it returns the MOST RECENT artifact.",
                 "input_schema": {
@@ -3569,6 +3591,26 @@ struct CodeExplainArgs {
 struct CodeProposeDiffArgs {
     /// The change to make, in the user's own words.
     request: String,
+}
+
+// -- CHANGE QUEUE tool args (crate::changeq) -------------------------------------
+// changeq_list is READ-ONLY: it lists pending propose-only proposals (kind + ts +
+// artifact locator + provenance + the existing apply command). changeq_apply is
+// PROPOSE-ONLY + human-gated: it resolves a chosen proposal to THAT type's EXISTING
+// apply script (never a new authority) + the safe git-revert rollback. Neither
+// applies anything or reaches the network.
+#[derive(Deserialize)]
+struct ChangeqListArgs {
+    /// Optional kind filter ('heal'/'code'/'forge'/'optimize'). Absent => list ALL.
+    #[serde(default)]
+    kind: Option<String>,
+}
+#[derive(Deserialize)]
+struct ChangeqApplyArgs {
+    /// The proposal type: 'heal' / 'code' / 'forge' / 'optimize'.
+    kind: String,
+    /// The proposal timestamp (<ts>) shown by changeq_list.
+    ts: u64,
 }
 
 // -- ARTIFACT PEEK tool args (crate::artifact) -----------------------------------
@@ -6507,6 +6549,9 @@ async fn execute_mcp_tool(
                 preview: preview_text.clone(),
                 created_at: std::time::Instant::now(),
                 id: String::new(),
+                // Dynamic MCP tools have no per-tool structured planner -> text
+                // preview path, unchanged.
+                plan: None,
             });
             crate::audit::record_global(
                 namespace, flat, &preview_text,
@@ -6833,6 +6878,11 @@ pub async fn execute_tool(
             // and the journal byte-identical. Fail-open by construction: an
             // empty note list leaves the prompt byte-identical too.
             let advisories = crate::consensus::second_look(name, input, memory).await;
+            // PLAN-APPLY: compute the structured, STATE-BOUND diff for a tool with a
+            // per-tool planner (connector_add / standing_create); `None` for every
+            // other tool leaves the text-preview path byte-for-byte unchanged. The
+            // plan carries the state_hash the confirm path re-checks (drift -> re-park).
+            let plan = compute_plan(name, input, memory, true).await;
             // Park THE EXACT original input (not the confirm-stripped copy) so the
             // replay fires precisely what the user was shown. New consequential
             // invocation replaces any prior pending (single slot).
@@ -6845,6 +6895,7 @@ pub async fn execute_tool(
                 created_at: std::time::Instant::now(),
                 // park() (re)derives the stable content id; leave it empty here.
                 id: String::new(),
+                plan: plan.clone().map(Box::new),
             });
             let prompt = crate::consensus::compose_prompt(&prompt, &advisories);
             crate::audit::record_global(
@@ -6856,6 +6907,16 @@ pub async fn execute_tool(
                 "confirm.parked",
                 json!({"tool": name, "agent": namespace}),
             );
+            // PLAN-APPLY: emit the structured diff for the HUD PLAN // DIFF panel
+            // (phase=park, drift=false). Only for a tool with a planner — an
+            // unplanned tool emits nothing, so the panel stays empty (unchanged).
+            if let Some(ref p) = plan {
+                telemetry::emit(
+                    "system",
+                    "plan.diff",
+                    crate::plan::telemetry_frame(p, namespace, "park", false),
+                );
+            }
             if !advisories.is_empty() {
                 telemetry::emit(
                     "system",
@@ -6939,6 +7000,59 @@ pub async fn replay_confirmed_action(
             format!("This agent is not permitted to use the '{}' tool.", pending.tool),
             true,
         );
+    }
+    // PLAN-APPLY STATE-HASH BIND (plan.rs): when the parked action carried a
+    // structured, STATE-BOUND plan, RECOMPUTE the current state hash and only let
+    // the replay proceed if it STILL MATCHES the hash the user was shown. This is
+    // TOCTOU-safe by construction: a state change between the plan and the spoken
+    // "yes" (a colliding connector added, a mission list mutated) DRIFTS the hash,
+    // and we RE-PARK a fresh plan and fire NOTHING instead of executing a stale one.
+    //
+    // STRICTLY ADDITIVE — this can ONLY make the gate stricter:
+    //   * It runs AFTER voice-id + the allowlist (both already refused above if
+    //     they must), so it never bypasses them — a drifted action for an
+    //     unrecognized speaker is still refused by voice-id first.
+    //   * A MATCH (or a tool with no plan, or the plan section off) simply FALLS
+    //     THROUGH to the UNCHANGED dispatch below, where `gate(confirm)` STILL
+    //     requires the master switch on — the state-hash never substitutes for it.
+    //   * The only new outcome is a DRIFT re-park, which executes NOTHING.
+    // Fail-safe: an un-recomputable state (`compute_plan` -> None while a plan WAS
+    // parked) is treated as drift (`plan::bind_state`), never as a silent proceed.
+    if pending.plan.is_some() {
+        let fresh = compute_plan(&pending.tool, &pending.input, memory, false).await;
+        if let crate::plan::StateBind::Drifted(new_plan) =
+            crate::plan::bind_state(pending.plan.as_deref(), fresh)
+        {
+            warn!(tool = %pending.tool, "plan-apply: state drifted since the plan was shown; re-parking a fresh plan instead of executing");
+            // Re-park the FRESH plan into the (now-empty, taken by the caller) slot
+            // so the user re-confirms the CURRENT diff. Same agent/tool/input/
+            // allowlist; only the plan + preview refresh.
+            let repark_preview = plan_drift_preview(&pending.preview, &new_plan);
+            let prompt = crate::confirm::park(crate::confirm::PendingConfirmation {
+                agent: pending.agent.clone(),
+                tool: pending.tool.clone(),
+                input: pending.input.clone(),
+                allowed: pending.allowed.clone(),
+                preview: repark_preview,
+                created_at: std::time::Instant::now(),
+                id: String::new(),
+                plan: Some(Box::new(new_plan.clone())),
+            });
+            // Emit confirm.parked FIRST, then the plan.diff — the HUD's confirm.parked
+            // supersede clears the prior diff, so the fresh drift diff must land AFTER
+            // it (same clear-then-set order as the initial park sites).
+            crate::telemetry::emit(
+                "system",
+                "confirm.parked",
+                json!({"tool": pending.tool, "agent": pending.agent, "via": "plan_drift"}),
+            );
+            crate::telemetry::emit(
+                "system",
+                "plan.diff",
+                crate::plan::telemetry_frame(&new_plan, &pending.agent, "confirm", true),
+            );
+            return (prompt, false);
+        }
     }
     // If the master switch was turned OFF between park and confirm, Execute is
     // impossible: gate(true) would be DryRun, so the replay would only preview.
@@ -7780,6 +7894,23 @@ async fn dispatch_tool(
         "code_propose_diff" => match serde_json::from_value::<CodeProposeDiffArgs>(input.clone()) {
             Ok(args) => Ok(code_propose_diff_tool(&args.request).await),
             Err(e) => Err(anyhow!("invalid code_propose_diff arguments: {e}")),
+        },
+        // -- CHANGE QUEUE (crate::changeq) ------------------------------------
+        // changeq_list is READ-ONLY: it lists the pending propose-only proposals
+        // (heal / code / forge / optimize) unified into one git-native review lane,
+        // with each one's provenance + the EXISTING apply command. It applies
+        // nothing, changes nothing, reaches no network. Armed by default.
+        "changeq_list" => match serde_json::from_value::<ChangeqListArgs>(input.clone()) {
+            Ok(args) => Ok(changeq_list_tool(args.kind.as_deref())),
+            Err(e) => Err(anyhow!("invalid changeq_list arguments: {e}")),
+        },
+        // changeq_apply is PROPOSE-ONLY + human-gated: it resolves a chosen pending
+        // proposal to THAT type's EXISTING gated apply script (never a new
+        // authority) + the safe git-revert rollback. It applies NOTHING itself —
+        // the human runs the surfaced, re-validating apply command.
+        "changeq_apply" => match serde_json::from_value::<ChangeqApplyArgs>(input.clone()) {
+            Ok(args) => Ok(changeq_apply_tool(&args.kind, args.ts)),
+            Err(e) => Err(anyhow!("invalid changeq_apply arguments: {e}")),
         },
         // -- ARTIFACT PEEK (crate::artifact) ----------------------------------
         // READ-ONLY recall over the in-memory, on-device Artifact Registry: read
@@ -9424,6 +9555,23 @@ async fn code_propose_diff_tool(request: &str) -> String {
                 citations,
                 format!("diff: +{added}/-{removed} lines, {hunks} hunk{}", if hunks == 1 { "" } else { "s" }),
             );
+            // CHANGE QUEUE (changeq.rs): ALSO register this propose-only artifact into
+            // the unified git-native review lane. Pure bookkeeping — the diff was
+            // already written to state/code/proposals/<ts>/; this mirrors it into the
+            // queue (and, on-device, onto the darwin/changeq branch) with secret-free
+            // provenance. It changes NOTHING about the propose-only contract; apply
+            // still routes to scripts/apply_code_diff.sh (the existing gate).
+            crate::changeq::on_proposal(
+                crate::changeq::ChangeKind::Code,
+                ts,
+                crate::changeq::Provenance::new(
+                    "steve",
+                    load_heavy_model(),
+                    ts.to_string(),
+                    crate::changeq::fingerprint(diff.as_bytes()),
+                ),
+                format!("diff: +{added}/-{removed} lines, {hunks} hunk{}", if hunks == 1 { "" } else { "s" }),
+            );
             let mut reply = format!(
                 "I drafted a reviewable change and wrote it to the proposal store — I have NOT \
                  touched your code. Review the diff, then run `{apply_cmd}` to apply it (it \
@@ -9458,6 +9606,102 @@ async fn code_propose_diff_tool(request: &str) -> String {
         // code_propose_diff never produces the explain-only verdicts.
         _ => "I couldn't complete that change proposal just now, sir.".to_string(),
     }
+}
+
+// -- CHANGE QUEUE (crate::changeq) -----------------------------------------------
+
+/// changeq_list core: a READ-ONLY listing of the pending propose-only proposals in
+/// the unified git-native review lane. Optionally filtered by `kind`. Re-emits the
+/// `changeq.list` frame so the HUD panel reflects the read, and returns an honest
+/// secret-free text summary (kind, ts, summary, the EXISTING apply command, and
+/// whether it is mirrored onto the review branch). Never applies anything.
+fn changeq_list_tool(kind_filter: Option<&str>) -> String {
+    // A kind filter that names an unknown type is an honest miss (never guessed).
+    let filter = match kind_filter.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(k) => match crate::changeq::ChangeKind::from_wire(k) {
+            Some(kind) => Some(kind),
+            None => {
+                return format!(
+                    "'{k}' isn't a change-queue kind, sir — it is one of heal, code, forge, or optimize."
+                );
+            }
+        },
+        None => None,
+    };
+    // Re-emit the current lane so the HUD Change Queue panel reflects this read.
+    crate::changeq::emit_list();
+    let pending: Vec<_> = crate::changeq::list()
+        .into_iter()
+        .filter(|c| filter.is_none_or(|k| c.kind == k))
+        .collect();
+    if pending.is_empty() {
+        return match filter {
+            Some(k) => format!(
+                "The change queue has no pending {} proposals, sir — nothing is waiting for review.",
+                k.as_str()
+            ),
+            None => "The change queue is empty, sir — I have no propose-only proposals pending review."
+                .to_string(),
+        };
+    }
+    let mut out = format!(
+        "{} proposal{} pending in the change queue (review branch {}):",
+        pending.len(),
+        if pending.len() == 1 { "" } else { "s" },
+        crate::changeq::BRANCH,
+    );
+    for c in &pending {
+        let mirrored = if c.commit.is_some() { "mirrored" } else { "queued" };
+        out.push_str(&format!(
+            "\n- [{}] {} #{} ({mirrored}) — {} — apply: {}",
+            c.kind.as_str(),
+            c.artifact_rel,
+            c.ts,
+            c.summary,
+            c.apply_command(),
+        ));
+    }
+    out.push_str(
+        "\nAll are PROPOSE-ONLY — nothing is applied. Review a proposal, then run its apply \
+         command (it re-validates + applies under that type's own gate).",
+    );
+    out
+}
+
+/// changeq_apply core: PROPOSE-ONLY + human-gated. Resolves the chosen pending
+/// proposal (`kind` + `ts`) and returns THAT type's EXISTING gated apply command
+/// (never a new authority) plus the safe `git revert` rollback for the mirrored
+/// commit. It applies NOTHING itself — the human runs the surfaced, re-validating
+/// apply command. An unknown kind / an unqueued proposal is an honest miss.
+fn changeq_apply_tool(kind: &str, ts: u64) -> String {
+    let Some(kind) = crate::changeq::ChangeKind::from_wire(kind.trim()) else {
+        return format!(
+            "'{kind}' isn't a change-queue kind, sir — it is one of heal, code, forge, or optimize."
+        );
+    };
+    let Some(change) = crate::changeq::find(kind, ts) else {
+        return format!(
+            "I have no {} proposal queued at {ts}, sir — check `changeq_list` for the pending \
+             proposals. I won't fabricate an apply route for one that isn't there.",
+            kind.as_str()
+        );
+    };
+    let mut reply = format!(
+        "The {} proposal {ts} is PROPOSE-ONLY, sir — I have NOT applied it. To apply it, YOU run \
+         its existing, re-validating apply command:\n  {}\nThat script re-validates the change \
+         and applies it under {}'s own gate; nothing is applied until you run it.",
+        kind.as_str(),
+        change.apply_command(),
+        kind.as_str(),
+    );
+    if let Some(commit) = &change.commit {
+        let rollback = crate::changeq::revert_command(commit).arg_strs().join(" ");
+        reply.push_str(&format!(
+            "\nIt is mirrored onto the {} review branch; to roll it back safely: git {rollback}.",
+            crate::changeq::BRANCH,
+        ));
+    }
+    reply
 }
 
 // -- SANDBOXED SHELL / TERMINAL (crate::shell, #43) ------------------------------
@@ -10556,6 +10800,11 @@ pub async fn propose_standing_mission(
 
     // Master switch ON + ASK: PARK an standing_create whose replay payload carries
     // confirm=true, so the spoken-yes replay runs standing_create in Execute mode.
+    // PLAN-APPLY: compute the structured, STATE-BOUND diff over the current missions
+    // (this selector path parks standing_create just like the tool-call path, so it
+    // carries the same plan). `None` (plan off / state unreadable) => the text
+    // preview, unchanged.
+    let plan = compute_plan("standing_create", &input, memory, true).await;
     let prompt = crate::confirm::park(crate::confirm::PendingConfirmation {
         agent: agent_namespace.to_string(),
         tool: "standing_create".to_string(),
@@ -10564,6 +10813,7 @@ pub async fn propose_standing_mission(
         preview: preview.clone(),
         created_at: std::time::Instant::now(),
         id: String::new(),
+        plan: plan.clone().map(Box::new),
     });
     crate::audit::record_global(
         agent_namespace, "standing_create", &preview,
@@ -10574,6 +10824,13 @@ pub async fn propose_standing_mission(
         "confirm.parked",
         json!({"tool": "standing_create", "agent": agent_namespace, "via": "selector"}),
     );
+    if let Some(ref p) = plan {
+        telemetry::emit(
+            "system",
+            "plan.diff",
+            crate::plan::telemetry_frame(p, agent_namespace, "park", false),
+        );
+    }
     (prompt, true)
 }
 
@@ -10632,6 +10889,46 @@ async fn standing_cancel_tool(memory: &Memory, id: &str) -> String {
         Ok(false) => format!("I have no standing mission with id {} to cancel.", id.trim()),
         Err(e) => format!("I couldn't cancel that standing mission: {e}"),
     }
+}
+
+/// PLAN-APPLY: build the structured, STATE-BOUND diff for a parked consequential
+/// action by reading the CURRENT relevant state. Resolves the live config path from
+/// `ROOT` and delegates to [`crate::plan::plan_for`]. Returns `None` — falling back
+/// to the unchanged text preview — when the root is unknown, the `[plan]` section is
+/// off, the tool has no structured planner, or the input is malformed. The SAME
+/// function is used at PARK time and at CONFIRM time, so a plan and its
+/// re-derivation are computed identically (the basis of the drift check).
+/// `at_park` selects the entry point: PARK time honours the `[plan].enabled`
+/// opt-out (`plan_for`); CONFIRM time re-derives regardless (`recompute_plan`) so
+/// a mid-flight toggle can't wedge a parked action into an endless re-park.
+async fn compute_plan(tool: &str, input: &Value, memory: &Memory, at_park: bool) -> Option<crate::plan::Plan> {
+    let root = ROOT.get()?;
+    let cfg_path = root.join("config").join("darwin.toml");
+    if at_park {
+        crate::plan::plan_for(tool, input, memory, &cfg_path).await
+    } else {
+        crate::plan::recompute_plan(tool, input, memory, &cfg_path).await
+    }
+}
+
+/// The re-park preview spoken when a planned action DRIFTED between the plan and
+/// the spoken "yes": an honest lead-in that the state changed, followed by the
+/// original preview (which still faithfully names the action). The confirm clause
+/// is re-appended by `confirm::park` -> `confirmation_prompt`. `new_plan` is the
+/// freshly recomputed diff (its summary names the current state's effect).
+fn plan_drift_preview(original_preview: &str, new_plan: &crate::plan::Plan) -> String {
+    // Strip the OFF-mode "[dry run] " lead-in if present (the park path adds the
+    // say-confirm clause; this only supplies the faithful action description).
+    let body = original_preview.strip_prefix("[dry run] ").unwrap_or(original_preview);
+    let body = body
+        .split(" Enable consequential actions")
+        .next()
+        .unwrap_or(body)
+        .trim_end_matches(['.', ' ']);
+    format!(
+        "The state changed since I showed you this — here's the current plan. {} ({})",
+        body, new_plan.summary
+    )
 }
 
 /// The Standing-Missions subsystem master switch ([standing].enabled), read from
@@ -13093,6 +13390,8 @@ mod tests {
                 "doc_search",
                 "code_explain",
                 "code_propose_diff",
+                "changeq_list",
+                "changeq_apply",
                 "artifact_peek",
                 "shell_run",
                 "ui_actuate",
@@ -14047,6 +14346,7 @@ mod tests {
                 preview: "click at (100, 100) on \"the Send button\"".into(),
                 created_at: Instant::now(),
                 id: String::new(),
+                plan: None,
             });
             let taken_a = crate::confirm::take_live(Instant::now()).expect("A parked");
             assert_eq!(taken_a.input["target"], "the Send button", "the one confirm authorized exactly action A");
@@ -14299,6 +14599,7 @@ mod tests {
             preview: "Would send an email to a@b.com".into(),
             created_at: std::time::Instant::now(),
             id: String::new(),
+            plan: None,
         };
         let (outcome, is_error) = replay_confirmed_action(&pending, &mem).await;
         assert!(is_error, "replay outside the allowlist must be refused: {outcome}");
@@ -14572,6 +14873,7 @@ mod tests {
             preview: "Would send an email to a@b.com".into(),
             created_at: std::time::Instant::now(),
             id: String::new(),
+            plan: None,
         };
         let (outcome, is_error) = {
             let _on = crate::integrations::ConsequentialOverride::force(true);
@@ -14663,6 +14965,7 @@ mod tests {
             preview: "Would send an email to a@b.com".into(),
             created_at: std::time::Instant::now(),
             id: String::new(),
+            plan: None,
         };
         let (outcome, is_error) = replay_confirmed_action(&pending, &mem).await;
         // Allowed -> reaches the client builder, which (no Google creds) returns
@@ -14673,6 +14976,120 @@ mod tests {
             "an allowed tool is NOT refused on replay: {outcome}"
         );
         cleanup_temp_memory(&mem_path("confirm_allow_ok"));
+    }
+
+    // ---- PLAN-APPLY: the state-hash bind can ONLY add a failure -------------
+
+    /// Build a structured plan whose state_hash cannot match the current state.
+    fn stale_connector_plan() -> crate::plan::Plan {
+        crate::plan::Plan {
+            tool: "connector_add".into(),
+            summary: "Add MCP connector 'files' (http) — inert".into(),
+            changes: vec![crate::plan::Change {
+                resource: "config/darwin.toml [[mcp.servers]] 'files'".into(),
+                before: "(absent)".into(),
+                after: "https endpoint https://mcp.example.com/sse — INERT".into(),
+            }],
+            // A hash that the confirm-time recompute (ROOT unset in the test bin ->
+            // compute_plan None -> bind Drifted) can never reproduce.
+            state_hash: "stalehash0000000".into(),
+        }
+    }
+
+    /// THE STRICTNESS INVARIANT, end-to-end at the replay chokepoint: a planned
+    /// action whose STATE drifted (here: unrecomputable, the fail-safe) RE-PARKS a
+    /// fresh confirmation and executes NOTHING — EVEN with the master switch forced
+    /// ON and voice-id allowing. This proves the state-hash is a purely ADDITIVE
+    /// precondition: it can only turn an otherwise-executable confirm into a
+    /// re-park, never approve a drifted action, and never substitute for the master
+    /// switch / voice-id (both of which pass here — the ONLY thing stopping the
+    /// action is the drift).
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // the PENDING_TEST_LOCK serializes slot tests (crate convention)
+    async fn replay_reparks_a_drifted_planned_action_and_fires_nothing() {
+        let _g = crate::confirm::PENDING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        crate::confirm::clear();
+        let mem = open_temp_memory("plan_drift");
+        let pending = crate::confirm::PendingConfirmation {
+            agent: "agent.pepper".into(),
+            tool: "connector_add".into(),
+            input: json!({"name": "files", "transport": "http", "url": "https://mcp.example.com/sse"}),
+            // pepper must hold connector_add so the allowlist check PASSES and only
+            // the state-hash drift can stop the action.
+            allowed: vec!["connector_add".into()],
+            preview: "Add the MCP connector 'files' (http: https endpoint https://mcp.example.com/sse) INERT.".into(),
+            created_at: std::time::Instant::now(),
+            id: String::new(),
+            plan: Some(Box::new(stale_connector_plan())),
+        };
+        let (outcome, is_error) = {
+            // Master switch FORCED ON: without the plan gate, this confirm would
+            // proceed to dispatch. Voice-id is OFF (default) -> allow. So the drift
+            // is the ONLY thing that can stop it.
+            let _on = crate::integrations::ConsequentialOverride::force(true);
+            replay_confirmed_action(&pending, &mem).await
+        };
+        // A re-park is NOT an error — it's a fresh confirmation prompt.
+        assert!(!is_error, "a drift re-park is a confirmation, not an error: {outcome}");
+        // The spoken outcome tells the user honestly that the state changed.
+        assert!(
+            outcome.contains("state changed since I showed you"),
+            "the re-park explains the drift: {outcome}"
+        );
+        // NOTHING executed: no connector was written (no success report).
+        assert!(
+            !outcome.contains("Added MCP connector"),
+            "a drifted action must NOT execute: {outcome}"
+        );
+        // A FRESH pending now sits in the slot (the re-park), carrying a plan — the
+        // action is awaiting a NEW confirm, not gone and not fired.
+        let reparked = crate::confirm::peek_pending(std::time::Instant::now())
+            .expect("a fresh pending was re-parked");
+        assert_eq!(reparked.tool, "connector_add");
+        crate::confirm::clear();
+        cleanup_temp_memory(&mem_path("plan_drift"));
+    }
+
+    /// CONTRAST: a pending with NO structured plan (plan: None) is byte-for-byte
+    /// today's path — the replay reaches the real dispatch (no re-park), proving the
+    /// state-hash bind only engages for a planned tool and changes nothing else.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // the PENDING_TEST_LOCK serializes slot tests (crate convention)
+    async fn replay_without_a_plan_reaches_dispatch_unchanged() {
+        let _g = crate::confirm::PENDING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        crate::confirm::clear();
+        let mem = open_temp_memory("plan_none");
+        let pending = crate::confirm::PendingConfirmation {
+            agent: "agent.pepper".into(),
+            tool: "connector_add".into(),
+            input: json!({"name": "files", "transport": "http", "url": "https://mcp.example.com/sse"}),
+            allowed: vec!["connector_add".into()],
+            preview: "Add the MCP connector 'files'.".into(),
+            created_at: std::time::Instant::now(),
+            id: String::new(),
+            plan: None, // no structured planner -> unchanged text-preview path
+        };
+        let (outcome, _is_error) = {
+            let _on = crate::integrations::ConsequentialOverride::force(true);
+            replay_confirmed_action(&pending, &mem).await
+        };
+        // It reached dispatch (connector::add_connector), which — with no config
+        // path installed in the test bin — reports its own error, NOT a drift re-park.
+        assert!(
+            !outcome.contains("state changed since I showed you"),
+            "a plan-less action never re-parks on drift: {outcome}"
+        );
+        // And the slot is empty — nothing was re-parked.
+        assert!(
+            crate::confirm::peek_pending(std::time::Instant::now()).is_none(),
+            "a plan-less replay parks nothing: {outcome}"
+        );
+        crate::confirm::clear();
+        cleanup_temp_memory(&mem_path("plan_none"));
     }
 
     // ---- MCP dynamic-tool wiring into the agent surface ---------------------

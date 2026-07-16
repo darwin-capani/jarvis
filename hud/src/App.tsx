@@ -8,7 +8,9 @@ import AudioIoPanel from "./components/AudioIoPanel";
 import AnswerSourcesPanel from "./components/AnswerSourcesPanel";
 import AuditPanel from "./components/AuditPanel";
 import SecondLookPanel from "./components/SecondLookPanel";
+import PlanDiffPanel from "./components/PlanDiffPanel";
 import ChartPanel from "./components/ChartPanel";
+import ChangeQueuePanel from "./components/ChangeQueuePanel";
 import CodeIntelPanel from "./components/CodeIntelPanel";
 import CommandDeck from "./components/CommandDeck";
 import ShellPanel from "./components/ShellPanel";
@@ -16,6 +18,7 @@ import UiActuatePanel from "./components/UiActuatePanel";
 import DiagnosticsPanel from "./components/DiagnosticsPanel";
 import DocSearchPanel from "./components/DocSearchPanel";
 import EvalPanel from "./components/EvalPanel";
+import SpendMeter from "./components/SpendMeter";
 import FirstRunSetup from "./components/FirstRunSetup";
 import ForgePanel from "./components/ForgePanel";
 import GlobalScanPanel, { GLOBAL_SCAN_APP } from "./components/GlobalScanPanel";
@@ -86,7 +89,7 @@ import { audioStore } from "./core/audioStore";
 import { bool, num, parseEnvelope } from "./core/events";
 import { hasSeenOnboarding, markOnboardingSeen } from "./core/onboarding";
 import type { OnboardingRouteTarget } from "./core/onboarding";
-import { activeConsensusAdvisory, initialState, reduce } from "./core/state";
+import { activeConsensusAdvisory, activePlanDiff, initialState, reduce } from "./core/state";
 import {
   initialTakeoverState,
   isExitKey,
@@ -678,6 +681,7 @@ export default function App() {
           <ConnectorMarketplacePanel mcp={state.mcp} />
           <ExtensibilityPanel webhooks={state.webhooks} plugins={state.plugins} />
           <SecondLookPanel advisory={activeConsensusAdvisory(state, nowTick.getTime())} />
+          <PlanDiffPanel plan={activePlanDiff(state, nowTick.getTime())} />
           <AuditPanel audit={state.audit} liveGate={state.liveGate} />
           <JournalPanel journal={state.journal} />
           <ActionPanel action={state.actionSurface} />
@@ -687,6 +691,7 @@ export default function App() {
             pdfJail={state.pdfJailAvailable}
           />
           <CodeIntelPanel code={state.codeIntel} />
+          <ChangeQueuePanel changeq={state.changeq} />
           <ShellPanel shell={state.shell} />
           <UiActuatePanel uiActuate={state.uiActuate} />
           <UnifiedSearchPanel result={state.unifiedSearch} />
@@ -708,6 +713,7 @@ export default function App() {
           <MirrorPanel mirror={state.mirror} onContest={contestBelief} />
           <MemoryPanel memory={state.memory} />
           <EvalPanel report={state.evalReport} proposal={state.optimizerProposal} />
+          <SpendMeter spend={state.obolSpend} />
           <SkillsPanel skills={state.skills} />
           <InferencePerfPanel perf={state.inferencePerf} />
           <DiagnosticsPanel gauges={state.gauges} facts={state.facts} actions={state.actions} />

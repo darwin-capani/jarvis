@@ -243,7 +243,10 @@ pub fn simulate<S: AgentScorer>(
         .name
         .clone();
 
-    // 3. TIER — the precedence Override > Auto > Fallback, from the SAME resolver.
+    // 3. TIER — the precedence Override > Budget-floor > Auto > Fallback, from the
+    //    SAME resolver. PRECOG projects the SAME OBOL dollar-budget pressure the
+    //    live turn would see, so a "what would you do" under a near-cap budget
+    //    honestly shows the step-down (Pressure::None under the no-cap default).
     let (tier, _reason) = resolve_tier(
         ctx.cfg,
         ctx.override_tier,
@@ -251,6 +254,7 @@ pub fn simulate<S: AgentScorer>(
         predicted.confidence,
         ctx.cfg.router.cloud_confidence_threshold,
         ctx.cloud_reachable,
+        crate::obol::current_budget_pressure(ctx.cfg),
     );
 
     // 4. PLANNED TOOL CLASS — the deterministic side-effecting-vocabulary

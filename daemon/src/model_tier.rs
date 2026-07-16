@@ -97,6 +97,17 @@ impl Tier {
         matches!(self, Tier::Fast | Tier::Heavy)
     }
 
+    /// Capability/cost RANK: Local(0) < Fast(1) < Heavy(2). Higher == more capable
+    /// AND more expensive. Used by the REDUCE-ONLY budget-floor fold to prove it
+    /// can only ever step a tier DOWN (a lower rank), never up.
+    fn rank(self) -> u8 {
+        match self {
+            Tier::Local => 0,
+            Tier::Fast => 1,
+            Tier::Heavy => 2,
+        }
+    }
+
     /// Map a [router].conversation_route config string to its default tier.
     /// "cloud_heavy" -> Heavy, "cloud_fast" -> Fast, anything else (incl. "local"
     /// and any unknown value) -> Local (the safe, always-available default).
@@ -117,6 +128,11 @@ pub enum Reason {
     Override,
     /// No override; the auto difficulty heuristic picked it (AUTO).
     Auto,
+    /// The OBOL dollar-budget stepped the auto tier DOWN this turn (a near/over-cap
+    /// turn routed to a cheaper/more-local tier to stay under the daily cap). A
+    /// REDUCE-ONLY reason: it only ever appears when the budget LOWERED the tier,
+    /// and it is beaten outright by an explicit Override.
+    Budget,
     /// A cloud tier was wanted but the cloud was unreachable, or the cloud call
     /// errored — degraded to Local. The existing degrade path, now named.
     Fallback,
@@ -127,6 +143,7 @@ impl Reason {
         match self {
             Reason::Override => "override",
             Reason::Auto => "auto",
+            Reason::Budget => "budget",
             Reason::Fallback => "fallback",
         }
     }
@@ -229,12 +246,15 @@ impl Drop for OverrideGuard {
 // RESOLVE: Override > Auto-difficulty > Fallback
 // ---------------------------------------------------------------------------
 
-/// Resolve the tier for a turn, applying the precedence Override > Auto > Fallback.
+/// Resolve the tier for a turn, applying the precedence
+/// **Override > Budget-floor > Auto > Fallback**.
 ///
 /// * `cfg`             — for the [router].conversation_route default + the
 ///   [cloud] model strings (read by [`tier_to_model`]).
 /// * `override_tier`   — the manual override (usually [`current_override`]); when
-///   `Some`, it WINS (Reason::Override) over the auto heuristic.
+///   `Some`, it WINS (Reason::Override) over BOTH the auto heuristic AND the
+///   budget-floor. A user who EXPLICITLY forces a cloud tier is never blocked by
+///   the dollar budget.
 /// * `complexity`      — the classifier's `complexity` ("heavy" => a complex turn;
 ///   anything else => low/trivial) used by the AUTO heuristic to step up/down.
 /// * `confidence`      — the classifier confidence; below `low_conf_threshold` a
@@ -244,9 +264,14 @@ impl Drop for OverrideGuard {
 /// * `cloud_reachable` — whether a cloud call can be made at all this turn (key +
 ///   reachability). If a cloud tier is resolved but this is false, it degrades to
 ///   Local with Reason::Fallback — NO cloud call.
+/// * `budget`          — the OBOL dollar-budget [`crate::obol::Pressure`]. It is a
+///   REDUCE-ONLY input: it can only ever step the AUTO tier DOWN toward the
+///   cheaper/on-device path (via [`budget_floor_tier`]) and NEVER raises a tier,
+///   loosens a gate, or beats an Override. [`crate::obol::Pressure::None`] (the
+///   shipped default — no cap) makes this a byte-for-byte no-op.
 ///
-/// Returns `(Tier, Reason)`. A `Local` result (override / offline / fallback) is
-/// the signal to the router that NO cloud completion is attempted this turn.
+/// Returns `(Tier, Reason)`. A `Local` result (override / offline / budget-floor /
+/// fallback) is the signal to the router that NO cloud completion is attempted.
 pub fn resolve_tier(
     cfg: &Config,
     override_tier: Option<Tier>,
@@ -254,9 +279,11 @@ pub fn resolve_tier(
     confidence: f64,
     low_conf_threshold: f64,
     cloud_reachable: bool,
+    budget: crate::obol::Pressure,
 ) -> (Tier, Reason) {
-    // 1. OVERRIDE wins. An explicit Local override is the privacy path: force
-    //    Local, NO cloud call, regardless of cloud reachability.
+    // 1. OVERRIDE wins — over BOTH the budget-floor and auto. An explicit Local
+    //    override is the privacy path; an explicit CLOUD override is the user
+    //    forcing the call, which the dollar budget must NEVER block.
     if let Some(forced) = override_tier {
         if forced.is_cloud() && !cloud_reachable {
             // The user asked for a cloud tier but there is no cloud this turn —
@@ -273,11 +300,52 @@ pub fn resolve_tier(
     let default_tier = Tier::from_route(&cfg.router.conversation_route);
     let auto = auto_tier(default_tier, complexity, confidence, low_conf_threshold);
 
-    // 3. FALLBACK — a cloud tier with no cloud this turn degrades to Local.
-    if auto.is_cloud() && !cloud_reachable {
+    // 3. BUDGET-FLOOR — REDUCE-ONLY. Under dollar pressure, step the AUTO tier
+    //    DOWN (Heavy -> Fast under ease; anything -> Local under floor). It can
+    //    ONLY lower the tier — never raise it — so `floored.rank() <= auto.rank()`
+    //    always holds (asserted by the property test).
+    let floored = budget_floor_tier(auto, budget);
+    let budget_lowered = floored.rank() < auto.rank();
+
+    // 4. FALLBACK — a cloud tier with no cloud this turn degrades to Local.
+    if floored.is_cloud() && !cloud_reachable {
         return (Tier::Local, Reason::Fallback);
     }
-    (auto, Reason::Auto)
+    let reason = if budget_lowered {
+        Reason::Budget
+    } else {
+        Reason::Auto
+    };
+    (floored, reason)
+}
+
+/// The REDUCE-ONLY budget fold: step `tier` DOWN under dollar [`Pressure`], never
+/// up. PURE + unit-tested. This is the machine-checkable heart of "the budget can
+/// only route cheaper/more-local":
+///   * [`Pressure::None`]  -> `tier` unchanged (the no-cap default).
+///   * [`Pressure::Ease`]  -> at most Fast (a Heavy turn steps down to Fast; Fast
+///     and Local are already at/below that floor and are untouched).
+///   * [`Pressure::Floor`] -> Local (force on-device — no further cloud SPEND).
+///
+/// For EVERY input the result's [`Tier::rank`] is `<=` the input's, so this fold
+/// can never escalate to a pricier tier. It touches ONLY the tier; it has no
+/// access to a gate, a confirm, or a permission — mirroring [`crate::focus`]'s
+/// type-level reduce-only guarantee.
+pub fn budget_floor_tier(tier: Tier, budget: crate::obol::Pressure) -> Tier {
+    use crate::obol::Pressure;
+    match budget {
+        Pressure::None => tier,
+        // Cap at Fast: min by rank so Heavy->Fast, Fast->Fast, Local->Local.
+        Pressure::Ease => {
+            if tier.rank() <= Tier::Fast.rank() {
+                tier
+            } else {
+                Tier::Fast
+            }
+        }
+        // Force the cheapest, on-device path — no more cloud spend this turn.
+        Pressure::Floor => Tier::Local,
+    }
 }
 
 /// The AUTO difficulty heuristic: refine the configured default tier by this
@@ -1029,11 +1097,100 @@ pub fn classify_model_swap(utterance: &str) -> Option<ModelSwapIntent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::obol::Pressure;
 
     fn cfg_with_route(route: &str) -> Config {
         let mut c = Config::default();
         c.router.conversation_route = route.to_string();
         c
+    }
+
+    // --- OBOL BUDGET-FLOOR: the REDUCE-ONLY fold can only step DOWN ----------
+
+    /// The machine-checked heart of "the budget can only route cheaper/more-local":
+    /// for EVERY tier and EVERY pressure, the floored tier's rank is <= the input's
+    /// — the fold NEVER escalates. Plus the exact step-down table.
+    #[test]
+    fn budget_floor_only_ever_steps_the_tier_down_never_up() {
+        for &tier in &[Tier::Local, Tier::Fast, Tier::Heavy] {
+            for &p in &[Pressure::None, Pressure::Ease, Pressure::Floor] {
+                let floored = budget_floor_tier(tier, p);
+                assert!(
+                    floored.rank() <= tier.rank(),
+                    "budget floor RAISED {tier:?} to {floored:?} under {p:?} — must only lower"
+                );
+            }
+        }
+        // None is the identity (the no-cap default) for every tier.
+        assert_eq!(budget_floor_tier(Tier::Heavy, Pressure::None), Tier::Heavy);
+        assert_eq!(budget_floor_tier(Tier::Fast, Pressure::None), Tier::Fast);
+        assert_eq!(budget_floor_tier(Tier::Local, Pressure::None), Tier::Local);
+        // Ease caps at Fast: Heavy steps down, Fast/Local untouched (never raised).
+        assert_eq!(budget_floor_tier(Tier::Heavy, Pressure::Ease), Tier::Fast);
+        assert_eq!(budget_floor_tier(Tier::Fast, Pressure::Ease), Tier::Fast);
+        assert_eq!(budget_floor_tier(Tier::Local, Pressure::Ease), Tier::Local);
+        // Floor forces on-device Local for every tier (no more cloud spend).
+        assert_eq!(budget_floor_tier(Tier::Heavy, Pressure::Floor), Tier::Local);
+        assert_eq!(budget_floor_tier(Tier::Fast, Pressure::Floor), Tier::Local);
+        assert_eq!(budget_floor_tier(Tier::Local, Pressure::Floor), Tier::Local);
+    }
+
+    #[test]
+    fn budget_steps_auto_down_and_names_the_reason() {
+        let cfg = cfg_with_route("cloud_heavy");
+        // A heavy turn AUTO-resolves to Heavy; under EASE it steps to Fast, and the
+        // reason is Budget (not Auto) so the HUD can show WHY it downshifted.
+        let (tier, reason) = resolve_tier(&cfg, None, "heavy", 0.95, 0.6, true, Pressure::Ease);
+        assert_eq!((tier, reason), (Tier::Fast, Reason::Budget));
+        // Under FLOOR the same heavy turn is forced on-device Local — NO cloud call.
+        let (tier, reason) = resolve_tier(&cfg, None, "heavy", 0.95, 0.6, true, Pressure::Floor);
+        assert_eq!((tier, reason), (Tier::Local, Reason::Budget));
+        assert_eq!(tier_to_model(tier, &cfg), ModelChoice::Local);
+        // No pressure -> unchanged, Reason::Auto (byte-for-byte today's behavior).
+        let (tier, reason) = resolve_tier(&cfg, None, "heavy", 0.95, 0.6, true, Pressure::None);
+        assert_eq!((tier, reason), (Tier::Heavy, Reason::Auto));
+    }
+
+    #[test]
+    fn budget_never_escalates_a_cheap_auto_pick() {
+        let cfg = cfg_with_route("cloud_fast");
+        // A trivial turn AUTO-resolves to Fast. NO pressure level may ever raise it
+        // to Heavy — the budget is reduce-only. Ease leaves Fast at Fast (already at
+        // the cap floor); Floor lowers it to Local.
+        let (tier, reason) = resolve_tier(&cfg, None, "light", 0.95, 0.6, true, Pressure::Ease);
+        assert_eq!((tier, reason), (Tier::Fast, Reason::Auto), "ease can't raise Fast");
+        let (tier, reason) = resolve_tier(&cfg, None, "light", 0.95, 0.6, true, Pressure::Floor);
+        assert_eq!((tier, reason), (Tier::Local, Reason::Budget), "floor lowers to Local");
+    }
+
+    #[test]
+    fn user_override_beats_the_budget_floor_outright() {
+        let cfg = cfg_with_route("cloud_heavy");
+        // Even under the HARDEST budget pressure (Floor), an explicit Heavy override
+        // WINS: the user forcing the powerful model is never blocked by the dollar
+        // budget. Reason::Override, and it IS a cloud call.
+        let (tier, reason) = resolve_tier(&cfg, Some(Tier::Heavy), "light", 0.95, 0.6, true, Pressure::Floor);
+        assert_eq!((tier, reason), (Tier::Heavy, Reason::Override));
+        assert_eq!(tier_to_model(tier, &cfg), ModelChoice::Cloud(cfg.cloud.heavy_model.clone()));
+        // A Fast override under Floor also stands (override > budget), staying cloud.
+        let (tier, reason) = resolve_tier(&cfg, Some(Tier::Fast), "heavy", 0.95, 0.6, true, Pressure::Floor);
+        assert_eq!((tier, reason), (Tier::Fast, Reason::Override));
+    }
+
+    #[test]
+    fn budget_floor_then_fallback_when_cloud_unreachable() {
+        let cfg = cfg_with_route("cloud_heavy");
+        // Ease would step Heavy->Fast, but with no cloud this turn the cloud tier
+        // degrades to Local with Reason::Fallback (fallback is evaluated after the
+        // budget floor). Either way: NO cloud call, and it's honest.
+        let (tier, reason) = resolve_tier(&cfg, None, "heavy", 0.95, 0.6, false, Pressure::Ease);
+        assert_eq!((tier, reason), (Tier::Local, Reason::Fallback));
+        assert_eq!(tier_to_model(tier, &cfg), ModelChoice::Local);
+    }
+
+    #[test]
+    fn reason_budget_label_is_stable() {
+        assert_eq!(Reason::Budget.as_str(), "budget");
     }
 
     // --- Tier basics --------------------------------------------------------
@@ -1080,12 +1237,12 @@ mod tests {
         // explicit Heavy override wins, with Reason::Override.
         let cfg = cfg_with_route("cloud_heavy");
         let (tier, reason) =
-            resolve_tier(&cfg, Some(Tier::Heavy), "light", 0.95, 0.6, true);
+            resolve_tier(&cfg, Some(Tier::Heavy), "light", 0.95, 0.6, true, Pressure::None);
         assert_eq!(tier, Tier::Heavy);
         assert_eq!(reason, Reason::Override);
 
         // A Fast override wins even on a HEAVY turn (auto would pick Heavy).
-        let (tier, reason) = resolve_tier(&cfg, Some(Tier::Fast), "heavy", 0.95, 0.6, true);
+        let (tier, reason) = resolve_tier(&cfg, Some(Tier::Fast), "heavy", 0.95, 0.6, true, Pressure::None);
         assert_eq!(tier, Tier::Fast);
         assert_eq!(reason, Reason::Override);
     }
@@ -1096,13 +1253,13 @@ mod tests {
     fn auto_maps_complexity_to_tier_from_cloud_heavy_default() {
         let cfg = cfg_with_route("cloud_heavy");
         // Heavy turn -> Heavy (auto).
-        let (tier, reason) = resolve_tier(&cfg, None, "heavy", 0.95, 0.6, true);
+        let (tier, reason) = resolve_tier(&cfg, None, "heavy", 0.95, 0.6, true, Pressure::None);
         assert_eq!((tier, reason), (Tier::Heavy, Reason::Auto));
         // Trivial confident turn steps DOWN to Fast to save cost.
-        let (tier, reason) = resolve_tier(&cfg, None, "light", 0.95, 0.6, true);
+        let (tier, reason) = resolve_tier(&cfg, None, "light", 0.95, 0.6, true, Pressure::None);
         assert_eq!((tier, reason), (Tier::Fast, Reason::Auto));
         // Low-confidence light turn is treated as hard -> Heavy.
-        let (tier, reason) = resolve_tier(&cfg, None, "light", 0.3, 0.6, true);
+        let (tier, reason) = resolve_tier(&cfg, None, "light", 0.3, 0.6, true, Pressure::None);
         assert_eq!((tier, reason), (Tier::Heavy, Reason::Auto));
     }
 
@@ -1110,10 +1267,10 @@ mod tests {
     fn auto_from_cloud_fast_default_escalates_hard_turns() {
         let cfg = cfg_with_route("cloud_fast");
         // Trivial -> stays Fast.
-        let (tier, reason) = resolve_tier(&cfg, None, "light", 0.95, 0.6, true);
+        let (tier, reason) = resolve_tier(&cfg, None, "light", 0.95, 0.6, true, Pressure::None);
         assert_eq!((tier, reason), (Tier::Fast, Reason::Auto));
         // Heavy -> escalates to Heavy even from a fast default.
-        let (tier, reason) = resolve_tier(&cfg, None, "heavy", 0.95, 0.6, true);
+        let (tier, reason) = resolve_tier(&cfg, None, "heavy", 0.95, 0.6, true, Pressure::None);
         assert_eq!((tier, reason), (Tier::Heavy, Reason::Auto));
     }
 
@@ -1122,7 +1279,7 @@ mod tests {
         let cfg = cfg_with_route("local");
         // Even a HEAVY turn stays Local under a local default (offline intent
         // preserved) — auto never silently reaches cloud.
-        let (tier, reason) = resolve_tier(&cfg, None, "heavy", 0.95, 0.6, true);
+        let (tier, reason) = resolve_tier(&cfg, None, "heavy", 0.95, 0.6, true, Pressure::None);
         assert_eq!((tier, reason), (Tier::Local, Reason::Auto));
     }
 
@@ -1132,7 +1289,7 @@ mod tests {
     fn cloud_unreachable_auto_falls_back_to_local() {
         let cfg = cfg_with_route("cloud_heavy");
         // Heavy turn would be Heavy, but cloud is unreachable -> Local + Fallback.
-        let (tier, reason) = resolve_tier(&cfg, None, "heavy", 0.95, 0.6, false);
+        let (tier, reason) = resolve_tier(&cfg, None, "heavy", 0.95, 0.6, false, Pressure::None);
         assert_eq!((tier, reason), (Tier::Local, Reason::Fallback));
         // And tier_to_model gives NO cloud string.
         assert_eq!(tier_to_model(tier, &cfg), ModelChoice::Local);
@@ -1143,7 +1300,7 @@ mod tests {
         let cfg = cfg_with_route("cloud_heavy");
         // Offline override on a heavy turn with cloud UP: still Local (privacy
         // wins), Reason::Override, NO cloud model.
-        let (tier, reason) = resolve_tier(&cfg, Some(Tier::Local), "heavy", 0.95, 0.6, true);
+        let (tier, reason) = resolve_tier(&cfg, Some(Tier::Local), "heavy", 0.95, 0.6, true, Pressure::None);
         assert_eq!((tier, reason), (Tier::Local, Reason::Override));
         assert_eq!(tier_to_model(tier, &cfg), ModelChoice::Local);
     }
@@ -1153,7 +1310,7 @@ mod tests {
         let cfg = cfg_with_route("local");
         // The user asked for Heavy but there is no cloud -> honest Local fallback,
         // not a pretend cloud call.
-        let (tier, reason) = resolve_tier(&cfg, Some(Tier::Heavy), "light", 0.95, 0.6, false);
+        let (tier, reason) = resolve_tier(&cfg, Some(Tier::Heavy), "light", 0.95, 0.6, false, Pressure::None);
         assert_eq!((tier, reason), (Tier::Local, Reason::Fallback));
         assert_eq!(tier_to_model(tier, &cfg), ModelChoice::Local);
     }
@@ -1212,7 +1369,7 @@ mod tests {
         set_override(intent.to_override());
         // Now even a heavy, confident turn with cloud reachable resolves Local.
         let (tier, reason) =
-            resolve_tier(&cfg, current_override(), "heavy", 0.95, 0.6, true);
+            resolve_tier(&cfg, current_override(), "heavy", 0.95, 0.6, true, Pressure::None);
         assert_eq!((tier, reason), (Tier::Local, Reason::Override));
         assert_eq!(tier_to_model(tier, &cfg), ModelChoice::Local);
     }

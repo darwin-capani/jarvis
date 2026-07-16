@@ -102,7 +102,7 @@ role = "CTO + Builds: investigates bugs, makes code changes, opens GitHub PRs (f
 voice = "am_michael"
 hue = 150
 persona_file = "inference/personas/steve.txt"
-tools = ["conversation", "file.op", "system.query", "memory.recall", "search_files", "open_path", "system_status", "recall_facts", "github_list_prs", "github_get_pr", "github_list_issues", "github_comment_issue", "github_open_pr", "forge_app", "code_explain", "code_propose_diff", "shell_run", "ui_actuate", "world_query"]
+tools = ["conversation", "file.op", "system.query", "memory.recall", "search_files", "open_path", "system_status", "recall_facts", "github_list_prs", "github_get_pr", "github_list_issues", "github_comment_issue", "github_open_pr", "forge_app", "code_explain", "code_propose_diff", "changeq_list", "changeq_apply", "shell_run", "ui_actuate", "world_query"]
 namespace = "agent.steve"
 
 [[agent]]

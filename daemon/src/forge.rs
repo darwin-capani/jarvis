@@ -1042,6 +1042,24 @@ pub async fn forge_draft(
             match write_proposal(&forge_root, ts, &manifest, &manifest_toml, &files, &report) {
                 Ok(dir) => {
                     set_pending(ts);
+                    // CHANGE QUEUE (changeq.rs): ALSO register this propose-only
+                    // artifact into the unified git-native review lane. Pure
+                    // bookkeeping — the validated app was already written to
+                    // state/forge/proposals/<ts>/; this mirrors it into the queue
+                    // (and, on-device, onto darwin/changeq) with secret-free
+                    // provenance. It changes NOTHING about the propose-only contract;
+                    // deploy still routes to scripts/apply_forge.sh (the existing gate).
+                    crate::changeq::on_proposal(
+                        crate::changeq::ChangeKind::Forge,
+                        ts,
+                        crate::changeq::Provenance::new(
+                            "forge",
+                            model,
+                            ts.to_string(),
+                            crate::changeq::fingerprint(manifest_toml.as_bytes()),
+                        ),
+                        format!("forged app '{}' (validated, sandboxed)", manifest.app.name),
+                    );
                     let (event, payload) = ev_proposed(&manifest.app.name, ts);
                     telemetry::emit("system", event, payload);
                     tracing::info!(

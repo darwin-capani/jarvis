@@ -18,6 +18,14 @@ pub struct Config {
     pub inference: InferenceConfig,
     pub self_heal: SelfHealConfig,
     pub forge: ForgeConfig,
+    /// [changeq] — the CHANGE QUEUE (changeq.rs): ONE git-native review lane that
+    /// unifies every propose-only artifact (heal / code / forge / optimize). PURE
+    /// bookkeeping over already-propose-only stores — it invents NO new apply
+    /// authority (changeq_apply routes to each type's EXISTING gated apply script +
+    /// re-validation) and NEVER changes any writer's propose-only contract. Armed
+    /// by default; INERT WITHOUT A REPO (with no git repo the branch commit is a
+    /// no-op — the in-memory queue + read-only list still work).
+    pub changeq: ChangeqConfig,
     pub telemetry: TelemetryConfig,
     pub proactive: ProactiveConfig,
     /// [focus] — FOCUS PROFILES (#24, focus.rs). `profile` ships "default" (the
@@ -93,6 +101,14 @@ pub struct Config {
     /// through the normal router + the gate FRESH — enabling only allows
     /// recording/replay, never bypasses the gate.
     pub macros: MacrosConfig,
+    /// [runbook] — RUNBOOKS (runbook.rs): a benign-only, TYPED, INSPECTABLE automation
+    /// DAG (a step up from opaque macros). `enabled` SHIPS OFF (false): with it off
+    /// nothing plans or runs. A runbook carries NO authority — `run` re-issues EACH
+    /// step through the NORMAL router + gate FRESH, one at a time, so a consequential
+    /// step PARKS for a spoken confirm exactly as if issued live (no pre-approval, no
+    /// batching); data flow (`out` -> a later `with`) passes VALUES only, never a gate
+    /// bypass. Parser/typechecker/planner are PURE. `max_steps` bounds one runbook.
+    pub runbook: RunbookConfig,
     pub mcp: McpConfig,
     pub skills: SkillsConfig,
     pub optimize: OptimizeConfig,
@@ -302,6 +318,16 @@ pub struct Config {
     /// or serious thermal pressure — it never loosens a gate, never makes a cloud
     /// call. The LIVE pmset/thermal reader is device-gated behind this flag.
     pub power: PowerConfig,
+    /// [obol] — CLOUD-SPEND LEDGER + DOLLAR-CAP ROUTING BUDGET (obol.rs). A durable,
+    /// bounded, secret-free spend ledger (one row per cloud call: model + token
+    /// counts + dollar estimate + agent + ts) fed from the SAME point eval.rs records
+    /// cloud usage. `daily_usd_cap` SHIPS 0.0 == NO CAP (INERT): the budget is a
+    /// REDUCE-ONLY routing input (Override > Budget-floor > Auto > Fallback) that can
+    /// ONLY step a near/over-cap turn DOWN to a cheaper/on-device tier — it never
+    /// loosens a gate, never escalates to a pricier model, and never blocks a call the
+    /// user EXPLICITLY forces. With the cap 0 the budget influences nothing (routing is
+    /// byte-for-byte today's); the ledger still records honest accounting.
+    pub obol: ObolConfig,
     /// [report] — REPORT GENERATION (#40, report.rs). `enabled` SHIPS ON (full-power
     /// default). The op is READ-ONLY — it pulls the already-cited notebook/research
     /// material and folds it into a BOUNDED markdown report, REUSING research.rs's
@@ -377,6 +403,17 @@ pub struct Config {
     /// human-gated `apply_code_diff.sh`). It reports honest UNVERIFIED — never a
     /// faked pass — when the sandbox/tooling is unavailable or no verify command is set.
     pub realm: RealmConfig,
+    /// [plan] — PLAN-APPLY (plan.rs). `enabled` SHIPS ON (armed-by-default). It
+    /// upgrades the cross-turn confirmation PREVIEW from prose to a field-level DIFF
+    /// (before/after) for the consequential tools whose effect is a concrete state
+    /// change (connector_add, standing_create), and BINDS the diff to a hash of the
+    /// CURRENT relevant state: at confirm time the hash is recomputed and the action
+    /// only proceeds if it still matches, else it RE-PARKS a fresh plan (TOCTOU-safe).
+    /// STRICTLY ADDITIVE: the state-hash is an EXTRA precondition on top of the master
+    /// switch + spoken confirm + voice-id + !lockdown — it can only make the gate
+    /// STRICTER, never replace a check. With it off (or a tool with no planner) the
+    /// confirmation falls back to today's text preview, byte-for-byte unchanged.
+    pub plan: PlanConfig,
 }
 
 /// Every section and key the config knows, for unknown-key diagnostics
@@ -426,6 +463,10 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // "auto" NEVER deploys a forged app into apps/ — deploy is ALWAYS a separate
     // human step (scripts/apply_forge.sh); see ForgeConfig.
     ("forge", &["enabled", "mode"]),
+    // [changeq] — the Change Queue (changeq.rs): ONE git-native review lane over
+    // every propose-only artifact. "enabled" is the master gate; "max_pending"
+    // bounds the in-memory review window. See ChangeqConfig.
+    ("changeq", &["enabled", "max_pending"]),
     ("telemetry", &["port"]),
     (
         "proactive",
@@ -514,6 +555,12 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // utterances + intent names (never a secret). `max_steps` bounds one macro;
     // `retention` bounds the store. Listed so none reads as a typo.
     ("macros", &["enabled", "max_steps", "retention"]),
+    // [runbook] — RUNBOOKS (runbook.rs). `enabled` SHIPS OFF (false). A runbook is a
+    // benign-only, typed, inspectable automation DAG; `run` re-issues each step through
+    // the NORMAL router + gate FRESH (a consequential step PARKS one at a time — no
+    // pre-approval, no batching), and data flow passes values only, never a gate bypass.
+    // `max_steps` bounds one runbook. Listed so neither key reads as a typo.
+    ("runbook", &["enabled", "max_steps"]),
     // [mcp] — Model Context Protocol client (mcp.rs). `enabled` is the subsystem
     // master switch and SHIPS ON (full-power default) — INERT WITHOUT SERVERS: with an
     // empty `servers` list nothing connects (the installer must NOT add any). The
@@ -951,6 +998,9 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // below which (on battery) DARWIN prefers Fast + defers heavy work. Listed so
     // neither reads as a typo.
     ("power", &["adaptive", "low_battery_pct"]),
+    // [obol] — CLOUD-SPEND LEDGER + DOLLAR-CAP BUDGET. `daily_usd_cap` ships 0.0
+    // (no cap == inert; the budget is REDUCE-ONLY once a cap is set).
+    ("obol", &["daily_usd_cap"]),
     // [report] — REPORT GENERATION (#40, report.rs). `enabled` SHIPS ON (full-power
     // default). The read-only op folds already-cited notebook/research material into a
     // bounded markdown report under research.rs's cite discipline (every citation a
@@ -1015,6 +1065,13 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // command; empty => an honest UNVERIFIED, never a faked pass). Listed here so
     // neither key reads as a typo.
     ("realm", &["enabled", "verify_command", "timeout_secs"]),
+    // [plan] — PLAN-APPLY (plan.rs). `enabled` SHIPS ON (armed-by-default) — it
+    // upgrades the confirmation preview to a STATE-BOUND field-level diff for the
+    // concrete-state-change consequential tools (connector_add, standing_create)
+    // and re-parks on state drift (TOCTOU-safe). STRICTLY ADDITIVE — never loosens
+    // a gate; falls back to today's text preview where off or no planner exists.
+    // Listed so the key never reads as a typo.
+    ("plan", &["enabled"]),
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1744,6 +1801,33 @@ impl Default for PowerConfig {
     }
 }
 
+/// [obol] — CLOUD-SPEND LEDGER + DOLLAR-CAP ROUTING BUDGET (obol.rs). The durable,
+/// bounded, secret-free spend ledger records every cloud call (model, token counts,
+/// dollar estimate, agent, ts) from the SAME feed point as the eval cost window.
+/// `daily_usd_cap` is the ONLY knob and it SHIPS 0.0 == NO CAP (the feature is
+/// INERT): the budget is a REDUCE-ONLY routing input that, once a real cap is set,
+/// can only step a near/over-cap turn DOWN to a cheaper/on-device tier
+/// (Override > Budget-floor > Auto > Fallback). It NEVER loosens a gate, NEVER
+/// escalates to a pricier model, and NEVER blocks a call the user explicitly forces.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ObolConfig {
+    /// The daily cloud-spend cap in USD. `0.0` (the shipped default) means NO CAP:
+    /// [`crate::obol::budget_pressure`] is always `None`, so routing is byte-for-byte
+    /// today's. A positive value arms the REDUCE-ONLY budget-floor: at ~80% of the
+    /// cap a Heavy turn eases down to Fast; at/over the cap the turn is floored to the
+    /// on-device Local path (no further cloud spend). It only ever routes cheaper.
+    pub daily_usd_cap: f64,
+}
+
+impl Default for ObolConfig {
+    fn default() -> Self {
+        // SHIPS INERT: no cap. The ledger still records honest accounting, but the
+        // budget throttles NOTHING until the owner sets a real dollar cap.
+        Self { daily_usd_cap: 0.0 }
+    }
+}
+
 /// [report] — REPORT GENERATION (#40, report.rs). `enabled` SHIPS ON (full-power
 /// default). The op is READ-ONLY — it pulls the agent-scoped, already-cited
 /// notebook/research material and folds it into a BOUNDED markdown report under
@@ -2038,6 +2122,40 @@ impl Default for OptimizeConfig {
             // review+apply, adopted only if it beats baseline on held-out traces.
             // There is no auto-apply-to-live path; NEVER ship "auto" as the default.
             mode: "propose".to_string(),
+        }
+    }
+}
+
+/// [changeq] — the CHANGE QUEUE (changeq.rs). ONE git-native review lane that
+/// unifies every propose-only artifact (heal / code / forge / optimize) onto a
+/// dedicated LOCAL git branch (`darwin/changeq`) with secret-free provenance
+/// trailers, exposes a read-only `changeq_list`, and routes `changeq_apply` to
+/// each type's EXISTING gated apply script + re-validation (it invents NO new
+/// authority). PURE bookkeeping — it never changes any writer's propose-only
+/// contract.
+///
+///   - `enabled` (SHIPS ON, full-power default): master gate. INERT WITHOUT A
+///     REPO — with no git repo the branch commit is a no-op; the in-memory queue
+///     + the read-only list still work. Off => nothing is registered.
+///   - `max_pending`: the BOUND on the in-memory review window (clamped to
+///     `[1, changeq::MAX_QUEUE_BOUND]`); past it the OLDEST pending proposal is
+///     evicted so the lane can never grow without bound.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ChangeqConfig {
+    pub enabled: bool,
+    pub max_pending: usize,
+}
+
+impl Default for ChangeqConfig {
+    fn default() -> Self {
+        Self {
+            // SHIPS ON (full-power default) — INERT WITHOUT A REPO. Pure bookkeeping
+            // over already-propose-only artifacts; the git commit is device-gated
+            // (the runner), and apply still routes to each type's own gated script.
+            enabled: true,
+            // A bounded review window (mirrors changeq::DEFAULT_QUEUE_BOUND).
+            max_pending: crate::changeq::DEFAULT_QUEUE_BOUND,
         }
     }
 }
@@ -2502,6 +2620,33 @@ impl Default for RealmConfig {
             // verdict is reachable instead of always timing out to UNVERIFIED.
             timeout_secs: 300,
         }
+    }
+}
+
+/// [plan] — PLAN-APPLY (plan.rs). `enabled` SHIPS ON (armed-by-default). It upgrades
+/// the cross-turn confirmation PREVIEW from prose to a field-level, STATE-BOUND diff
+/// for the concrete-state-change consequential tools (connector_add, standing_create)
+/// and re-parks the confirmation when the underlying state DRIFTS between the plan and
+/// the spoken "yes" (TOCTOU-safe by construction). It is STRICTLY ADDITIVE — the
+/// state-hash is an EXTRA precondition on top of the master switch + spoken confirm +
+/// voice-id + !lockdown; it can only make the gate STRICTER, never replace a check.
+/// With it off (or for a tool that has no structured planner) the confirmation falls
+/// back to today's text preview, byte-for-byte unchanged.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PlanConfig {
+    /// Master gate for the structured, state-bound diff. SHIPS ON (armed-by-default):
+    /// with it off, every consequential confirmation uses the unchanged text preview.
+    /// Turning it ON only ADDS the state-drift re-park — it loosens nothing.
+    pub enabled: bool,
+}
+
+impl Default for PlanConfig {
+    fn default() -> Self {
+        // SHIPS ON (armed-by-default). ADDITIVE-ONLY: the state-hash re-park can only
+        // make the confirmation stricter (re-park on drift), never approve a drifted
+        // action and never bypass the master switch / spoken confirm / voice-id.
+        Self { enabled: true }
     }
 }
 
@@ -3960,6 +4105,35 @@ impl Default for MacrosConfig {
     }
 }
 
+/// [runbook] — RUNBOOKS (runbook.rs): a benign-only, TYPED, INSPECTABLE automation DAG
+/// where each step names a capability it `uses` (a tool/skill/agent), a typed `with`
+/// input map, the step ids it `needs`, and an optional `out` that can feed a later
+/// step's `with`. `enabled` SHIPS OFF (false).
+///
+/// KEY SAFETY (enforced in runbook.rs + the router, not here): the parser/typechecker/
+/// planner are PURE (they only inspect); `run` walks the DAG topologically and re-issues
+/// EACH step through the NORMAL router + the gate FRESH, one at a time — a consequential
+/// step hits the confirmation gate + master switch + voice-id + lockdown FRESH, exactly
+/// as if issued live (NO pre-approval, NO batching). Data flow (`out` -> a later `with`)
+/// passes a VALUE only, never authority: a parked step produces nothing, so its consumer
+/// BLOCKS rather than run on a fabricated value. `max_steps` bounds one runbook.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RunbookConfig {
+    /// Master switch for planning/running runbooks. SHIPS OFF (false).
+    pub enabled: bool,
+    /// Max steps one runbook may hold (a bounded DAG).
+    pub max_steps: usize,
+}
+
+impl Default for RunbookConfig {
+    fn default() -> Self {
+        // SHIPS OFF (false): a conservative first landing. Enabling never bypasses the
+        // gate — every consequential step still PARKS fresh, one at a time. Bounded.
+        Self { enabled: false, max_steps: crate::runbook::DEFAULT_MAX_STEPS }
+    }
+}
+
 /// [skills] — the skill library (skills/). SHIPS ON: the in-tree skills are PURE +
 /// read-only, so offering them is safe by default. `enabled` only governs whether
 /// the `skill_list` / `skill_invoke` meta-tools are surfaced — a CONSEQUENTIAL skill
@@ -4210,6 +4384,7 @@ impl Config {
             inference: section(&table, "inference", &mut issues),
             self_heal: section(&table, "self_heal", &mut issues),
             forge: section(&table, "forge", &mut issues),
+            changeq: section(&table, "changeq", &mut issues),
             telemetry: section(&table, "telemetry", &mut issues),
             proactive: section(&table, "proactive", &mut issues),
             focus: section(&table, "focus", &mut issues),
@@ -4223,6 +4398,7 @@ impl Config {
             drafts: section(&table, "drafts", &mut issues),
             missions: section(&table, "missions", &mut issues),
             macros: section(&table, "macros", &mut issues),
+            runbook: section(&table, "runbook", &mut issues),
             mcp: section(&table, "mcp", &mut issues),
             skills: section(&table, "skills", &mut issues),
             optimize: section(&table, "optimize", &mut issues),
@@ -4263,6 +4439,7 @@ impl Config {
             webhooks: section(&table, "webhooks", &mut issues),
             plugin_sdk: section(&table, "plugin_sdk", &mut issues),
             power: section(&table, "power", &mut issues),
+            obol: section(&table, "obol", &mut issues),
             report: section(&table, "report", &mut issues),
             chart: section(&table, "chart", &mut issues),
             artifact: section(&table, "artifact", &mut issues),
@@ -4271,6 +4448,7 @@ impl Config {
             egress: section(&table, "egress", &mut issues),
             precog: section(&table, "precog", &mut issues),
             realm: section(&table, "realm", &mut issues),
+            plan: section(&table, "plan", &mut issues),
         };
 
         // SELECTABLE QUANTIZATION (#39) value validation: an unknown [inference]

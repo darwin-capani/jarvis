@@ -1621,6 +1621,13 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
             // allowlisted [code].roots root). Both ship ON in [code] but are INERT
             // until a codebase root is allowlisted.
             "code_explain", "code_propose_diff",
+            // CHANGE QUEUE (changeq.rs): steve, the CTO/Builds agent, owns the
+            // unified git-native review lane over every propose-only artifact —
+            // changeq_list (READ-ONLY: list pending heal/code/forge/optimize
+            // proposals + provenance) and changeq_apply (PROPOSE-ONLY + human-gated:
+            // surface THAT type's EXISTING gated apply command + the git-revert
+            // rollback — it invents NO new authority and applies nothing itself).
+            "changeq_list", "changeq_apply",
             // SANDBOXED SHELL / TERMINAL (task #43): steve, the CTO/Builds agent,
             // owns the HIGHEST-RISK tool — arbitrary command execution. It ships
             // ON in [shell] but NEVER auto-runs; every command is CONSEQUENTIAL

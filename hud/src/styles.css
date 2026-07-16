@@ -7338,6 +7338,107 @@ svg.tri circle {
 .eval-proposal-note { line-height: 1.35; font-size: 0.66em; }
 .eval-foot { margin-top: 2px; line-height: 1.35; font-size: 0.7em; }
 
+/* SPEND // CLOUD METER (obol.rs). Mirrors the eval scorecard's visual language:
+   cyan surface for measured accounting, AMBER for the EASE budget shoulder, RED
+   reserved for the FLOOR (at/over cap) budget pressure — the one state the user
+   should notice. Dollars are always shown as an estimate; the budget is
+   reduce-only, so nothing here implies an action or a loosened gate. */
+.spend-body { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; }
+.spend-section { display: flex; flex-direction: column; gap: 6px; }
+.spend-section-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.spend-section-title {
+  font-size: 0.72em;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  color: var(--cyan-bright);
+}
+.spend-runtime-pill {
+  font-size: 0.62em;
+  letter-spacing: 0.07em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--cyan-dim);
+  color: var(--cyan-dim);
+}
+.spend-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px 12px;
+}
+.spend-stat { display: flex; flex-direction: column; gap: 1px; min-width: 56px; }
+.spend-stat-label {
+  font-size: 0.6em;
+  letter-spacing: 0.06em;
+  color: var(--cyan-dim);
+}
+.spend-stat-value {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  color: var(--ice);
+  font-variant-numeric: tabular-nums;
+}
+.spend-stat.prominent .spend-stat-value { font-size: 1.04em; color: var(--cyan-bright); }
+.spend-pressure-pill {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--cyan-dim);
+  align-self: flex-end;
+}
+.spend-pressure-label { font-size: 0.55em; letter-spacing: 0.08em; color: var(--cyan-dim); }
+.spend-pressure-value {
+  font-family: var(--mono);
+  font-size: 0.78em;
+  letter-spacing: 0.04em;
+  color: var(--ice);
+}
+.spend-pressure-pill.ease { border-color: var(--amber, #f0a020); }
+.spend-pressure-pill.ease .spend-pressure-value { color: var(--amber, #f0a020); }
+.spend-pressure-pill.floor { border-color: var(--red, #ff5a5a); }
+.spend-pressure-pill.floor .spend-pressure-value { color: var(--red, #ff5a5a); }
+.spend-gauge {
+  position: relative;
+  height: 8px;
+  border: 1px solid var(--cyan-dim);
+  border-radius: 4px;
+  overflow: hidden;
+  background: rgba(120, 200, 230, 0.06);
+}
+.spend-gauge-fill {
+  display: block;
+  height: 100%;
+  background: var(--cyan-bright);
+  transition: width 0.4s ease;
+}
+.spend-gauge.ease .spend-gauge-fill { background: var(--amber, #f0a020); }
+.spend-gauge.floor .spend-gauge-fill { background: var(--red, #ff5a5a); }
+.spend-gauge-ease {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 80%;
+  width: 1px;
+  background: var(--ice-dim);
+  opacity: 0.6;
+}
+.spend-recent { gap: 4px; }
+.spend-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.spend-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.7em;
+  font-family: var(--mono);
+}
+.spend-row-agent { color: var(--cyan-bright); min-width: 52px; }
+.spend-row-model { color: var(--ice-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spend-row-tokens { font-size: 0.9em; }
+.spend-row-cost { color: var(--ice); font-variant-numeric: tabular-nums; }
+.spend-foot { margin-top: 2px; line-height: 1.35; font-size: 0.7em; }
+
 /* SKILLS // MARKETPLACE — review-only catalog browser. Mirrors the MCP panel's
    visual language (cyan surface, amber for a gated entry; RED stays reserved for
    alerts). All interactivity here is local view state (search + category filter)
@@ -9884,6 +9985,29 @@ body,
 .secondlook-note::before { content: "▸ "; color: var(--warn-amber); }
 .secondlook-foot { margin-top: 4px; }
 
+/* PLAN // DIFF (plan.diff): the structured, STATE-BOUND field-level diff for the
+   currently parked consequential action. Advisory only — the daemon owns the gate;
+   the panel clears when the pending resolves. A drift re-park flips to amber. */
+.plandiff-body { display: flex; flex-direction: column; gap: 5px; }
+.plandiff-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.plandiff-pill {
+  font-size: 0.62em; letter-spacing: 0.06em; padding: 1px 6px;
+  border-radius: 3px; border: 1px solid currentColor; white-space: nowrap;
+  color: var(--accent-cyan, currentColor);
+}
+.plandiff-pill.drift { color: var(--warn-amber); }
+.plandiff-tool { font-size: 0.78em; letter-spacing: 0.04em; }
+.plandiff-summary { font-size: 0.74em; overflow-wrap: anywhere; }
+.plandiff-changes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.plandiff-change { font-size: 0.72em; overflow-wrap: anywhere; }
+.plandiff-resource { font-size: 0.68em; letter-spacing: 0.03em; opacity: 0.85; }
+.plandiff-delta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px; }
+.plandiff-before { text-decoration: line-through; opacity: 0.7; }
+.plandiff-arrow { opacity: 0.6; }
+.plandiff-after { color: var(--accent-cyan, currentColor); }
+.plandiff-drift { margin-top: 2px; color: var(--warn-amber); }
+.plandiff-foot { margin-top: 4px; }
+
 /* Session rewind (session.rewind): review-only timeline of an asked window —
    recorded turns + gated-action verdicts, oldest first. Nothing re-executes. */
 .rewind-body { display: flex; flex-direction: column; gap: 5px; }
@@ -10085,3 +10209,61 @@ body,
 .overnight-item-prompt { color: var(--fg, rgba(255, 255, 255, 0.85)); }
 .overnight-item-result { font-size: 0.9em; overflow-wrap: anywhere; }
 .overnight-foot { margin-top: 4px; }
+
+/* ------------------------------------------------------- CHANGE QUEUE panel */
+/* CHANGE QUEUE // REVIEW LANE — the read-only surface for the unified git-native
+   review lane over every PROPOSE-ONLY artifact (self-heal / code / forge /
+   optimize). Same posture as the code/forge/heal review panels: each proposal is
+   shown READ-ONLY with its EXACT MANUAL apply command (amber dashed command box —
+   NO one-click apply). Cyan = neutral/structural; green = mirrored-on-branch;
+   amber = queued + the manual command (RED stays reserved for alerts). */
+.changeq-body { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; }
+.changeq-head { line-height: 1.35; }
+.changeq-head code, .changeq-foot code { color: var(--cyan-bright); }
+.changeq-list { display: flex; flex-direction: column; gap: 8px; }
+.changeq-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--cyan-dim);
+  background: rgba(26, 214, 255, 0.04);
+  border-radius: 2px;
+}
+.changeq-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.changeq-pill {
+  font-size: 0.64em;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  color: var(--cyan-bright);
+}
+.changeq-pill-heal { color: var(--warn-amber); }
+.changeq-pill-forge { color: var(--learn-green); }
+.changeq-ts { font-size: 0.68em; color: var(--cyan-dim); font-variant-numeric: tabular-nums; }
+.changeq-status {
+  margin-left: auto;
+  font-size: 0.6em;
+  letter-spacing: 0.08em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+.changeq-status.mirrored { color: var(--learn-green); }
+.changeq-status.queued { color: var(--warn-amber); }
+.changeq-summary { font-size: 0.82em; color: var(--ice); line-height: 1.35; }
+.changeq-artifact, .changeq-prov { font-size: 0.7em; line-height: 1.35; overflow-wrap: anywhere; }
+.changeq-artifact-label { color: var(--cyan-dim); letter-spacing: 0.06em; font-weight: 600; }
+.changeq-artifact code, .changeq-prov code { color: var(--cyan-bright); }
+.changeq-apply { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
+.changeq-apply-label { font-size: 0.62em; letter-spacing: 0.06em; }
+.changeq-apply-cmd {
+  font-size: 0.74em;
+  color: var(--warn-amber);
+  border: 1px dashed var(--warn-amber);
+  border-radius: 3px;
+  padding: 3px 6px;
+  overflow-wrap: anywhere;
+}
+.changeq-foot { margin-top: 2px; line-height: 1.4; }

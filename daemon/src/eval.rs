@@ -92,6 +92,42 @@ impl Default for CostRates {
     }
 }
 
+impl CostRates {
+    /// The dollar ESTIMATE for ONE call's [`TokenUsage`] under these rates — the
+    /// shared "rates × measured counts" formula. A transparent multiplier, never a
+    /// billed figure. Used by the eval cost aggregate AND the OBOL spend ledger so
+    /// both derive their dollars from the SAME arithmetic (no drift).
+    pub fn cost_of(&self, usage: &TokenUsage) -> f64 {
+        (usage.input_tokens as f64) / 1_000_000.0 * self.input_per_m
+            + (usage.output_tokens as f64) / 1_000_000.0 * self.output_per_m
+            + (usage.cache_read_tokens as f64) / 1_000_000.0 * self.cache_read_per_m
+    }
+}
+
+/// The TRANSPARENT per-model $/1M-token price table (published list prices used
+/// ONLY as an estimate multiplier, never a billed number). A coarse match on the
+/// model id: the heavy (Opus) family is the most expensive, the fast (Haiku)
+/// family the cheapest, the Sonnet family in between; anything unrecognized (an
+/// empty/absent model string, a future model) falls back to [`CostRates::default`]
+/// so the estimate is honest-but-conservative rather than free. PURE — the single
+/// place the daemon maps a model string to its rate, so the eval scorecard and the
+/// OBOL ledger agree on what a given model costs.
+pub fn rates_for_model(model: &str) -> CostRates {
+    let m = model.to_ascii_lowercase();
+    if m.contains("opus") {
+        // Heavy tier — the most capable + the most expensive.
+        CostRates { input_per_m: 15.00, output_per_m: 75.00, cache_read_per_m: 1.50 }
+    } else if m.contains("haiku") {
+        // Fast tier — quick + cheap.
+        CostRates { input_per_m: 1.00, output_per_m: 5.00, cache_read_per_m: 0.10 }
+    } else if m.contains("sonnet") {
+        CostRates { input_per_m: 3.00, output_per_m: 15.00, cache_read_per_m: 0.30 }
+    } else {
+        // Unknown / absent model id — the conservative primary-model default.
+        CostRates::default()
+    }
+}
+
 /// One turn's REAL cloud token usage (the COST primitive). Surfaced from the
 /// cloud reply path's `usage` counters per turn. A turn that made no cloud call
 /// (on-device only) contributes nothing — it is simply never recorded.
@@ -170,6 +206,11 @@ pub async fn record_cloud_usage(resp: &Value) {
     let Some(usage) = extract_token_usage(resp) else {
         return;
     };
+    // OBOL: feed the durable spend LEDGER + the live dollar-budget from the SAME
+    // point, with the SAME measured token COUNTS (aggregate-only; no content; a
+    // no-op durable append until the ledger sink is installed). The eval cost
+    // window and the OBOL ledger therefore share one feed and one price table.
+    crate::obol::record_cloud_spend(resp, usage).await;
     let Some(sink) = USAGE_SINK.get() else {
         return;
     };

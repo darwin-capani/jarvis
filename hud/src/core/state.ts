@@ -33,6 +33,7 @@ import {
   DocIndexStatus,
   DocSearchResult,
   EvalReport,
+  ObolSpend,
   KnowledgeGraphResult,
   LifeLogDigest,
   SessionRewind,
@@ -40,6 +41,7 @@ import {
   MirrorFrame,
   LiveGateEvent,
   ConsensusAdvisory,
+  PlanDiff,
   LocalToolsStatus,
   LocalWarmStatus,
   InferencePerfStatus,
@@ -136,6 +138,7 @@ import {
   parsePolicySnapshot,
   liveGateEventFrom,
   parseConsensusAdvisory,
+  parsePlanDiff,
   parseVerifyStatus,
   verifyStatusIsEmpty,
   parseCrossCheckStatus,
@@ -167,6 +170,7 @@ import {
   parseUnifiedSearchResult,
   parseEpisodicRecorded,
   parseEvalReport,
+  parseObolSpend,
   parseForgeProposed,
   parseCapabilityAtlas,
   parseTccSnapshot,
@@ -232,6 +236,7 @@ import {
   voiceModeInitial,
 } from "./events";
 import { agentProfile, normalizeHue } from "./agents";
+import { type ChangeqState, changeqReduce, parseChangeqList } from "./changeq";
 
 /* ------------------------------------------------------------------------ */
 
@@ -663,6 +668,13 @@ export interface HudState {
    *  a codebase root allowlisted. REVIEW-ONLY + SECRET-FREE — no one-click apply,
    *  no token field on the wire. */
   codeIntel: CodeIntel | null;
+  /** The CHANGE QUEUE surface (changeq.list, changeq.rs): the pending PROPOSE-ONLY
+   *  proposals (self-heal / code / forge / optimize) unified into one git-native
+   *  review lane, each with its EXISTING apply command + secret-free provenance.
+   *  Null until the first changeq.list frame (nothing is pending). REVIEW-ONLY —
+   *  the panel shows each proposal's manual, re-validating apply command; there is
+   *  NO one-click apply, and the frame carries no secret/token. */
+  changeq: ChangeqState | null;
   /** The SANDBOXED SHELL surface (shell.blocked / shell.denied / shell.preview /
    *  shell.executing / shell.ran): the last command's HONEST outcome — OFF/locked,
    *  refused-denylisted, parked-awaiting-confirm, executing, or the faithful run
@@ -785,6 +797,13 @@ export interface HudState {
    *  percentiles, sums, rates, and counts; latency/cost read "awaiting turns"
    *  until real turns/cloud calls feed them (runtime-gated). */
   evalReport: EvalReport | null;
+  /** The OBOL SPEND // CLOUD METER snapshot (obol.spend): today's cloud spend vs
+   *  the daily $ cap, the REDUCE-ONLY budget pressure (none/ease/floor), headroom,
+   *  a call count, and the recent secret-free rows. Null until the daemon emits the
+   *  first periodic meter (~20s after startup). SECRET-FREE — the wire carries only
+   *  dollars, counts, model/agent names, and the reduce-only posture. The dollars
+   *  are a labelled ESTIMATE; the budget can only route cheaper/on-device. */
+  obolSpend: ObolSpend | null;
   /** The last optimizer PROPOSAL (optimize.proposed): a REVIEWABLE artifact the
    *  propose-only optimizer wrote under state/optimize/proposals/<ts>/, awaiting
    *  the MANUAL scripts/apply_optimization.sh step. Null when none is pending —
@@ -1003,6 +1022,18 @@ export interface HudState {
    *  the panel never claims an action awaits confirm once its pending is gone.
    *  0 when there is no advisory. */
   consensusAdvisoryAt: number;
+  /** PLAN-APPLY (plan.diff): the structured, STATE-BOUND field-level diff for the
+   *  currently PARKED consequential action (daemon plan.rs). Carries the summary +
+   *  before/after changes + the state hash; `drift`/`phase` mark a confirm-time
+   *  re-park when the state changed since the plan was shown. Cleared when the
+   *  pending resolves or a new park supersedes it (same lifecycle as the advisory).
+   *  ADVISORY on the HUD — the daemon owns the gate; this only shows the diff. */
+  planDiff: PlanDiff | null;
+  /** Wall-clock ms the current plan diff arrived. Same hard-TTL discipline as the
+   *  advisory (a parked action has a ~120s TTL and several resolutions clear it
+   *  silently) — `activePlanDiff` treats it as STALE past PLAN_DIFF_TTL_MS. 0 when
+   *  there is no plan diff. */
+  planDiffAt: number;
   /** The user-set POLICY surface (policy.snapshot): the per-action rules
    *  (tool [+agent] [+recipient] -> always|never|ask) in the daemon's
    *  deterministic order, plus the [policy] on/off posture. Null until the daemon
@@ -1332,6 +1363,20 @@ export function activeConsensusAdvisory(state: HudState, nowMs: number): Consens
   if (nowMs - state.consensusAdvisoryAt > CONSENSUS_ADVISORY_TTL_MS) return null;
   return state.consensusAdvisory;
 }
+
+/** The plan diff shares the parked action's ~120s hard TTL — past it the pending
+ *  is gone by every path, so the diff is retired even without a clearing event.
+ *  Same value as the advisory (they describe the SAME pending). */
+export const PLAN_DIFF_TTL_MS = 125_000;
+
+/** The PLAN // DIFF to SHOW, or null when there is none or it has gone stale.
+ *  PURE (takes `now`), so a silently-resolved pending never leaves the panel
+ *  claiming an action still awaits confirm. */
+export function activePlanDiff(state: HudState, nowMs: number): PlanDiff | null {
+  if (state.planDiff === null) return null;
+  if (nowMs - state.planDiffAt > PLAN_DIFF_TTL_MS) return null;
+  return state.planDiff;
+}
 /** Cap on the live proactive-SUGGESTIONS feed the HUD keeps in view. A VIEW
  *  bound — the daemon's detector is itself bounded; this just keeps the panel
  *  from growing without limit if many distinct patterns clear the threshold. */
@@ -1430,6 +1475,7 @@ export function initialState(): HudState {
     forgeProposal: null,
     forgeAlert: null,
     codeIntel: null,
+    changeq: null,
     shell: null,
     uiActuate: null,
     mcp: null,
@@ -1450,6 +1496,7 @@ export function initialState(): HudState {
     vault: null,
     skills: null,
     evalReport: null,
+    obolSpend: null,
     optimizerProposal: null,
     docIndex: null,
     docSearch: null,
@@ -1479,6 +1526,8 @@ export function initialState(): HudState {
     liveGate: [],
     consensusAdvisory: null,
     consensusAdvisoryAt: 0,
+    planDiff: null,
+    planDiffAt: 0,
     policy: null,
     voiceId: voiceIdInitial(),
     modelTier: modelTierInitial(),
@@ -1640,7 +1689,7 @@ export function reduce(state: HudState, action: HudAction): HudState {
       // panel must not keep claiming an action awaits a confirm that can no
       // longer be given (same phantom-state class as activeAgent above).
       return setCore(
-        { ...state, connected: false, activeAgent: null, consensusAdvisory: null, consensusAdvisoryAt: 0 },
+        { ...state, connected: false, activeAgent: null, consensusAdvisory: null, consensusAdvisoryAt: 0, planDiff: null, planDiffAt: 0 },
         "offline",
         action.at,
       );
@@ -2371,6 +2420,15 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       };
     }
 
+    case "changeq.list": {
+      // The CHANGE QUEUE (changeq.rs) broadcast its FULL current pending set of
+      // propose-only proposals. parseChangeqList is DEFENSIVE (a malformed item is
+      // dropped, never guessed) and changeqReduce is authoritative + pure (dedup by
+      // (kind, ts), newest-first, capped); a garbled frame (parse -> null) is
+      // ignored so the last good state is preserved rather than blanking the panel.
+      return { ...s, changeq: changeqReduce(s.changeq, parseChangeqList(env.data)) };
+    }
+
     case "shell.blocked": {
       // The sandboxed shell did NOT run a command. reason "disabled" is the
       // shipped-OFF / locked-down gate — the inert default the daemon's spoken
@@ -2753,6 +2811,16 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // "awaiting turns", the routing/correction rates, and the OFF/propose
       // optimizer posture. REVIEW-ONLY: the eval framework measures, never tunes.
       return { ...s, evalReport: parseEvalReport(env.data) };
+    }
+
+    case "obol.spend": {
+      // The periodic AGGREGATE-ONLY spend meter (obol.rs). parseObolSpend NEVER
+      // returns null (a malformed payload yields an honest all-zero/"none"
+      // snapshot rather than a stale one) and NEVER carries PII — so the SPEND //
+      // CLOUD METER gauge always renders the current honest state: today's spend
+      // vs the daily $ cap, the REDUCE-ONLY budget pressure, and the recent
+      // secret-free rows. REVIEW-ONLY: the budget only ever routes cheaper.
+      return { ...s, obolSpend: parseObolSpend(env.data) };
     }
 
     case "optimize.proposed": {
@@ -3212,18 +3280,23 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       // (never a target/input). Folded newest-first into a bounded ring; the
       // durable, hash-chained record stays daemon-side. A malformed event that
       // does not map to a gate verdict is ignored (same reference).
-      // A new PARK also supersedes any prior pending (single slot), so the
-      // second-look advisory — which describes the pending action — goes stale
-      // with it; the fresh consensus.advisory event (if any) follows the park
-      // immediately on the same stream.
-      const supersede = env.event === "confirm.parked" && s.consensusAdvisory !== null;
+      // A new PARK also supersedes any prior pending (single slot), so BOTH the
+      // second-look advisory AND the plan diff — which describe the pending action
+      // — go stale with it; the fresh consensus.advisory / plan.diff events (if
+      // any) follow the park immediately on the same stream (park emits confirm.parked
+      // FIRST, then the diff, so this clear never wipes the new park's own diff).
+      const supersede =
+        env.event === "confirm.parked" && (s.consensusAdvisory !== null || s.planDiff !== null);
+      const cleared = supersede
+        ? { consensusAdvisory: null, consensusAdvisoryAt: 0, planDiff: null, planDiffAt: 0 }
+        : null;
       const seq = s.seq + 1;
       const ev = liveGateEventFrom(env.event, env.data, env.ts, seq);
       if (ev === null) {
-        return supersede ? { ...s, consensusAdvisory: null, consensusAdvisoryAt: 0 } : s;
+        return cleared !== null ? { ...s, ...cleared } : s;
       }
       const base = { ...s, seq, liveGate: [ev, ...s.liveGate].slice(0, LIVE_GATE_CAP) };
-      return supersede ? { ...base, consensusAdvisory: null, consensusAdvisoryAt: 0 } : base;
+      return cleared !== null ? { ...base, ...cleared } : base;
     }
 
     case "consensus.advisory": {
@@ -3237,18 +3310,30 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       return { ...s, consensusAdvisory: advisory, consensusAdvisoryAt: at };
     }
 
+    case "plan.diff": {
+      // PLAN-APPLY: the structured, STATE-BOUND diff for the just-parked action
+      // (daemon plan.rs -> the confirmation park sites). parsePlanDiff returns null
+      // for an empty/malformed diff — dropped, never fabricated. The gate itself is
+      // UNCHANGED by anything here — the panel only SHOWS the diff. Stamp the arrival
+      // so the client TTL retires a stale diff whose pending died silently. A
+      // confirm-phase (drift) frame simply REPLACES the shown diff with the fresh one.
+      const diff = parsePlanDiff(env.data);
+      if (diff === null) return s;
+      return { ...s, planDiff: diff, planDiffAt: at };
+    }
+
     case "confirm.affirmed":
     case "confirm.denied":
     case "confirm.dropped_unrelated":
     case "confirm.replayed": {
-      // The pending resolved — the advisory describes a pending that no longer
-      // exists. `confirm.replayed` covers the HUD/command-channel confirm path
+      // The pending resolved — the advisory + plan diff describe a pending that no
+      // longer exists. `confirm.replayed` covers the HUD/command-channel confirm path
       // (which actually EXECUTES the action) as well as the voice replay; the
       // voice-only affirmed/denied/dropped_unrelated cover cancel + pass-through.
       // Silent resolutions (barge-in, lockdown, TTL expiry, command-channel
-      // deny) are caught by the client TTL in `activeConsensusAdvisory`.
-      if (s.consensusAdvisory === null) return s;
-      return { ...s, consensusAdvisory: null, consensusAdvisoryAt: 0 };
+      // deny) are caught by the client TTLs in `activeConsensusAdvisory`/`activePlanDiff`.
+      if (s.consensusAdvisory === null && s.planDiff === null) return s;
+      return { ...s, consensusAdvisory: null, consensusAdvisoryAt: 0, planDiff: null, planDiffAt: 0 };
     }
 
     case "audit.truncated": {

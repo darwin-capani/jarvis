@@ -4184,7 +4184,7 @@ export type ModelTier = "local" | "fast" | "heavy";
  *  override is in force (MANUAL); `auto` = no override, the difficulty heuristic
  *  picked it; `fallback` = a cloud tier was wanted but the cloud was unreachable /
  *  errored, so it degraded to local (the honest degrade path). */
-export type ModelTierReason = "override" | "auto" | "fallback";
+export type ModelTierReason = "override" | "auto" | "fallback" | "budget";
 
 /** The set of swap intents the daemon detects (ModelSwapIntent::as_str). `auto`
  *  clears any override; the other three pin a tier. */
@@ -4232,7 +4232,9 @@ function asModelTier(v: string | null): ModelTier | null {
 
 /** Narrow an untrusted string to a known ModelTierReason, or null. */
 function asModelTierReason(v: string | null): ModelTierReason | null {
-  return v === "override" || v === "auto" || v === "fallback" ? v : null;
+  return v === "override" || v === "auto" || v === "fallback" || v === "budget"
+    ? v
+    : null;
 }
 
 /** Narrow an untrusted string to a known ModelSwapIntent, or null. */
@@ -4923,6 +4925,9 @@ export function modelTierTone(
   reason: ModelTierReason | null,
 ): "good" | "bad" | "warn" | "ok" | "idle" {
   if (reason === "fallback") return "bad"; // a degrade — surface it
+  // OBOL budget-floor stepped this turn DOWN to stay under the daily $ cap — a
+  // deliberate cost guard the user should notice (not a fault). Warn tone.
+  if (reason === "budget") return "warn";
   switch (tier) {
     case "heavy":
       return "good";
@@ -4948,6 +4953,8 @@ export function modelTierReasonLabel(reason: ModelTierReason | null): string {
       return "OVERRIDE";
     case "auto":
       return "AUTO";
+    case "budget":
+      return "BUDGET";
     case "fallback":
       return "FALLBACK";
     case null:
@@ -4979,6 +4986,8 @@ export function modelTierReasonHonest(reason: ModelTierReason | null): string {
       return "you pinned this tier by voice (MANUAL) — it overrides the auto pick";
     case "auto":
       return "picked automatically per turn by a difficulty HEURISTIC (can be wrong; overridable)";
+    case "budget":
+      return "the daily $ cap stepped this turn DOWN to a cheaper/on-device tier (reduce-only; an override beats it)";
     case "fallback":
       return "a cloud tier was wanted but the cloud was unreachable — degraded to on-device (no cloud call)";
     case null:
@@ -5977,6 +5986,109 @@ export function parseEvalReport(data: Record<string, unknown>): EvalReport {
       posture: str(optimizerObj, "posture") ?? "propose-only",
     },
     runtimeGated: strArr(data, "runtime_gated") ?? [],
+  };
+}
+
+/* ------------------------------------------------------------------------ *
+ * OBOL — SPEND // CLOUD METER, from daemon/src/obol.rs::build_spend_report,     *
+ * emitted as a `system / obol.spend` envelope by the periodic spend_meter_task  *
+ * (every 30s, 20s startup delay). AGGREGATE-ONLY + SECRET-FREE: the wire carries *
+ * ONLY the day/cap dollars, the derived REDUCE-ONLY budget pressure, headroom, a  *
+ * call count, and the recent rows' NON-SECRET fields (model + token counts +      *
+ * cost + agent + ts) — never a prompt, a response, or an utterance. The dollar    *
+ * figures are a TRANSPARENT estimate (published $/1M rates × measured counts),    *
+ * never a billed number, and the budget is REDUCE-ONLY (it can only route         *
+ * cheaper/on-device, never loosen a gate or escalate).                            *
+ * ------------------------------------------------------------------------ */
+
+/** The budget pressure on the wire (obol.rs `Pressure`). `none` = below the cap
+ *  (or no cap configured — the shipped default); `ease` = ~80% of the cap, a Heavy
+ *  turn eases to Fast; `floor` = at/over the cap, turns are forced on-device. */
+export type ObolPressure = "none" | "ease" | "floor";
+
+/** One recent spend row (obol.rs SpendRow) — SECRET-FREE by construction: a model
+ *  id, token COUNTS, a dollar estimate, and an agent NAME. Never an utterance. */
+export interface ObolSpendRow {
+  ts: number;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+  agent: string;
+}
+
+/** The whole SPEND // CLOUD METER snapshot the gauge renders. `capConfigured` is
+ *  false under the shipped no-cap default (pure accounting, no step-down);
+ *  `willStepDown` mirrors `pressure !== "none"`. `costIsEstimate` is always true on
+ *  the wire (the dollars are a published-rate estimate, never a billed figure).
+ *  NEVER carries PII. */
+export interface ObolSpend {
+  daySpendUsd: number;
+  dailyCapUsd: number;
+  capConfigured: boolean;
+  headroomUsd: number;
+  /** Share of the cap spent today (0..; clamped >= 0), 0 when no cap. */
+  fraction: number;
+  pressure: ObolPressure;
+  /** True iff the budget would step this turn's tier down (pressure ease/floor). */
+  willStepDown: boolean;
+  /** The reduce-only posture on the wire, so the gauge copy is grounded. */
+  reduceOnly: boolean;
+  callsToday: number;
+  recent: ObolSpendRow[];
+  costIsEstimate: boolean;
+}
+
+/** A non-negative float (a dollar figure), or 0 when absent/negative/NaN. */
+function nonNegNum(data: Record<string, unknown>, key: string): number {
+  const v = num(data, key);
+  return v !== null && v >= 0 ? v : 0;
+}
+
+/** Narrow an untrusted budget-pressure string, defaulting to "none" (the safe,
+ *  no-step-down reading) for anything unrecognized. */
+function asObolPressure(v: string | null): ObolPressure {
+  return v === "ease" || v === "floor" ? v : "none";
+}
+
+/** Parse one recent spend row defensively. SECRET-FREE: only the numeric counts +
+ *  cost and the model/agent strings are read — there is no field that could carry
+ *  an utterance. */
+function parseObolRow(v: unknown): ObolSpendRow {
+  const d = isPlainObject(v) ? v : {};
+  return {
+    ts: nonNegInt(d, "ts"),
+    model: str(d, "model") ?? "",
+    inputTokens: nonNegInt(d, "input_tokens"),
+    outputTokens: nonNegInt(d, "output_tokens"),
+    cacheReadTokens: nonNegInt(d, "cache_read_tokens"),
+    costUsd: nonNegNum(d, "cost_usd"),
+    agent: str(d, "agent") ?? "",
+  };
+}
+
+/** Parse an `obol.spend` payload. NEVER returns null (like parseEvalReport): a
+ *  malformed frame yields an honest all-zero / "none" snapshot so the gauge renders
+ *  the current honest state rather than a stale one. AGGREGATE-ONLY: no field here
+ *  can carry PII. Never throws on junk. */
+export function parseObolSpend(data: Record<string, unknown>): ObolSpend {
+  const rawRecent = Array.isArray(data["recent"]) ? (data["recent"] as unknown[]) : [];
+  return {
+    daySpendUsd: nonNegNum(data, "day_spend_usd"),
+    dailyCapUsd: nonNegNum(data, "daily_cap_usd"),
+    capConfigured: bool(data, "cap_configured") ?? false,
+    headroomUsd: nonNegNum(data, "headroom_usd"),
+    fraction: nonNegNum(data, "fraction"),
+    pressure: asObolPressure(str(data, "pressure")),
+    willStepDown: bool(data, "will_step_down") ?? false,
+    // Fail-safe TRUE: the budget is reduce-only by construction, so a missing flag
+    // reads as reduce-only rather than implying it could loosen anything.
+    reduceOnly: bool(data, "reduce_only") ?? true,
+    callsToday: nonNegInt(data, "calls_today"),
+    recent: rawRecent.map(parseObolRow),
+    // Fail-safe TRUE: a dollar figure is ALWAYS shown as an estimate, never billed.
+    costIsEstimate: bool(data, "cost_is_estimate") ?? true,
   };
 }
 
@@ -7941,6 +8053,84 @@ export function parseConsensusAdvisory(
     : [];
   if (notes.length === 0) return null;
   return { tool, agent: str(data, "agent") ?? "", notes };
+}
+
+/* ------------------------------------------------------------------------ *
+ * PLAN-APPLY (plan.diff) — the structured, STATE-BOUND diff for the parked   *
+ * consequential action (daemon plan.rs). It upgrades the confirmation        *
+ * PREVIEW from prose to a field-level DIFF: each change names a `resource`    *
+ * moving from `before` to `after`, and the whole plan is bound to a          *
+ * `stateHash` of the current state. On a spoken "yes" the daemon RECOMPUTES  *
+ * that hash and re-parks (phase="confirm", drift=true) if the state changed  *
+ * since the plan was shown — TOCTOU-safe. HONESTY: this is ADVISORY on the    *
+ * HUD (the daemon owns the gate); the state-hash can only make the daemon     *
+ * gate STRICTER, never approve a drifted action. SECRET-FREE: the daemon      *
+ * ships only human-readable summaries; the wire is bounded again here.       *
+ * ------------------------------------------------------------------------ */
+
+/** One field-level change in a plan: a named resource moving before -> after. */
+export interface PlanChange {
+  resource: string;
+  before: string;
+  after: string;
+}
+
+/** The structured, state-bound diff for the currently parked action. `phase` is
+ *  "park" (a fresh plan) or "confirm" (a drift re-park); `drift` marks whether
+ *  the state changed since the plan was first shown. */
+export interface PlanDiff {
+  tool: string;
+  agent: string;
+  summary: string;
+  changes: PlanChange[];
+  stateHash: string;
+  phase: "park" | "confirm";
+  drift: boolean;
+}
+
+/** Defensive caps mirroring the daemon's bounds — the wire is never trusted. */
+const PLAN_CHANGES_CAP = 8;
+const PLAN_FIELD_CHARS = 240;
+const PLAN_SUMMARY_CHARS = 240;
+
+/** Bound a wire string to a max length (empty when absent/non-string). */
+function planField(v: unknown): string {
+  return typeof v === "string" ? v.slice(0, PLAN_FIELD_CHARS) : "";
+}
+
+/** Parse a `plan.diff` payload, or null when it names no tool or carries no
+ *  well-formed change (an empty plan is meaningless — the reducer drops it
+ *  rather than clearing or fabricating state). Each change must carry a
+ *  non-empty `resource`; before/after are bounded (never trusted from the wire).
+ *  `phase` narrows to the closed set (unknown -> "park"); `drift` defaults false. */
+export function parsePlanDiff(data: Record<string, unknown>): PlanDiff | null {
+  const tool = str(data, "tool");
+  if (tool === null || tool === "") return null;
+  const raw = data["changes"];
+  const changes: PlanChange[] = Array.isArray(raw)
+    ? raw
+        .slice(0, PLAN_CHANGES_CAP)
+        .map((c): PlanChange | null => {
+          if (typeof c !== "object" || c === null) return null;
+          const rec = c as Record<string, unknown>;
+          const resource = planField(rec["resource"]);
+          if (resource === "") return null;
+          return { resource, before: planField(rec["before"]), after: planField(rec["after"]) };
+        })
+        .filter((c): c is PlanChange => c !== null)
+    : [];
+  if (changes.length === 0) return null;
+  const phaseRaw = str(data, "phase");
+  const phase: "park" | "confirm" = phaseRaw === "confirm" ? "confirm" : "park";
+  return {
+    tool,
+    agent: str(data, "agent") ?? "",
+    summary: (str(data, "summary") ?? "").slice(0, PLAN_SUMMARY_CHARS),
+    changes,
+    stateHash: str(data, "state_hash") ?? "",
+    phase,
+    drift: bool(data, "drift") ?? false,
+  };
 }
 
 /* ======================================================================== *
