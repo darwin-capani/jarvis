@@ -3771,17 +3771,28 @@ async fn run_pipeline(
                     "response": outcome.response,
                 }),
             );
-            if let Err(e) = memory
-                .record_transcript(
-                    Some(&wav.display().to_string()),
-                    &text,
-                    &class.intent,
-                    outcome.routed_to,
-                    Some(&outcome.response),
-                )
-                .await
-            {
-                warn!(error = %e, "failed to record transcript");
+            // THRESHOLD — GUEST MODE: a guest turn must leave NO trace in the OWNER's
+            // DURABLE state. Every owner-durable post-turn recorder below (transcript,
+            // episodic store, CAUSA decision-trace, optimizer trace — the fact-learner
+            // is already gated) is skipped for a guest turn, so a bystander's utterance
+            // never poisons the owner's memory / history / routing corpus (which the
+            // owner later reads back via fetch_history / episodic_recall / "why did you
+            // do that"). A single shared flag gates them all — the honest, robust form
+            // of the per-writer guards.
+            let guest_turn = crate::threshold::is_guest_turn();
+            if !guest_turn {
+                if let Err(e) = memory
+                    .record_transcript(
+                        Some(&wav.display().to_string()),
+                        &text,
+                        &class.intent,
+                        outcome.routed_to,
+                        Some(&outcome.response),
+                    )
+                    .await
+                {
+                    warn!(error = %e, "failed to record transcript");
+                }
             }
             // MACRO CAPTURE (#27): while a recording is in progress, append THIS
             // command (the utterance + its classified intent) to the buffer — but
@@ -3915,25 +3926,31 @@ async fn run_pipeline(
             // read from the SAME per-turn voiceid::current_turn_gate() the deep
             // tool gate consults, so an unrecognized speaker's turn never seeds
             // the owner's episodic memory. Every field is redacted before store.
-            let voice = episodic::VoiceGate::from_owner_gate(voiceid::current_turn_gate());
-            match episodic::record_episode(
-                cfg,
-                memory,
-                &outcome.namespace,
-                &text,
-                &outcome.response,
-                &class.intent,
-                transient,
-                voice,
-            )
-            .await
-            {
-                Ok(recorded) => telemetry::emit(
-                    "system",
-                    "episodic.recorded",
-                    json!({"recorded": recorded, "agent": outcome.agent}),
-                ),
-                Err(e) => warn!(error = %e, "failed to record episode"),
+            // GUEST GATE (in addition to VoiceGate): with voice-id OFF, an explicit
+            // "guest mode on" installs a guest scope but the VoiceGate permits
+            // recording (OwnerGate::OFF), so a bystander's turn would otherwise seed
+            // the owner's episodic store — poisoning it. Skip for a guest turn.
+            if !guest_turn {
+                let voice = episodic::VoiceGate::from_owner_gate(voiceid::current_turn_gate());
+                match episodic::record_episode(
+                    cfg,
+                    memory,
+                    &outcome.namespace,
+                    &text,
+                    &outcome.response,
+                    &class.intent,
+                    transient,
+                    voice,
+                )
+                .await
+                {
+                    Ok(recorded) => telemetry::emit(
+                        "system",
+                        "episodic.recorded",
+                        json!({"recorded": recorded, "agent": outcome.agent}),
+                    ),
+                    Err(e) => warn!(error = %e, "failed to record episode"),
+                }
             }
 
             // PER-TURN DECISION SIGNALS shared by the CAUSA decision trace and the
@@ -3965,7 +3982,7 @@ async fn run_pipeline(
             // carry on-screen secrets and must never seed a trace). READ-ONLY: it
             // records what already happened; the utterance + outcome are redacted at
             // assembly, and it never fabricates a rationale.
-            if cfg.explain.enabled && !transient {
+            if cfg.explain.enabled && !transient && !guest_turn {
                 let gate = voiceid::current_turn_gate();
                 explain::record(
                     &explain::TurnSignals {
@@ -3999,7 +4016,7 @@ async fn run_pipeline(
             // explicit redirect cue — optimize::is_correction), re-label the prior
             // trace Corrected (the learnable signal). The recorder + labeler are
             // pure no-ops when disabled, so the shipped-OFF default does nothing.
-            if cfg.optimize.enabled && !transient {
+            if cfg.optimize.enabled && !transient && !guest_turn {
                 // Cross-turn correction: did THIS turn correct the prior route?
                 if let Some(prior) = prior_turn.as_ref() {
                     if optimize::is_correction(prior, &class.intent, &outcome.agent, &text) {

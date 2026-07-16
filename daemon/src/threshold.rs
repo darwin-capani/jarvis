@@ -476,7 +476,13 @@ pub fn current_turn_scope() -> Option<Scope> {
 /// today's. This is the honest, fail-closed replacement for any namespace routing:
 /// there is no "safe subset" of the owner's memory to hand a bystander.
 pub fn is_guest_turn() -> bool {
-    current_turn_scope().is_some()
+    // PRESENCE-ONLY — never clones the Scope (this runs at ~15 read sites per turn;
+    // the value is never inspected here, only Option::is_some()).
+    #[cfg(test)]
+    if let Some(over) = SCOPE_OVERRIDE.with(|c| c.borrow().clone()) {
+        return over.is_some();
+    }
+    TURN_SCOPE.try_with(|c| c.borrow().is_some()).unwrap_or(false)
 }
 
 /// `#[cfg(test)]`-only RAII guard forcing [`current_turn_scope`] to a value on the
