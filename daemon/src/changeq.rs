@@ -543,8 +543,9 @@ impl ChangeQueue {
         self.items.is_empty()
     }
 
-    /// Whether registration is currently armed.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Whether registration is currently armed. Public accessor for the integration
+    /// seam (the live gate reads `self.enabled` directly); allowed dead in all builds.
+    #[allow(dead_code)]
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
