@@ -156,7 +156,7 @@ export default function App() {
   // the credit). `aboutOpen` is driven ONLY by the native menu event below;
   // `appVersion` is the version that event carries (the real bundle version).
   const [aboutOpen, setAboutOpen] = useState(false);
-  const [appVersion, setAppVersion] = useState("1.1.0");
+  const [appVersion, setAppVersion] = useState("1.2.0");
 
   // FIRST-RUN SETUP — the honest backend-install gate. `backendIsInstalled` is
   // the RESOLVED backend_installed() result, or null until the shell check
