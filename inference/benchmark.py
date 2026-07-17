@@ -18,7 +18,8 @@ WHAT IT MEASURES
                conflict in mlx_lm, so that combination is reported unreachable).
   * STT        whisper transcribe latency on a short synthesized speech clip.
   * TTS        Kokoro real-time factor (RTF = synth_seconds / audio_seconds).
-  * Embeddings latency per text for the 4B-forward mean-pooled _embed_one path.
+  * Embeddings: single-text latency AND single-vs-batched throughput for the
+    4B-forward mean-pooled op=embed path (the batched path is the MNEMOSYNE shape).
 
 METHODOLOGY (why the numbers are trustworthy)
   * WARM: every model is loaded and a warm-up run is executed and DISCARDED
@@ -549,27 +550,79 @@ def bench_tts(eng, runs, warmup):
     }
 
 
-def bench_embed(eng, runs, warmup):
-    """Per-text latency of the resident-LLM mean-pooled embedding path."""
-    import mlx.core as mx
+# A realistic retrieval batch: a query + several short candidate facts, the
+# shape MNEMOSYNE actually sends to op=embed.
+_EMBED_BATCH = [
+    "What did the user say about their travel plans last week?",
+    "The user prefers window seats on morning flights.",
+    "The user's passport expires in March 2027.",
+    "The user dislikes layovers longer than two hours.",
+    "The user flew to Lisbon in April and stayed six nights.",
+    "The user's frequent-flyer number is on file with two airlines.",
+    "The user asked to avoid red-eye departures when possible.",
+    "The user books aisle seats when travelling with the dog.",
+]
 
+
+def bench_embed(eng, runs, warmup):
+    """Embedding throughput for the resident-LLM mean-pooled path, measured two
+    ways: SINGLE (one embed() call per text — a forward per text) and BATCHED (the
+    whole batch in one embed() call, one padded forward per chunk, the real
+    MNEMOSYNE call shape). per_text_ms lets the two be compared apples-to-apples;
+    the batched path amortizes the per-forward overhead."""
     text = ("DARWIN keeps its embeddings on device by mean-pooling the resident "
             "language model's last hidden states.")
+    batch = _EMBED_BATCH
+    n = len(batch)
     with eng._lock:
         eng._ensure_llm()
-        latencies = []
+        # SINGLE-text latency (one forward), unchanged metric for continuity.
+        single = []
         dim = None
         for _ in range(runs + warmup):
             t0 = time.perf_counter()
-            vec = eng._embed_one(mx, text)
-            latencies.append((time.perf_counter() - t0) * 1000.0)
+            vec = eng._embed_one(_mx(), text)
+            single.append((time.perf_counter() - t0) * 1000.0)
             dim = len(vec)
+    # The two public-path measurements run OUTSIDE eng._lock: embed() acquires
+    # the engine's NON-REENTRANT threading.Lock itself, so calling it while
+    # holding the lock self-deadlocks the benchmark. Measuring the public entry
+    # point (lock acquisition included) is also the honest end-to-end number.
+    # SINGLE path over the batch: one embed() call per text.
+    single_batch_ms = []
+    for _ in range(runs + warmup):
+        t0 = time.perf_counter()
+        for t in batch:
+            eng.embed([t])
+        single_batch_ms.append((time.perf_counter() - t0) * 1000.0)
+    # BATCHED path: the whole batch in one call.
+    batched_ms = []
+    for _ in range(runs + warmup):
+        t0 = time.perf_counter()
+        eng.embed(batch)
+        batched_ms.append((time.perf_counter() - t0) * 1000.0)
+    single_total = summarize_metric(single_batch_ms, warmup=warmup)
+    batched_total = summarize_metric(batched_ms, warmup=warmup)
     return {
         "available": True,
         "model": eng.llm_id,
         "dim": dim,
-        "latency_ms": summarize_metric(latencies, warmup=warmup),
+        "latency_ms": summarize_metric(single, warmup=warmup),
+        "batch": {
+            "n": n,
+            "single_total_ms": single_total,
+            "batched_total_ms": batched_total,
+            "single_per_text_ms": single_total["median"] / n,
+            "batched_per_text_ms": batched_total["median"] / n,
+            "speedup": (single_total["median"] / batched_total["median"]
+                        if batched_total["median"] else None),
+        },
     }
+
+
+def _mx():
+    import mlx.core as mx
+    return mx
 
 
 def _build_engine():

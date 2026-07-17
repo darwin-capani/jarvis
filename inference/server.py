@@ -1433,6 +1433,40 @@ EXTRACT_FACTS_MAX_TOKENS = 120
 # request cannot enqueue an unbounded number of forward passes.
 EMBED_MAX_TOKENS = 512
 EMBED_MAX_BATCH = 256
+# op=embed runs the whole request as ONE padded forward per chunk instead of a
+# forward per text (the daemon sends a query + K candidate facts together, so
+# batching amortizes the per-forward launch/graph overhead — ~2.2x on M1 Pro for
+# a realistic batch). We chunk the batch so the padded [chunk, maxlen, hidden]
+# activation tensor stays bounded no matter how large EMBED_MAX_BATCH is, and so
+# one long input only pads its own chunk. Right-padding + the model's default
+# causal mask means each real token attends only to earlier REAL tokens, so a
+# real token's hidden state is identical to the unpadded run; pad positions are
+# excluded from the mean-pool. Vectors match the per-text path up to fp
+# reduction-order noise (cosine >= 0.9999) — behaviour-preserving for retrieval.
+EMBED_BATCH_CHUNK = 32
+
+
+def _pool_normalize(mx, hidden, lengths):
+    """PURE masked-mean-pool + L2-normalize. `hidden` is a [B, T, H] tensor of
+    per-token last hidden states; `lengths[i]` is row i's real-token count (the
+    rest are right-padding). Mean-pool over each row's real tokens only, then
+    L2-normalize so cosine similarity is a dot product, mapping any non-finite
+    component to 0.0 (a degenerate-but-finite vector keeps the JSON response
+    strict-valid instead of failing the whole batch). Returns a [B, H] tensor.
+
+    No model / no tokenizer / no I/O — unit-testable with synthetic hidden states
+    and a stub decoder. `mx` is injected so this stays import-light."""
+    _b, t, _h = hidden.shape
+    # [B, T] boolean: column j is real iff j < lengths[i]. Built on-device from
+    # `lengths` so there is no per-token Python loop.
+    valid = mx.arange(t)[None, :] < mx.array(lengths)[:, None]
+    maskf = valid.astype(hidden.dtype)[:, :, None]  # [B, T, 1]
+    summed = mx.sum(hidden * maskf, axis=1)  # [B, H] — pads contribute 0
+    counts = mx.maximum(mx.sum(maskf[:, :, 0], axis=1), 1.0)[:, None]  # [B, 1]
+    pooled = summed / counts
+    norm = mx.sqrt(mx.sum(pooled * pooled, axis=1, keepdims=True))
+    normed = pooled / mx.maximum(norm, 1e-12)
+    return mx.where(mx.isnan(normed) | mx.isinf(normed), 0.0, normed)
 
 # op=describe_image (on-device VLM): structured marker the op returns when the
 # vision-language model cannot run (mlx-vlm not installed, or the checkpoint not
@@ -3597,52 +3631,58 @@ class InferenceEngine:
             # with no per-token stream, so metrics are honestly absent.
             return (out, {"speculative": False, "quant": quant_loaded, "metrics": None})
 
-    def _embed_one(self, mx, text):
-        """Compute one L2-normalized embedding VECTOR for `text` by mean-pooling
-        the LLM's last hidden states ON-DEVICE. Caller holds self._lock and the
-        LLM is loaded. NO new model is downloaded: we reuse the already-resident
-        generate model's hidden states (the alternative — a dedicated sentence
-        embedding model — would need a separate weight download, which the
-        contract forbids).
-
-        Method: encode the text (capped at EMBED_MAX_TOKENS), run the
-        transformer BODY (model.model(...) — the decoder stack WITHOUT the
-        LM head, which most mlx_lm architectures expose) to get per-token last
-        hidden states, mean-pool over the token axis, then L2-normalize so
-        cosine similarity is a plain dot product. Returns a Python list[float].
-        Deterministic given the model + text (a forward pass, no sampling)."""
-        # Cap the input so a giant blob cannot hold the GPU lock / blow memory.
+    def _embed_encode(self, text):
+        """Encode one input to a capped list of token ids for embedding. An input
+        that tokenizes to nothing (e.g. "") still needs a vector, so it falls back
+        to a single space so the forward pass has at least one token. Capped at
+        EMBED_MAX_TOKENS so a giant blob cannot hold the GPU lock / blow memory."""
         token_ids = self._tokenizer.encode(text if text else " ")
         if not token_ids:
-            # An input that tokenizes to nothing (e.g. "") still needs a vector;
-            # encode a single space so the forward pass has at least one token.
             token_ids = self._tokenizer.encode(" ")
-        token_ids = token_ids[:EMBED_MAX_TOKENS]
-        tokens = mx.array(token_ids)[None]  # shape [1, seq]
+        return token_ids[:EMBED_MAX_TOKENS]
 
-        # Run the transformer body to get last hidden states [1, seq, hidden].
-        # mlx_lm causal-LM modules wrap an inner `.model` (the decoder stack)
-        # whose __call__ returns hidden states; the outer module then applies
-        # the LM head. We want the hidden states, so call the inner stack.
+    def _embed_batch(self, mx, texts):
+        """Compute one L2-normalized embedding VECTOR per input by mean-pooling the
+        resident LLM's last hidden states ON-DEVICE, as ONE padded forward per
+        chunk. Caller holds self._lock and the LLM is loaded. NO new model is
+        downloaded: we reuse the already-resident generate model's hidden states
+        (the alternative — a dedicated sentence embedding model — would need a
+        separate weight download, which the contract forbids).
+
+        Method: encode each text (capped at EMBED_MAX_TOKENS); split into chunks
+        of at most EMBED_BATCH_CHUNK; for each chunk right-pad to the chunk's max
+        length and run the transformer BODY once (model.model(...) — the decoder
+        stack WITHOUT the LM head, which most mlx_lm architectures expose) to get
+        per-token last hidden states [chunk, maxlen, hidden]; masked-mean-pool over
+        each row's REAL tokens; L2-normalize. Right-padding + the default causal
+        mask means a real token attends only to earlier real tokens, so its hidden
+        state is identical to the unpadded run. Returns a list of Python
+        list[float] in input order. Deterministic (a forward pass, no sampling)."""
         inner = getattr(self._model, "model", None)
         if inner is None or not callable(inner):
             raise ValueError(
                 "this model does not expose an inner decoder stack for embeddings"
             )
-        hidden = inner(tokens)  # [1, seq, hidden]
-        # Mean-pool over the token (seq) axis -> [1, hidden] -> [hidden].
-        pooled = mx.mean(hidden, axis=1)[0]
-        # L2-normalize so cosine similarity is a dot product. Guard a zero norm.
-        norm = mx.sqrt(mx.sum(pooled * pooled))
-        normed = pooled / mx.maximum(norm, 1e-12)
-        # Defensive: a pathological forward pass could leave NaN/Inf components,
-        # which json.dumps emits as bare NaN/Infinity tokens that the daemon's
-        # serde_json rejects, failing the WHOLE batch instead of degrading.
-        # Map any non-finite entry to 0.0 so the JSON response stays strict-valid
-        # (a degenerate-but-finite vector; recall still falls back cleanly if needed).
-        normed = mx.where(mx.isnan(normed) | mx.isinf(normed), 0.0, normed)
-        mx.eval(normed)
-        return [float(x) for x in normed.tolist()]
+        encoded = [self._embed_encode(t) for t in texts]
+        vectors = []
+        for start in range(0, len(encoded), EMBED_BATCH_CHUNK):
+            chunk = encoded[start:start + EMBED_BATCH_CHUNK]
+            lengths = [len(ids) for ids in chunk]
+            maxlen = max(lengths)
+            # Pad id is irrelevant to the result: pad positions are never attended
+            # by real tokens (causal mask) and are excluded from the mean-pool.
+            padded = [ids + [0] * (maxlen - len(ids)) for ids in chunk]
+            hidden = inner(mx.array(padded))  # [chunk, maxlen, hidden]
+            normed = _pool_normalize(mx, hidden, lengths)  # [chunk, hidden]
+            mx.eval(normed)
+            vectors.extend([[float(x) for x in row] for row in normed.tolist()])
+        return vectors
+
+    def _embed_one(self, mx, text):
+        """One L2-normalized embedding VECTOR for `text`. Thin wrapper over
+        [`_embed_batch`] (a batch of one) so the single- and multi-text paths share
+        one implementation. Caller holds self._lock and the LLM is loaded."""
+        return self._embed_batch(mx, [text])[0]
 
     def embed(self, texts):
         """Return one L2-normalized embedding VECTOR per input string, computed
@@ -3651,10 +3691,12 @@ class InferenceEngine:
         reuses the already-loaded generate model so NO new model is downloaded.
 
         `texts` is a list of strings (the daemon sends the query + the candidate
-        facts in one batch). The batch is capped at EMBED_MAX_BATCH and each
-        input at EMBED_MAX_TOKENS. Returns a list of equal-length float vectors,
-        in the SAME ORDER as the inputs. Deterministic (a forward pass, no
-        sampling). Holds the GPU lock for the batch like the other LLM ops."""
+        facts in one batch). The batch is capped at EMBED_MAX_BATCH and each input
+        at EMBED_MAX_TOKENS. Returns a list of equal-length float vectors, in the
+        SAME ORDER as the inputs — computed as one padded forward per chunk of
+        EMBED_BATCH_CHUNK rather than a forward per text. Deterministic (a forward
+        pass, no sampling). Holds the GPU lock for the batch like the other LLM
+        ops."""
         import mlx.core as mx
 
         if not isinstance(texts, list):
@@ -3666,12 +3708,11 @@ class InferenceEngine:
         for t in texts:
             if not isinstance(t, str):
                 raise ValueError("'texts' entries must be strings for op=embed")
-        vectors = []
+        if not texts:
+            return []
         with self._lock:
             self._ensure_llm()
-            for t in texts:
-                vectors.append(self._embed_one(mx, t))
-        return vectors
+            return self._embed_batch(mx, texts)
 
     # -- on-device vision-language model (op=describe_image) ------------
     # _ensure_vlm must be called with self._lock held.
