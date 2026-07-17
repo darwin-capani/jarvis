@@ -1260,7 +1260,7 @@ fn tool_defs() -> &'static Value {
             },
             {
                 "name": "doc_search",
-                "description": "Search the user's OWN indexed FILES — an on-device document search (RAG) over the folders the user explicitly allowlisted. Returns CITED results: each is a real chunk of a real indexed file, with the FILE PATH, a byte OFFSET, and a snippet. READ-ONLY — it retrieves, stores nothing, sends nothing to the cloud, changes nothing. Call this when the user asks you to find/search/look up something in their files, notes, or documents ('search my notes for the launch plan', 'find where I wrote about the budget', 'what do my docs say about X'). 100% ON-DEVICE: file contents and the embeddings NEVER leave the device — embedding is the on-device model, and when that server is down search FALLS BACK to lexical BM25 (keyword term-overlap). The returned report NAMES which method actually ran (neural on-device embeddings, or lexical BM25 on fallback); report it the same way and never claim neural when it fell back. It indexes TEXT-LIKE files only (notes, markdown, source, config) — PDFs and other binaries are NOT indexed in this version; if the user expects a PDF, say it isn't covered yet, don't pretend it was searched. It CITES only real indexed chunks and NEVER fabricates a result: when the index is empty, the feature is off, or nothing matches, it honestly says so — tell the user they may need to enable file search and add a folder, and never invent a file or a quote. The index covers ONLY explicitly-allowlisted folders (never the whole disk) and is forgettable.",
+                "description": "Search the user's OWN indexed FILES — an on-device document search (RAG) over the folders the user explicitly allowlisted. Returns CITED results: each is a real chunk of a real indexed file, with the FILE PATH, a byte OFFSET, and a snippet. ON-DEVICE ONLY — it sends nothing to the cloud and never modifies the user's files; the ONE thing a search may write is the LOCAL index itself: with Spotlight integration on, matching files under the allowlisted folders can be absorbed into the index during the search (bounded by the configured max_files/max_chunks caps, cleared by 'forget my file index', rebuilt by reindex). Call this when the user asks you to find/search/look up something in their files, notes, or documents ('search my notes for the launch plan', 'find where I wrote about the budget', 'what do my docs say about X'). 100% ON-DEVICE: file contents and the embeddings NEVER leave the device — embedding is the on-device model, and when that server is down search FALLS BACK to lexical BM25 (keyword term-overlap). The returned report NAMES which method actually ran (neural on-device embeddings, or lexical BM25 on fallback); report it the same way and never claim neural when it fell back. It indexes TEXT-LIKE files (notes, markdown, source, config) plus born-digital PDFs and Office documents (.docx/.xlsx/.pptx) via on-device extractors; a scanned/encrypted/corrupt file is SKIPPED honestly (never indexed as garbage) — if a result the user expects is missing, say the file may have been skipped or not yet indexed, don't pretend it was searched. It CITES only real indexed chunks and NEVER fabricates a result: when the index is empty, the feature is off, or nothing matches, it honestly says so — tell the user they may need to enable file search and add a folder, and never invent a file or a quote. The index covers ONLY explicitly-allowlisted folders (never the whole disk) and is forgettable.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -8058,12 +8058,15 @@ async fn dispatch_tool(
             Err(e) => Err(anyhow!("invalid pasteboard_put arguments: {e}")),
         },
         // -- DOC SEARCH (crate::docsearch) -----------------------------------
-        // READ-ONLY on-device file RAG: rank the indexed file CHUNKS and return
-        // CITED results (file path + offset + snippet). The index is built only
+        // On-device file RAG: rank the indexed file CHUNKS and return CITED
+        // results (file path + offset + snippet). The index is built only
         // over the user's explicitly-allowlisted folders (never the whole disk),
         // every candidate was PATH-CONFINED at index time, and file contents +
-        // embeddings never leave the device. Nothing is stored/sent by a search —
-        // so it never touches integrations::gate(). Ranking is RUNTIME-SELECTED
+        // embeddings never leave the device. A search SENDS nothing anywhere —
+        // so it never touches integrations::gate() — and its ONE write is
+        // LOCAL: with [docsearch].spotlight on it may ABSORB bounded Spotlight
+        // candidates into the local index (max_files/max_chunks-capped,
+        // forgettable, rebuilt by reindex). Ranking is RUNTIME-SELECTED
         // (neural on-device embeddings when the LOCAL inference server is up and
         // every chunk is embedded, else lexical BM25); the report names whichever
         // ran. The live arm injects InferenceEmbedder; tests inject a mock. When
@@ -9480,14 +9483,19 @@ fn load_docsearch_config() -> crate::config::DocSearchConfig {
 }
 
 /// Run the `doc_search` tool: an on-device file RAG over the user's indexed files.
-/// READ-ONLY — it opens the local doc-chunk store and ranks the stored chunks via
+/// It opens the local doc-chunk store and ranks the stored chunks via
 /// [`crate::docsearch::DocIndex::search`] (neural on-device embeddings when the
 /// LOCAL inference server is up AND every chunk is embedded, else lexical BM25 —
 /// the report NAMES whichever ran). It CITES only real indexed chunks (file path +
 /// snippet) and NEVER fabricates one: an empty/unbuilt index or a no-match query
 /// honestly returns "nothing found" and points the user at enabling file search +
-/// allowlisting a folder. Nothing is stored or sent (the only network is the LOCAL
-/// embed socket); file contents + embeddings never leave the device.
+/// allowlisting a folder. NOTHING IS SENT (the only network is the LOCAL embed
+/// socket); file contents + embeddings never leave the device. The ONE write a
+/// search may make is LOCAL and BOUNDED: with `[docsearch].spotlight` on, the
+/// Spotlight bridge may ABSORB matching allowlisted files into the index
+/// ([`crate::spotlight::augment_index`] — capped by max_files/max_chunks,
+/// cleared by `forget my file index`, rebuilt by a reindex); the user's own
+/// files are never modified.
 async fn doc_search_tool(
     query: &str,
     k: Option<usize>,

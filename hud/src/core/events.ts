@@ -6182,9 +6182,11 @@ export function parseOptimizerProposal(
  *     docsearch::emit_status): whether the daemon found its pdfjail memory-jail  *
  *     helper (PDF extraction jailed vs the weaker in-process fallback guard),    *
  *     and whether the READ-ONLY Spotlight candidate bridge is actually           *
- *     answering (mdfind present + at least one real query succeeded — honest     *
- *     false when Spotlight indexing is disabled). Flat booleans, so a            *
- *     production install silently degraded on either front is VISIBLE.           *
+ *     answering ([docsearch].spotlight ON + mdfind present + the MOST RECENT     *
+ *     real query succeeded — honest false when the flag is off, Spotlight        *
+ *     indexing is disabled, or the last attempt failed; never a stale "worked    *
+ *     once" claim). Flat booleans, so a production install silently degraded     *
+ *     on either front is VISIBLE.                                                *
  *                                                                                *
  * 100% ON-DEVICE: telemetry is the local 127.0.0.1 broadcast only — file         *
  * contents + embeddings never leave the device. SHIPPED-OFF: the feature is      *
@@ -6295,11 +6297,13 @@ export function parsePdfJailAvailable(data: Record<string, unknown>): boolean {
 
 /** Parse a `docsearch.status` payload's Spotlight leg: whether the daemon's
  *  READ-ONLY Spotlight candidate bridge (spotlight.rs: mdfind/mdls, root-
- *  confined) is ACTUALLY answering — mdfind present AND at least one real query
- *  returned successfully. STRICT, same rule as the pdfjail parse: only a literal
- *  JSON `true` claims the integration (an absent field — an older daemon — a
- *  malformed or truthy-but-not-boolean value all coerce to `false`), because
- *  overclaiming a working integration is the dishonest direction. NEVER throws. */
+ *  confined) is ACTUALLY answering — [docsearch].spotlight ON, mdfind present,
+ *  AND the MOST RECENT real query succeeded (a later failure flips it back to
+ *  false; never a sticky "worked once" claim). STRICT, same rule as the pdfjail
+ *  parse: only a literal JSON `true` claims the integration (an absent field —
+ *  an older daemon — a malformed or truthy-but-not-boolean value all coerce to
+ *  `false`), because overclaiming a working integration is the dishonest
+ *  direction. NEVER throws. */
 export function parseSpotlightAvailable(data: Record<string, unknown>): boolean {
   return bool(data, "spotlight_available") === true;
 }

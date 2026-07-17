@@ -25,13 +25,18 @@
 //!     or an absolute-elsewhere line from a hostile output is DROPPED. Hidden
 //!     entries (dotfiles/dotdirs) are dropped too, mirroring the walk's rule.
 //!   * BOUNDED — fixed argv (never a shell string), hard timeout, kill_on_drop,
-//!     a byte cap on captured output, and a config-bounded candidate count
-//!     (`[docsearch].spotlight_max_candidates`, default 64).
+//!     a byte ceiling on the bytes EVER HELD from the child (an incremental
+//!     capped read, [`read_capped`] — the child is killed the moment the ceiling
+//!     is reached, never buffered whole then truncated), and a config-bounded
+//!     candidate count (`[docsearch].spotlight_max_candidates`, default 64).
 //!   * HONEST — metadata that cannot be read (mdls missing, a `(null)` attribute,
 //!     malformed output) is ABSENT, never fabricated. Availability
-//!     ([`spotlight_available`]) claims true only after mdfind is present AND has
-//!     actually returned successfully at least once this process — a machine with
-//!     Spotlight indexing disabled honestly reports false.
+//!     ([`spotlight_available`]) reports the MOST RECENT real mdfind attempt:
+//!     true only while mdfind is present AND the last real query succeeded — a
+//!     machine with Spotlight indexing disabled, or one where mdfind STOPS
+//!     answering mid-session, honestly reports false (never a stale claim). The
+//!     status emission additionally reports false whenever the config flag is
+//!     off ([`reported_available`]).
 //!
 //! ## PURE seam vs DEVICE-GATED runner (the power.rs / posture.rs house pattern)
 //!
@@ -65,9 +70,12 @@ const MDLS: &str = "/usr/bin/mdls";
 const MDFIND_TIMEOUT: Duration = Duration::from_secs(5);
 const MDLS_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Cap on the captured stdout TEXT of one query (a hostile/berserk tool cannot
-/// make the daemon hold unbounded output; the candidate/line caps below bound it
-/// again). 1 MiB comfortably holds thousands of paths.
+/// Ceiling on the stdout bytes EVER HELD from one query. This bounds CAPTURE,
+/// not merely retention: the live runner reads the child's pipe incrementally
+/// ([`read_capped`]) and KILLS the child the moment this many bytes have
+/// arrived — a broad query over a large root can never spike the daemon's
+/// memory for the duration of the timeout. 1 MiB comfortably holds thousands
+/// of paths; the candidate/line caps below bound the parse again.
 const MAX_OUTPUT_BYTES: usize = 1 << 20;
 
 /// A single output line longer than this is garbage, not a path (macOS caps
@@ -364,72 +372,141 @@ where
 // AVAILABILITY — honest "is Spotlight actually answering" for the status pill
 // ---------------------------------------------------------------------------
 
-/// Set by the LIVE runner (never an injected test runner) the first time a real
-/// mdfind invocation exits successfully this process.
-static MDFIND_SUCCEEDED: AtomicBool = AtomicBool::new(false);
+/// The outcome of the MOST RECENT real mdfind attempt — availability is a LIVE
+/// health signal, never a sticky "worked once" claim: a success that is later
+/// followed by a failure (Spotlight indexing turned off mid-session, mdfind
+/// wedged/timing out) flips it back to false on that very attempt. A tiny
+/// struct (not a bare static) so the record/read transition is unit-testable
+/// on a LOCAL instance without ever touching the process-wide flag.
+struct MdfindHealth(AtomicBool);
 
-/// The pure availability rule: Spotlight is claimed available ONLY when the
-/// mdfind binary is present AND a real query has succeeded at least once this
-/// process. Split out so the honest-false paths are unit-testable without
-/// touching the process-wide flag.
-fn availability(mdfind_present: bool, succeeded_once: bool) -> bool {
-    mdfind_present && succeeded_once
+impl MdfindHealth {
+    const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+    /// Record the outcome of one REAL mdfind attempt (success OR failure —
+    /// last-attempt-wins). Called ONLY by the live runner, never by an
+    /// injected test runner.
+    fn record(&self, ok: bool) {
+        self.0.store(ok, Ordering::Relaxed);
+    }
+    /// Whether the most recent real attempt succeeded (false before any).
+    fn last_ok(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
 }
 
-/// Whether Spotlight candidate generation is ACTUALLY working: mdfind present
-/// next to where macOS ships it AND at least one real query returned
-/// successfully this process. HONEST FALSE until then — a machine with Spotlight
-/// indexing disabled (mdfind exits non-zero) or without the binary never claims
-/// the integration. Surfaced on every `docsearch.status` tick
-/// ([`crate::docsearch::emit_status`]) for the HUD's DocSearchPanel pill.
+/// The process-wide health flag the LIVE runner records into.
+static MDFIND_HEALTH: MdfindHealth = MdfindHealth::new();
+
+/// The pure availability rule: Spotlight is claimed available ONLY when the
+/// mdfind binary is present AND the MOST RECENT real query succeeded. Split out
+/// so the honest-false paths are unit-testable without touching the
+/// process-wide flag.
+fn availability(mdfind_present: bool, last_attempt_ok: bool) -> bool {
+    mdfind_present && last_attempt_ok
+}
+
+/// Whether Spotlight candidate generation is ACTUALLY working right now: mdfind
+/// present next to where macOS ships it AND the most recent real query returned
+/// successfully. HONEST FALSE before any query, after a failed/timed-out one
+/// (Spotlight indexing disabled mid-session included), or without the binary —
+/// the claim tracks the LAST attempt, never sticking on a stale success.
 pub fn spotlight_available() -> bool {
-    availability(
-        Path::new(MDFIND).is_file(),
-        MDFIND_SUCCEEDED.load(Ordering::Relaxed),
-    )
+    availability(Path::new(MDFIND).is_file(), MDFIND_HEALTH.last_ok())
+}
+
+/// What `docsearch.status` should REPORT for the Spotlight leg: the integration
+/// is claimed only when `[docsearch].spotlight` is ON *and* the bridge is
+/// actually answering ([`spotlight_available`]) — an operator who turned the
+/// flag off sees an honest false even if mdfind last answered fine. Surfaced on
+/// every status tick ([`crate::docsearch::emit_status`]) for the HUD pill.
+pub fn reported_available(spotlight_enabled: bool) -> bool {
+    spotlight_enabled && spotlight_available()
 }
 
 // ---------------------------------------------------------------------------
 // Real command runner (NEVER reached in tests — they inject canned output)
 // ---------------------------------------------------------------------------
 
-/// Truncate `s` to at most `cap` bytes on a char boundary (mirrors docsearch's
-/// cap). Cheap when it already fits.
-fn cap_output(s: &str, cap: usize) -> String {
-    if s.len() <= cap {
-        return s.to_string();
+/// Read from `reader` holding AT MOST `cap` bytes, incrementally through a
+/// fixed 8 KiB scratch — the bounded-CAPTURE primitive of the live runner.
+/// Returns `(bytes, hit_cap)`: `hit_cap` true means the ceiling was reached
+/// and the caller must stop consuming (and kill the producing child). Unlike a
+/// buffer-then-truncate, the bytes EVER HELD never exceed `cap` (+ the scratch),
+/// whatever the stream tries to push. EOF or a read error ends the read with
+/// whatever real bytes arrived. Pure over any `AsyncRead`, so it is unit-tested
+/// on synthetic huge/small streams without spawning anything.
+async fn read_capped<R>(reader: &mut R, cap: usize) -> (Vec<u8>, bool)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut scratch = [0u8; 8192];
+    loop {
+        let remaining = cap.saturating_sub(buf.len());
+        if remaining == 0 {
+            return (buf, true); // ceiling reached — stop capturing NOW
+        }
+        let want = scratch.len().min(remaining);
+        match reader.read(&mut scratch[..want]).await {
+            Ok(0) => return (buf, false), // EOF within the ceiling
+            Ok(n) => buf.extend_from_slice(&scratch[..n]),
+            Err(_) => return (buf, false), // keep the real bytes we have
+        }
     }
-    let mut end = cap;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s[..end].to_string()
 }
 
 /// Spawn one READ-ONLY Spotlight query with explicit args (never a shell
-/// string), bounded by `timeout` + kill_on_drop + the output byte cap —
-/// mirroring posture.rs::run_real_command. Returns the (lossy-decoded, capped)
-/// stdout ONLY on a successful exit; a spawn error, non-zero exit (Spotlight
-/// indexing disabled), or timeout is `None` and the caller degrades honestly.
-/// A successful REAL mdfind run is what arms [`spotlight_available`] — an
-/// injected test runner never touches that flag.
+/// string), bounded by `timeout` + kill_on_drop + the CAPTURE ceiling: stdout
+/// is read incrementally ([`read_capped`]) and the child is KILLED the moment
+/// [`MAX_OUTPUT_BYTES`] have arrived — the daemon never holds more than the
+/// ceiling however much a broad query produces (stderr is discarded, stdin
+/// closed). Returns the (lossy-decoded) stdout on a successful exit — a
+/// ceiling-hit is OUR kill, not a child failure, so the capped output still
+/// returns (the parser's candidate cap needs far less than 1 MiB of paths).
+/// A spawn error, a real non-zero exit (Spotlight indexing disabled), or a
+/// timeout (kill_on_drop reaps the child) is `None` and the caller degrades
+/// honestly. Every REAL mdfind attempt — success OR failure — records into
+/// [`MDFIND_HEALTH`] (last-attempt-wins); an injected test runner never
+/// touches that flag.
 async fn run_real_command(
     program: &'static str,
     args: Vec<String>,
     timeout: Duration,
 ) -> Option<String> {
+    use std::process::Stdio;
     use tokio::process::Command;
     let mut cmd = Command::new(program);
     cmd.args(&args)
-        .stdin(std::process::Stdio::null())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
         .kill_on_drop(true);
-    match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(Ok(out)) if out.status.success() => {
-            if program == MDFIND {
-                MDFIND_SUCCEEDED.store(true, Ordering::Relaxed);
-            }
-            Some(cap_output(&String::from_utf8_lossy(&out.stdout), MAX_OUTPUT_BYTES))
+    let outcome = tokio::time::timeout(timeout, async {
+        let mut child = cmd.spawn().ok()?;
+        let mut stdout = child.stdout.take()?;
+        let (buf, hit_cap) = read_capped(&mut stdout, MAX_OUTPUT_BYTES).await;
+        if hit_cap {
+            // Stop the producer the moment the ceiling is reached — the bytes
+            // already captured are plenty (the candidate cap is far smaller).
+            let _ = child.kill().await;
         }
+        let status = child.wait().await.ok()?;
+        // A ceiling-hit exit is OUR kill (not a child failure); otherwise the
+        // child must have exited cleanly for the output to be trusted.
+        (status.success() || hit_cap).then_some(buf)
+    })
+    .await;
+    let ok = matches!(&outcome, Ok(Some(_)));
+    if program == MDFIND {
+        // Last-attempt-wins health: a failure here (spawn error, non-zero
+        // exit, timeout) flips availability back to false immediately.
+        MDFIND_HEALTH.record(ok);
+    }
+    match outcome {
+        Ok(Some(buf)) => Some(String::from_utf8_lossy(&buf).into_owned()),
         _ => None, // absent / failed / timed out -> the caller degrades honestly
     }
 }
@@ -837,13 +914,86 @@ kMDItemLastUsedDate = 2026-07-01 09:14:22 +0000
     // =====================================================================
 
     #[test]
-    fn availability_requires_presence_and_a_real_success() {
-        // Both legs required: a present binary that never answered is NOT
-        // available (Spotlight indexing may be disabled), and a recorded success
-        // without the binary (deleted since) is not either.
+    fn availability_requires_presence_and_a_recent_success() {
+        // Both legs required: a present binary whose last attempt failed (or
+        // that never answered) is NOT available, and a recorded success without
+        // the binary (deleted since) is not either.
         assert!(!availability(false, false));
-        assert!(!availability(true, false), "present but never succeeded -> false");
+        assert!(!availability(true, false), "present but last attempt failed -> false");
         assert!(!availability(false, true), "succeeded but binary gone -> false");
         assert!(availability(true, true));
+    }
+
+    #[test]
+    fn health_tracks_the_most_recent_attempt_never_sticking_on_a_success() {
+        // A LOCAL health flag (the process-wide static is never touched by a
+        // test): availability must follow the LAST attempt, so a success that
+        // is later followed by a failure — Spotlight indexing turned off
+        // mid-session, mdfind wedged — flips honestly back to false.
+        let health = MdfindHealth::new();
+        assert!(!health.last_ok(), "no attempt yet -> false");
+        health.record(true);
+        assert!(availability(true, health.last_ok()), "a real success claims it");
+        health.record(false);
+        assert!(
+            !availability(true, health.last_ok()),
+            "a later FAILURE must flip availability back to false — never sticky"
+        );
+        health.record(true);
+        assert!(availability(true, health.last_ok()), "…and a recovery re-claims it");
+    }
+
+    #[test]
+    fn reported_availability_is_off_when_the_config_flag_is_off() {
+        // The status emission must never claim the integration while the
+        // operator has [docsearch].spotlight off — whatever the live health
+        // says. (Under test the live health is untouched, so the enabled leg
+        // simply mirrors spotlight_available().)
+        assert!(!reported_available(false), "config OFF -> reported unavailable");
+        assert_eq!(reported_available(true), spotlight_available());
+    }
+
+    // =====================================================================
+    // BOUNDED CAPTURE — the live runner's read primitive on synthetic streams
+    // =====================================================================
+
+    #[tokio::test]
+    async fn read_capped_bounds_the_bytes_ever_held_from_a_huge_stream() {
+        // A 4 MiB "child stdout" against a 1 KiB ceiling: the read stops AT the
+        // ceiling and reports the hit (the live runner then kills the child) —
+        // the bytes held never exceed the cap, however large the stream.
+        let huge = vec![b'x'; 4 << 20];
+        let mut reader: &[u8] = &huge;
+        let (buf, hit_cap) = read_capped(&mut reader, 1024).await;
+        assert_eq!(buf.len(), 1024, "exactly the ceiling is ever held");
+        assert!(hit_cap, "the ceiling hit must be reported so the child is killed");
+
+        // A small stream is read whole, ceiling untouched.
+        let mut small: &[u8] = b"/Users/me/docs/a.md\n";
+        let (buf, hit_cap) = read_capped(&mut small, 1024).await;
+        assert_eq!(buf, b"/Users/me/docs/a.md\n");
+        assert!(!hit_cap, "EOF within the ceiling is not a cap hit");
+
+        // An empty stream yields empty, honestly.
+        let mut empty: &[u8] = b"";
+        let (buf, hit_cap) = read_capped(&mut empty, 1024).await;
+        assert!(buf.is_empty() && !hit_cap);
+    }
+
+    #[tokio::test]
+    async fn read_capped_survives_a_dribbling_stream_without_exceeding_the_cap() {
+        // A slow producer that dribbles one small chunk per read (tokio's
+        // chained reader yields each part separately) still lands exactly at
+        // the ceiling — the cap holds ACROSS reads, not just per read.
+        let part1: &[u8] = &[b'a'; 300];
+        let part2: &[u8] = &[b'b'; 300];
+        let part3: &[u8] = &[b'c'; 300];
+        let mut chained = tokio::io::AsyncReadExt::chain(
+            part1,
+            tokio::io::AsyncReadExt::chain(part2, part3),
+        );
+        let (buf, hit_cap) = read_capped(&mut chained, 500).await;
+        assert_eq!(buf.len(), 500, "the cap holds across incremental reads");
+        assert!(hit_cap);
     }
 }

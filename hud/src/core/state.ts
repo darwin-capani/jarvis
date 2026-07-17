@@ -839,10 +839,13 @@ export interface HudState {
   pdfJailAvailable: boolean | null;
   /** Whether the daemon's READ-ONLY Spotlight candidate bridge (spotlight.rs:
    *  root-confined mdfind/mdls) is ACTUALLY answering (docsearch.status, same
-   *  cadence): mdfind present AND at least one real query succeeded. `false`
-   *  honestly covers "not yet queried", "Spotlight indexing disabled", and a
-   *  malformed payload — the DocSearchPanel pill never overclaims. Null until
-   *  the first status frame (an older daemon), in which case claim nothing. */
+   *  cadence): [docsearch].spotlight ON, mdfind present, AND the MOST RECENT
+   *  real query succeeded — a later failure (or turning the flag off) flips it
+   *  back to false on the next frame, never a stale "worked once" claim.
+   *  `false` honestly covers "not yet queried", "flag off", "Spotlight indexing
+   *  disabled / last attempt failed", and a malformed payload — the
+   *  DocSearchPanel pill never overclaims. Null until the first status frame
+   *  (an older daemon), in which case claim nothing. */
   spotlightAvailable: boolean | null;
   /** The self-distillation pipeline's honest state (distill.status): armed/
    *  inert, examples ready, last run — and that adapters are NEVER auto-

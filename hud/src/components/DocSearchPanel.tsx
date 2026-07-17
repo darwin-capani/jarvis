@@ -151,16 +151,19 @@ function IndexStatusRow({
         )}
         {/* The READ-ONLY Spotlight candidate bridge (docsearch.status, same
             precedent as the pdfjail pill). Null = no status frame yet (an older
-            daemon) — claim nothing. IDLE covers both "no search has queried
-            Spotlight yet this daemon run" and "mdfind is absent / Spotlight
-            indexing is disabled" — the strict parse never overclaims. */}
+            daemon) — claim nothing. The daemon reports the MOST RECENT real
+            mdfind attempt, config-gated — so IDLE covers "no search has queried
+            Spotlight yet", "[docsearch].spotlight is off", and "mdfind is
+            unavailable / the last query failed (Spotlight indexing disabled)".
+            A working claim is never stale: a later failure or a flag flip drops
+            the pill on the next frame. */}
         {spotlight !== null && (
           <span
             className={`docsearch-pill ${spotlight ? "spotlight-on" : "spotlight-idle"}`}
             title={
               spotlight
-                ? "macOS Spotlight is feeding read-only candidates: file searches also ask mdfind, confined with -onlyin to your allowlisted roots (never an unrestricted query); every candidate re-runs the same path-confinement and extraction rules before it can be indexed"
-                : "Spotlight has not answered a query yet this daemon run — either no file search has run, or mdfind is unavailable / Spotlight indexing is disabled; searches still run over the on-device index"
+                ? "macOS Spotlight is feeding read-only candidates: file searches also ask mdfind, confined with -onlyin to your allowlisted roots (never an unrestricted query); every candidate re-runs the same path-confinement and extraction rules before it can be indexed. This reflects the most recent real query — a failure flips it off."
+                : "Spotlight is not answering right now — no file search has queried it yet, [docsearch].spotlight is off, or the most recent mdfind query failed (mdfind unavailable / Spotlight indexing disabled); searches still run over the on-device index"
             }
           >
             {spotlight ? "SPOTLIGHT ON" : "SPOTLIGHT IDLE"}
