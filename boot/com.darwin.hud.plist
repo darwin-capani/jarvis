@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.darwin.hud</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__DARWIN_ROOT__/boot/run_hud.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <!-- A windowed GUI app needs the Aqua (logged-in graphical) session to reach
+         the window server. Unlike the daemon/inference agents (headless services),
+         the HUD only makes sense once a user is at the desktop, so we constrain it
+         to Aqua; launchd will not load it in a pre-login/background session. -->
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>WorkingDirectory</key>
+    <string>__DARWIN_ROOT__</string>
+    <key>StandardOutPath</key>
+    <string>__DARWIN_ROOT__/state/logs/launchd-hud.log</string>
+    <key>StandardErrorPath</key>
+    <string>__DARWIN_ROOT__/state/logs/launchd-hud.log</string>
+    <!-- Interactive: a user-facing, foreground GUI process (not a batch/adaptive
+         background job), so macOS schedules it at normal interactive priority. -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>

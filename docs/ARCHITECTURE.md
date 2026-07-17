@@ -26,13 +26,15 @@ power button
            └─▶ auto-login (DARWIN user)
                 └─▶ launchd LaunchAgents (KeepAlive — relaunched if they exit)
                      ├─ com.darwin.inference → boot/run_inference.sh → MLX server
-                     └─ com.darwin.daemon    → boot/run_daemon.sh    → darwind
-                          └─▶ DARWIN live: mic loop, telemetry, routing
+                     ├─ com.darwin.daemon    → boot/run_daemon.sh    → darwind
+                     │                          └─▶ DARWIN live: mic loop, telemetry, routing
+                     └─ com.darwin.hud        → boot/run_hud.sh       → DARWIN.app (HUD)
+                          (Aqua-session-scoped: needs the graphical login)
 ```
 
 Installed by `scripts/install_boot.sh` (dry-run by default; `--install` applies, `--uninstall` removes). The boot wrappers source `state/env.sh` (gitignored, chmod 600) for `ANTHROPIC_API_KEY`.
 
-The Phase-2 HUD completes the takeover: launched the same way, it runs as a fullscreen shell-replacement app so the macOS UI is never seen. Until it ships, the stock desktop is visible behind a fully working DARWIN.
+The HUD now autostarts too (`com.darwin.hud`): after auto-login the Mac powers on directly into the **visible DARWIN app**, not just the headless backend. `boot/run_hud.sh` locates the built `DARWIN.app` and execs it (windowed). The fullscreen kiosk "takeover" that replaces the macOS shell remains an **explicit, always-exitable in-HUD action** — it is never auto-entered at boot (`tauri.conf.json` ships `fullscreen: false`; see `hud/src-tauri/src/takeover.rs`). Auto-login itself is a guided manual step (a security/credential setting), never automated by the installer.
 
 This is the maximum achievable boot integration on M4-generation silicon today. iBoot cannot be replaced and macOS cannot be removed (see Constraint corrections, items 1–2); everything after login **can** be owned, and this owns all of it.
 

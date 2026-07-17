@@ -2,8 +2,10 @@
 # install_boot.sh — boot-to-DARWIN LaunchAgent installer.
 #
 # Renders the plist templates in boot/ with the real project root, installs
-# them into ~/Library/LaunchAgents, and (re)starts both agents so the M4 Mini
-# powers on directly into the DARWIN environment.
+# them into ~/Library/LaunchAgents, and (re)starts all three agents so the M4
+# Mini powers on directly into the DARWIN environment: the inference server, the
+# darwind daemon, AND the DARWIN HUD (the visible Tauri app) — so login renders
+# the actual DARWIN face, not just the headless backend.
 #
 # Usage:
 #   scripts/install_boot.sh              # DRY RUN: print the plan, change nothing
@@ -16,8 +18,25 @@ DARWIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CARGO="$HOME/.cargo/bin/cargo"
 [ -x "$CARGO" ] || CARGO="$(command -v cargo || true)"
 AGENT_DIR="$HOME/Library/LaunchAgents"
-LABELS=("com.darwin.inference" "com.darwin.daemon")
+# Load order = boot order: inference first (the daemon needs it), then the
+# daemon, then the HUD (the visible app comes up once its backend is live).
+LABELS=("com.darwin.inference" "com.darwin.daemon" "com.darwin.hud")
 GUI_DOMAIN="gui/$(id -u)"
+
+# Locate the built DARWIN.app the HUD agent will exec (via boot/run_hud.sh).
+# Same preference order as run_hud.sh: the bundle built under this DARWIN_ROOT
+# first (matches this tree), then the installed copies. Echoes the path, or
+# empty if none is found yet.
+locate_darwin_app() {
+    local found cand
+    found="$(find "$DARWIN_ROOT/hud/src-tauri/target/release/bundle" \
+        -maxdepth 2 -type d -name 'DARWIN.app' 2>/dev/null | head -1 || true)"
+    if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
+    for cand in "/Applications/DARWIN.app" "$HOME/Applications/DARWIN.app"; do
+        if [ -d "$cand" ]; then printf '%s' "$cand"; return 0; fi
+    done
+    return 0
+}
 
 MODE="dry-run"
 case "${1:-}" in
@@ -57,13 +76,17 @@ post_install_checklist() {
 Post-install checklist (boot-to-DARWIN):
   1. Enable auto-login: System Settings > Users & Groups > Automatically log in as
      this user. Without it the Mini stops at the login window and launchd never
-     starts the gui domain agents.
+     starts the gui domain agents (including the HUD, which needs the Aqua/GUI
+     session). This is a GUIDED MANUAL step — it is a security/credential setting
+     and is intentionally NOT automated by this installer.
   2. Cloud fallback key: put 'export ANTHROPIC_API_KEY=...' in
      $DARWIN_ROOT/state/env.sh and chmod 600 it (state/ is gitignored).
-  3. Optional cosmetic de-macOS-ing for the pre-HUD era:
+  3. The DARWIN HUD now autostarts (com.darwin.hud) — after auto-login the Mini
+     powers on directly into the visible DARWIN app, not just the backend. It
+     opens as a normal window; the fullscreen "kiosk takeover" stays an EXPLICIT
+     in-HUD action (never auto-entered) and its exit is always reachable.
+  4. Optional cosmetic de-macOS-ing (hide the Dock behind the HUD window):
        defaults write com.apple.dock autohide -bool true && killall Dock
-     Note: true shell replacement (no Dock, no menu bar, no Finder ever) ships
-     with the Phase-2 fullscreen HUD; this is just hiding furniture until then.
 EOF
 }
 
@@ -75,19 +98,22 @@ Resolved DARWIN_ROOT: $DARWIN_ROOT
 
 Plan for --install:
   1. Preflight: require $DARWIN_ROOT/.venv/bin/python (the inference agent
-     would otherwise crash-loop every ~10s under KeepAlive).
+     would otherwise crash-loop every ~10s under KeepAlive) AND a built
+     DARWIN.app for the HUD agent (built by ./install.sh stage 5; the HUD
+     agent would likewise crash-loop without it).
   2. Build the release daemon, then verify the binary exists:
        $CARGO build --release --manifest-path "$DARWIN_ROOT/daemon/Cargo.toml"
   3. Render plist templates (sed 's|__DARWIN_ROOT__|$DARWIN_ROOT|g'):
        $DARWIN_ROOT/boot/com.darwin.inference.plist -> $AGENT_DIR/com.darwin.inference.plist
        $DARWIN_ROOT/boot/com.darwin.daemon.plist    -> $AGENT_DIR/com.darwin.daemon.plist
+       $DARWIN_ROOT/boot/com.darwin.hud.plist       -> $AGENT_DIR/com.darwin.hud.plist
   4. Lint each rendered plist: plutil -lint <plist>
-  5. For each agent (inference, then daemon):
+  5. For each agent (inference, then daemon, then hud):
        launchctl bootout $GUI_DOMAIN/<label> 2>/dev/null || true
        poll 'launchctl print $GUI_DOMAIN/<label>' until the service is gone (<=10s)
        launchctl bootstrap $GUI_DOMAIN $AGENT_DIR/<label>.plist   # RunAtLoad starts it
   6. Print the post-install checklist (auto-login, state/env.sh API key,
-     optional Dock autohide until the Phase-2 HUD replaces the shell).
+     optional Dock autohide — the HUD now autostarts too, so login renders it).
 
 Plan for --uninstall:
   For each of: ${LABELS[*]}
@@ -124,6 +150,18 @@ if [ ! -x "$CARGO" ]; then
     echo "       toolchain (https://rustup.rs) before installing boot agents." >&2
     exit 1
 fi
+# The HUD agent execs the built DARWIN.app (via boot/run_hud.sh). This script
+# builds the daemon but NOT the (heavy, node/Tauri) HUD — that is ./install.sh
+# stage 5's job. So, symmetric to the venv check, REQUIRE the app to already
+# exist rather than bootstrap a com.darwin.hud that just crash-loops on exit 78.
+HUD_APP="$(locate_darwin_app)"
+if [ -z "$HUD_APP" ]; then
+    echo "error: no built DARWIN.app found for the HUD agent (looked under" >&2
+    echo "       $DARWIN_ROOT/hud/src-tauri/target/release/bundle, /Applications, ~/Applications)." >&2
+    echo "       Build it first with ./install.sh (stage 5 builds the HUD), then re-run." >&2
+    exit 1
+fi
+echo "    HUD app: $HUD_APP"
 
 echo "==> Building release daemon"
 "$CARGO" build --release --manifest-path "$DARWIN_ROOT/daemon/Cargo.toml"
@@ -155,5 +193,5 @@ for label in "${LABELS[@]}"; do
     launchctl bootstrap "$GUI_DOMAIN" "$rendered"
 done
 
-echo "Install complete: both agents bootstrapped (RunAtLoad starts them)."
+echo "Install complete: all three agents bootstrapped (RunAtLoad starts them: inference + daemon + HUD)."
 post_install_checklist
