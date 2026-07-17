@@ -1799,13 +1799,24 @@ pub async fn route(
         let latest = if candidate.exists() { Some(candidate.as_path()) } else { None };
         identify_sound_clip_or_request(text, latest)
     };
+    // LUMEN (#45): "read me the screen / the buttons" (READ-ONLY narrate) + "click
+    // the <ordinal|name>" (-> the UNCHANGED ui_actuate capstone). Computed here so
+    // the ACT arm can re-pin the active agent to the ui_actuate OWNER below, and
+    // dispatch below (before the Vision arm) so a control read/act is Lumen's.
+    let lumen = lumen_command(text);
     // Re-pin the active agent to Vision (the vision owner) for the describe, the
     // image-generation, and the identify-sound intents so the HUD + persona track
-    // the agent that acts.
+    // the agent that acts. A Lumen ACTUATION re-pins to the ui_actuate-OWNING
+    // specialist so execute_tool runs under ITS allowlist (the capstone gate is
+    // unchanged — it is just applied as the owning agent, like any live tool call).
     let agent: &Agent = if describe.is_some() || generate_image.is_some() || sound_clip.is_some() {
         let vision = agents.get(VISION_APP).unwrap_or(agent);
         emit_agent_active(vision);
         vision
+    } else if matches!(lumen, Some(LumenCommand::Act(_))) {
+        let actuator = agents.owner_of("ui_actuate").unwrap_or(agent);
+        emit_agent_active(actuator);
+        actuator
     } else {
         agent
     };
@@ -1819,6 +1830,10 @@ pub async fn route(
         handle_identify_sound(req.clip, app_registry, root).await
     } else if let Some(cmd) = silicon_canvas_command(text) {
         handle_silicon_canvas(cmd, app_registry).await
+    } else if let Some(cmd) = lumen {
+        // Lumen (#45) BEFORE Vision: a control read/act is Lumen's; `agent` is
+        // already the ui_actuate owner for the ACT arm (re-pinned above).
+        handle_lumen(cmd, memory, app_registry, agent).await
     } else if let Some(cmd) = vision_command(text) {
         handle_vision(cmd, app_registry).await
     } else if let Some(cmd) = nexus_command(text) {
@@ -3327,6 +3342,113 @@ async fn handle_vision(cmd: VisionCommand, app_registry: &Arc<AppRegistry>) -> H
     }
 }
 
+/// Execute a LUMEN (#45) voice command — the screen-narration + hands-free
+/// voice-navigation dispatch. Two arms, both READ-ONLY except the actuation, which
+/// runs entirely through the UNCHANGED capstone:
+///
+///   * READ — forward the READ-ONLY Vision `read.screen` locate (the SAME op the
+///     OCR read uses; DEVICE-gated by Screen-Recording TCC), then speak a
+///     content-free acknowledgment. The recognized control labels arrive
+///     ASYNCHRONOUSLY on the `vision.screen` telemetry event (relayed to the HUD,
+///     never in this synchronous reply — kept transient by `is_screen_read`); at
+///     integration that relay also parses them into Lumen's remembered readout
+///     (`lumen::remember_readout`) + narrates them via `lumen::narrate_controls`,
+///     so a follow-up "click the third" selects over exactly what was read.
+///
+///   * ACT — select the ONE named target over the REMEMBERED controls
+///     (`lumen::resolve_voice_action`), or REFUSE honestly (a miss / ambiguity /
+///     out-of-range / no-location / nothing-read-yet never becomes a wrong click).
+///     A resolved target is handed to `anthropic::execute_tool("ui_actuate", …)` —
+///     the SAME entry a live tool call uses — under the ui_actuate-OWNING agent's
+///     allowlist. The capstone still PARKS it per action for a spoken yes (master
+///     switch + voice-id + `!lockdown` + the pure planner); Lumen NEVER actuates,
+///     gates, or batches. ONE resolved phrase = ONE request = (after the capstone's
+///     own gate) at most ONE actuation. The park prompt / refusal is spoken
+///     VERBATIM (llm_voice=false) so the exact "say confirm" wording survives.
+///
+/// The `actor` is the ui_actuate-owning specialist (re-pinned by the caller); the
+/// ACT arm runs execute_tool under ITS allowlist + namespace, exactly like a
+/// mission sub-task runs as its owning specialist.
+async fn handle_lumen(
+    cmd: LumenCommand,
+    memory: &Memory,
+    app_registry: &Arc<AppRegistry>,
+    actor: &Agent,
+) -> HandlerOutput {
+    match cmd {
+        LumenCommand::Read => {
+            // READ-ONLY: forward the existing Vision `read.screen` locate (device-
+            // gated OCR). The readout is relayed async (HUD) + remembered at
+            // integration; here we only forward + acknowledge (content-free).
+            let op = op_read_screen(None);
+            let data = match apps::send_op(app_registry, VISION_APP, &op).await {
+                Ok(()) => {
+                    telemetry::emit(
+                        "system",
+                        "lumen.read",
+                        json!({"narrate": crate::lumen::is_narrating()}),
+                    );
+                    "Reading your screen now, sir — I'll read out the on-screen controls so you can \
+                     tell me which to click. I'll need your Screen Recording consent on-device."
+                        .to_string()
+                }
+                Err(e) => {
+                    warn!(app = VISION_APP, error = %e, "lumen read.screen forward failed");
+                    format!("I couldn't reach Vision to read the screen: {e}. Open it first, sir.")
+                }
+            };
+            HandlerOutput { data, llm_voice: true }
+        }
+        LumenCommand::Act(phrase) => {
+            // Select the ONE target over the REMEMBERED controls (or refuse). No
+            // OCR/AX runs here — the list was captured by a prior read.
+            let controls = crate::lumen::snapshot_controls();
+            let resolved = crate::lumen::resolve_voice_action(&phrase, &controls);
+            // SECRET-FREE telemetry (control count + selected + refusal class only).
+            telemetry::emit(
+                "system",
+                "lumen.action",
+                crate::lumen::resolved_action_frame(controls.len(), &resolved),
+            );
+            let data = match resolved {
+                Ok(req) => {
+                    // Hand the request to the UNCHANGED capstone via the SAME entry a
+                    // live tool call uses — it plans + gates + PARKS per action; Lumen
+                    // adds nothing to the gate. `confirm` is omitted (never self-set).
+                    let input = ui_actuate_input(&req);
+                    let (outcome, _is_error) = anthropic::execute_tool(
+                        "ui_actuate",
+                        &input,
+                        memory,
+                        &actor.tools,
+                        &actor.namespace,
+                        true,
+                    )
+                    .await;
+                    outcome
+                }
+                // A miss / ambiguity / out-of-range / no-location / nothing-read-yet
+                // is an HONEST spoken refusal — sentence-cased for the verbatim path.
+                Err(e) => capitalize_first(&e.reason()),
+            };
+            // Spoken VERBATIM: the park prompt's exact "say confirm" wording (and the
+            // precise refusal) must not be re-paraphrased by the persona converse.
+            HandlerOutput { data, llm_voice: false }
+        }
+    }
+}
+
+/// Capitalize the first alphabetic character of a spoken line (the SelectError
+/// reasons are authored mid-sentence, but the Lumen ACT arm speaks them VERBATIM,
+/// so they lead a sentence here). Pure; leaves everything else byte-identical.
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 /// Execute a Nexus voice command: LAUNCH the Nexus micro-app, or forward a
 /// STRUCTURED op line to the already-running app. Mirrors [`handle_silicon_canvas`]
 /// and [`handle_vision`] exactly — verified outcome as converse data (llm_voice)
@@ -4553,8 +4675,162 @@ pub fn is_screen_read(text: &str) -> bool {
     // note / a scanned page can carry private content just like an on-screen
     // password/message), so all three must be kept TRANSIENT (off lifelong memory
     // / optimizer traces). Agree-by-construction with the routing: anything that
-    // maps to one of these ops is flagged transient here.
-    screen_read_op(&lower).is_some() || handwriting_document_op(&lower).is_some()
+    // maps to one of these ops is flagged transient here. The LUMEN read arm
+    // (#45, "read me the buttons / what's on screen") is ALSO a screen read — it
+    // surfaces the on-screen CONTROL labels — so it is unioned in for the same
+    // transience (the ACT arm is NOT a read and is intentionally excluded).
+    screen_read_op(&lower).is_some()
+        || handwriting_document_op(&lower).is_some()
+        || matches!(lumen_command(text), Some(LumenCommand::Read))
+}
+
+// ===========================================================================
+// LUMEN (#45) — SCREEN-NARRATION + hands-free VOICE-NAVIGATION dispatch. Maps
+//   (a) "read me the screen / the buttons / what's on screen" -> the READ-ONLY
+//       Vision `read.screen` locate + Lumen's control narration (through the
+//       speech path); the async readout is remembered (lumen::remember_readout at
+//       integration) so a follow-up can select over it, AND
+//   (b) "click / press / tap the <ordinal|name>" -> lumen::resolve_voice_action
+//       over the remembered controls -> the UNCHANGED, per-action-gated
+//       `ui_actuate` CAPSTONE (via anthropic::execute_tool, the SAME entry a live
+//       tool call uses). Lumen only SELECTS the one target + builds the request;
+//       the capstone still owns EVERY gate (the pure single-action planner, the
+//       consequential spoken confirm PER ACTION, the master switch, voice-id, and
+//       `!lockdown`). Lumen weakens, bypasses, and re-implements NONE of it.
+//
+// CONSERVATIVE by construction: the ACT arm anchors on unambiguous UI-actuation
+// verbs (a bare "click"/"tap", or "press"/"push" WITH a control noun / ordinal —
+// so "press play" / "push harder" never trip it); the READ arm requires a read
+// verb WITH a screen/controls anchor and defers the where-is/locate/watch/scan/
+// handwriting phrasings to the more-specific Vision ops.
+// ===========================================================================
+
+/// What a Lumen voice command resolves to. The READ arm forwards the READ-ONLY
+/// screen locate + narrates; the ACT arm names the ONE target to actuate (the raw
+/// phrase, which [`crate::lumen::resolve_voice_action`] parses over the remembered
+/// controls).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LumenCommand {
+    /// "read me the screen / the buttons / what's on screen" — READ-ONLY narrate.
+    Read,
+    /// "click / press the <ordinal|name>" — carries the lowercased phrase the
+    /// selector parses over the remembered controls.
+    Act(String),
+}
+
+/// Map a spoken utterance to a [`LumenCommand`], or None when it is neither a
+/// Lumen read nor a Lumen actuation phrase (the turn falls through to the rest of
+/// routing). PURE + deterministic so the mapping is unit-tested without a socket,
+/// a running app, the OCR/AX locate, or the capstone. The ACT arm is checked
+/// FIRST so "click the third button" (which mentions "button") is an actuation,
+/// never a control read.
+pub fn lumen_command(text: &str) -> Option<LumenCommand> {
+    let lower = text.trim().to_lowercase();
+    if lower.is_empty() {
+        return None;
+    }
+    if lumen_is_act(&lower) {
+        return Some(LumenCommand::Act(lower));
+    }
+    if lumen_is_read(&lower) {
+        return Some(LumenCommand::Read);
+    }
+    None
+}
+
+/// Whether `lower` is a Lumen ACTUATION phrase. CONSERVATIVE: a bare strong verb
+/// ("click"/"tap"/"double-click") counts on its own (these almost never appear in
+/// ordinary speech), but the broader "press"/"push" count ONLY alongside a control
+/// noun or an ordinal — so "press play" / "push harder" / "press on" never trip
+/// it. A degenerate "click" with no target still routes here and is REFUSED
+/// honestly by the selector (never a guess), which is the correct place to say so.
+fn lumen_is_act(lower: &str) -> bool {
+    let has_strong = contains_word(lower, "click")
+        || contains_word(lower, "tap")
+        || lower.contains("double click")
+        || lower.contains("double-click");
+    let has_press = contains_word(lower, "press") || contains_word(lower, "push");
+    if !has_strong && !has_press {
+        return false;
+    }
+    if has_strong {
+        return true;
+    }
+    // press/push: require a concrete UI target to avoid ordinary-speech false hits.
+    lumen_mentions_control_noun(lower) || lumen_mentions_ordinal(lower)
+}
+
+/// Whether `lower` is a Lumen READ (control-narration) phrase. Requires a read/
+/// narrate/list verb (or a "what's on / what are" question) WITH a screen or
+/// controls anchor. DEFERS the where-is/locate, watch, scan, handwriting, and
+/// describe phrasings to the more-specific Vision ops (checked here so, even
+/// though Lumen dispatch runs before Vision, those never get swallowed).
+fn lumen_is_read(lower: &str) -> bool {
+    let deferred = lower.contains("where is")
+        || lower.contains("where's")
+        || lower.contains("locate")
+        || (lower.contains("find") && lower.contains("button"))
+        || lower.contains("watch")
+        || lower.contains("scan")
+        || lower.contains("handwriting")
+        || lower.contains("handwritten")
+        || lower.contains("whiteboard")
+        || lower.contains("white board")
+        || lower.contains("describe");
+    if deferred {
+        return false;
+    }
+    let mentions_screen = lower.contains("screen") || lower.contains("display");
+    let mentions_controls = lumen_mentions_control_noun(lower);
+    let reads = lower.contains("read")
+        || lower.contains("narrate")
+        || lower.contains("list")
+        || lower.contains("what's on")
+        || lower.contains("what is on")
+        || lower.contains("what are");
+    reads && (mentions_screen || mentions_controls)
+}
+
+/// Whether `lower` names an on-screen CONTROL kind (button/link/tab/…). Used to
+/// narrow the conservative act/read triggers. Substring-based (matches plurals).
+fn lumen_mentions_control_noun(lower: &str) -> bool {
+    ["button", "link", "tab", "checkbox", "check box", "field", "menu", "control", "icon"]
+        .iter()
+        .any(|n| lower.contains(n))
+}
+
+/// Whether any whitespace/punctuation-delimited token in `lower` is an ordinal —
+/// a number word ("first".."tenth"), a digit+suffix ("1st".."10th"), or a short
+/// bare number (an id/code-length digit run is deliberately NOT one). PURE.
+fn lumen_mentions_ordinal(lower: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth",
+        "tenth", "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th", "10th",
+    ];
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .any(|t| {
+            WORDS.contains(&t)
+                || (t.len() <= 3 && t.chars().all(|c| c.is_ascii_digit()))
+        })
+}
+
+/// Build the `ui_actuate` tool INPUT (its `UiActuateArgs` JSON) from a resolved
+/// [`crate::ui_automation::ActuationRequest`] — the SAME shape a live tool call
+/// carries, so [`anthropic::execute_tool`] plans + gates it through the UNCHANGED
+/// capstone. `confirm` is deliberately OMITTED (defaults false): only the
+/// confirmation gate's `force_confirm` ever sets it, never Lumen — so the request
+/// can only ever PARK for a spoken yes, never self-authorize. PURE.
+fn ui_actuate_input(req: &crate::ui_automation::ActuationRequest) -> serde_json::Value {
+    use crate::ui_automation::Action;
+    match &req.action {
+        Action::Click { x, y } => {
+            json!({"action": "click", "target": req.target_desc, "x": x, "y": y})
+        }
+        Action::Type { text } => json!({"action": "type", "target": req.target_desc, "text": text}),
+        Action::Key { combo } => json!({"action": "key", "target": req.target_desc, "combo": combo}),
+    }
 }
 
 // ===========================================================================
@@ -6078,10 +6354,11 @@ mod tests {
         handle_identify_sound, identify_sound_clip_or_request,
         interrupt_roll_call, is_describe_request, is_generate_image_request,
         is_identify_sound_request, is_screen_read,
-        is_uncertain_fallback, mark_forge_command, nexus_command, op_classify_sound, recent_replies,
+        is_uncertain_fallback, lumen_command, mark_forge_command, nexus_command, op_classify_sound,
+        recent_replies, ui_actuate_input,
         select_agent, silicon_canvas_command, sound_clip_path, suggests_web, utterance_wants_open,
         vision_command, wants_cloud, wants_quit, AppRequest, ConversationBrain, DescribeRequest,
-        GenerateImageRequest, IdentifySoundRequest, MarkForgeCommand, NexusCommand,
+        GenerateImageRequest, IdentifySoundRequest, LumenCommand, MarkForgeCommand, NexusCommand,
         SiliconCanvasCommand, VisionCommand,
         MARK_FORGE_APP, NEXUS_APP, ROLL_CALL_CANCEL, SILICON_CANVAS_APP, VISION_APP,
     };
@@ -6717,6 +6994,184 @@ mod tests {
         // "vision" must be a whole word — never inside "television"/"revision".
         assert!(vision_command("open the television").is_none());
         assert!(vision_command("start the revision").is_none());
+    }
+
+    // ===== LUMEN (#45) dispatch ==========================================
+
+    /// "read me the screen / the buttons / what's on screen" classify as a Lumen
+    /// READ; "click/press/tap the <ordinal|name>" as a Lumen ACT carrying the
+    /// phrase.
+    #[test]
+    fn lumen_read_and_act_phrases_route_correctly() {
+        for text in [
+            "read me the screen",
+            "read the screen",
+            "read me the buttons",
+            "read the controls",
+            "narrate the screen",
+            "list the buttons",
+            "what's on screen",
+            "what is on my screen",
+            "what are the buttons",
+        ] {
+            assert_eq!(lumen_command(text), Some(LumenCommand::Read), "{text:?} -> READ");
+        }
+        for (text, want) in [
+            ("click the third button", "click the third button"),
+            ("press the second button", "press the second button"),
+            ("tap Submit", "tap submit"),
+            ("click Sign in", "click sign in"),
+            ("click the 2nd link", "click the 2nd link"),
+        ] {
+            assert_eq!(
+                lumen_command(text),
+                Some(LumenCommand::Act(want.to_string())),
+                "{text:?} -> ACT (lowercased phrase)"
+            );
+        }
+    }
+
+    /// The classifier is CONSERVATIVE: ordinary speech and the more-specific
+    /// Vision phrasings never over-trigger a Lumen read/act.
+    #[test]
+    fn lumen_does_not_over_trigger_on_unrelated_speech() {
+        for text in [
+            // No UI-actuation verb / no screen-or-controls read anchor.
+            "read me the news",
+            "what's on my plate today",
+            "what do you see",
+            "press play",           // press + no control noun/ordinal
+            "push harder",          // push + no control noun/ordinal
+            "let's press on",       // press + no control noun/ordinal
+            "select all my emails", // "select" is NOT a Lumen act verb
+            "choose a restaurant",  // "choose" is NOT a Lumen act verb
+            // These belong to the more-specific Vision ops (deferred by Lumen).
+            "where's the submit button",
+            "locate the settings icon",
+            "watch the screen",
+            "scan this document",
+            "read this handwriting",
+            "describe my screen",
+        ] {
+            assert_eq!(lumen_command(text), None, "{text:?} must NOT trigger Lumen");
+        }
+    }
+
+    /// A Lumen READ is a screen read (surfaces on-screen control labels), so it is
+    /// unioned into `is_screen_read` for TRANSIENCE; a Lumen ACT is NOT a read.
+    #[test]
+    fn lumen_read_is_transient_but_act_is_not() {
+        assert!(is_screen_read("read me the buttons"), "a lumen read is transient");
+        assert!(is_screen_read("what are the controls"), "a lumen read is transient");
+        assert!(!is_screen_read("click the third button"), "an actuation is not a screen read");
+    }
+
+    /// The ACT arm builds the `ui_actuate` tool input in the EXACT `UiActuateArgs`
+    /// shape a live tool call carries — a single click at the resolved point, with
+    /// `confirm` OMITTED (never self-set, so it can only ever PARK).
+    #[test]
+    fn ui_actuate_input_is_the_capstone_tool_shape() {
+        let req = crate::ui_automation::ActuationRequest {
+            action: crate::ui_automation::Action::Click { x: 300, y: 200 },
+            target_desc: "Cancel".to_string(),
+        };
+        let input = ui_actuate_input(&req);
+        assert_eq!(input["action"], "click");
+        assert_eq!(input["target"], "Cancel");
+        assert_eq!(input["x"], 300);
+        assert_eq!(input["y"], 200);
+        assert!(input.get("confirm").is_none(), "confirm is never set by Lumen: {input}");
+    }
+
+    /// THE SAFETY ASSERTION: the ACT path builds an ActuationRequest via the pure
+    /// selector and flows it through the UNCHANGED capstone (`execute_tool`,
+    /// the SAME entry a live tool call uses) — and the capstone NEVER auto-executes
+    /// it. `resolve_voice_action` -> `ui_actuate_input` -> `execute_tool` under the
+    /// ui_actuate-owning agent's allowlist: nothing is performed and nothing
+    /// self-authorizes (with the master switch off — the default — the gate is a
+    /// DryRun even with confirm; in this headless build the deny-leaning display
+    /// bound also refuses the click pre-actuation, so nothing is even parked). NO
+    /// real AX/OCR/actuate runs. `plan_actuation` against a real bound proves the
+    /// request is a valid SINGLE actuation (never a batch).
+    #[tokio::test]
+    async fn lumen_act_flows_through_the_unchanged_capstone_and_never_auto_executes() {
+        use crate::ui_automation::{Action, ScreenBounds};
+        // A located control list, exactly as a prior read would have produced.
+        let controls = vec![
+            crate::lumen::NarratableElement {
+                label: "Submit".into(),
+                role: crate::lumen::ElementRole::Button,
+                center: Some((100, 200)),
+            },
+            crate::lumen::NarratableElement {
+                label: "Cancel".into(),
+                role: crate::lumen::ElementRole::Button,
+                center: Some((300, 200)),
+            },
+        ];
+        // Pure selection -> the ONE target's actuation request (never a batch).
+        let req = crate::lumen::resolve_voice_action("click the second button", &controls).unwrap();
+        assert!(matches!(req.action, Action::Click { x: 300, y: 200 }));
+        assert!(
+            crate::ui_automation::plan_actuation(&req, ScreenBounds { width: 4000, height: 4000 }).is_ok(),
+            "the request is a valid, bounded, single actuation"
+        );
+        // The gate never auto-executes on Lumen's say-so: with the master switch
+        // off (default), even a confirm is a DryRun (parks/previews, never fires).
+        assert_eq!(
+            crate::integrations::gate(true),
+            crate::integrations::ActionMode::DryRun,
+            "confirm alone can never execute — the action parks/previews"
+        );
+
+        // Flow the SAME request through the UNCHANGED capstone entry.
+        let db = TempDb::new("lumen-act");
+        let mem = Memory::open(&db.0).unwrap();
+        let reg = AgentRegistry::canonical();
+        let actuator = reg.owner_of("ui_actuate").expect("an agent owns ui_actuate");
+        assert!(actuator.may_use("ui_actuate"), "the owner may use the capstone");
+        let input = ui_actuate_input(&req);
+        let (outcome, _is_error) = crate::anthropic::execute_tool(
+            "ui_actuate",
+            &input,
+            &mem,
+            &actuator.tools,
+            &actuator.namespace,
+            true,
+        )
+        .await;
+        assert!(
+            !outcome.to_lowercase().contains("i performed"),
+            "the capstone must NEVER auto-execute a Lumen actuation: {outcome}"
+        );
+        // Nothing self-authorized: no parked-then-executed action left the slot
+        // holding an executed effect (the deny-leaning bound refused it pre-park).
+        assert!(
+            crate::confirm::peek_pending(std::time::Instant::now()).is_none(),
+            "a Lumen actuation never self-parks an executed action"
+        );
+    }
+
+    /// The READ arm forwards the READ-ONLY Vision `read.screen` locate through the
+    /// speech path (llm_voice) — honest when Vision isn't reachable, never a
+    /// fabricated readout, and it actuates nothing.
+    #[tokio::test]
+    async fn lumen_read_arm_forwards_the_readonly_locate_through_speech() {
+        let apps = std::sync::Arc::new(crate::apps::AppRegistry::discover(std::path::Path::new(
+            "/nonexistent",
+        )));
+        let reg = AgentRegistry::canonical();
+        let out = super::handle_lumen(
+            LumenCommand::Read,
+            &Memory::open(&TempDb::new("lumen-read").0).unwrap(),
+            &apps,
+            reg.orchestrator(),
+        )
+        .await;
+        assert!(out.llm_voice, "the read acknowledgment is persona-voiced");
+        // Vision isn't running here, so it says so HONESTLY (never a fake readout).
+        assert!(out.data.to_lowercase().contains("screen"), "{}", out.data);
+        assert!(!out.data.to_lowercase().contains("i performed"), "read actuates nothing");
     }
 
     /// "what do you see" / "who is there" -> the generic presence STATUS

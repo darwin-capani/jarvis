@@ -349,6 +349,20 @@ pub enum SelectError {
 }
 
 impl SelectError {
+    /// A short, STABLE, SECRET-FREE class tag for telemetry (never the phrase or
+    /// the labels) — the refusal bucket a consumer groups by. Shared by both
+    /// action-frame builders so the wire tag can never drift between them.
+    fn tag(&self) -> &'static str {
+        match self {
+            SelectError::NoElements => "no_elements",
+            SelectError::EmptyPhrase => "empty_phrase",
+            SelectError::NotFound(_) => "not_found",
+            SelectError::OutOfRange { .. } => "out_of_range",
+            SelectError::Ambiguous(_) => "ambiguous",
+            SelectError::NoLocation(_) => "no_location",
+        }
+    }
+
     /// A faithful, honest one-line reason for the spoken refusal. NEVER claims an
     /// action happened; states precisely why nothing was selected/actuated.
     pub fn reason(&self) -> String {
@@ -673,6 +687,59 @@ pub fn narrate_on_focus_change(focused: Option<&NarratableElement>) -> Option<St
 }
 
 // ===========================================================================
+// LAST SCREEN READOUT — the located controls the most recent read produced, so a
+// follow-up voice ACTION ("read me the buttons, then click the THIRD") selects
+// over the SAME list the user just heard. Process-global + poison-tolerant
+// (mirrors SETTINGS). It holds ONLY the DERIVED, BOUNDED [`NarratableElement`]
+// list (labels + roles + located points, already capped by `max_controls`) — the
+// device-gated OCR/AX relay parses the async `read.screen` readout into it via
+// [`remember_readout`] at integration; the router's ACT arm reads it via
+// [`snapshot_controls`]. It is EMPTY until a read populates it, so a "click the
+// third" with nothing read yet REFUSES honestly ([`SelectError::NoElements`] =>
+// "read the screen first") — never a guess over a stale/absent screen.
+// ===========================================================================
+
+/// The most recent located-control readout the voice-navigation ACT arm selects
+/// over. Empty until a read populates it. Poison-tolerant, mirroring [`SETTINGS`].
+static LAST_READOUT: Mutex<Vec<NarratableElement>> = Mutex::new(Vec::new());
+
+/// Remember the located controls from a Vision `read.screen` readout so a
+/// follow-up voice ACTION can select over exactly what was just read. Parses the
+/// readout via [`parse_vision_controls`] BOUNDED to the installed [`max_controls`]
+/// (a dense screen is never remembered wholesale). The device-gated OCR/AX relay
+/// calls this when a readout arrives (the async `vision.screen` event) at
+/// integration; PURE + unit-tested over synthetic JSON, so it agrees with the
+/// on-wire shape by construction (no socket, no device under `cargo test`).
+pub fn remember_readout(readout: &Value) {
+    let controls = parse_vision_controls(readout, max_controls());
+    remember_controls(controls);
+}
+
+/// Remember an already-parsed control list directly (the relay may parse once and
+/// reuse the list for both narration and selection). Kept in lock-step with
+/// [`remember_readout`]; the hermetic tests seed the selection list through this
+/// so no OCR/AX ever runs under `cargo test`.
+pub fn remember_controls(controls: Vec<NarratableElement>) {
+    *LAST_READOUT.lock().unwrap_or_else(|e| e.into_inner()) = controls;
+}
+
+/// A snapshot (clone) of the controls the most recent read produced — the list a
+/// voice ACTION selects over. Empty until a read populates it (=> the action
+/// REFUSES honestly rather than act on a stale/absent screen).
+pub fn snapshot_controls() -> Vec<NarratableElement> {
+    LAST_READOUT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Clear the remembered readout (e.g. on lockdown / a new session) so a later
+/// action can never select over a stale screen.
+pub fn clear_controls() {
+    LAST_READOUT.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+// ===========================================================================
 // TELEMETRY FRAMES — SECRET-FREE by construction (role + counts, NEVER labels).
 // ===========================================================================
 
@@ -700,17 +767,29 @@ pub fn narration_event_frame(el: &NarratableElement) -> Value {
 pub fn action_frame(control_count: usize, outcome: &Result<usize, SelectError>) -> Value {
     let (selected, refusal) = match outcome {
         Ok(_) => (true, "none"),
-        Err(e) => (
-            false,
-            match e {
-                SelectError::NoElements => "no_elements",
-                SelectError::EmptyPhrase => "empty_phrase",
-                SelectError::NotFound(_) => "not_found",
-                SelectError::OutOfRange { .. } => "out_of_range",
-                SelectError::Ambiguous(_) => "ambiguous",
-                SelectError::NoLocation(_) => "no_location",
-            },
-        ),
+        Err(e) => (false, e.tag()),
+    };
+    json!({
+        "controls": control_count,
+        "selected": selected,
+        "refusal": refusal,
+    })
+}
+
+/// The per-action telemetry frame for a RESOLVED voice actuation (the router's
+/// ACT arm dispatch). SECRET-FREE exactly like [`action_frame`]: the located-
+/// control count, whether a CLICKABLE target was resolved (a target that was
+/// selected but carries no located point is `selected=false, refusal="no_location"`
+/// — no click point, so no action), and on a refusal the class — NEVER the phrase,
+/// the labels, or the coordinate. Keyed on the [`resolve_voice_action`] result so
+/// the telemetry is single-source with what actually reaches the capstone.
+pub fn resolved_action_frame(
+    control_count: usize,
+    outcome: &Result<crate::ui_automation::ActuationRequest, SelectError>,
+) -> Value {
+    let (selected, refusal) = match outcome {
+        Ok(_) => (true, "none"),
+        Err(e) => (false, e.tag()),
     };
     json!({
         "controls": control_count,
@@ -1053,5 +1132,62 @@ mod tests {
     fn status_frame_reports_only_the_gate() {
         assert_eq!(status_frame(false), json!({"narrate": false}));
         assert_eq!(status_frame(true), json!({"narrate": true}));
+    }
+
+    #[test]
+    fn resolved_action_frame_carries_only_class_not_content() {
+        let els = sample();
+        // A resolved click -> selected, no refusal, no coordinate/label leaked.
+        let ok = resolve_voice_action("click the second button", &els);
+        let f = resolved_action_frame(els.len(), &ok);
+        assert_eq!(f["selected"], true);
+        assert_eq!(f["refusal"], "none");
+        assert_eq!(f["controls"], els.len());
+        assert!(!f.to_string().contains("300"), "no coordinate leaks: {f}");
+
+        // A selected-but-unlocatable target is honestly NOT resolved (no click
+        // point) — the frame says so with the class, never the label.
+        let ghost = vec![el("Ghost", ElementRole::Button, None)];
+        let no_loc = resolve_voice_action("click Ghost", &ghost);
+        let f = resolved_action_frame(ghost.len(), &no_loc);
+        assert_eq!(f["selected"], false);
+        assert_eq!(f["refusal"], "no_location");
+        assert!(!f.to_string().to_lowercase().contains("ghost"), "no label leaks: {f}");
+    }
+
+    // -- LAST SCREEN READOUT CACHE (the ACT arm selects over this) ---------
+
+    #[test]
+    fn remember_readout_parses_caches_and_bounds_by_max_controls() {
+        let _g = serial();
+        install_settings(false, 2); // bound the readout to 2 controls
+        let readout = json!({
+            "controls": [
+                {"text": "Send", "center": {"x": 10, "y": 20}, "is_control": true},
+                {"text": "Cancel", "center": {"x": 30, "y": 20}, "is_control": true},
+                {"text": "Help", "center": {"x": 50, "y": 20}, "is_control": true},
+            ]
+        });
+        remember_readout(&readout);
+        let cached = snapshot_controls();
+        assert_eq!(cached.len(), 2, "the readout is bounded by max_controls: {cached:?}");
+        assert_eq!(cached[0].label, "Send");
+        // The ACT arm can now select the SECOND of what was just read.
+        assert_eq!(select_target("click the second", &cached), Ok(1));
+        clear_controls();
+        assert!(snapshot_controls().is_empty(), "clear empties the readout");
+        install_settings(false, 20); // restore the shipped default
+    }
+
+    #[test]
+    fn empty_cache_makes_an_action_refuse_read_the_screen_first() {
+        let _g = serial();
+        clear_controls();
+        let controls = snapshot_controls();
+        // Nothing read yet -> a voice action REFUSES honestly, never a guess.
+        assert_eq!(
+            resolve_voice_action("click the third button", &controls).unwrap_err(),
+            SelectError::NoElements
+        );
     }
 }
