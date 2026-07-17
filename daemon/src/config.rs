@@ -326,6 +326,15 @@ pub struct Config {
     /// or serious thermal pressure — it never loosens a gate, never makes a cloud
     /// call. The LIVE pmset/thermal reader is device-gated behind this flag.
     pub power: PowerConfig,
+    /// [vitals] — LIVE HARDWARE VITALS FEED (vitals.rs). `enabled` SHIPS ON
+    /// (armed-by-default). STRICTLY READ-ONLY: a bounded poll that SURFACES real
+    /// device state (battery %, AC/charge state, live thermal pressure, memory
+    /// pressure, per-core CPU + load average, all mounted volumes' free/total) to
+    /// the HUD `hardware.vitals` panel. It takes NO action, touches NO actuator,
+    /// needs NO root/sudo/powermetrics — every read is an unprivileged observation
+    /// that degrades honestly (never fabricated) when unreadable. `poll_secs` is
+    /// the refresh cadence (clamped to a sane floor).
+    pub vitals: VitalsConfig,
     /// [snapshot] — SAFETY SNAPSHOT (snapshot.rs). `enabled` SHIPS ON
     /// (armed-by-default). BENIGN-ONLY: before a consequential, hard-to-reverse
     /// step (a self-heal apply, a consequential mission step) DARWIN takes a
@@ -1042,6 +1051,12 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // below which (on battery) DARWIN prefers Fast + defers heavy work. Listed so
     // neither reads as a typo.
     ("power", &["adaptive", "low_battery_pct"]),
+    // [vitals] — LIVE HARDWARE VITALS FEED (vitals.rs). `enabled` SHIPS ON
+    // (armed-by-default). STRICTLY READ-ONLY: a bounded poll that surfaces real
+    // device state (battery/thermal/memory-pressure/per-core CPU + load/volumes)
+    // to the HUD. No action, no actuator, no root. `poll_secs` is the refresh
+    // cadence (clamped to a sane floor). Listed so neither reads as a typo.
+    ("vitals", &["enabled", "poll_secs"]),
     // [snapshot] — SAFETY SNAPSHOT (snapshot.rs). `enabled` SHIPS ON (armed-by-
     // default). BENIGN-ONLY: before a consequential step (a self-heal apply, a
     // consequential mission step) DARWIN takes a bounded `tmutil localsnapshot`
@@ -1877,6 +1892,41 @@ impl Default for PowerConfig {
             // Conservative discharge threshold: below 20% on battery, prefer the
             // cheaper local Fast sub-tier + defer heavy work.
             low_battery_pct: 20,
+        }
+    }
+}
+
+/// [vitals] — LIVE HARDWARE VITALS FEED (vitals.rs). STRICTLY READ-ONLY, armed
+/// by default.
+///
+///   - `enabled` (SHIPS ON, armed-by-default): the master gate for the
+///     `hardware.vitals` poll. When ON, DARWIN surfaces real device state
+///     (battery %, AC/charge state, live thermal pressure, memory pressure,
+///     per-core CPU utilization + load average, and every mounted volume's
+///     free/total) to the HUD panel. Every read is an UNPRIVILEGED OBSERVATION —
+///     no action, no actuator, no root/sudo/powermetrics — and each field
+///     degrades honestly (never fabricated) when it cannot be read. OFF => the
+///     poll never spawns and the panel stays honestly empty.
+///   - `poll_secs` (default 5): the refresh cadence. Clamped at read time to a
+///     sane floor (>= [`vitals::VITALS_MIN_POLL_SECS`]) so a hostile/typo'd 0
+///     can't busy-spin the poll.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct VitalsConfig {
+    pub enabled: bool,
+    pub poll_secs: u64,
+}
+
+impl Default for VitalsConfig {
+    fn default() -> Self {
+        Self {
+            // SHIPS ON (armed-by-default). STRICTLY READ-ONLY: the poll only
+            // OBSERVES + reports device state — it never acts, never actuates,
+            // and needs no privilege.
+            enabled: true,
+            // A calm 5s cadence: fresh enough for a live panel, light on the
+            // machine. Clamped to VITALS_MIN_POLL_SECS at read time.
+            poll_secs: 5,
         }
     }
 }
@@ -4658,6 +4708,7 @@ impl Config {
             webhooks: section(&table, "webhooks", &mut issues),
             plugin_sdk: section(&table, "plugin_sdk", &mut issues),
             power: section(&table, "power", &mut issues),
+            vitals: section(&table, "vitals", &mut issues),
             snapshot: section(&table, "snapshot", &mut issues),
             obol: section(&table, "obol", &mut issues),
             report: section(&table, "report", &mut issues),
@@ -4921,6 +4972,33 @@ mod tests {
         );
         assert!(cfg.power.adaptive);
         assert_eq!(cfg.power.low_battery_pct, 15);
+    }
+
+    /// [vitals] LIVE HARDWARE VITALS FEED SHIPS ON (armed-by-default; strictly
+    /// READ-ONLY — no action/actuator/root), with the calm 5s poll default. The
+    /// keys are KNOWN and round-trip.
+    #[test]
+    fn vitals_defaults_on_and_keys_known() {
+        let (cfg, issues) = Config::parse("");
+        assert!(issues.is_empty(), "{issues:?}");
+        assert!(
+            cfg.vitals.enabled,
+            "[vitals].enabled SHIPS ON (armed-by-default; strictly read-only)"
+        );
+        assert_eq!(cfg.vitals.poll_secs, 5);
+
+        let raw = r#"
+            [vitals]
+            enabled = false
+            poll_secs = 10
+        "#;
+        let (cfg, issues) = Config::parse(raw);
+        assert!(
+            !issues.iter().any(|i| i.contains("vitals")),
+            "[vitals] keys must be KNOWN (no diagnostic): {issues:?}"
+        );
+        assert!(!cfg.vitals.enabled);
+        assert_eq!(cfg.vitals.poll_secs, 10);
     }
 
     /// SAFETY SNAPSHOT: [snapshot].enabled SHIPS ON (armed-by-default; benign-only

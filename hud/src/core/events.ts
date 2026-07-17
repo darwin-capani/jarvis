@@ -40,6 +40,34 @@ export interface SystemLoadData {
   uptime_secs: number;
 }
 
+/** system / hardware.vitals — vitals.rs::vitals_task, every [vitals].poll_secs.
+ *  A STRICTLY READ-ONLY, SECRET-FREE device snapshot. Parsed defensively by
+ *  core/vitals.ts (parseVitals); the shape is documented here for the wire. */
+export interface HardwareVitalsData {
+  battery: {
+    percent: number | null; // Option<u8>; null on a desktop Mac / read miss
+    on_ac: boolean;
+    charge_state: "discharging" | "charging" | "charged" | "unknown";
+  };
+  thermal: "nominal" | "fair" | "serious" | "critical"; // ProcessInfo.thermalState
+  memory: {
+    used_bytes: number;
+    total_bytes: number;
+    pressure: "normal" | "warn" | "critical"; // used-fraction heuristic level
+  };
+  cpu: {
+    per_core: number[]; // per logical core utilization %
+    load_avg: [number, number, number]; // 1 / 5 / 15 min
+  };
+  volumes: Array<{
+    label: string; // secret-free: volume label + mount + bytes only
+    mount: string;
+    free_bytes: number;
+    total_bytes: number;
+  }>;
+  uptime_secs: number;
+}
+
 /** system / daemon.started — main.rs. `cloud_key_present` added by contract #2. */
 export interface DaemonStartedData {
   root: string;

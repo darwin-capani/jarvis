@@ -237,6 +237,7 @@ import {
 } from "./events";
 import { agentProfile, normalizeHue } from "./agents";
 import { type ChangeqState, changeqReduce, parseChangeqList } from "./changeq";
+import { type HardwareVitals, parseVitals } from "./vitals";
 
 /* ------------------------------------------------------------------------ */
 
@@ -630,6 +631,11 @@ export interface HudState {
    *  on-device translation). Empty until [captions].enabled is turned on. */
   captions: CaptionEntry[];
   gauges: SystemGauges;
+  /** The LIVE HARDWARE VITALS snapshot (hardware.vitals, vitals.rs): battery %,
+   *  AC/charge state, LIVE thermal pressure, memory pressure, per-core CPU +
+   *  load average, and every mounted volume's free/total. STRICTLY READ-ONLY +
+   *  secret-free. Null until the first frame (nothing read yet). */
+  vitals: HardwareVitals | null;
   lastTimings: PipelineTimings | null;
 
   /** Daemon-side is_speaking(): mic is muted because DARWIN is talking.
@@ -1456,6 +1462,7 @@ export function initialState(): HudState {
       diskFreeBytes: null,
       uptimeSecs: null,
     },
+    vitals: null,
     lastTimings: null,
     micMuted: false,
     loudStreak: 0,
@@ -1864,6 +1871,14 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
           uptimeSecs: num(env.data, "uptime_secs"),
         },
       };
+    }
+
+    case "hardware.vitals": {
+      // LIVE HARDWARE VITALS (vitals.rs, [vitals].poll_secs cadence). parseVitals
+      // is DEFENSIVE (a malformed field degrades to an honest unknown/empty,
+      // never a fabricated reading) and STRICTLY READ-ONLY — the panel only
+      // displays, it actuates nothing.
+      return { ...s, vitals: parseVitals(env.data) };
     }
 
     case "daemon.started": {

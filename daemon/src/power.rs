@@ -171,11 +171,75 @@ pub async fn read_power_live() -> PowerReading {
     PowerReading {
         battery_pct,
         on_ac,
-        // The thermal level requires a macOS ProcessInfo bridge (device-gated +
-        // not wired in this headless build); report Nominal so the policy never
-        // throttles on a guess. The thermal branch of throttle_decision is still
-        // fully tested via synthetic ThermalState inputs.
-        thermal: ThermalState::Nominal,
+        // LIVE thermal level via the macOS ProcessInfo.thermalState bridge
+        // (read_thermal_live -> the csrc/thermal_shim.m read). READ-ONLY +
+        // unprivileged. A read miss / non-macOS build degrades to Nominal so the
+        // policy never throttles on a guess. The thermal branch of
+        // throttle_decision is still fully tested via synthetic ThermalState
+        // inputs, and the int->ThermalState mapping is unit-tested via map_thermal.
+        thermal: read_thermal_live(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LIVE THERMAL — the ProcessInfo.thermalState bridge (READ-ONLY, unprivileged).
+// Mirrors the es_shim precedent: the fragile system call lives in a tiny C/ObjC
+// shim (csrc/thermal_shim.m) compiled against Apple's REAL Foundation header, so
+// the enum ladder is compiler-verified; Rust sees a flat int and maps it with a
+// PURE, unit-tested function. Reading thermalState needs NO entitlement, NO root,
+// and NO powermetrics/sudo — it is a public, process-scoped OS signal.
+// ---------------------------------------------------------------------------
+
+/// Map the flat int the thermal shim returns (`darwin_thermal_state`) to a
+/// [`ThermalState`]. PURE — unit-tested on synthetic ints. 0=Nominal, 1=Fair,
+/// 2=Serious, 3=Critical; anything else (incl. the shim's -1 "unknown/
+/// unreadable") degrades to `Nominal`, so the policy NEVER throttles on a guess.
+pub fn map_thermal(raw: i32) -> ThermalState {
+    match raw {
+        0 => ThermalState::Nominal,
+        1 => ThermalState::Fair,
+        2 => ThermalState::Serious,
+        3 => ThermalState::Critical,
+        _ => ThermalState::Nominal,
+    }
+}
+
+// Link, in order: the shim archive (force-loaded via +whole-archive — a
+// build-script static lib referenced only from the bin is otherwise dropped by
+// this linker, exactly like es.rs's shim), then the Foundation framework + libobjc
+// the shim's `[NSProcessInfo … thermalState]` message-send needs. build.rs
+// compiles the archive (with -fno-objc-msgsend-selector-stubs so it references
+// the classic `_objc_msgSend`) and adds its OUT_DIR to the search path; declaring
+// the links here keeps rustc's whole-archive modifier exact. All of this LINKS
+// freely with no entitlement — reading thermalState is unprivileged.
+// clippy::duplicated_attributes is a false positive here (it flags the multiple
+// #[link] attrs as duplicates); all three links are needed.
+#[cfg(target_os = "macos")]
+#[allow(clippy::duplicated_attributes)]
+#[link(name = "darwin_thermal_shim", kind = "static", modifiers = "+whole-archive")]
+#[link(name = "Foundation", kind = "framework")]
+#[link(name = "objc", kind = "dylib")]
+extern "C" {
+    // csrc/thermal_shim.m — reads NSProcessInfo.thermalState and returns a flat
+    // int (0..=3, or -1). Compiled + linked by build.rs on macOS. READ-ONLY.
+    fn darwin_thermal_state() -> std::os::raw::c_int;
+}
+
+/// Read the LIVE macOS thermal pressure level via the thermal shim
+/// (`NSProcessInfo.thermalState`). READ-ONLY + unprivileged. The DEVICE-GATED
+/// runner: it is NEVER exercised under test (the tests drive the PURE
+/// [`map_thermal`] on synthetic ints). Off macOS it reports `Nominal`.
+pub fn read_thermal_live() -> ThermalState {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: `darwin_thermal_state` takes no arguments, reads one scalar OS
+        // signal, and returns a plain `int`; it is linked from the build-script
+        // shim on macOS. No pointers, no ownership — a pure scalar read.
+        map_thermal(unsafe { darwin_thermal_state() })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        ThermalState::Nominal
     }
 }
 
@@ -246,6 +310,39 @@ mod tests {
         off.power.adaptive = false;
         let low = PowerReading { battery_pct: Some(5), on_ac: false, thermal: ThermalState::Nominal };
         assert!(!current_plan(&off, low).is_throttled(), "adaptive OFF must never throttle");
+    }
+
+    // The PURE int->ThermalState mapping (the live read's tested seam): each of
+    // the shim's 0..=3 codes maps to its ladder rung; any other value (incl. the
+    // shim's -1 "unknown/unreadable") degrades to Nominal so the policy never
+    // throttles on a guess.
+    #[test]
+    fn map_thermal_covers_the_ladder_and_degrades_unknown_to_nominal() {
+        assert_eq!(map_thermal(0), ThermalState::Nominal);
+        assert_eq!(map_thermal(1), ThermalState::Fair);
+        assert_eq!(map_thermal(2), ThermalState::Serious);
+        assert_eq!(map_thermal(3), ThermalState::Critical);
+        // -1 (the shim's "unknown"), out-of-range, and negatives all degrade safe.
+        assert_eq!(map_thermal(-1), ThermalState::Nominal);
+        assert_eq!(map_thermal(4), ThermalState::Nominal);
+        assert_eq!(map_thermal(i32::MIN), ThermalState::Nominal);
+        assert_eq!(map_thermal(i32::MAX), ThermalState::Nominal);
+    }
+
+    // A live-read Serious/Critical (from the thermal shim, modeled here via
+    // map_thermal) routed through the throttle policy DOES throttle even on AC —
+    // proving the newly-wired live thermal reaches the policy that consumes it.
+    #[test]
+    fn live_thermal_serious_throttles_even_on_ac() {
+        let mut cfg = Config::default();
+        cfg.power.adaptive = true;
+        let reading = PowerReading {
+            battery_pct: None,
+            on_ac: true,
+            thermal: map_thermal(2), // Serious, as the live shim would report
+        };
+        let plan = current_plan(&cfg, reading);
+        assert!(plan.is_throttled(), "serious thermal must throttle even on AC");
     }
 
     // With adaptive ON, a synthetic low-battery reading routed through current_plan

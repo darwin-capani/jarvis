@@ -382,6 +382,7 @@ mod ui_automation;
 mod unified_search;
 mod user_model;
 mod vault;
+mod vitals;
 mod voiceid;
 // VOICE CLONING (build 2/2): the CONSENT-GATED, authorization-bound capability that
 // uploads an owner-authorized sample to ElevenLabs and stores the returned voice id.
@@ -2350,6 +2351,12 @@ async fn main() -> Result<()> {
     telemetry::init();
     tokio::spawn(telemetry::serve(cfg.telemetry.port));
     tokio::spawn(telemetry::system_load_task());
+    // LIVE HARDWARE VITALS (vitals.rs): a STRICTLY READ-ONLY poll surfacing real
+    // device state (battery/AC, live thermal, memory pressure, per-core CPU +
+    // load, all mounted volumes) to the HUD `hardware.vitals` panel. Gated by
+    // [vitals].enabled (armed by default); OFF, the task returns without spawning
+    // any read. It OBSERVES and reports — no action, no actuator, no root.
+    tokio::spawn(vitals::vitals_task(cfg.clone()));
 
     // ARTIFACT REGISTRY (artifact.rs): apply the [artifact] master gate + retention
     // bound to the process-global registry the producers register into and the

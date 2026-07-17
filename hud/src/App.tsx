@@ -16,6 +16,7 @@ import CommandDeck from "./components/CommandDeck";
 import ShellPanel from "./components/ShellPanel";
 import UiActuatePanel from "./components/UiActuatePanel";
 import DiagnosticsPanel from "./components/DiagnosticsPanel";
+import VitalsPanel from "./components/VitalsPanel";
 import DocSearchPanel from "./components/DocSearchPanel";
 import EvalPanel from "./components/EvalPanel";
 import SpendMeter from "./components/SpendMeter";
@@ -717,6 +718,7 @@ export default function App() {
           <SkillsPanel skills={state.skills} />
           <InferencePerfPanel perf={state.inferencePerf} />
           <DiagnosticsPanel gauges={state.gauges} facts={state.facts} actions={state.actions} />
+          <VitalsPanel vitals={state.vitals} />
         </div></ErrorBoundary>
         <Waveform connected={state.connected} />
       </div>
