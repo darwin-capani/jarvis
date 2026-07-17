@@ -2643,8 +2643,11 @@ async fn handle_undo_command(cmd: crate::journal::UndoCommand, memory: &Memory) 
                     json!({"tool": tool, "agent": agent, "seq": seq}),
                 );
                 let gate_before = crate::integrations::consequential_allowed();
+                // "undo that" is a DIRECT, user-present interactive command, so it is
+                // user_originated=true AND context_trusted=true — the derived inverse
+                // is treated exactly like a live utterance's tool call.
                 let (outcome, is_error) =
-                    anthropic::execute_tool(&tool, &input, memory, &allowed, &agent, true).await;
+                    anthropic::execute_tool(&tool, &input, memory, &allowed, &agent, true, true).await;
                 // Read back whether the inverse is now the parked confirmation —
                 // never assumed from the outcome text.
                 let parked = crate::confirm::peek_pending(Instant::now())

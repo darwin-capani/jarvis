@@ -2364,6 +2364,11 @@ async fn tool_loop(
                 allowed,
                 namespace,
                 user_originated,
+                // The whole-loop trust origin — TRUE only for a live interactive
+                // turn (call 0 AND its continuations), FALSE for an unattended
+                // autonomous loop. Gates the `Always`->park downgrade so a standing
+                // mission / tripwire tick never auto-fires a consequential action.
+                context_trusted,
             )
             .await;
             if !is_error {
@@ -2875,8 +2880,12 @@ async fn local_tool_loop(
             // by it. Every consequential/voice-id/lockdown/policy gate inside
             // execute_tool still applies — a consequential tool PARKS/REFUSES here
             // exactly as it does in the cloud loop.
+            // The offline loop is a LIVE, user-present interactive turn (the local
+            // model answering the owner directly), so it is context_trusted=true —
+            // an `Always` here is attended and unchanged. (The offline subset holds
+            // no consequential outward tools anyway.)
             let (out, is_error) =
-                execute_tool(&call.name, &call.input, memory, allowed, namespace, true).await;
+                execute_tool(&call.name, &call.input, memory, allowed, namespace, true, true).await;
             if !is_error {
                 // ATTRIBUTION: same capability capture as the cloud tool loop, so
                 // an offline turn's tool/skill is recorded in the trace too.
@@ -6417,6 +6426,12 @@ async fn execute_mcp_tool(
     flat: &str,
     input: &Value,
     namespace: &str,
+    // Whether this call is part of a live, user-originated INTERACTIVE turn
+    // (`true`) vs. an UNATTENDED autonomous run (`false`). Threaded from
+    // `execute_tool` so the MCP path applies the SAME unattended `Always`->park
+    // downgrade as the built-in path — a standing mission can never auto-fire a
+    // consequential MCP action with nobody present. See `execute_tool`.
+    context_trusted: bool,
 ) -> (String, bool) {
     let agent = agent_id_from_namespace(namespace);
     let Some((server, tool)) = crate::mcp::parse_flat_tool_name(flat) else {
@@ -6478,7 +6493,17 @@ async fn execute_mcp_tool(
         // built-in path: NEVER > ALWAYS > ASK; Always is inert when the master is
         // OFF; a policy can NEVER grant what the master switch forbids.
         let master_on = crate::integrations::consequential_allowed();
-        match crate::policy::evaluate_global(flat, namespace, &preview_text) {
+        // UNATTENDED-RUN DOWNGRADE (same as the built-in path): an autonomous run
+        // (not context_trusted) downgrades `Always` -> `Ask` so the consequential
+        // MCP action PARKS for a fresh human confirm instead of auto-firing with
+        // nobody present. See `downgrade_always_if_unattended`.
+        let decision = downgrade_always_if_unattended(
+            crate::policy::evaluate_global(flat, namespace, &preview_text),
+            flat,
+            namespace,
+            context_trusted,
+        );
+        match decision {
             crate::policy::Decision::Never => {
                 warn!(tool = flat, agent = namespace, "policy: Never — blocking the consequential MCP action");
                 crate::audit::record_global(
@@ -6657,6 +6682,51 @@ fn outward_get_egress_refusal(name: &str, input: &Value) -> Option<String> {
     }
 }
 
+/// UNATTENDED-RUN DOWNGRADE (safety guarantee for standing missions). A user
+/// `Always` policy means "don't ask me every time" — but ONLY for an ATTENDED,
+/// interactive turn, where the owner is right there to see the action. In an
+/// UNATTENDED autonomous run — a fired tripwire, a time-based standing tick, a
+/// resumed/durable mission, or a mission sub-task spawned from a tool CONTINUATION
+/// (possibly injected content): ANY loop that is not `context_trusted` — nobody is
+/// present, so an `Always` must NEVER auto-fire a consequential OUTWARD action. We
+/// DOWNGRADE `Always` -> `Ask` here so the WHOLE existing chokepoint (park under the
+/// ON master switch / preview under OFF) treats it exactly like the default: it
+/// PARKS for a fresh human confirmation instead of auto-dispatching. This makes the
+/// standing-mission "can never auto-send/post/spend" guarantee TRUE.
+///
+/// `context_trusted` is the load-bearing signal: it is TRUE for every live
+/// interactive turn — the owner's own call 0 AND its continuations, voice-id on or
+/// off — so an ATTENDED `Always` is byte-for-byte UNCHANGED; it is FALSE for every
+/// autonomous loop (see `complete_with_tools` / the mission dispatch chain). We
+/// deliberately do NOT *also* require "no voice-id turn-gate is installed": a
+/// mission sub-task spawned on a continuation of a live (even voice-id-verified)
+/// turn still runs with the enclosing turn's process-global gate installed, yet its
+/// instruction may be injected content — treating it as attended merely because a
+/// gate happens to be installed would REOPEN precisely the auto-fire hole this
+/// closes. Only the auto-fire direction is removed: `Never`/`Ask`, and attended
+/// `Always`, are all untouched. Returns the (possibly downgraded) decision.
+fn downgrade_always_if_unattended(
+    decision: crate::policy::Decision,
+    tool: &str,
+    namespace: &str,
+    context_trusted: bool,
+) -> crate::policy::Decision {
+    if !context_trusted && decision == crate::policy::Decision::Always {
+        warn!(
+            tool,
+            agent = namespace,
+            "policy: Always downgraded to a park — unattended autonomous run, no human present to auto-approve"
+        );
+        crate::telemetry::emit(
+            "system",
+            "policy.parked_unattended",
+            json!({"tool": tool, "agent": namespace}),
+        );
+        return crate::policy::Decision::Ask;
+    }
+    decision
+}
+
 // `pub` (crate-wide) because the router's UNDO arm (journal.rs / router.rs)
 // hands a derived inverse to THIS same entry point, so the inverse receives the
 // identical treatment a live utterance's tool call gets: voice-id refusal,
@@ -6674,6 +6744,14 @@ pub async fn execute_tool(
     // pages, MCP/email/research results — only ever lands in the context on a
     // continuation, so this flag scopes the prompt-injection egress guard below.
     user_originated: bool,
+    // Whether THIS whole loop is a live, user-originated INTERACTIVE turn (`true`)
+    // vs. an UNATTENDED autonomous run (`false`: a standing tick / tripwire /
+    // resumed-or-durable mission / an injected-content-spawned sub-task). Distinct
+    // from `user_originated`, which is false on an interactive CONTINUATION too;
+    // `context_trusted` stays true across the whole interactive turn. It gates the
+    // unattended `Always`->park downgrade so a standing mission can never auto-fire
+    // a consequential action with nobody present. See `downgrade_always_if_unattended`.
+    context_trusted: bool,
 ) -> (String, bool) {
     // EGRESS GUARD (prompt-injection exfiltration). `open_url` / `web_search` /
     // `sage_research` are read-classified outward GETs: they are NOT in
@@ -6743,7 +6821,7 @@ pub async fn execute_tool(
     // consequential MCP tool parks; a read-only one runs ungated. Handled BEFORE
     // the static allowlist check below (which keys on built-in names only).
     if crate::mcp::is_mcp_flat_name(name) {
-        return execute_mcp_tool(crate::mcp::global(), name, input, namespace).await;
+        return execute_mcp_tool(crate::mcp::global(), name, input, namespace, context_trusted).await;
     }
 
     if !agent_may_use(allowed, name) {
@@ -6819,7 +6897,18 @@ pub async fn execute_tool(
         // CEILING (Always is inert when it's OFF — a policy can NEVER grant what
         // the master forbids).
         let master_on = crate::integrations::consequential_allowed();
-        match crate::policy::evaluate_global(name, namespace, &preview) {
+        // UNATTENDED-RUN DOWNGRADE: in an autonomous run (not context_trusted) an
+        // `Always` is downgraded to `Ask` so it PARKS for a fresh human confirm
+        // instead of auto-firing with nobody present. `Never`/`Ask`/attended-`Always`
+        // are untouched. See `downgrade_always_if_unattended`.
+        let decision =
+            downgrade_always_if_unattended(
+                crate::policy::evaluate_global(name, namespace, &preview),
+                name,
+                namespace,
+                context_trusted,
+            );
+        match decision {
             // NEVER: hard-block even with master ON + a would-be confirmation.
             crate::policy::Decision::Never => {
                 warn!(tool = name, agent = namespace, "policy: Never — blocking the consequential action");
@@ -12012,6 +12101,7 @@ mod tests {
         build_messages, build_system_blocks, cite_annotation, citation_for_tool, clear_sources,
         cloud_summary_candidates, confidence_tail, current_sources, dispatch_tool,
         answer_annotation_telemetry, answers, capability_label,
+        downgrade_always_if_unattended,
         execute_mcp_tool, execute_tool,
         extract_text, facts_block, forge_gate, grounded_world_live, is_parked_consequential,
         keychain_query_args, outward_get_egress_refusal, parse_confidence, personalization_block,
@@ -14000,8 +14090,22 @@ mod tests {
         memory: &Memory,
         allowed: &[String],
     ) -> (String, bool) {
-        // Tests through this helper model a direct user request (user_originated).
-        execute_tool(name, input, memory, allowed, "agent.darwin", true).await
+        // Tests through this helper model a direct user request: user_originated AND
+        // a live, context_trusted interactive turn (the ATTENDED path).
+        execute_tool(name, input, memory, allowed, "agent.darwin", true, true).await
+    }
+
+    /// Test wrapper modeling an UNATTENDED autonomous run (a standing tick /
+    /// tripwire / resumed mission / injected-content-spawned sub-task): NOT
+    /// context_trusted and NOT user_originated — the regime in which an `Always`
+    /// for a consequential tool must DOWNGRADE to a park instead of auto-firing.
+    async fn exec_t_unattended(
+        name: &str,
+        input: &serde_json::Value,
+        memory: &Memory,
+        allowed: &[String],
+    ) -> (String, bool) {
+        execute_tool(name, input, memory, allowed, "agent.darwin", false, false).await
     }
 
     /// Steve's shipped allowlist (the cloud-tool ids from config/agents.toml):
@@ -14579,6 +14683,7 @@ mod tests {
             &sage,
             "agent.sage",
             false, // continuation: untrusted fetched content is in context
+            true,  // still a live interactive turn (context_trusted); only the call index is a continuation
         )
         .await;
         assert!(is_error, "a data-bearing outward GET in a continuation must be refused: {outcome}");
@@ -14873,6 +14978,166 @@ mod tests {
         // And it did NOT arm a pending slot (it skipped the park).
         assert!(crate::confirm::take_live(std::time::Instant::now()).is_none());
         cleanup_temp_memory(&mem_path("policy_always_on"));
+    }
+
+    // -- UNATTENDED-RUN DOWNGRADE (standing-mission "never auto-send/post/spend") --
+    // A user `Always` means "don't ask me every time" only for an ATTENDED,
+    // interactive turn. In an UNATTENDED autonomous run (a fired tripwire /
+    // time-based standing tick / resumed mission / injected-content-spawned
+    // sub-task — any loop that is NOT context_trusted), an `Always` for a
+    // CONSEQUENTIAL tool must DOWNGRADE to a park so nothing auto-fires with nobody
+    // present. This is what makes the standing_create UI promise TRUE.
+
+    /// The DOWNGRADE mapping in isolation. An ATTENDED (context_trusted) turn passes
+    /// EVERY decision through UNCHANGED — so `Always` still auto-approves on an
+    /// interactive turn. An UNATTENDED run downgrades ONLY `Always` to a park
+    /// (`Ask`); a benign `Ask` and a hard `Never` are untouched. It also COMPOSES
+    /// with policy.rs's NEVER_AUTO_APPROVE neutralization: `ui_actuate`/`shell_run`
+    /// can never resolve to `Always` (they neutralize to `Ask` at `evaluate`), so
+    /// they PARK per-action in attended AND unattended runs alike — the fix only
+    /// ever REMOVES the auto-fire direction, never weakens a refusal.
+    #[test]
+    fn unattended_downgrade_only_affects_always_and_composes_with_never_auto_approve() {
+        // ATTENDED (context_trusted=true): unchanged for all three decisions.
+        for d in [Decision::Always, Decision::Never, Decision::Ask] {
+            assert_eq!(
+                downgrade_always_if_unattended(d, "gmail_send", "agent.pepper", true),
+                d,
+                "an attended (context_trusted) turn leaves {d:?} unchanged"
+            );
+        }
+        // UNATTENDED (context_trusted=false): ONLY Always downgrades to a park.
+        assert_eq!(
+            downgrade_always_if_unattended(Decision::Always, "gmail_send", "agent.pepper", false),
+            Decision::Ask,
+            "unattended: Always downgrades to a park (Ask) so it can't auto-fire"
+        );
+        assert_eq!(
+            downgrade_always_if_unattended(Decision::Never, "gmail_send", "agent.pepper", false),
+            Decision::Never,
+            "unattended: a Never is untouched (it still hard-blocks)"
+        );
+        assert_eq!(
+            downgrade_always_if_unattended(Decision::Ask, "gmail_send", "agent.pepper", false),
+            Decision::Ask,
+            "unattended: a benign Ask decision is unchanged"
+        );
+        // COMPOSES with the maximally-dangerous-tool neutralization: even a set
+        // Always for ui_actuate / shell_run resolves to Ask at evaluate, and the
+        // unattended downgrade leaves that Ask a per-action park.
+        for tool in crate::policy::NEVER_AUTO_APPROVE_TOOLS {
+            let _g = PolicyOverride::force(true, policy_with(&[(tool, Decision::Always)]));
+            let evaluated = crate::policy::evaluate_global(tool, "agent.steve", "the Send button");
+            assert_eq!(
+                evaluated,
+                Decision::Ask,
+                "{tool}: an Always is neutralized to Ask by policy.rs (never auto-approvable)"
+            );
+            assert_eq!(
+                downgrade_always_if_unattended(evaluated, tool, "agent.steve", false),
+                Decision::Ask,
+                "{tool} stays a per-action park even in an unattended run"
+            );
+        }
+    }
+
+    /// END-TO-END CONTRAST through `execute_tool`: with the SAME `Always` policy on
+    /// a consequential tool and the master switch ON, an ATTENDED interactive turn
+    /// AUTO-DISPATCHES (unchanged behavior — it persists, parks nothing), while an
+    /// UNATTENDED autonomous run PARKS (persists nothing, arms a fresh human
+    /// confirmation). This is the core guarantee: a standing mission can never
+    /// auto-send/post/spend on an `Always`.
+    // intentional: hold the global PENDING serialization guard across the awaited action; #[tokio::test] is current-thread so it cannot self-deadlock
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn unattended_always_parks_while_attended_always_auto_dispatches() {
+        use std::time::Instant;
+        let _lock = crate::confirm::PENDING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _ = crate::confirm::take_live(Instant::now());
+
+        // (1) ATTENDED interactive turn: Always AUTO-DISPATCHES (unchanged).
+        let mem_att = open_temp_memory("policy_attended_always");
+        let (out_a, err_a) = {
+            let _on = crate::integrations::ConsequentialOverride::force(true);
+            let _pol = PolicyOverride::force(true, policy_with(&[("standing_create", Decision::Always)]));
+            exec_t(
+                "standing_create",
+                &json!({"goal": "attended mission", "schedule": "daily"}),
+                &mem_att,
+                &["standing_create".to_string()],
+            )
+            .await
+        };
+        assert!(!err_a, "the attended auto-approved execution succeeds: {out_a}");
+        assert!(
+            out_a.contains("Standing mission established"),
+            "an ATTENDED Always + master ON must EXECUTE directly (unchanged): {out_a}"
+        );
+        assert_eq!(
+            crate::standing::list(&mem_att).await.unwrap().len(),
+            1,
+            "the attended Always persisted the mission"
+        );
+        assert!(
+            crate::confirm::take_live(Instant::now()).is_none(),
+            "the attended Always parked nothing (it auto-dispatched)"
+        );
+        cleanup_temp_memory(&mem_path("policy_attended_always"));
+
+        // (2) UNATTENDED autonomous run: the SAME policy PARKS instead of firing.
+        let mem_un = open_temp_memory("policy_unattended_park");
+        let (out_u, err_u) = {
+            let _on = crate::integrations::ConsequentialOverride::force(true);
+            let _pol = PolicyOverride::force(true, policy_with(&[("standing_create", Decision::Always)]));
+            exec_t_unattended(
+                "standing_create",
+                &json!({"goal": "unattended mission", "schedule": "daily", "confirm": true}),
+                &mem_un,
+                &["standing_create".to_string()],
+            )
+            .await
+        };
+        assert!(!err_u, "an unattended park is not an error: {out_u}");
+        assert!(
+            out_u.to_lowercase().contains("confirm"),
+            "an UNATTENDED Always must PARK for a fresh human confirm, not auto-fire: {out_u}"
+        );
+        assert!(
+            !out_u.contains("Standing mission established"),
+            "an unattended Always must NOT auto-dispatch: {out_u}"
+        );
+        assert!(
+            crate::standing::list(&mem_un).await.unwrap().is_empty(),
+            "an unattended Always must persist NOTHING (it parked, did not auto-dispatch)"
+        );
+        assert!(
+            crate::confirm::take_live(Instant::now()).is_some(),
+            "the downgraded Always armed a pending confirmation for the human"
+        );
+        cleanup_temp_memory(&mem_path("policy_unattended_park"));
+    }
+
+    /// A BENIGN (non-consequential, read-only) tool is UNAFFECTED by the unattended
+    /// downgrade: it runs normally in an autonomous run — it never parks, never
+    /// refuses. The downgrade only ever touches a consequential `Always`.
+    #[tokio::test]
+    async fn unattended_benign_tool_runs_normally() {
+        let mem = open_temp_memory("policy_unattended_benign");
+        // recall_facts is read-only: it is not consequential, so it dispatches
+        // straight through even in an unattended (context_trusted=false) run.
+        let (out, is_error) = {
+            let _on = crate::integrations::ConsequentialOverride::force(true);
+            let _pol = PolicyOverride::force(true, policy_with(&[("standing_create", Decision::Always)]));
+            exec_t_unattended("recall_facts", &json!({}), &mem, &["recall_facts".to_string()]).await
+        };
+        assert!(!is_error, "a benign read-only tool must run, not error, unattended: {out}");
+        assert!(
+            !out.to_lowercase().contains("say 'confirm'"),
+            "a benign tool must NOT park in an unattended run: {out}"
+        );
+        cleanup_temp_memory(&mem_path("policy_unattended_benign"));
     }
 
     /// An injected "set policy allow X" reaching the model can do NOTHING: there is
@@ -15246,7 +15511,7 @@ mod tests {
         let mgr = mcp_manager_files(vec!["friday".into()]).await;
         // Orchestrator namespace -> agent id "darwin" -> always allowed.
         let (outcome, is_error) =
-            execute_mcp_tool(&mgr, "mcp__files__read_file", &json!({"path": "/tmp/x"}), "agent.darwin")
+            execute_mcp_tool(&mgr, "mcp__files__read_file", &json!({"path": "/tmp/x"}), "agent.darwin", true)
                 .await;
         assert!(!is_error, "read-only MCP tool must succeed: {outcome}");
         assert_eq!(outcome, "done");
@@ -15263,6 +15528,7 @@ mod tests {
             "mcp__files__read_file",
             &json!({"path": "/tmp/x"}),
             "agent.veronica",
+            true,
         )
         .await;
         assert!(is_error, "a non-allowed agent must be refused");
@@ -15285,6 +15551,7 @@ mod tests {
             "mcp__files__write_file",
             &json!({"path": "/tmp/x", "data": "hi"}),
             "agent.darwin",
+            true,
         )
         .await;
         assert!(!is_error, "a dry-run preview is not an error: {outcome}");
@@ -15325,7 +15592,7 @@ mod tests {
                 crate::integrations::consequential_allowed(),
                 "the cfg(test) override must report the switch ON"
             );
-            execute_mcp_tool(&mgr, "mcp__files__write_file", &input, "agent.darwin").await
+            execute_mcp_tool(&mgr, "mcp__files__write_file", &input, "agent.darwin", true).await
         };
         // The override dropped above -> the switch reads OFF again for other tests.
         assert!(
@@ -15385,7 +15652,7 @@ mod tests {
                 verified: false,
                 scope: crate::voiceid::GateScope::Consequential,
             });
-            execute_mcp_tool(&mgr, "mcp__files__write_file", &input, "agent.darwin").await
+            execute_mcp_tool(&mgr, "mcp__files__write_file", &input, "agent.darwin", true).await
         };
 
         // Refused with the honest voice-id message — NOT a preview, NOT a park.
@@ -15419,7 +15686,7 @@ mod tests {
         // class_for_flat -> Consequential (fail-safe) for an undiscovered tool.
         assert!(mgr.class_for_flat("mcp__files__ghost").is_consequential());
         let (outcome, is_error) =
-            execute_mcp_tool(&mgr, "mcp__files__ghost", &json!({}), "agent.darwin").await;
+            execute_mcp_tool(&mgr, "mcp__files__ghost", &json!({}), "agent.darwin", true).await;
         // OFF switch -> DryRun path -> the manager rejects the unknown tool.
         assert!(is_error, "unknown MCP tool must surface an error, not run: {outcome}");
     }
@@ -16951,6 +17218,7 @@ mod tests {
             &mnemosyne,
             mnemosyne_ns,
             true,
+            true,
         )
         .await;
         assert!(!is_error, "recall is read-only and must not error: {hit}");
@@ -16966,7 +17234,7 @@ mod tests {
 
         // recall_facts (the generic read tool mnemosyne also holds): same boundary.
         let (facts, is_error) =
-            execute_tool("recall_facts", &json!({}), &mem, &mnemosyne, mnemosyne_ns, true).await;
+            execute_tool("recall_facts", &json!({}), &mem, &mnemosyne, mnemosyne_ns, true, true).await;
         assert!(!is_error, "recall_facts is read-only and must not error: {facts}");
         assert!(facts.contains("user.project"), "shared fact must surface: {facts}");
         assert!(
