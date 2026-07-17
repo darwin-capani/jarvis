@@ -48,7 +48,7 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
 use std::time::Duration;
@@ -223,7 +223,9 @@ impl Attestation {
 }
 
 /// The hashes a local staging rebuild produced. Compared against the attestation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Serde-serializable so a device-gated verify step can record the rebuild it
+/// produced into an attestation sidecar for the deploy-time gate to consult.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RebuildResult {
     pub closure_hash: String,
     pub artifact_hash: String,
@@ -479,6 +481,147 @@ pub fn install_decision(verdict: &Admission, human_approved: bool) -> InstallDec
 }
 
 // ===========================================================================
+// (4b) The INSTALL-TIME PRECONDITION gate — PURE, unit-tested. This is the
+// verdict wired in as a PRECONDITION of the human-gated install (forge apply /
+// apps enable): a `Refused` verdict BLOCKS admission; anything else falls
+// through to the EXISTING human gate UNCHANGED. It adds NO new install authority
+// — it can only ever BLOCK, never install.
+//
+// INERT-BY-DEFAULT (byte-for-byte unchanged until the owner opts in): with the
+// signer allowlist EMPTY (the shipped default) — or verify off, or no
+// attestation present for this app — the gate is a PASS-THROUGH that admits
+// nothing and blocks nothing, so today's install behavior is exactly preserved.
+// The gate only starts BLOCKING once the owner has added a trusted signer AND an
+// attestation is present, at which point a signature/rebuild MISMATCH (or a
+// tampered/absent-required rebuild) fails closed.
+// ===========================================================================
+
+/// The on-disk attestation SIDECAR that sits next to a plugin/app manifest
+/// (`attestation.json`). A device-gated verify step writes it; the deploy-time
+/// gate reads it. Absent => the gate is a pass-through (inert). SECRET-FREE (a
+/// public key id + a signature are not secrets).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttestationEnvelope {
+    /// The attestation whose signature the ed25519 gate verifies.
+    #[serde(flatten)]
+    pub attestation: Attestation,
+    /// The ed25519 signature over `attestation.signing_bytes()` (hex).
+    pub signature_hex: String,
+    /// OPTIONAL locally-produced reproducible-build result. When
+    /// `require_rebuild_match` is set and this is absent, admission fail-closes
+    /// (a required rebuild with nothing to compare is a Refusal, never a pass).
+    #[serde(default)]
+    pub rebuild: Option<RebuildResult>,
+}
+
+/// The install-time precondition verdict. A VERIFICATION gate, NEVER an install
+/// authority: `Inert` and `Admitted` BOTH still require the existing human gate
+/// downstream — only `Blocked` stops an install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallGate {
+    /// The registry gate is inert for this install (verify off, or no trusted
+    /// signer configured, or no attestation present). It adds nothing; the
+    /// install proceeds under the EXISTING human gate, exactly as before.
+    Inert { reason: String },
+    /// A trusted signer is configured AND the attestation verified (and, if
+    /// required, a local rebuild matched). Registry-ADMITTED — but STILL gated on
+    /// the human's out-of-band approval (no new install authority).
+    Admitted { reason: String },
+    /// A trusted signer is configured and the attestation was REFUSED
+    /// (non-allowlisted signer, invalid/tampered signature, or a rebuild
+    /// mismatch / a required-but-absent rebuild). Fail-closed: the install is
+    /// BLOCKED with an honest, secret-free reason.
+    Blocked { reason: String },
+}
+
+impl InstallGate {
+    /// The ONLY state that stops an install. `Inert`/`Admitted` proceed to the
+    /// human gate; `Blocked` refuses.
+    pub fn blocks_install(&self) -> bool {
+        matches!(self, InstallGate::Blocked { .. })
+    }
+
+    /// The honest reason (a label, never a secret) for logs / the deploy message.
+    pub fn reason(&self) -> &str {
+        match self {
+            InstallGate::Inert { reason }
+            | InstallGate::Admitted { reason }
+            | InstallGate::Blocked { reason } => reason,
+        }
+    }
+
+    /// A stable label for telemetry / the wire.
+    pub fn label(&self) -> &'static str {
+        match self {
+            InstallGate::Inert { .. } => "inert",
+            InstallGate::Admitted { .. } => "admitted",
+            InstallGate::Blocked { .. } => "blocked",
+        }
+    }
+}
+
+/// THE pure install-time precondition. Fail-closed only ONCE THE OWNER HAS OPTED
+/// IN (a trusted signer is configured AND an attestation is present); INERT
+/// otherwise so today's install behavior is byte-for-byte unchanged:
+///   - `verify` off                         -> Inert (pass-through);
+///   - the signer allowlist is empty        -> Inert (pass-through, shipped default);
+///   - no attestation for this app          -> Inert (unverified, human-gated);
+///   - a bad hex signature in the envelope  -> Blocked (fail-closed);
+///   - [`decide_admission`] Refuses         -> Blocked (fail-closed);
+///   - [`decide_admission`] Admits          -> Admitted (STILL human-gated).
+///
+/// This function has NO I/O and NO actuator: it returns a verdict, it installs
+/// NOTHING. `Admitted` alone never installs — see [`install_decision`].
+pub fn install_gate(
+    verify: bool,
+    allowlist: &SignerAllowlist,
+    attestation: Option<&AttestationEnvelope>,
+    require_rebuild_match: bool,
+) -> InstallGate {
+    if !verify {
+        return InstallGate::Inert {
+            reason: "registry verify is off ([registry].verify = false) — proceeding under the \
+                     existing human gate"
+                .to_string(),
+        };
+    }
+    if allowlist.is_empty() {
+        return InstallGate::Inert {
+            reason: "no trusted signer configured ([registry].signers empty) — registry gate inert, \
+                     proceeding under the existing human gate"
+                .to_string(),
+        };
+    }
+    let Some(env) = attestation else {
+        return InstallGate::Inert {
+            reason: "no attestation present for this app — unverified, proceeding under the \
+                     existing human gate"
+                .to_string(),
+        };
+    };
+    let Ok(sig) = hex::decode(env.signature_hex.trim()) else {
+        return InstallGate::Blocked {
+            reason: "attestation sidecar signature is not valid hex".to_string(),
+        };
+    };
+    match decide_admission(
+        allowlist,
+        &env.attestation,
+        &sig,
+        env.rebuild.as_ref(),
+        require_rebuild_match,
+    ) {
+        Admission::Admitted { .. } => InstallGate::Admitted {
+            reason: format!(
+                "attestation verified against trusted signer {:?}",
+                env.attestation.signer_key_id
+            ),
+        },
+        Admission::Refused { reason } => InstallGate::Blocked { reason },
+    }
+}
+
+// ===========================================================================
 // The signed LOCAL index — self-attesting over the allowlist.
 // ===========================================================================
 
@@ -522,6 +665,7 @@ impl Registry {
 
 pub const EV_VERDICT: &str = "registry.verdict";
 pub const EV_STATUS: &str = "registry.status";
+pub const EV_INSTALL_GATE: &str = "registry.install_gate";
 
 /// `(verdict_label, reason?)` for an admission — the SECRET-FREE fields the
 /// telemetry frame carries.
@@ -544,6 +688,20 @@ pub fn ev_verdict(plugin_id: &str, admission: &Admission, signer_key_id: &str) -
             "verdict": verdict,
             "reason": reason,
             "signer": signer_key_id,
+        }),
+    )
+}
+
+/// The per-install gate frame: the app id, the gate outcome label, and the
+/// honest reason. SECRET-FREE (a label + a reason, never a key or a signature).
+pub fn ev_install_gate(app: &str, gate: &InstallGate) -> (&'static str, serde_json::Value) {
+    (
+        EV_INSTALL_GATE,
+        json!({
+            "app": app,
+            "gate": gate.label(),
+            "blocked": gate.blocks_install(),
+            "reason": gate.reason(),
         }),
     )
 }
@@ -676,6 +834,76 @@ pub async fn run_verification(
     let (event, payload) = ev_verdict(&attestation.plugin_id, &admission, &attestation.signer_key_id);
     telemetry::emit("system", event, payload);
     admission
+}
+
+// ===========================================================================
+// (6) The DEPLOY-TIME wiring — impure. Reads the OPTIONAL attestation sidecar
+// next to a manifest and runs the PURE [`install_gate`] against the [registry]
+// config, emitting the SECRET-FREE `registry.install_gate` frame. This is what
+// the human-gated install (forge apply -> `darwind --validate-forge-manifest`)
+// consults as a PRECONDITION. It installs NOTHING — it returns a verdict; only a
+// `Blocked` verdict stops the install, everything else falls through to the
+// EXISTING human gate unchanged.
+// ===========================================================================
+
+/// The attestation sidecar filename, expected next to a plugin/app manifest.
+pub const ATTESTATION_SIDECAR: &str = "attestation.json";
+
+/// Load the OPTIONAL attestation sidecar at `path`. `Ok(None)` when the file is
+/// absent (=> the gate is inert / pass-through). `Err` when the file is present
+/// but unreadable or malformed — the caller treats that as fail-closed (a
+/// present-but-corrupt attestation must never silently pass).
+pub fn load_attestation_sidecar(path: &Path) -> Result<Option<AttestationEnvelope>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading attestation sidecar {}", path.display()))?;
+    let env: AttestationEnvelope = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing attestation sidecar {}", path.display()))?;
+    Ok(Some(env))
+}
+
+/// The deploy-time install precondition for the app whose manifest is at
+/// `manifest_path`. Reads the OPTIONAL `attestation.json` sidecar in the same
+/// directory and runs the PURE [`install_gate`] against the [registry] config.
+///
+/// INERT-BY-DEFAULT: `verify` off or the `signers` allowlist empty (the shipped
+/// default) short-circuits to `Inert` WITHOUT even touching the disk sidecar, so
+/// today's install path is byte-for-byte unchanged. A present-but-unreadable
+/// sidecar fails closed (`Blocked`). Emits the secret-free gate frame. Returns
+/// the verdict; installs NOTHING.
+pub fn deploy_install_gate(
+    manifest_path: &Path,
+    verify: bool,
+    signers: &BTreeMap<String, String>,
+    require_rebuild_match: bool,
+) -> InstallGate {
+    let allowlist = SignerAllowlist::from_config(signers);
+
+    // Fast inert path: an unconfigured gate never reads the sidecar (preserves
+    // the byte-for-byte "unconfigured = pass-through" guarantee, and avoids any
+    // disk touch on the default install path).
+    let gate = if !verify || allowlist.is_empty() {
+        install_gate(verify, &allowlist, None, require_rebuild_match)
+    } else {
+        let sidecar = manifest_path.with_file_name(ATTESTATION_SIDECAR);
+        match load_attestation_sidecar(&sidecar) {
+            Ok(env) => install_gate(verify, &allowlist, env.as_ref(), require_rebuild_match),
+            Err(e) => InstallGate::Blocked {
+                reason: format!("attestation sidecar present but unreadable/invalid: {e}"),
+            },
+        }
+    };
+
+    let app = manifest_path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("<app>");
+    let (event, payload) = ev_install_gate(app, &gate);
+    telemetry::emit("system", event, payload);
+    gate
 }
 
 #[cfg(test)]
@@ -995,6 +1223,197 @@ checksum = \"aaaa\"
         let refused = Admission::Refused { reason: "x".into() };
         assert_eq!(install_decision(&refused, true), InstallDecision::RefusedByRegistry);
         assert_eq!(install_decision(&refused, false), InstallDecision::RefusedByRegistry);
+    }
+
+    // -- (4b) the INSTALL-TIME PRECONDITION gate -----------------------------
+    //
+    // The whole point: wired in as a precondition of the human-gated install, it
+    // must ship INERT (empty allowlist / unconfigured => pass-through, today's
+    // behavior byte-for-byte), yet fail closed on a MISMATCH / tampered / absent-
+    // required rebuild ONCE the owner has added a trusted signer + an attestation.
+
+    /// Build a signed sidecar envelope for `att` (optionally carrying a rebuild).
+    fn envelope(kp: &Ed25519KeyPair, att: &Attestation, rebuild: Option<RebuildResult>) -> AttestationEnvelope {
+        let sig = kp.sign(&att.signing_bytes());
+        AttestationEnvelope {
+            attestation: att.clone(),
+            signature_hex: hex::encode(sig.as_ref()),
+            rebuild,
+        }
+    }
+
+    fn matching_rebuild(att: &Attestation) -> RebuildResult {
+        RebuildResult {
+            closure_hash: att.closure_hash.clone(),
+            artifact_hash: att.artifact_hash.clone(),
+        }
+    }
+
+    #[test]
+    fn install_gate_is_inert_when_unconfigured_so_todays_behavior_is_unchanged() {
+        let kp = keypair(&[7u8; 32]);
+        let att = sample_attestation();
+        let env = envelope(&kp, &att, Some(matching_rebuild(&att)));
+
+        // Shipped default: EMPTY allowlist -> Inert (pass-through), even WITH a
+        // present, perfectly valid attestation. The gate blocks nothing.
+        let empty = SignerAllowlist::default();
+        let g = install_gate(true, &empty, Some(&env), true);
+        assert!(matches!(g, InstallGate::Inert { .. }), "empty allowlist must be inert (pass-through)");
+        assert!(!g.blocks_install(), "an inert gate never blocks an install");
+
+        // verify = false -> Inert regardless of a configured signer.
+        let allow = allowlist_of(&[("owner-key-1", &kp)]);
+        let g = install_gate(false, &allow, Some(&env), true);
+        assert!(matches!(g, InstallGate::Inert { .. }), "verify=false must be inert");
+        assert!(!g.blocks_install());
+
+        // A trusted signer IS configured but NO attestation is present ->
+        // Inert (unverified, proceed under the human gate). This is the state
+        // BEFORE the owner has shipped an attestation: still pass-through.
+        let g = install_gate(true, &allow, None, true);
+        assert!(matches!(g, InstallGate::Inert { .. }), "no attestation => inert/pass-through");
+        assert!(!g.blocks_install());
+    }
+
+    #[test]
+    fn install_gate_admits_a_verified_attestation_but_still_needs_the_human_gate() {
+        let kp = keypair(&[7u8; 32]);
+        let allow = allowlist_of(&[("owner-key-1", &kp)]);
+        let att = sample_attestation();
+        let env = envelope(&kp, &att, Some(matching_rebuild(&att)));
+
+        // Signer configured + valid signature + matching rebuild -> Admitted.
+        let g = install_gate(true, &allow, Some(&env), true);
+        assert!(matches!(g, InstallGate::Admitted { .. }), "a verified attestation admits");
+        // ADMITTED IS NOT AN INSTALL: it must not block, but it adds NO authority —
+        // the downstream install_decision still requires the human gate.
+        assert!(!g.blocks_install(), "admitted proceeds to the human gate, never blocks");
+        let admitted = decide_admission(&allow, &att, kp.sign(&att.signing_bytes()).as_ref(), Some(&matching_rebuild(&att)), true);
+        assert_eq!(
+            install_decision(&admitted, false),
+            InstallDecision::AwaitingHumanGate,
+            "an admitted gate on its own must NOT install (no new install authority)"
+        );
+
+        // signature-only mode (require_rebuild_match = false): a valid signature
+        // admits WITHOUT a rebuild present.
+        let env_no_rebuild = envelope(&kp, &att, None);
+        let g = install_gate(true, &allow, Some(&env_no_rebuild), false);
+        assert!(matches!(g, InstallGate::Admitted { .. }), "sig-only mode admits on a valid signature");
+    }
+
+    #[test]
+    fn install_gate_blocks_a_configured_signer_mismatch_and_fails_closed() {
+        let kp = keypair(&[7u8; 32]);
+        let allow = allowlist_of(&[("owner-key-1", &kp)]);
+        let att = sample_attestation();
+
+        // (a) rebuild MISMATCH (valid signature, wrong built bytes) -> Blocked.
+        let mismatched = RebuildResult { artifact_hash: "0000".into(), ..matching_rebuild(&att) };
+        let env = envelope(&kp, &att, Some(mismatched));
+        let g = install_gate(true, &allow, Some(&env), true);
+        assert!(g.blocks_install(), "a rebuild mismatch must block");
+        assert!(matches!(g, InstallGate::Blocked { .. }));
+
+        // (b) rebuild REQUIRED but ABSENT -> Blocked (fail-closed).
+        let env = envelope(&kp, &att, None);
+        let g = install_gate(true, &allow, Some(&env), true);
+        assert!(g.blocks_install(), "a required-but-absent rebuild must block (fail-closed)");
+
+        // (c) TAMPERED attestation (edited after signing) -> signature invalid -> Blocked.
+        let mut tampered = att.clone();
+        tampered.artifact_hash = "beef".into();
+        let env = AttestationEnvelope {
+            attestation: tampered,
+            // the signature is over the ORIGINAL bytes.
+            signature_hex: hex::encode(kp.sign(&att.signing_bytes()).as_ref()),
+            rebuild: Some(matching_rebuild(&att)),
+        };
+        let g = install_gate(true, &allow, Some(&env), true);
+        assert!(g.blocks_install(), "a tampered attestation must fail closed (blocked)");
+
+        // (d) a signer NOT in the allowlist -> Blocked.
+        let stranger = keypair(&[1u8; 32]);
+        let mut att2 = att.clone();
+        att2.signer_key_id = "stranger".to_string();
+        let env = envelope(&stranger, &att2, Some(matching_rebuild(&att2)));
+        let g = install_gate(true, &allow, Some(&env), true);
+        assert!(g.blocks_install(), "a non-allowlisted signer must block");
+
+        // (e) a garbage hex signature -> Blocked (fail-closed, never a pass).
+        let env = AttestationEnvelope {
+            attestation: att.clone(),
+            signature_hex: "zzzz-not-hex".to_string(),
+            rebuild: Some(matching_rebuild(&att)),
+        };
+        let g = install_gate(true, &allow, Some(&env), true);
+        assert!(g.blocks_install(), "a non-hex signature must fail closed");
+    }
+
+    #[test]
+    fn deploy_install_gate_reads_the_sidecar_and_stays_inert_by_default() {
+        let dir = std::env::temp_dir().join(format!("darwin-reg-gate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("manifest.toml");
+        std::fs::write(&manifest, "[app]\nname = \"x\"\n").unwrap();
+
+        let kp = keypair(&[7u8; 32]);
+        let att = sample_attestation();
+
+        // (1) DEFAULT config: signers EMPTY -> Inert, and it does NOT even need a
+        // sidecar (byte-for-byte today's behavior; no disk sidecar written).
+        let empty: BTreeMap<String, String> = BTreeMap::new();
+        let g = deploy_install_gate(&manifest, true, &empty, true);
+        assert!(matches!(g, InstallGate::Inert { .. }), "unconfigured deploy gate is a pass-through");
+
+        // (2) Owner configures a signer but ships NO sidecar -> Inert (pass-through).
+        let signers: BTreeMap<String, String> =
+            [("owner-key-1".to_string(), pubkey_hex(&kp))].into_iter().collect();
+        let g = deploy_install_gate(&manifest, true, &signers, true);
+        assert!(matches!(g, InstallGate::Inert { .. }), "configured signer, no attestation => inert");
+
+        // (3) Owner ships a VALID sidecar -> Admitted (still human-gated, never blocks).
+        let env = envelope(&kp, &att, Some(matching_rebuild(&att)));
+        std::fs::write(dir.join(ATTESTATION_SIDECAR), serde_json::to_string(&env).unwrap()).unwrap();
+        let g = deploy_install_gate(&manifest, true, &signers, true);
+        assert!(matches!(g, InstallGate::Admitted { .. }), "a valid sidecar admits (still human-gated)");
+        assert!(!g.blocks_install());
+
+        // (4) Owner ships a TAMPERED sidecar (mismatched rebuild) -> Blocked.
+        let bad = AttestationEnvelope {
+            rebuild: Some(RebuildResult { artifact_hash: "0000".into(), ..matching_rebuild(&att) }),
+            ..envelope(&kp, &att, None)
+        };
+        std::fs::write(dir.join(ATTESTATION_SIDECAR), serde_json::to_string(&bad).unwrap()).unwrap();
+        let g = deploy_install_gate(&manifest, true, &signers, true);
+        assert!(g.blocks_install(), "a mismatched sidecar must block the deploy");
+
+        // (5) Owner ships a MALFORMED sidecar -> Blocked (present-but-corrupt fails closed).
+        std::fs::write(dir.join(ATTESTATION_SIDECAR), "{ not valid json").unwrap();
+        let g = deploy_install_gate(&manifest, true, &signers, true);
+        assert!(g.blocks_install(), "a corrupt sidecar must fail closed");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_gate_frame_is_secret_free() {
+        let kp = keypair(&[7u8; 32]);
+        let allow = allowlist_of(&[("owner-key-1", &kp)]);
+        let att = sample_attestation();
+        let env = envelope(&kp, &att, Some(matching_rebuild(&att)));
+        let g = install_gate(true, &allow, Some(&env), true);
+        let (event, payload) = ev_install_gate("acme-linter", &g);
+        assert_eq!(event, "registry.install_gate");
+        assert_eq!(payload["app"], "acme-linter");
+        assert_eq!(payload["gate"], "admitted");
+        assert_eq!(payload["blocked"], false);
+        // NEVER a key or a signature on the wire.
+        let wire = payload.to_string();
+        assert!(!wire.contains(&pubkey_hex(&kp)), "no public key bytes on the wire");
+        assert!(!wire.contains(&env.signature_hex), "no signature bytes on the wire");
     }
 
     // -- the signed LOCAL index self-attests ---------------------------------

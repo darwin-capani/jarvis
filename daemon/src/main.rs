@@ -1764,9 +1764,20 @@ async fn main() -> Result<()> {
     // minimal manifest and NON-ZERO on a parse error or any over-broad grant.
     // scripts/apply_forge.sh calls this in place of a textual permission scan,
     // closing the TOML parser-differential (dotted keys / inline tables /
-    // deny_unknown_fields) the text scan could not see. Side-effect-free: it
-    // only reads the manifest and validates — it deploys NOTHING and touches
-    // neither apps/ nor any config. No daemon starts; no tracing/Config/Keychain.
+    // deny_unknown_fields) the text scan could not see.
+    //
+    // TWO orthogonal PRECONDITIONS run here, both before anything is deployed:
+    //   (1) the forge PERMISSION-minimization gate (validate_manifest_file), and
+    //   (2) the ATTESTED-REGISTRY verification gate (registry::deploy_install_gate),
+    //       which reads the OPTIONAL attestation.json sidecar next to the manifest
+    //       and consults the [registry] config. A `Blocked` verdict REFUSES the
+    //       deploy (fail-closed); Inert/Admitted fall through to the EXISTING human
+    //       gate UNCHANGED. It adds NO new install authority — only a block.
+    //       INERT-BY-DEFAULT: with `[registry].signers` empty (the shipped default),
+    //       gate (2) is a pass-through, so this path stays byte-for-byte as before.
+    // Side-effect-free beyond reading: it deploys NOTHING and touches neither apps/
+    // nor any config. No daemon starts; no tracing/Keychain. It DOES read the
+    // (pure, file-only) Config to learn the [registry] posture for gate (2).
     if let Some(pos) = std::env::args().position(|a| a == "--validate-forge-manifest") {
         let manifest_path = std::env::args().nth(pos + 1).unwrap_or_default();
         let app_name = std::env::args().nth(pos + 2).unwrap_or_default();
@@ -1779,20 +1790,29 @@ async fn main() -> Result<()> {
         // Representative root for the SBPL-derivability check only; nothing is
         // deployed and the live tree is never read here.
         let root = resolve_root();
-        match forge::validate_manifest_file(
-            Path::new(&manifest_path),
-            &app_name,
-            &root,
-        ) {
-            Ok(()) => {
-                println!("FORGE MANIFEST OK: minimal permissions, default-deny SBPL derivable");
-                return Ok(());
-            }
-            Err(e) => {
-                eprintln!("FORGE MANIFEST REJECTED: {e}");
-                std::process::exit(1);
-            }
+        // (1) The forge permission-minimization gate (unchanged behavior).
+        if let Err(e) = forge::validate_manifest_file(Path::new(&manifest_path), &app_name, &root) {
+            eprintln!("FORGE MANIFEST REJECTED: {e}");
+            std::process::exit(1);
         }
+        // (2) The attested-registry verification precondition. Reads the [registry]
+        // config (pure, file-only) + the OPTIONAL attestation.json sidecar. INERT
+        // (pass-through) with the shipped-empty signer allowlist, so today's deploy
+        // is unchanged; a `Blocked` verdict fails the deploy closed.
+        let (cfg, _issues) = Config::load(&root.join("config").join("darwin.toml"));
+        let gate = registry::deploy_install_gate(
+            Path::new(&manifest_path),
+            cfg.registry.verify,
+            &cfg.registry.signers,
+            cfg.registry.require_rebuild_match,
+        );
+        if gate.blocks_install() {
+            eprintln!("FORGE MANIFEST REJECTED: registry refused admission — {}", gate.reason());
+            std::process::exit(1);
+        }
+        println!("FORGE MANIFEST OK: minimal permissions, default-deny SBPL derivable");
+        println!("REGISTRY GATE: {} — {}", gate.label(), gate.reason());
+        return Ok(());
     }
 
     // Operator entrypoint: `darwind --forge-goal "<goal>"` runs the GATED,
