@@ -253,6 +253,14 @@ fn lock() -> std::sync::MutexGuard<'static, RingState> {
 /// ring, evicting the oldest beyond the (clamped) `ring_size`. Called ONCE per
 /// turn from the turn loop. No-op-safe: a clamp guarantees at least one slot.
 pub fn record(signals: &TurnSignals, ring_size: usize) {
+    // THRESHOLD write-integrity chokepoint: a GUEST turn leaves NO durable trace.
+    // The decision-trace ring is owner-influencing state the OWNER reads back via
+    // "why did you do that" — a bystander's turn must never enter it (nor bump the
+    // turn_ref counter). Refuse HERE, at the ring primitive. Background tasks read
+    // false and are unaffected.
+    if crate::threshold::guest_write_blocked() {
+        return;
+    }
     let cap = clamp_ring(ring_size);
     let mut g = lock();
     let turn_ref = g.next_ref;
@@ -687,6 +695,30 @@ mod tests {
         let g = crate::confirm::PENDING_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_for_test();
         g
+    }
+
+    /// THRESHOLD write-integrity chokepoint (explain::record). The decision-trace
+    /// ring is owner-influencing state the OWNER reads back via "why did you do
+    /// that" — a GUEST turn must push NOTHING and must not even bump the turn_ref
+    /// counter. The owner path records as usual.
+    #[test]
+    fn guest_turn_records_no_decision_trace() {
+        let _g = store_guard(); // holds PENDING_TEST_LOCK + clears the ring
+        let before_ref = lock().next_ref;
+        {
+            let guest = crate::threshold::guest_from(
+                &crate::threshold::Scope::owner(vec!["*".to_string()], crate::focus::FocusProfile::Default),
+                &crate::focus::FocusProfile::DeepFocus,
+            );
+            let _o = crate::threshold::ScopeOverride::guest(guest);
+            assert!(crate::threshold::is_guest_turn());
+            record(&signals(), 8);
+        }
+        assert!(explain_last().is_none(), "a guest turn seeded a decision trace");
+        assert_eq!(lock().next_ref, before_ref, "a guest turn bumped the ring's turn counter");
+        // OWNER path records normally.
+        record(&signals(), 8);
+        assert!(explain_last().is_some(), "the owner turn's trace was not recorded");
     }
 
     #[test]

@@ -816,6 +816,58 @@ fn discard_wav(path: &Path) {
 /// server for durable facts from the exchange and upsert them. Runs on its
 /// own InferenceClient (the main loop owns the other one mutably) and only
 /// ever logs on failure — learning must never delay or break a response.
+/// Apply a spoken guest-mode toggle to the persistent `guest_mode` flag under the
+/// SPEAKER GUARD, then return the EXPLICIT guest flag that feeds `threshold::decide`
+/// (auto-guest from an Unrecognized voice is folded in by `decide` itself):
+///   * "guest mode on"  — ONLY the verified OWNER (or an unenforced voice-id) may
+///     LATCH the persistent flag. A non-owner is ALREADY voice-scoped to guest by
+///     `decide` this turn, so their ON is a no-op on the flag — otherwise a bystander
+///     could latch it and silently degrade the OWNER's own later turns.
+///   * "guest mode off" — ONLY the verified OWNER (or an unenforced voice-id) may
+///     clear it; a bystander's OFF is IGNORED, so they can neither un-scope
+///     themselves (auto-guest still holds) nor strip the owner's explicit protection
+///     (the safety net against a voice-id false-accept).
+///   * the returned explicit flag = `guest_mode && (owner-verified OR unenforced)`,
+///     so an Unrecognized speaker is scoped BY THEIR VOICE, never by/despite the flag.
+///
+/// Pure over (toggle, speaker, &mut flag); unit-tested.
+fn resolve_explicit_guest(
+    toggle: Option<threshold::GuestToggle>,
+    speaker: threshold::SpeakerState,
+    guest_mode: &mut bool,
+) -> bool {
+    let owner_or_unenforced = matches!(
+        speaker,
+        threshold::SpeakerState::OwnerVerified | threshold::SpeakerState::Unenforced
+    );
+    match toggle {
+        // ON latches the PERSISTENT (cross-turn) flag ONLY for the owner / unenforced
+        // voice-id. A non-owner is already voice-scoped to guest by decide() this turn,
+        // so their ON is a no-op on the flag — otherwise the OWNER's next turn inherits
+        // the latched flag and is silently degraded until they toggle off.
+        Some(threshold::GuestToggle::On) if owner_or_unenforced => *guest_mode = true,
+        Some(threshold::GuestToggle::On) => {
+            info!("THRESHOLD: a non-owner guest-mode-on toggle does not latch the persistent flag (they are already voice-scoped)");
+        }
+        Some(threshold::GuestToggle::Off) if owner_or_unenforced => *guest_mode = false,
+        Some(threshold::GuestToggle::Off) => {
+            info!("THRESHOLD: ignoring a guest-mode-off toggle from a non-owner speaker");
+        }
+        None => {}
+    }
+    *guest_mode && owner_or_unenforced
+}
+
+/// Whether THIS turn's passive fact-learner should run. False for a transient
+/// perception read, an empty response, OR a GUEST turn. The guest clause is the
+/// security-critical one: the learner extracts first-person claims and WRITES them
+/// into the OWNER's fact store, so a bystander's turn must never seed it — mirroring
+/// the episodic VoiceGate that keeps an unrecognized speaker out of durable memory.
+/// Pure over the args + the per-turn guest scope, so the boundary is unit-tested.
+fn should_learn_turn(response: &str, transient: bool) -> bool {
+    !response.is_empty() && !transient && !threshold::is_guest_turn()
+}
+
 fn spawn_learning_task(sock: PathBuf, memory: Arc<Memory>, utterance: String, response: String) {
     tokio::spawn(async move {
         let mut infer = InferenceClient::new(sock);
@@ -1341,6 +1393,14 @@ async fn anticipation_task(root: PathBuf, cfg: Arc<Config>, memory: Arc<Memory>,
         // The behavior in force this tick: the per-tick auto selection when on,
         // else the once-resolved configured profile (identical to today).
         let tuned: &focus::TunedBehavior = auto_tuned.as_ref().unwrap_or(&configured_tuned);
+
+        // THRESHOLD — GUEST MODE does NOT touch this ambient tick. The per-turn guest
+        // scope governs a guest's OWN spoken turn (its reads / tools), NOT the
+        // background anticipation loop: this loop is a separate task, so it never
+        // reads a turn's task-local scope. "Ambient guest-presence quieting" of
+        // proactive briefs/missions is a SEPARATE future feature — it needs a
+        // PERSISTENT guest-presence signal (not a per-turn one), and is out of scope
+        // here. The tick is byte-for-byte today's regardless of any guest turn.
 
         // PROACTIVE-INTELLIGENCE SUGGESTIONS (#13 habit detector + #14 predictive
         // suggester). Runs every tick, INDEPENDENT of the EDITH brief decision
@@ -3054,6 +3114,14 @@ async fn main() -> Result<()> {
     // re-saved on a confirmed clone / forget). Consent-gated, never automatic.
     let mut clone_state: voiceclone::CloneState = voiceclone::CloneState::Idle;
     let mut cloned_voices: voiceclone::ClonedVoices = voiceclone::load_clones(&root);
+    // THRESHOLD (guest mode): the EXPLICIT "guest mode on/off" toggle, held across
+    // turns exactly like `owner_profile` — the owner hands the mic to a guest and it
+    // stays scoped until the owner explicitly ends it (an ordinary utterance never
+    // flips it). Starts OFF, so the shipped behavior is byte-for-byte today's until
+    // the owner toggles it (or voice-id auto-scopes an unrecognized speaker per
+    // turn, which needs no persistent flag). AUTO-guest (an Unrecognized speaker)
+    // is derived per-turn from the voice gate and needs no state here.
+    let mut guest_mode = false;
     // CROSS-TURN CORRECTION LABELING (optimizer): the PRIOR turn's recorded trace
     // (row id + intent + agent), carried forward so THIS turn can re-label it
     // Corrected IFF it corrected the prior routing (see optimize::is_correction).
@@ -3062,7 +3130,11 @@ async fn main() -> Result<()> {
     let mut prior_turn: Option<optimize::PriorTurn> = None;
     while let Some(event) = rx.recv().await {
         let Event::Utterance { wav, embedding } = event;
-        let response = run_pipeline(
+        // THRESHOLD — GUEST MODE: run each turn inside a FRESH per-turn guest-scope
+        // slot (task-local). The scope is confined to THIS turn's task, so a
+        // concurrent background task (anticipation / a durable mission) never reads
+        // it, and it resets for the next turn by construction — no cross-turn leak.
+        let response = threshold::with_turn_scope(run_pipeline(
             wav,
             embedding,
             &root,
@@ -3080,7 +3152,8 @@ async fn main() -> Result<()> {
             &mut enrollment,
             &mut clone_state,
             &mut cloned_voices,
-        )
+            &mut guest_mode,
+        ))
         .await;
         // Keep the last NON-empty spoken reply; a turn that produced nothing
         // (dropped/abandoned) leaves the prior reply as the echo reference.
@@ -3116,6 +3189,10 @@ async fn run_pipeline(
     enrollment: &mut Option<voiceid::Enrollment>,
     clone_state: &mut voiceclone::CloneState,
     cloned_voices: &mut voiceclone::ClonedVoices,
+    // THRESHOLD (guest mode): the persistent EXPLICIT guest-mode toggle, held by the
+    // turn loop across turns (like `owner_profile`). An explicit "guest mode on/off"
+    // utterance flips it; it is read as the `guest_flag` into `threshold::decide`.
+    guest_mode: &mut bool,
 ) -> Option<String> {
     let started = Instant::now();
     let wav_str = wav.display().to_string();
@@ -3124,6 +3201,11 @@ async fn run_pipeline(
     // skips verification never inherits a stale verified=true. A guard makes every
     // early return safe.
     let _gate_guard = TurnGateGuard;
+    // THRESHOLD guest scope: the SAME per-turn discipline. Installed FIRST, ahead of
+    // every early return, so a guest turn's scope is cleared unconditionally at turn
+    // end and can never leak into the owner's next turn (tools / recall / the
+    // anticipation tick that would otherwise suppress the owner's own briefs).
+    let _scope_guard = TurnScopeGuard;
 
     // Per-turn RESPONSE-VOICE-LANGUAGE: the babel_interpret TOOL records the language
     // it translated INTO (to_lang) in a per-turn process-global so the response-speak
@@ -3224,6 +3306,14 @@ async fn run_pipeline(
             (result, stt_started.elapsed().as_millis() as u64)
         },
         async {
+            // THRESHOLD note: this CONTENT-FREE capture marker (wav path + ts, NO
+            // transcript) is emitted DURING STT — BEFORE the guest scope is decided
+            // (the decision needs the transcript for the explicit toggle), so the
+            // record_event chokepoint does not gate it. It carries no utterance
+            // content / no owner data and the events table has no owner-facing row
+            // reader; a bystander's WORDS never enter the durable log (the utterance
+            // content rides route.cloud/route.local, recorded AFTER the scope installs
+            // and gated there). See threshold::guest_write_blocked's HONESTY note.
             if let Err(e) = memory.record_event("audio", "utterance.captured", &wav_str).await {
                 warn!(error = %e, "failed to record utterance event");
             }
@@ -3441,12 +3531,71 @@ async fn run_pipeline(
         }
     }
 
+    // THRESHOLD — GUEST MODE (threshold.rs), WIRING POINT 1. Decided ONCE per turn,
+    // right after voice-id installs this turn's owner gate and BEFORE routing (so
+    // the recall dispatch, the tool loop, and the anticipation tick all read the
+    // scope it installs). Map the SAME per-turn voice-id gate to a speaker signal,
+    // fold in the persistent EXPLICIT "guest mode on/off" toggle, decide the
+    // effective scope via the PURE `threshold::decide`, emit the secret-free HUD
+    // frame, and INSTALL a guest scope (or CLEAR to the owner path). On the OWNER
+    // path — a recognized owner, voice-id off/unenforced, `[threshold]` disabled,
+    // and no explicit toggle — NO scope is installed, so recall + tools + the
+    // anticipation tick are byte-for-byte unchanged. Guest mode holds NO handle to
+    // the master switch / per-action confirm / voice-id / lockdown gates: it can
+    // only ever NARROW (fewer tools, shared-only recall, a quieter profile).
+    {
+        // Resolve THIS turn's speaker signal FIRST, then the EXPLICIT guest flag
+        // under the SPEAKER GUARD (see `resolve_explicit_guest`): any speaker may turn
+        // guest mode ON (it can only NARROW), but ONLY the verified OWNER or an
+        // unenforced voice-id may turn it OFF — a bystander can never un-scope anyone,
+        // and auto-guest (an Unrecognized voice) is folded in by `decide`.
+        let speaker = threshold::SpeakerState::from_owner_gate(&voiceid::current_turn_gate());
+        let explicit_guest =
+            resolve_explicit_guest(threshold::classify_guest_toggle(&text), speaker, guest_mode);
+        let cfg_view = threshold::ThresholdConfigView::from_config(&cfg.threshold);
+        // The owner scope this turn would run under: the orchestrator wildcard tools
+        // + the identity focus profile — the WIDEST owner baseline, so the guest
+        // projection (and the subset check below) is the sharpest. Downstream the
+        // tool loop re-intersects the guest tools with the ACTIVE agent's allowlist.
+        let owner_scope =
+            threshold::Scope::owner(vec!["*".to_string()], focus::FocusProfile::Default);
+        let decision = threshold::decide(speaker, explicit_guest, &cfg_view, &owner_scope);
+        threshold::emit_guest(&decision);
+        if decision.active {
+            // HARD SAFETY RAIL: the installed guest scope can only ever NARROW the
+            // owner scope — guest mode NEVER widens or weakens a gate. Asserted here,
+            // at the install site, before it can gate anything. Provable by
+            // construction (a `Scope` carries only restrict-only knobs and
+            // `guest_from` confines every axis; the property test pins it), so this
+            // debug assertion is defense-in-depth that fires in every test/debug
+            // build if a future change ever regressed the invariant.
+            debug_assert!(
+                decision
+                    .scope
+                    .is_no_broader_than(&owner_scope, &focus::BaseBehavior::default()),
+                "THRESHOLD: a guest scope must never be broader than the owner scope"
+            );
+            threshold::set_turn_scope(decision.scope);
+        } else {
+            // OWNER PATH: no guest scope in force — recall + tools + anticipation are
+            // byte-for-byte unchanged.
+            threshold::clear_turn_scope();
+        }
+    }
+
     // VOICE CLONING (build 2/2), AFTER STT and BEFORE routing. CONSENT-GATED across
     // turns: a "clone my voice" intent PROPOSES a clone and parks (nothing leaves the
     // device); a confirming "yes" on the NEXT turn performs the upload via the
     // inference clone seam and stores the returned voice id. A "forget the clone"
     // intent drops the stored id. All three return a spoken acknowledgment without
     // routing; an ordinary utterance returns None and falls through. NEVER automatic.
+    //
+    // THRESHOLD — GUEST MODE: voice cloning is a consequential action on the owner's
+    // account (it uploads a sample to the cloud clone seam) and manages the owner's
+    // stored clones. A guest reaches none of it — this block runs BEFORE route()'s
+    // gate, so skip it for a guest and fall through to the guest-gated conversational
+    // path. Owner path: byte-for-byte today's.
+    if !threshold::is_guest_turn() {
     if let Some(resp) = handle_voice_clone(
         &text,
         root,
@@ -3461,6 +3610,7 @@ async fn run_pipeline(
         discard_wav(&wav);
         return Some(resp);
     }
+    }
 
     // MACRO REPLAY (#27), AFTER STT and BEFORE classify/route. A "replay macro X"
     // utterance re-runs each recorded command through the FULL classify -> route ->
@@ -3474,6 +3624,17 @@ async fn run_pipeline(
     if let Some(crate::macros::MacroCommand::Replay { name }) =
         crate::macros::classify_macro_command(&text)
     {
+        // THRESHOLD — GUEST MODE: this block runs BEFORE route()'s guest fast-path
+        // gate, so refuse macro replay for a guest HERE — a bystander may not re-run
+        // the owner's saved commands. Nothing is replayed.
+        if threshold::is_guest_turn() {
+            info!(macro_name = %name, "THRESHOLD: refusing macro replay for a guest");
+            let msg = "I can't replay macros in guest mode — those re-run the owner's saved \
+                       commands. The owner can do it.".to_string();
+            let _ = speech::speak(&msg, infer, cfg, started, &mut reply).await;
+            discard_wav(&wav);
+            return Some(msg);
+        }
         // Compute the same brief + cloud-reachability the normal route path uses, so
         // each replayed step routes identically to a live command.
         let brief = proactive::first_contact_brief(cfg, memory).await;
@@ -3531,7 +3692,14 @@ async fn run_pipeline(
     // Proactive learning: when this utterance ends an away gap longer than
     // [proactive].idle_gap_hours, the first-contact brief rides into the
     // converse data and the persona phrases it (emits proactive.brief).
-    let brief = proactive::first_contact_brief(cfg, memory).await;
+    // THRESHOLD — GUEST MODE: the first-contact brief is the OWNER's proactive intel
+    // (calendar / mail / signals). A guest turn gets NONE of it — withheld like every
+    // other owner-data feed. Owner path: byte-for-byte today's.
+    let brief = if threshold::is_guest_turn() {
+        None
+    } else {
+        proactive::first_contact_brief(cfg, memory).await
+    };
 
     // Cloud reachability for Darwin-Prime delegation: the API key is the
     // honest signal (resolved once, cached). With no key, conversational turns
@@ -3636,6 +3804,17 @@ async fn run_pipeline(
                     "response": outcome.response,
                 }),
             );
+            // THRESHOLD — GUEST MODE: a guest turn must leave NO trace in the OWNER's
+            // DURABLE state. This is now enforced at the PERSISTENCE-BOUNDARY CHOKEPOINT
+            // (threshold::guest_write_blocked, checked inside every durable-write
+            // PRIMITIVE) rather than here at the scattered call sites: record_transcript,
+            // episodic/record_episode, explain::record, and the optimizer trace below
+            // each NO-OP on a guest turn no matter which caller reaches them. The old
+            // per-writer `!guest_turn` gates were whack-a-mole (each review found a new
+            // uncovered writer); the chokepoint is load-bearing, so these sites run
+            // unguarded and the write simply does nothing on a guest turn. (The passive
+            // fact-learner is the ONE exception — it is tokio::spawn'd, so it escapes the
+            // task-local scope and keeps its own should_learn_turn spawn-gate below.)
             if let Err(e) = memory
                 .record_transcript(
                     Some(&wav.display().to_string()),
@@ -3752,7 +3931,11 @@ async fn run_pipeline(
                 || router::is_generate_image_request(&text)
                 || router::is_identify_sound_request(&text)
                 || screen_context::is_screen_context_recall(&text);
-            if !outcome.response.is_empty() && !transient {
+            // THRESHOLD — GUEST MODE: `should_learn_turn` skips the passive
+            // fact-learner on a guest turn, so a bystander's first-person claims never
+            // poison the OWNER's fact store (mirrors the episodic VoiceGate below).
+            // Owner path: byte-for-byte today's.
+            if should_learn_turn(&outcome.response, transient) {
                 spawn_learning_task(
                     sock_path.to_path_buf(),
                     memory.clone(),
@@ -3776,6 +3959,13 @@ async fn run_pipeline(
             // read from the SAME per-turn voiceid::current_turn_gate() the deep
             // tool gate consults, so an unrecognized speaker's turn never seeds
             // the owner's episodic memory. Every field is redacted before store.
+            // GUEST GATE (in addition to VoiceGate): with voice-id OFF, an explicit
+            // "guest mode on" installs a guest scope but the VoiceGate permits
+            // recording (OwnerGate::OFF), so a bystander's turn would otherwise seed
+            // the owner's episodic store. This is now enforced at the chokepoint —
+            // episodic::record_episode returns Ok(false) on a guest turn (and the
+            // Memory::record_episode store guard is the load-bearing backstop) — so
+            // episodic.recorded honestly reports false and nothing is persisted.
             let voice = episodic::VoiceGate::from_owner_gate(voiceid::current_turn_gate());
             match episodic::record_episode(
                 cfg,
@@ -3826,6 +4016,9 @@ async fn run_pipeline(
             // carry on-screen secrets and must never seed a trace). READ-ONLY: it
             // records what already happened; the utterance + outcome are redacted at
             // assembly, and it never fabricates a rationale.
+            // GUEST GATE: enforced at the chokepoint — explain::record NO-OPs on a
+            // guest turn — so this site runs unguarded and simply records nothing for
+            // a bystander (no owner-readable "why did you do that" trace is seeded).
             if cfg.explain.enabled && !transient {
                 let gate = voiceid::current_turn_gate();
                 explain::record(
@@ -3860,6 +4053,10 @@ async fn run_pipeline(
             // explicit redirect cue — optimize::is_correction), re-label the prior
             // trace Corrected (the learnable signal). The recorder + labeler are
             // pure no-ops when disabled, so the shipped-OFF default does nothing.
+            // GUEST GATE: enforced at the chokepoint — record_trace returns Ok(None)
+            // and label_outcome/calibrate NO-OP on a guest turn — so this site runs
+            // unguarded and seeds neither the optimizer corpus nor the calibration
+            // window for a bystander.
             if cfg.optimize.enabled && !transient {
                 // Cross-turn correction: did THIS turn correct the prior route?
                 if let Some(prior) = prior_turn.as_ref() {
@@ -4151,6 +4348,20 @@ impl Drop for TurnGateGuard {
     }
 }
 
+/// RAII guard that clears the per-turn THRESHOLD guest scope on EVERY return path.
+/// The guest scope is a TASK-LOCAL established fresh per turn by
+/// `threshold::with_turn_scope` (the event loop wraps each `run_pipeline` call), so
+/// per-turn isolation already holds by construction — this guard is belt-and-
+/// suspenders that empties the slot the moment the turn's work is done, ahead of
+/// any late-turn code. Installed at the TOP of `run_pipeline`. (`clear_turn_scope`
+/// is a no-op outside a turn scope, so this can never touch a background task.)
+struct TurnScopeGuard;
+impl Drop for TurnScopeGuard {
+    fn drop(&mut self) {
+        threshold::clear_turn_scope();
+    }
+}
+
 /// VOICE-ID per-turn handling (round G). Returns `Some(ack)` when this utterance
 /// was an enroll/forget intent (or fed an in-progress enrollment) and the turn is
 /// DONE (the caller speaks the ack and returns — no routing). Returns `None` for
@@ -4168,10 +4379,36 @@ fn handle_voice_id(
     owner_profile: &mut Option<voiceid::OwnerProfile>,
     enrollment: &mut Option<voiceid::Enrollment>,
 ) -> Option<String> {
+    // Whether an owner is enrolled, and whether THIS utterance verifies as that
+    // owner — computed up front because the explicit Forget/Enroll intents below
+    // MUTATE the owner profile and MUST be gated on owner verification: an
+    // unrecognized speaker must not be able to delete or overwrite the owner's
+    // voice (which turns voice-id off and un-scopes them — the "forget my voice"
+    // takeover the review found). Fail-closed: no usable embedding while enrolled
+    // -> not the owner. The FIRST enroll (no owner yet) stays open to bootstrap.
+    let enrolled = owner_profile.as_ref().is_some_and(|p| p.is_enrolled());
+    let is_verified_owner = match (enrolled, owner_profile.as_ref(), embedding) {
+        (true, Some(p), Some(emb)) => p.verify(emb).verified,
+        _ => false,
+    };
+
     // 1. EXPLICIT intents first. A "forget" clears the profile + any session;
-    //    an "enroll" starts (or restarts) a capture session.
+    //    an "enroll" starts (or restarts) a capture session. Once an owner is
+    //    enrolled, BOTH require the VERIFIED owner (the profile is protected).
     match voiceid::classify_intent(text) {
         Some(voiceid::VoiceIntent::Forget) => {
+            // SPEAKER GUARD: with an owner enrolled + enforcing, an UNVERIFIED
+            // speaker's "forget my voice" is refused — else it deletes the profile,
+            // voice-id goes OFF, and the speaker gains the full owner scope on the
+            // next turn (defeating threshold's can't-un-scope rail).
+            if enrolled && !is_verified_owner {
+                telemetry::emit(
+                    "system",
+                    "voiceid.forget_refused",
+                    json!({"reason": "unverified_speaker"}),
+                );
+                return Some("Only the enrolled owner can turn off voice recognition — I couldn't verify your voice, so I'm leaving it on.".to_string());
+            }
             *enrollment = None;
             let had = owner_profile.as_ref().is_some_and(|p| p.is_enrolled());
             *owner_profile = None;
@@ -4199,6 +4436,18 @@ fn handle_voice_id(
             });
         }
         Some(voiceid::VoiceIntent::Enroll) => {
+            // SPEAKER GUARD: a re-enroll OVERWRITES the owner profile, so once an
+            // owner is enrolled only the VERIFIED owner may re-enroll — else a
+            // bystander takes over the owner identity. The first enroll (unenrolled)
+            // is open (that is how the owner is bootstrapped).
+            if enrolled && !is_verified_owner {
+                telemetry::emit(
+                    "system",
+                    "voiceid.enroll_refused",
+                    json!({"reason": "unverified_speaker"}),
+                );
+                return Some("An owner voice is already enrolled — only the enrolled owner can re-enroll, and I couldn't verify your voice.".to_string());
+            }
             *enrollment = Some(voiceid::Enrollment::begin(
                 cfg.voice_id.min_enroll_samples,
                 cfg.voice_id.threshold,
@@ -4268,7 +4517,7 @@ fn handle_voice_id(
     //    behavior). ENROLLED -> verify; a missing embedding (no usable audio /
     //    embed error) is FAIL-CLOSED: verified=false (an unverified speaker for
     //    the consequential path), but ordinary replies still flow.
-    let enrolled = owner_profile.as_ref().is_some_and(|p| p.is_enrolled());
+    // (`enrolled` computed above.)
     let (gate, outcome) = if let (true, Some(profile)) = (enrolled, owner_profile.as_ref()) {
         let outcome = match embedding {
             Some(emb) => profile.verify(emb),
@@ -4895,9 +5144,141 @@ async fn trigger_create_pronunciation(
 
 #[cfg(test)]
 mod tests {
-    use super::{fmt_ms, is_self_echo, is_stale_wait, RotatingLogWriter, STALE_UTTERANCE_WAIT};
+    use super::{
+        fmt_ms, is_self_echo, is_stale_wait, resolve_explicit_guest, should_learn_turn,
+        RotatingLogWriter, STALE_UTTERANCE_WAIT,
+    };
+    use super::{focus, threshold};
     use std::io::Write;
     use std::time::Duration;
+
+    /// A representative guest scope for the guest-turn assertions below.
+    fn guest_scope() -> threshold::Scope {
+        threshold::guest_from(
+            &threshold::Scope::owner(vec!["*".to_string()], focus::FocusProfile::Default),
+            &focus::FocusProfile::DeepFocus,
+        )
+    }
+
+    // THRESHOLD — GUEST MODE, finding 1: the passive fact-learner never runs on a
+    // guest turn, so a bystander's first-person claims never poison owner memory.
+    #[test]
+    fn a_guest_turn_never_runs_the_passive_fact_learner() {
+        // Owner path (no guest scope): a real, non-transient turn learns as today.
+        assert!(should_learn_turn("You're Darwin.", false), "owner learns a real turn");
+        // Transient / empty turns never learn (unchanged).
+        assert!(!should_learn_turn("You're Darwin.", true), "transient never learns");
+        assert!(!should_learn_turn("", false), "empty response never learns");
+        // GUEST turn: NEVER learns — no write into the owner's fact store.
+        let _o = threshold::ScopeOverride::guest(guest_scope());
+        assert!(
+            !should_learn_turn("My name is Mallory.", false),
+            "a guest turn must never run the fact-learner (no owner-memory write)"
+        );
+    }
+
+    // THRESHOLD — GUEST MODE, finding 3: the explicit toggle is speaker-guarded so a
+    // bystander can never un-scope themselves, and a non-owner OFF is ignored.
+    #[test]
+    fn the_guest_toggle_is_speaker_guarded() {
+        use threshold::{GuestToggle, SpeakerState};
+
+        // A bystander (Unrecognized) saying "guest mode off" does NOT clear the flag,
+        // and the effective explicit flag is false — but decide()'s auto-guest (not
+        // exercised here) keeps them scoped by their voice.
+        let mut flag = true; // the owner had turned guest mode ON earlier
+        let eff = resolve_explicit_guest(Some(GuestToggle::Off), SpeakerState::Unrecognized, &mut flag);
+        assert!(flag, "a bystander's OFF must NOT clear the owner's explicit flag");
+        assert!(!eff, "the explicit flag never takes effect for an Unrecognized speaker");
+
+        // A bystander's ON does NOT latch the PERSISTENT flag (the fix for the LOW
+        // finding): otherwise the OWNER's next turn would inherit it and be silently
+        // degraded. The bystander is still guest-scoped THIS turn by decide()'s
+        // auto-guest (via their Unrecognized voice), so no confidentiality is lost.
+        let mut flag = false;
+        let eff = resolve_explicit_guest(Some(GuestToggle::On), SpeakerState::Unrecognized, &mut flag);
+        assert!(!flag, "a non-owner ON must NOT latch the persistent flag (owner never degraded)");
+        assert!(!eff, "an Unrecognized speaker's explicit flag never takes effect (auto-guest scopes them)");
+
+        // The verified OWNER (or an unenforced voice-id) MAY latch guest mode ON.
+        let mut flag = false;
+        let eff = resolve_explicit_guest(Some(GuestToggle::On), SpeakerState::OwnerVerified, &mut flag);
+        assert!(flag, "the owner may latch guest mode ON");
+        assert!(eff, "owner ON -> explicit guest takes effect");
+
+        // The verified OWNER may turn guest mode OFF and un-scope themselves.
+        let mut flag = true;
+        let eff = resolve_explicit_guest(Some(GuestToggle::Off), SpeakerState::OwnerVerified, &mut flag);
+        assert!(!flag, "the verified owner may clear the flag");
+        assert!(!eff, "owner OFF -> no explicit guest");
+
+        // The verified OWNER may turn guest mode ON (hand the mic to a guest).
+        let mut flag = false;
+        let eff = resolve_explicit_guest(Some(GuestToggle::On), SpeakerState::OwnerVerified, &mut flag);
+        assert!(flag && eff, "owner ON -> explicit guest active");
+
+        // With voice-id UNENFORCED, OFF is allowed (no speaker distinction exists).
+        let mut flag = true;
+        let eff = resolve_explicit_guest(Some(GuestToggle::Off), SpeakerState::Unenforced, &mut flag);
+        assert!(!flag && !eff, "unenforced OFF clears the flag");
+
+        // No toggle: the flag is unchanged; effective only for owner/unenforced.
+        let mut flag = true;
+        assert!(
+            resolve_explicit_guest(None, SpeakerState::Unenforced, &mut flag),
+            "a persisted ON flag stays effective for an unenforced turn"
+        );
+        let mut flag = true;
+        assert!(
+            !resolve_explicit_guest(None, SpeakerState::Unrecognized, &mut flag),
+            "a persisted ON flag NEVER makes an Unrecognized speaker Explicit (auto-guest governs)"
+        );
+    }
+
+    // The voice-id enroll/forget handler MUTATES the owner profile, so once an owner
+    // is enrolled it must require the VERIFIED owner — else an unrecognized bystander
+    // could delete the profile ("forget my voice") to turn voice-id OFF and un-scope
+    // themselves, or overwrite it ("enroll my voice") to take over the owner identity.
+    #[test]
+    fn voiceid_forget_and_reenroll_require_the_verified_owner() {
+        use super::{config, handle_voice_id, voiceid};
+        use std::sync::Arc;
+        let cfg = Arc::new(config::Config::default());
+        // Refusal paths return BEFORE touching disk, so a bogus root is never read.
+        let root = std::path::Path::new("/no/such/test/root");
+        let owner_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
+        let stranger_vec = vec![0.0_f32, 1.0, 0.0, 0.0]; // orthogonal -> never verifies
+        let mut enrollment: Option<voiceid::Enrollment> = None;
+
+        let enrolled_owner = || {
+            let mut p = voiceid::OwnerProfile::new(voiceid::DEFAULT_THRESHOLD);
+            p.enroll(owner_vec.clone());
+            Some(p)
+        };
+
+        // (1) enrolled owner + UNVERIFIED speaker "forget my voice" -> REFUSED; profile survives.
+        let mut prof = enrolled_owner();
+        let r = handle_voice_id("forget my voice", Some(&stranger_vec), root, &cfg, &mut prof, &mut enrollment);
+        assert!(r.unwrap().contains("Only the enrolled owner"), "unverified forget must be refused");
+        assert!(prof.as_ref().is_some_and(|p| p.is_enrolled()), "the owner profile MUST survive an unverified forget");
+
+        // (2) enrolled owner + UNVERIFIED speaker "enroll my voice" -> REFUSED (no takeover); no session.
+        let r = handle_voice_id("enroll my voice", Some(&stranger_vec), root, &cfg, &mut prof, &mut enrollment);
+        assert!(r.unwrap().contains("already enrolled"), "unverified re-enroll must be refused");
+        assert!(prof.as_ref().is_some_and(|p| p.is_enrolled()) && enrollment.is_none(), "a stranger starts no enrollment");
+
+        // (3) enrolled owner + VERIFIED owner "forget my voice" -> ALLOWED (profile cleared).
+        //     (root is bogus so the disk delete errors+warns, but the in-RAM profile clears.)
+        let mut prof = enrolled_owner();
+        let r = handle_voice_id("forget my voice", Some(&owner_vec), root, &cfg, &mut prof, &mut enrollment);
+        assert!(r.is_some() && prof.is_none(), "the verified owner may forget their own voice");
+
+        // (4) UNENROLLED: the FIRST enroll is OPEN (bootstrapping the owner).
+        let mut none_prof: Option<voiceid::OwnerProfile> = None;
+        let r = handle_voice_id("enroll my voice", Some(&stranger_vec), root, &cfg, &mut none_prof, &mut enrollment);
+        assert!(r.unwrap().to_lowercase().contains("enroll your voice"), "the first enroll bootstraps the owner");
+        assert!(enrollment.is_some(), "bootstrap enroll starts a capture session");
+    }
 
     /// STARTUP-ORDER pin (source-level, like forge.rs's no_auto_deploy proof):
     /// `telemetry::init()` must run BEFORE `apps::AppRegistry::discover(` in

@@ -544,6 +544,15 @@ impl Dispatcher for CloudDispatcher<'_> {
             // private notes.
             let personalization =
                 crate::anthropic::grounded_personalization_live(self.memory).await;
+            // THRESHOLD — GUEST MODE does NOT touch a mission. A mission is
+            // owner-authorized work that runs OUTSIDE any guest turn's task-local
+            // scope (a guest can never dispatch one — route_capability is guest-gated;
+            // durable/standing missions run in their own background task), so
+            // `grounded_world_live` / `grounded_personalization_live` above and
+            // `complete_with_tools` below all read `current_turn_scope() == None` and
+            // behave exactly as an owner call — never emptied or narrowed by a
+            // concurrent guest turn.
+            //
             // The SAME cloud tool loop the direct path uses — per-agent allowlist
             // + gate + recall isolation ride along unchanged. No history/facts
             // threaded here: a sub-task is a fresh, self-contained instruction.

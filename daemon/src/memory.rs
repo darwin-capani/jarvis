@@ -229,6 +229,13 @@ impl Memory {
     }
 
     pub async fn record_event(&self, source: &str, kind: &str, payload: &str) -> Result<()> {
+        // THRESHOLD write-integrity chokepoint: a GUEST turn leaves NO durable trace
+        // in the owner's state. A bystander's utterance (which rides the router's
+        // "route.cloud" / "route.local" event payloads) must never enter the durable
+        // events log. Background tasks read false here and are unaffected.
+        if crate::threshold::guest_write_blocked() {
+            return Ok(());
+        }
         let conn = self.conn.lock().await;
         conn.execute(
             "INSERT INTO events(ts, source, kind, payload) VALUES (?1, ?2, ?3, ?4)",
@@ -250,6 +257,17 @@ impl Memory {
     /// re-stamped "now" and beat a genuinely newer edit on the peer. Local
     /// writes keep using upsert_fact (a local edit IS a touch-now).
     pub async fn upsert_fact_at(&self, key: &str, value: &str, ts: &str) -> Result<()> {
+        // THRESHOLD write-integrity chokepoint: THE single fact-write leaf — every
+        // fact write funnels here (upsert_fact / upsert_user_fact, and thus the cloud
+        // remember_fact tool, user_model, standing, macros::save, and
+        // proactive::record_interaction). A GUEST turn durably writes NOTHING, so a
+        // bystander can never seed or overwrite one of the owner's facts, no matter
+        // which caller reaches this. Background tasks read false here and write as
+        // usual. (The spawned passive learner escapes the task-local, so it keeps its
+        // own should_learn_turn spawn-gate — see threshold::guest_write_blocked.)
+        if crate::threshold::guest_write_blocked() {
+            return Ok(());
+        }
         let conn = self.conn.lock().await;
         let updated = conn.execute(
             "UPDATE facts SET value = ?2, ts = ?3, confidence = 1.0 WHERE key = ?1",
@@ -550,6 +568,13 @@ impl Memory {
         routed_to: &str,
         response: Option<&str>,
     ) -> Result<()> {
+        // THRESHOLD write-integrity chokepoint: a GUEST turn leaves NO durable trace.
+        // The transcript row carries the raw utterance + response — a bystander's turn
+        // must never enter the owner's history (which the owner reads back via
+        // fetch_history / recent_exchanges). Background tasks read false here.
+        if crate::threshold::guest_write_blocked() {
+            return Ok(());
+        }
         let conn = self.conn.lock().await;
         conn.execute(
             "INSERT INTO transcripts(ts, wav_path, text, intent, routed_to, response)
@@ -581,6 +606,16 @@ impl Memory {
     /// caller builds an Episode by hand. `ts`/`id` on the input are ignored for
     /// the write — the row's ts is stamped now and the id is assigned by SQLite.
     pub async fn record_episode(&self, ep: &Episode) -> Result<()> {
+        // THRESHOLD write-integrity chokepoint: a GUEST turn leaves NO durable trace.
+        // The episodic store is owner memory the owner reads back (episodic_recall) —
+        // a bystander's turn must never seed it. This is the load-bearing guard for
+        // BOTH crate::episodic::record_episode and any hand-built Episode write;
+        // background tasks read false here. (episodic::record_episode ALSO returns
+        // Ok(false) early on a guest turn so the episodic.recorded telemetry stays
+        // honest.)
+        if crate::threshold::guest_write_blocked() {
+            return Ok(());
+        }
         let conn = self.conn.lock().await;
         // Defensive re-redaction: NEVER trust that the caller already redacted
         // the free-text fields.
@@ -742,6 +777,16 @@ impl Memory {
         Ok(n.max(0) as u64)
     }
 
+    /// Total rows in the durable `events` log — a test-facing counter used by the
+    /// THRESHOLD write-integrity enumeration to prove `record_event` is a no-op on a
+    /// guest turn (no public reader otherwise exists for this internal log).
+    #[cfg(test)]
+    pub(crate) async fn events_count(&self) -> Result<u64> {
+        let conn = self.conn.lock().await;
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?;
+        Ok(n.max(0) as u64)
+    }
+
     // -- RESEARCH NOTEBOOKS -------------------------------------------------
     // A persistent, redacted, agent-scoped, bounded store of SAGE research runs.
     // save_notebook_entry is the WRITE path (a run -> a cited entry); the entry's
@@ -765,6 +810,15 @@ impl Memory {
     /// run's cited sources, never a fabricated one. `ts`/`id` on the input are
     /// ignored: ts is stamped now and id is assigned by SQLite.
     pub async fn save_notebook_entry(&self, entry: &NotebookEntry) -> Result<i64> {
+        // THRESHOLD write-integrity chokepoint: a GUEST turn leaves NO durable trace.
+        // The research notebook is durable owner corpus (revisit reads it back); a
+        // guest reaches no research tool today, but this future-proofs the chokepoint
+        // so no caller can ever seed the owner's notebook on a guest turn. The 0
+        // sentinel id (no row) is never consumed on a guest path. Background tasks
+        // read false here.
+        if crate::threshold::guest_write_blocked() {
+            return Ok(0);
+        }
         let mut conn = self.conn.lock().await;
         let synthesized = crate::optimize::redact(&entry.synthesized);
         let tx = conn.transaction()?;
@@ -1437,5 +1491,44 @@ mod tests {
             .unwrap();
         assert_eq!(mem.recent_exchanges(5).await.unwrap().len(), 1);
         assert_eq!(mem.all_facts(5).await.unwrap().len(), 1);
+    }
+
+    /// THRESHOLD finding 2 — honest ordering of the `record_event` chokepoint. The
+    /// CONTENT-FREE "utterance.captured" marker (wav path + ts, NO transcript) is
+    /// emitted DURING STT, BEFORE the guest scope is installed (the decision needs the
+    /// transcript), so `is_guest_turn()` is false then and it writes — as it must for
+    /// an owner turn. The CONTENT-carrying route.cloud/route.local events are recorded
+    /// AFTER the scope installs, so on a guest turn they NO-OP at the chokepoint. Same
+    /// primitive; the installed task-local scope is the only difference. This pins the
+    /// honest claim: a bystander's WORDS never enter the durable events log.
+    #[tokio::test]
+    async fn record_event_chokepoint_gates_content_events_but_not_the_pre_scope_capture_marker() {
+        let db = TempDb::new("utterance-captured-ordering");
+        let mem = Memory::open(&db.0).unwrap();
+
+        // Pre-scope window (no guest scope installed) == the utterance.captured marker:
+        // it records (this is exactly the owner-path behavior, byte-for-byte).
+        mem.record_event("audio", "utterance.captured", "/tmp/x.wav")
+            .await
+            .unwrap();
+        assert_eq!(mem.events_count().await.unwrap(), 1, "the pre-scope capture marker must record");
+
+        // Post-scope GUEST window == route.cloud/route.local carrying the utterance:
+        // the chokepoint no-ops, so a bystander's words never enter the durable log.
+        crate::threshold::with_turn_scope(async {
+            crate::threshold::set_turn_scope(crate::threshold::guest_from(
+                &crate::threshold::Scope::owner(vec!["*".to_string()], crate::focus::FocusProfile::Default),
+                &crate::focus::FocusProfile::DeepFocus,
+            ));
+            mem.record_event("local", "conversation", "the guest's words")
+                .await
+                .unwrap();
+        })
+        .await;
+        assert_eq!(
+            mem.events_count().await.unwrap(),
+            1,
+            "a guest turn's content-carrying event must not enter the durable events log"
+        );
     }
 }

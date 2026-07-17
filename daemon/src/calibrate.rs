@@ -448,6 +448,13 @@ static SINK: Mutex<CalibrationState> = Mutex::new(CalibrationState::new());
 /// Record a completed turn into the live window (global). No-op-safe under lock
 /// poisoning.
 pub fn record(trace_id: i64, confidence: f64) {
+    // THRESHOLD write-integrity chokepoint: a GUEST turn leaves NO durable trace.
+    // The calibration window is owner-influencing state — it shifts the OWNER's
+    // clarify threshold (adjusted_clarify_threshold) — so a bystander's turn must
+    // never enter it. Background tasks read false here and record as usual.
+    if crate::threshold::guest_write_blocked() {
+        return;
+    }
     let mut s = SINK.lock().unwrap_or_else(|p| p.into_inner());
     s.record(trace_id, confidence);
 }
@@ -455,6 +462,11 @@ pub fn record(trace_id: i64, confidence: f64) {
 /// Re-label a recorded turn in the live window (global) when a correction is
 /// detected. Poison-tolerant.
 pub fn relabel(trace_id: i64, outcome: Outcome) {
+    // THRESHOLD write-integrity chokepoint: a GUEST turn mutates NO owner-influencing
+    // calibration window. Background tasks read false here and relabel as usual.
+    if crate::threshold::guest_write_blocked() {
+        return;
+    }
     let mut s = SINK.lock().unwrap_or_else(|p| p.into_inner());
     s.relabel(trace_id, outcome);
 }
@@ -537,6 +549,31 @@ pub async fn calibrate_report_task(cfg: Arc<Config>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THRESHOLD write-integrity chokepoint (calibrate::record / relabel). The live
+    /// calibration window shifts the OWNER's clarify threshold — a GUEST turn must
+    /// add or relabel NOTHING in it. The global SINK is not touched by any other
+    /// test; the crate lock is held for good measure. Assertions are deltas, so a
+    /// leftover owner sample never affects another test.
+    #[test]
+    fn guest_turn_records_and_relabels_nothing_in_the_calibration_window() {
+        let _g = crate::confirm::PENDING_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let before = snapshot().len();
+        {
+            let guest = crate::threshold::guest_from(
+                &crate::threshold::Scope::owner(vec!["*".to_string()], crate::focus::FocusProfile::Default),
+                &crate::focus::FocusProfile::DeepFocus,
+            );
+            let _o = crate::threshold::ScopeOverride::guest(guest);
+            assert!(crate::threshold::is_guest_turn());
+            record(424242, 0.91);
+            relabel(424242, Outcome::CorrectedNextTurn);
+        }
+        assert_eq!(snapshot().len(), before, "a guest turn wrote into the calibration window");
+        // OWNER path records normally.
+        record(424242, 0.91);
+        assert_eq!(snapshot().len(), before + 1, "the owner sample was not recorded");
+    }
 
     /// A config with sensible calibration defaults + the routing hook ON, for the
     /// hook tests (the pure-math tests do not touch it).

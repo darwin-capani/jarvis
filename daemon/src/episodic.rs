@@ -312,6 +312,14 @@ pub async fn record_episode(
     transient: bool,
     voice: VoiceGate,
 ) -> Result<bool> {
+    // THRESHOLD write-integrity chokepoint: a GUEST turn leaves NO durable trace.
+    // Return Ok(false) BEFORE any work so the episodic.recorded telemetry the caller
+    // emits stays honest (recorded=false, because nothing was). The load-bearing
+    // backstop is the Memory::record_episode guard — this short-circuit is the honest
+    // recorder-level twin. Background tasks read false here and record as usual.
+    if crate::threshold::guest_write_blocked() {
+        return Ok(false);
+    }
     if !should_record(
         cfg.episodic.enabled,
         transient,

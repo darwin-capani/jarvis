@@ -526,6 +526,14 @@ impl TraceStore {
     /// [`Self::label_outcome`] — without re-scanning or guessing which row was
     /// last. Same redaction + eviction guarantees as `record`.
     pub async fn record_returning_id(&self, trace: &Trace) -> Result<i64> {
+        // THRESHOLD write-integrity chokepoint: a GUEST turn leaves NO durable trace.
+        // The optimizer corpus influences the OWNER's future routing — a bystander's
+        // turn must never seed it. This is the persistence-boundary guard (the live
+        // recorder record_trace ALSO short-circuits to Ok(None) on a guest turn); the
+        // 0 sentinel id is never used on a guest path. Background tasks read false.
+        if crate::threshold::guest_write_blocked() {
+            return Ok(0);
+        }
         let conn = self.conn.lock().await;
         // Defensive re-redaction: NEVER trust that the caller already redacted.
         let safe = redact(&trace.utterance_redacted);
@@ -561,6 +569,11 @@ impl TraceStore {
     /// correction signal for a long-ago turn is simply dropped, never errors.
     /// Returns the number of rows updated (0 or 1) for test assertions.
     pub async fn label_outcome(&self, id: i64, outcome: Outcome) -> Result<usize> {
+        // THRESHOLD write-integrity chokepoint: a GUEST turn mutates NO owner-durable
+        // routing corpus (0 rows relabeled). Background tasks read false here.
+        if crate::threshold::guest_write_blocked() {
+            return Ok(0);
+        }
         let conn = self.conn.lock().await;
         let n = conn.execute(
             "UPDATE traces SET outcome = ?1 WHERE id = ?2",
@@ -635,6 +648,15 @@ pub async fn record_trace(
 ) -> Result<Option<i64>> {
     if !cfg.optimize.enabled {
         return Ok(None); // shipped-OFF default: record NOTHING.
+    }
+    // THRESHOLD write-integrity chokepoint: a GUEST turn seeds NO optimizer trace.
+    // Returning Ok(None) (rather than relying only on the store-level guard) keeps
+    // the caller cascade clean — prior_turn is dropped, so no next-turn correction
+    // check runs against a phantom row — and the telemetry honest. The store-level
+    // guard in record_returning_id is the load-bearing backstop. Background tasks
+    // read false here and record as usual.
+    if crate::threshold::guest_write_blocked() {
+        return Ok(None);
     }
     let trace = Trace::new(
         raw_utterance,

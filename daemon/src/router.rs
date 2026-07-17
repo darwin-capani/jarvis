@@ -94,15 +94,20 @@ pub async fn route(
 ) -> Result<RouteOutcome> {
     let route_entry = Instant::now();
 
-    // VAULT MODE ("go dark", vault.rs) — SEAM 1 of 2. Fold an active vault into THIS
-    // turn's cloud reachability ONCE, at entry, so EVERY downstream cloud decision
-    // that consults `cloud_reachable` (the conversation brain, the roster answer,
-    // capability routing, agent selection) deterministically sees NO cloud this turn
-    // and stays on the local MLX brain. RESTRICT-ONLY: `vault::deny_cloud` can only
-    // turn a reachable cloud UNREACHABLE, never the reverse, so with the vault OFF
-    // this is byte-for-byte today's `cloud_reachable`. The actuating tool-loop gate
-    // (which does not consult reachability) is closed separately at SEAM 2 below.
-    let cloud_reachable = crate::vault::deny_cloud(cloud_reachable);
+    // VAULT MODE ("go dark", vault.rs) + THRESHOLD GUEST (guest = local-only) — SEAM 1
+    // of 2. Fold BOTH an active vault AND a guest turn into THIS turn's cloud
+    // reachability ONCE, at entry, so EVERY downstream cloud decision that consults
+    // `cloud_reachable` (the conversation brain, the roster answer, capability routing,
+    // agent selection) deterministically sees NO cloud this turn and stays on the local
+    // MLX brain. RESTRICT-ONLY + COMPOSABLE (`guest OR vault -> local`): each
+    // `deny_cloud` can only turn a reachable cloud UNREACHABLE, never the reverse, so
+    // with BOTH off this is byte-for-byte today's `cloud_reachable` (the owner still
+    // uses the cloud by default). GUEST rationale: a bystander's turn must never reach
+    // the owner's PAID cloud — that would append an obol spend row + bump the owner's
+    // daily budget (a durable, owner-readable trace) and egress the guest's turn under
+    // the owner's key. The actuating tool-loop gate (which does not consult
+    // reachability) is closed separately at SEAM 2 below.
+    let cloud_reachable = crate::threshold::deny_cloud(crate::vault::deny_cloud(cloud_reachable));
 
     // PANIC / LOCKDOWN (task #12) — THE emergency stop, honored BEFORE anything
     // else, even mid-confirmation / mid-anything. Any panic phrase ("panic",
@@ -254,6 +259,38 @@ pub async fn route(
             namespace: prime.namespace.clone(),
             spoken: None,
         });
+    }
+
+    // THRESHOLD — GUEST MODE fast-path gate. A guest scope confines a bystander to
+    // plain conversation, translation, and non-personal status. EVERY specialized
+    // route() fast path below BYPASSES the tool-loop + recall gates and either READS
+    // the owner's personal data (activity / screen / clipboard / notebooks / reports
+    // / lifelog / rewind / decision traces / user-model / vision describe) or takes a
+    // consequential / owner-CONTROL action (policy / model-swap / voice-mode / vault
+    // / macros / undo / charts / artifacts / music / images / designs / audio). None
+    // is safe for a bystander, so a guest turn that would trigger one is REFUSED
+    // HERE — before it can fire, with NO read and NO write. A guest-safe turn
+    // (conversation / translation / status) matches none of these anchored
+    // classifiers and flows through to the already guest-gated conversational path.
+    // On the owner path (no scope installed) this is a no-op and routing is
+    // byte-for-byte today's.
+    if crate::threshold::is_guest_turn() {
+        if let Some(category) = guest_denied_fast_path(text, cfg) {
+            telemetry::emit("local", "threshold.fast_path_refused", json!({"category": category}));
+            let prime = agents.orchestrator();
+            emit_agent_active(prime);
+            return Ok(RouteOutcome {
+                routed_to: "local",
+                response: format!(
+                    "I can't do that in guest mode — that would use the owner's {category}, \
+                     which is off-limits to a guest. I can talk, translate, and give \
+                     non-personal status. The owner can do it."
+                ),
+                agent: prime.name.clone(),
+                namespace: prime.namespace.clone(),
+                spoken: None,
+            });
+        }
     }
 
     // PER-ACTION POLICY VOICE COMMAND (consequential gate control): the user
@@ -1320,10 +1357,18 @@ pub async fn route(
         }
         crate::selector::Selection::Route(mode) => {
             telemetry::emit("local", "selector.mode", json!({"mode": mode.as_str()}));
-            if let Some(outcome) =
-                route_capability(mode, text, memory, agents, cloud_reachable).await
-            {
-                return Ok(outcome);
+            // THRESHOLD — GUEST MODE: the capability modes (World read/fold, a NOW
+            // multi-step mission, a standing-mission setup) either READ the owner's
+            // shared World Model or take a CONSEQUENTIAL/autonomous action. A guest
+            // reaches none of them — skip the capability dispatch and fall through to
+            // the (guest-gated) conversational path, which safely answers without any
+            // owner data or tool. Owner path: byte-for-byte today's.
+            if !crate::threshold::is_guest_turn() {
+                if let Some(outcome) =
+                    route_capability(mode, text, memory, agents, cloud_reachable).await
+                {
+                    return Ok(outcome);
+                }
             }
             // A capability that declined (e.g. nothing to read) degrades to the
             // normal pipeline below rather than going silent.
@@ -1331,15 +1376,17 @@ pub async fn route(
     }
 
     let needs_deep_reasoning = class.complexity == "heavy";
-    // VAULT MODE ("go dark") — SEAM 2 of 2. The actuating tool-loop gate does NOT
-    // consult `cloud_reachable` (it would otherwise try the cloud and degrade on the
-    // resolve_api_key error), so close it here at the decision itself: an active
-    // vault forces `to_cloud` false, so a heavy / low-confidence turn never reaches
-    // the cloud tool loop and instead stays on the local path (or honestly degrades
-    // offline). RESTRICT-ONLY via the same `vault::deny_cloud` gate as SEAM 1 — it
-    // can only turn a cloud decision OFF; with the vault off this is exactly
-    // `wants_cloud(class, cfg)`.
-    let to_cloud = crate::vault::deny_cloud(wants_cloud(class, cfg));
+    // VAULT MODE ("go dark") + THRESHOLD GUEST (guest = local-only) — SEAM 2 of 2. The
+    // actuating tool-loop gate does NOT consult `cloud_reachable` (it would otherwise
+    // try the cloud and degrade on the resolve_api_key error), so close it here at the
+    // decision itself: an active vault OR a guest turn forces `to_cloud` false, so a
+    // heavy / low-confidence turn never reaches the cloud tool loop and instead stays
+    // on the local path (or honestly degrades offline). RESTRICT-ONLY + COMPOSABLE via
+    // the same `deny_cloud` gates as SEAM 1 — each can only turn a cloud decision OFF;
+    // with BOTH off this is exactly `wants_cloud(class, cfg)`. GUEST: this is the
+    // second half of forcing a bystander local — no cloud tool loop, so no obol spend
+    // and no owner-key egress on a guest turn.
+    let to_cloud = crate::threshold::deny_cloud(crate::vault::deny_cloud(wants_cloud(class, cfg)));
     // RC-6: a turn that is cloud-bound ONLY because the classifier was unsure
     // (low confidence on a conversation intent — the CLASSIFY_FALLBACK shape a
     // garbled echo produces) must NOT reach the actuating cloud tool loop. An
@@ -1539,7 +1586,16 @@ pub async fn route(
             // describe DARWIN's agents when asked instead of denying the team
             // exists (the cloud persona carries no static roster). Grounded —
             // the persona prompt forbids inventing agents not in this list.
-            let roster = agents.roster_brief();
+            // GUEST GATE: withhold the owner's configured agent roster from a guest
+            // turn — consistent with the facts/world/personalization/history feeds
+            // above (all empty for a guest) and with guest_denied_fast_path refusing
+            // the roll-call / agent-query fast paths. A guest gets no owner config
+            // (agents.toml can carry owner-chosen agent names/roles).
+            let roster = if crate::threshold::is_guest_turn() {
+                String::new()
+            } else {
+                agents.roster_brief()
+            };
             // The first-contact brief is converse data — fold it into the
             // utterance so the persona still phrases it on the cloud chat path
             // (the proactive brief never rides a tool loop; this plain
@@ -1849,7 +1905,16 @@ pub async fn route(
     };
 
     reply.mute_for_action();
-    let mut out = if let Some(req) = describe {
+    let mut out = if crate::threshold::is_guest_turn() {
+        // THRESHOLD — GUEST MODE: a guest reaches NONE of the vision / image / sound
+        // / design handlers below — each reads the owner's screen or last-captured
+        // audio, or renders on their machine. (describe / generate-image / silicon-
+        // canvas / vision / nexus / mark-forge are already refused upstream by the
+        // fast-path gate; this ALSO covers the sound-identify path and is defense in
+        // depth.) Fall to the guest-gated handle_local, which admits only
+        // conversation + non-personal status and refuses the rest.
+        handle_local(&class.intent, &class.args, text, memory, app_registry, agent).await
+    } else if let Some(req) = describe {
         handle_describe(req, cfg, infer, app_registry, root).await
     } else if let Some(req) = generate_image {
         handle_generate_image(req, cfg, infer).await
@@ -3095,6 +3160,14 @@ fn enforce_tool<'a>(agents: &'a AgentRegistry, agent: &'a Agent, intent: &str) -
 /// filtered. Failures degrade to an empty list (a busy DB must never kill a
 /// reply) — same policy fetch_history uses for history.
 async fn agent_facts(memory: &Memory, namespace: &str) -> Vec<(String, String)> {
+    // THRESHOLD — GUEST MODE recall WITHHOLDING (WIRING POINT 2): a GUEST turn feeds
+    // NO owner memory to the LOCAL prompt at all. The whole store is the owner's
+    // personal data (the "shared" tier still holds the owner's user.* rows), so a
+    // bystander reads none of it. Return an empty feed (fail-closed). Owner path:
+    // byte-for-byte today's.
+    if crate::threshold::is_guest_turn() {
+        return Vec::new();
+    }
     memory
         .agent_scoped_facts(namespace, FACTS_LIMIT)
         .await
@@ -3156,6 +3229,14 @@ async fn generate_in_persona(
 }
 
 async fn fetch_history(memory: &Memory) -> Vec<(String, String)> {
+    // THRESHOLD — GUEST MODE: a GUEST turn's prompt carries NO conversation history.
+    // The recent exchanges are the OWNER's private dialogue (from before the mic was
+    // handed over); feeding them would let a bystander's turn be answered with — and
+    // echo — the owner's prior conversation. Return an empty history (fail-closed).
+    // Owner path: byte-for-byte today's.
+    if crate::threshold::is_guest_turn() {
+        return Vec::new();
+    }
     memory
         .recent_exchanges(HISTORY_EXCHANGES)
         .await
@@ -3195,6 +3276,107 @@ fn recent_replies(history: &[(String, String)], n: usize) -> Vec<String> {
 /// clobbering fixed key) and memory.recall reads its namespaced view (own
 /// namespace + shared facts), so each agent's notes stay isolated
 /// (constellation namespacing, item 4).
+/// THRESHOLD guest-mode fast-path admissibility. Returns `Some(category)` when a
+/// GUEST turn's utterance would trigger a route() fast-path handler that reads the
+/// owner's personal data or takes a consequential / owner-control action — each of
+/// which BYPASSES the tool-loop + recall gates. Returns `None` for a guest-safe
+/// turn (plain conversation / translation / non-personal status), which matches
+/// none of these anchored classifiers and flows through to the already guest-gated
+/// conversational path. ONLY consulted when a guest scope is installed.
+///
+/// PURE: every check is a side-effect-free classifier. NOTE it uses the pure
+/// `policy::classify_policy_command` — NOT `handle_user_policy_text`, which APPLIES
+/// the policy write — so testing admissibility never mutates state. Fail-closed:
+/// any owner-data / consequential specialized path is refused; only genuinely
+/// non-personal turns fall through. New fast paths added to `route()` must be
+/// mirrored here.
+fn guest_denied_fast_path(text: &str, cfg: &Config) -> Option<&'static str> {
+    let now = chrono::Local::now();
+    // -- Owner CONTROLS / CONSEQUENTIAL actions --------------------------------
+    if crate::policy::classify_policy_command(text).is_some() {
+        return Some("policy controls");
+    }
+    if crate::model_tier::classify_model_swap(text).is_some() {
+        return Some("model controls");
+    }
+    if crate::prosody::parse_whisper_command(text).is_some() {
+        return Some("voice-mode controls");
+    }
+    if crate::vault::classify_vault_command(text).is_some() {
+        return Some("vault controls");
+    }
+    if crate::macros::classify_macro_command(text).is_some() {
+        return Some("saved macros");
+    }
+    if crate::journal::classify_undo_command(text).is_some() {
+        return Some("undo history");
+    }
+    if classify_music_intent(text).is_some() {
+        return Some("music generation");
+    }
+    if generate_image_command(text).is_some() {
+        return Some("image generation");
+    }
+    if silicon_canvas_command(text).is_some() || mark_forge_command(text).is_some() {
+        return Some("design tools");
+    }
+    if nexus_command(text).is_some() {
+        return Some("audio tools");
+    }
+    if vision_command(text).is_some() {
+        return Some("vision tools");
+    }
+    if cfg.artifact.enabled && crate::artifact::classify_peek_intent(text) {
+        return Some("artifacts");
+    }
+    if crate::chart::classify_chart_intent(text).is_some() {
+        return Some("charts");
+    }
+    // -- Owner PERSONAL-DATA readers -------------------------------------------
+    if crate::aperture::classify_aperture_intent(text, &now).is_some() {
+        return Some("activity timeline");
+    }
+    if crate::screen_context::classify_screen_context_intent(text).is_some() {
+        return Some("screen context");
+    }
+    if crate::pasteboard::classify_pasteboard_intent(text).is_some() {
+        return Some("clipboard");
+    }
+    if crate::notebook::classify_notebook_intent(text).is_some() {
+        return Some("notebooks");
+    }
+    if crate::report::classify_report_intent(text).is_some() {
+        return Some("reports");
+    }
+    if crate::simulate::extract_hypothetical(text).is_some() {
+        return Some("personal simulations");
+    }
+    if crate::lifelog::classify_lifelog_intent(text).is_some() {
+        return Some("lifelog");
+    }
+    if crate::rewind::classify_rewind_intent(text, now.fixed_offset()).is_some() {
+        return Some("session rewind");
+    }
+    if crate::explain::classify_explain_intent(text).is_some() {
+        return Some("decision traces");
+    }
+    if crate::user_model::classify_mirror_intent(text).is_some() {
+        return Some("personal profile");
+    }
+    if describe_command(text).is_some() {
+        return Some("vision describe");
+    }
+    // The agent ROSTER / roll-call — route() fast paths that expose the owner's
+    // configured agent constellation. Not owner-personal data, but the guest
+    // allowlist is deny-by-default for EVERY route() fast path, so refuse these too
+    // (a guest gets conversation / translation / non-personal status, nothing about
+    // the owner's private setup).
+    if crate::agents::is_roll_call(text) || crate::agents::is_agent_query(text) {
+        return Some("agent roster");
+    }
+    None
+}
+
 async fn handle_local(
     intent: &str,
     args: &serde_json::Value,
@@ -3203,6 +3385,33 @@ async fn handle_local(
     app_registry: &Arc<AppRegistry>,
     agent: &Agent,
 ) -> HandlerOutput {
+    // THRESHOLD — GUEST MODE fast-path gate (finding 3). handle_local is the
+    // structured-intent FAST PATH — it BYPASSES the tool-loop + recall gates and can
+    // READ owner memory (memory.recall), WRITE owner memory (memory.store),
+    // launch/control apps (app.launch / app.control), open URLs (web.open), search
+    // the web (web.search), touch files (file.op), or (re)build the owner's doc
+    // index / knowledge graph. For a GUEST, DENY BY DEFAULT: allow ONLY genuinely
+    // non-personal intents — plain conversation (falls through to the guest-gated
+    // LLM path) and non-personal machine status — and refuse EVERYTHING else
+    // (including any future intent) with an honest message, performing NO read and
+    // NO write. On the owner path (no scope installed) this is a no-op and handling
+    // is byte-for-byte today's.
+    if crate::threshold::is_guest_turn() && !matches!(intent, "conversation" | "system.query") {
+        telemetry::emit(
+            "local",
+            "threshold.local_refused",
+            json!({"intent": intent, "agent": agent.name}),
+        );
+        return HandlerOutput {
+            data: format!(
+                "I can't do that in guest mode — '{intent}' would read or change the owner's \
+                 data or act on their machine, and a guest is limited to conversation, \
+                 translation, and non-personal status. The owner can do it."
+            ),
+            // Spoken verbatim, NOT sent to the LLM — no owner context is assembled.
+            llm_voice: false,
+        };
+    }
     if let Err(e) = memory.record_event("local", intent, text).await {
         warn!(error = %e, "failed to record local intent event");
     }
@@ -6645,6 +6854,58 @@ mod tests {
         assert_eq!(conversation_brain(&cfg, true, &heavy).0, ConversationBrain::Local);
     }
 
+    /// THRESHOLD finding 1 — GUEST = LOCAL-ONLY. A guest turn must NEVER reach the
+    /// owner's PAID cloud (a cloud call appends an obol spend row + bumps the owner's
+    /// daily budget — a durable, owner-readable trace — and egresses the guest's turn
+    /// under the owner's API key). The fix forces a guest local at the SAME two seams
+    /// vault uses; proven here at the cloud-vs-local decision the seams compute, with
+    /// the composition `guest OR vault -> local`. The owner path is byte-for-byte
+    /// unchanged (still cloud by default).
+    #[test]
+    fn a_guest_turn_is_forced_local_only_never_the_owners_paid_cloud() {
+        let _guard = crate::model_tier::OverrideGuard::force(None);
+        let cfg = Config::default(); // conversation_route defaults to cloud_heavy
+        assert_eq!(cfg.router.conversation_route, "cloud_heavy");
+        let heavy = classification("conversation", "heavy", 0.95);
+
+        // OWNER path (no guest scope): a reachable-cloud turn is UNCHANGED — the seam
+        // composition passes it through, and the conversation brain picks the cloud.
+        assert!(
+            crate::threshold::deny_cloud(crate::vault::deny_cloud(true)),
+            "owner: a reachable cloud turn is passed through unchanged"
+        );
+        let owner_reachable = crate::threshold::deny_cloud(crate::vault::deny_cloud(true));
+        assert!(
+            matches!(conversation_brain(&cfg, owner_reachable, &heavy).0, ConversationBrain::Cloud(_)),
+            "the owner still uses the paid cloud brain by default"
+        );
+
+        // GUEST: the SAME seam composition forces LOCAL — no cloud call, hence no obol
+        // spend row / no budget bump / no owner-key egress on a bystander's turn.
+        let guest = crate::threshold::guest_from(
+            &crate::threshold::Scope::owner(vec!["*".to_string()], crate::focus::FocusProfile::Default),
+            &crate::focus::FocusProfile::DeepFocus,
+        );
+        let _o = crate::threshold::ScopeOverride::guest(guest);
+        assert!(crate::threshold::is_guest_turn());
+        // SEAM 1 (cloud_reachable) is forced off even with the cloud reachable + vault off.
+        assert!(
+            !crate::threshold::deny_cloud(crate::vault::deny_cloud(true)),
+            "guest: seam 1 (cloud_reachable) is forced local"
+        );
+        let guest_reachable = crate::threshold::deny_cloud(crate::vault::deny_cloud(true));
+        assert_eq!(
+            conversation_brain(&cfg, guest_reachable, &heavy).0,
+            ConversationBrain::Local,
+            "a guest conversation is answered by the on-device brain, never the paid cloud"
+        );
+        // SEAM 2 (the actuating tool-loop `to_cloud`) is likewise forced off for a guest.
+        assert!(
+            !crate::threshold::deny_cloud(crate::vault::deny_cloud(true)),
+            "guest: seam 2 (to_cloud) is forced local"
+        );
+    }
+
     /// MODEL TIER wired into the conversation brain: an explicit override beats the
     /// config default, and an offline override forces the local path with NO cloud
     /// model — even when the cloud is reachable. Auto (no override) preserves the
@@ -8989,6 +9250,166 @@ mod tests {
         assert_eq!(notes.len(), 2, "two distinct notes kept, duplicate deduped: {notes:?}");
         assert!(notes.contains(&"the wifi password is hidden"));
         assert!(notes.contains(&"buy oat milk"));
+    }
+
+    // =====================================================================
+    // THRESHOLD — GUEST MODE: the structured-intent FAST PATH is gated
+    // =====================================================================
+
+    fn guest_scope_fixture() -> crate::threshold::Scope {
+        crate::threshold::guest_from(
+            &crate::threshold::Scope::owner(vec!["*".to_string()], crate::focus::FocusProfile::Default),
+            &crate::focus::FocusProfile::DeepFocus,
+        )
+    }
+
+    #[tokio::test]
+    async fn guest_handle_local_refuses_owner_data_and_write_intents_but_allows_conversation_and_status() {
+        // FINDING 3: handle_local is the structured-intent FAST PATH — it bypasses
+        // the tool-loop + recall gates. For a GUEST it must DENY BY DEFAULT: refuse
+        // memory.recall (reads owner facts), memory.store (WRITES owner memory),
+        // app.control, web.open, and anything else not in the non-personal set.
+        let db = TempDb::new("guest-handle-local");
+        let mem = Memory::open(&db.0).unwrap();
+        let reg = AgentRegistry::canonical();
+        let agent = reg.orchestrator();
+        let apps = std::sync::Arc::new(crate::apps::AppRegistry::discover(std::path::Path::new("/nonexistent")));
+
+        // Seed an owner fact so we can prove memory.recall never speaks it.
+        mem.upsert_fact("user.name", "Darwin").await.unwrap();
+        mem.upsert_fact("agent.darwin.secret_note", "the owner's private note").await.unwrap();
+
+        let _o = crate::threshold::ScopeOverride::guest(guest_scope_fixture());
+
+        // memory.recall — REFUSED, and speaks NO owner fact.
+        let out = super::handle_local("memory.recall", &serde_json::Value::Null, "what do you remember", &mem, &apps, agent).await;
+        assert!(!out.llm_voice, "a refusal is spoken verbatim, not sent to the LLM");
+        assert!(out.data.contains("guest mode"), "memory.recall is refused in guest mode: {}", out.data);
+        assert!(!out.data.contains("Darwin"), "no owner fact leaks via memory.recall: {}", out.data);
+        assert!(!out.data.contains("secret_note"), "no owner private fact leaks: {}", out.data);
+
+        // memory.store — REFUSED, and performs NO write to the owner namespace.
+        let out = super::handle_local("memory.store", &serde_json::Value::Null, "my card PIN is 1234", &mem, &apps, agent).await;
+        assert!(out.data.contains("guest mode"), "memory.store is refused in guest mode: {}", out.data);
+        let facts = mem.agent_scoped_facts(&agent.namespace, 100).await.unwrap();
+        assert!(
+            !facts.iter().any(|(_, v)| v.contains("1234")),
+            "a guest memory.store must perform NO write to the owner's memory: {facts:?}"
+        );
+
+        // app.control + web.open — REFUSED.
+        for intent in ["app.control", "app.launch", "web.open", "web.search", "file.op"] {
+            let out = super::handle_local(intent, &serde_json::Value::Null, "do the thing", &mem, &apps, agent).await;
+            assert!(out.data.contains("guest mode"), "{intent} must be refused for a guest: {}", out.data);
+            assert!(!out.llm_voice, "{intent} refusal is spoken verbatim");
+        }
+
+        // conversation + system.query — ALLOWED (fall through / non-personal status).
+        let out = super::handle_local("conversation", &serde_json::Value::Null, "hello there", &mem, &apps, agent).await;
+        assert!(!out.data.contains("guest mode"), "conversation is allowed for a guest: {}", out.data);
+        let out = super::handle_local("system.query", &serde_json::Value::Null, "how are you running", &mem, &apps, agent).await;
+        assert!(!out.data.contains("guest mode"), "non-personal system status is allowed for a guest: {}", out.data);
+    }
+
+    #[tokio::test]
+    async fn owner_handle_local_is_unchanged_no_guest_gate() {
+        // OWNER RAIL: with NO guest scope, handle_local performs its normal work —
+        // memory.store WRITES the note (byte-for-byte today's behavior).
+        let db = TempDb::new("owner-handle-local");
+        let mem = Memory::open(&db.0).unwrap();
+        let reg = AgentRegistry::canonical();
+        let agent = reg.orchestrator();
+        let apps = std::sync::Arc::new(crate::apps::AppRegistry::discover(std::path::Path::new("/nonexistent")));
+
+        let _o = crate::threshold::ScopeOverride::owner();
+        let out = super::handle_local("memory.store", &serde_json::Value::Null, "buy oat milk", &mem, &apps, agent).await;
+        assert!(!out.data.contains("guest mode"), "owner path never sees the guest refusal: {}", out.data);
+        let facts = mem.agent_scoped_facts(&agent.namespace, 100).await.unwrap();
+        assert!(facts.iter().any(|(_, v)| v == "buy oat milk"), "owner memory.store writes the note (unchanged)");
+    }
+
+    #[test]
+    fn guest_denied_fast_path_catches_owner_data_and_consequential_classifiers() {
+        // The route() fast-path gate: every owner-data / consequential specialized
+        // classifier is refused for a guest, while plain conversation / translation /
+        // status falls through (None).
+        let cfg = Config::default();
+        // Owner-DATA readers + owner CONTROLS / consequential actions -> Some(reason).
+        for u in [
+            "why do you think i like tea",     // user_model mirror (owner profile)
+            "what was i doing an hour ago",    // aperture (activity timeline)
+            "what did i copy earlier",         // pasteboard
+            "save this research",              // notebook
+            "go dark",                         // vault control
+            "replay the macro morning",        // macro replay (consequential)
+            "undo that",                       // journal undo (consequential)
+            "always allow the gmail_send action", // policy control (pure classify, no write)
+            "use the local model",             // model swap control
+            "roll call",                       // agent roster (finding 2)
+            "who's on the team",               // agent roster (finding 2)
+            "list my agents",                  // agent query (finding 2)
+            "what agents do you have",         // agent query (finding 2)
+        ] {
+            assert!(
+                super::guest_denied_fast_path(u, &cfg).is_some(),
+                "{u:?} must be refused for a guest (owner-data or consequential fast path)"
+            );
+        }
+        // Guest-safe turns -> None (they flow to the guest-gated conversational path).
+        for u in [
+            "hello, how are you",
+            "translate good morning into french",
+            "what's the weather like",
+            "tell me a joke",
+        ] {
+            assert!(
+                super::guest_denied_fast_path(u, &cfg).is_none(),
+                "{u:?} is guest-safe and must fall through"
+            );
+        }
+    }
+
+    #[test]
+    fn guest_denied_fast_path_does_not_mutate_policy() {
+        // REGRESSION: the fast-path gate uses the PURE `classify_policy_command`, NOT
+        // `handle_user_policy_text` (which APPLIES the rule). Probing a guest's policy
+        // utterance must classify it as denied WITHOUT writing any policy.
+        let cfg = Config::default();
+        assert!(
+            super::guest_denied_fast_path("always allow the shell_run action", &cfg).is_some(),
+            "a policy utterance is refused for a guest"
+        );
+        // The pure classifier used by the gate matches; the mutating handler was never
+        // called (nothing to assert on global policy here beyond no panic / no write —
+        // the point is the gate never routes through the applying path).
+    }
+
+    #[tokio::test]
+    async fn guest_recall_and_history_feeds_are_empty_owner_feeds_are_full() {
+        // FINDING 1 (feeds): a GUEST turn's auto RAG feed AND conversation history are
+        // WITHHELD entirely — a bystander's prompt carries none of the owner's stored
+        // facts or prior dialogue. The owner path is byte-for-byte today's.
+        let db = TempDb::new("guest-feeds");
+        let mem = Memory::open(&db.0).unwrap();
+        mem.upsert_fact("user.name", "Darwin").await.unwrap();
+        mem.upsert_fact("user.model.diet", "vegetarian").await.unwrap();
+        mem.record_transcript(None, "what's my name", "conversation", "local", Some("You're Darwin."))
+            .await
+            .unwrap();
+
+        // GUEST: both feeds are empty.
+        {
+            let _o = crate::threshold::ScopeOverride::guest(guest_scope_fixture());
+            assert!(super::agent_facts(&mem, "agent.darwin").await.is_empty(), "guest RAG feed is empty");
+            assert!(super::fetch_history(&mem).await.is_empty(), "guest history feed is empty");
+        }
+        // OWNER: both feeds carry the owner's data (unchanged).
+        {
+            let _o = crate::threshold::ScopeOverride::owner();
+            let facts = super::agent_facts(&mem, "agent.darwin").await;
+            assert!(facts.iter().any(|(k, _)| k == "user.name"), "owner RAG feed carries facts");
+            assert!(!super::fetch_history(&mem).await.is_empty(), "owner history feed carries the exchange");
+        }
     }
 
     #[tokio::test]

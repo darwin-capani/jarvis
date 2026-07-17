@@ -3,23 +3,29 @@
 //! ## What this is
 //! When voice-id reports an UNRECOGNIZED speaker (or the owner explicitly turns
 //! "guest mode" on), THRESHOLD projects a GUEST SCOPE over the turn:
-//!   * a restricted, strictly READ-ONLY tool allowlist (no consequential/outward
-//!     tools, no writes) — [`GUEST_READ_ONLY_TOOLS`], intersected with the owner's
-//!     own allowlist so it can never NAME a tool the owner lacks;
-//!   * recall routed to the SHARED-only namespace — never the owner's private
-//!     `agent.*` facts — by REUSING the existing namespace-isolation guard
-//!     ([`crate::memory::Memory::agent_scoped_facts`]) with a reserved sentinel
-//!     namespace no agent ever writes under, so the guard returns exactly the
-//!     shared tier;
-//!   * a quieter focus profile (a [`crate::focus::FocusProfile`]), COMPOSED on top
-//!     of the owner's active profile through the SAME restrict-only
-//!     [`crate::focus::apply_profile`] path, so it can only ever quiet further.
+//!   * a restricted, strictly NON-PERSONAL tool allowlist — [`GUEST_READ_ONLY_TOOLS`]
+//!     (only `system_status`, `skill_list`, `babel_translate`), intersected with the
+//!     owner's own allowlist so it can never NAME a tool the owner lacks. NO tool
+//!     that reads or writes the owner's personal data is offered;
+//!   * NO owner memory at all. The whole fact store is the owner's personal data —
+//!     the "shared across agents" (`not agent.*`) tier still holds the owner's
+//!     `user.*` / `user.model.*` / `user.world.*` rows, so it is NOT safe for a
+//!     bystander. The live recall dispatch consults [`is_guest_turn`] and feeds a
+//!     guest turn an EMPTY fact + history feed (fail-closed) — there is no "safe
+//!     subset" of the owner's memory to hand a bystander;
+//!   * a quieter focus profile (a [`crate::focus::FocusProfile`]) carried as a
+//!     restrict-only knob — provably no-broader than the owner's via
+//!     [`crate::focus::apply_profile`]. NB: this scope is per-TURN, so it governs
+//!     the guest's own spoken turn, NOT the ambient anticipation/mission loops.
+//!     "Ambient guest-presence quieting" of proactive briefs is a SEPARATE future
+//!     feature (it needs a PERSISTENT guest-presence signal, not a per-turn one).
 //!
 //! ## The sacred invariant: guest scope can ONLY NARROW — it LAYERS ON TOP
 //! A guest scope is derived from the owner scope and is provably NO BROADER than
 //! it on every axis ([`Scope::is_no_broader_than`], asserted by the property
 //! test): its tools are a SUBSET of the owner's, its recall is at least as
-//! restricted (shared-only), and its focus profile is at least as quiet. There is
+//! restricted (owner memory withheld), and its focus profile is at least as quiet.
+//! There is
 //! NO axis on which a guest scope can loosen anything — [`Scope`] carries only the
 //! three restrict-only knobs (tools / shared-recall / profile) and NOTHING that
 //! could express "loosen a gate", "raise autonomy", or "enable a consequential
@@ -51,57 +57,55 @@
 //! `[threshold].enabled = false` the feature never scopes anything (owner behavior
 //! byte-for-byte).
 //!
-//! This module is a PURE decision seam whose LIVE wiring (the router installing the
-//! per-turn guest scope, the recall path reading `shared_recall_only`, the tool
-//! loop consulting `read_only_tools`, and the `emit_guest` telemetry call) lands at
-//! integration. Until then its public API is unused in the live build, so — exactly
-//! like `policy.rs`'s "a shared contract another component reads" rationale — the
-//! unused-item lint is allowed module-wide. The invariant lives next to the type it
-//! guards; the tests exercise every item.
+//! This module is a PURE decision seam. Its LIVE wiring is installed by the daemon:
+//! `run_pipeline` decides + installs the per-turn guest scope (cleared at turn end
+//! by `TurnScopeGuard`); the recall dispatch consults [`is_guest_turn`] to withhold
+//! owner memory; the tool loop intersects the offered tools with the guest scope and
+//! `execute_tool` refuses any tool outside it; `route()` refuses every owner-data /
+//! consequential fast path for a guest; and `emit_guest` publishes the frame. A few
+//! pure helpers exist for the invariant proofs (`is_no_broader_than`, `behavior`)
+//! and are not all live-called, so — exactly like `policy.rs`'s "a shared contract
+//! another component reads" rationale — the unused-item lint is allowed module-wide.
+//! The invariant lives next to the type it guards; the tests exercise every item.
 #![allow(dead_code)]
 
 use serde_json::json;
 
 use crate::focus::{apply_profile, BaseBehavior, FocusProfile, TunedBehavior};
 
-/// The reserved sentinel memory namespace a GUEST recalls under. It is a valid
-/// `agent.*`-shaped string that NO enrolled agent (and not the owner) ever writes
-/// facts under, chosen deliberately free of SQL `LIKE` metacharacters (`_`, `%`)
-/// so it can never wildcard-match a real namespace. Feeding it to the EXISTING
-/// own+shared guard [`crate::memory::Memory::agent_scoped_facts`] therefore yields
-/// ONLY the shared tier (the `agent.<sentinel>.` own-prefix matches nothing, so
-/// just the `NOT LIKE 'agent.%'` shared rows survive) — the honest reuse of the
-/// isolation guard, not a second recall path.
-pub const GUEST_NAMESPACE: &str = "agent.guest-scope";
-
 /// The tools wildcard the orchestrator (`darwin`) holds. Mirrors
 /// `agents::TOOLS_WILDCARD` / [`crate::agents::Agent::may_use`].
 const TOOLS_WILDCARD: &str = "*";
 
-/// The CURATED, strictly-READ-ONLY local tool allowlist a guest may use. Every
-/// entry runs entirely on-device and is read-only: it stores nothing, sends
-/// nothing to the cloud, and takes NO consequential/outward action. This is a
-/// STRICT subset of `anthropic::SAFE_LOCAL_TOOLS` with the two non-read entries
-/// deliberately DROPPED: `remember_fact` (a durable WRITE) and `skill_invoke` (can
-/// dispatch a CONSEQUENTIAL skill). A guest gets to ASK and RETRIEVE, never to
-/// change state or reach outward. The guest recall tools additionally read only
-/// the SHARED tier (see [`GUEST_NAMESPACE`]).
+/// The CURATED tool allowlist a guest may use — narrowed to ONLY genuinely
+/// NON-PERSONAL tools, ones whose dispatch touches NO owner-stored personal data
+/// and takes NO consequential/outward/write action:
+///   * `system_status` — machine health (RAM + disk-free pct); no owner data.
+///   * `skill_list` — the skill CATALOG (capability names/categories); no owner data.
+///   * `babel_translate` — transforms the guest's own text; stores nothing, reads
+///     nothing, sends nothing.
+///
+/// A guest can TALK, TRANSLATE, and see non-personal STATUS — nothing personal.
+///
+/// DELIBERATELY EXCLUDED (each reads or writes the OWNER's private data, so the
+/// "shared across agents" tier is NOT safe for a bystander — that tier still holds
+/// the owner's personal `user.*` / `user.model.*` / `user.world.*` rows):
+///   * `recall_facts` / `mnemosyne_recall` / `episodic_recall` — read the owner's
+///     memory store (routing to a "shared" namespace does NOT protect the owner,
+///     because that tier IS the owner's personal facts);
+///   * `user_model_query` — the owner's personal profile (`user.model.*`);
+///   * `world_query` — the owner's personal world graph (`user.world.*`);
+///   * `doc_search` — the owner's indexed documents;
+///   * `search_files` — the owner's `$HOME` filesystem;
+///   * `remember_fact` / `skill_invoke` — a durable WRITE / a consequential dispatch.
+///
+/// A bystander gets NO owner-memory access at all.
 pub const GUEST_READ_ONLY_TOOLS: &[&str] = &[
-    // Memory / semantic recall — read-only retrieval (shared-tier only for a guest).
-    "recall_facts",
-    "mnemosyne_recall",
-    "episodic_recall",
-    "user_model_query",
-    "world_query",
-    // On-device retrieval / search — read-only, on-device. NOTE: `unified_search`
-    // is deliberately NOT here — it fans the query out to the OWNER's connected
-    // Gmail / Calendar / Slack and returns their private data, so it is neither
-    // on-device nor safe to expose to a bystander (it is not in SAFE_LOCAL_TOOLS).
-    "doc_search",
-    "search_files",
-    // Read-only status + the skill CATALOG (listing, not invocation).
+    // Read-only machine status + the skill CATALOG (listing, not invocation).
     "system_status",
     "skill_list",
+    // On-device translation of the guest's OWN text — no owner data touched.
+    "babel_translate",
 ];
 
 /// The per-turn SPEAKER signal THRESHOLD reasons over, derived from the voice-id
@@ -180,8 +184,10 @@ impl GuestReason {
 ///
 /// The three restrict-only knobs:
 ///   * `tools` — the tool allowlist (`["*"]` = the orchestrator wildcard).
-///   * `shared_recall_only` — when true, recall is confined to the SHARED tier
-///     (via [`GUEST_NAMESPACE`]); when false, the owner's normal own+shared recall.
+///   * `shared_recall_only` — when true, the owner's stored memory is WITHHELD from
+///     this turn ENTIRELY (a guest reads none of it — see [`is_guest_turn`], which
+///     the live recall dispatch consults to return an empty feed); when false, the
+///     owner's normal own+shared recall. It only ever TIGHTENS recall.
 ///   * `profile` — the focus lens applied to (composed onto) the base behavior.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scope {
@@ -206,19 +212,6 @@ impl Scope {
     /// so guest tool admission uses the IDENTICAL rule as the live allowlist gate.
     pub fn admits(&self, tool: &str) -> bool {
         admits(&self.tools, tool)
-    }
-
-    /// The memory namespace this scope recalls under, GIVEN the owner's active
-    /// namespace. A shared-only (guest) scope recalls under the reserved
-    /// [`GUEST_NAMESPACE`] sentinel — so the EXISTING own+shared guard returns only
-    /// the shared tier; an owner scope recalls under the owner's own namespace
-    /// (own + shared, exactly as today).
-    pub fn recall_namespace<'a>(&self, owner_namespace: &'a str) -> &'a str {
-        if self.shared_recall_only {
-            GUEST_NAMESPACE
-        } else {
-            owner_namespace
-        }
     }
 
     /// The focus behavior this scope yields when COMPOSED on top of `base`. For an
@@ -398,6 +391,295 @@ pub fn emit_guest(decision: &GuestDecision) {
     crate::telemetry::emit("threshold", "threshold.guest", guest_telemetry(decision));
 }
 
+// ---------------------------------------------------------------------------
+// The per-turn GUEST SCOPE — how the installed [`Scope`] threads into the deep
+// recall dispatch and the tool loop of the GUEST'S OWN TURN, WITHOUT parameter
+// threading. It is a TASK-LOCAL confined to the run_pipeline turn task, so a
+// CONCURRENT background task (the anticipation loop, a durable/standing mission)
+// runs OUTSIDE any turn scope and can NEVER read — nor be governed by — a guest
+// turn's scope. A per-turn signal governs a TURN, never ambient background work.
+// ---------------------------------------------------------------------------
+
+tokio::task_local! {
+    /// The current TURN's guest scope. Established fresh for EACH turn by
+    /// [`with_turn_scope`] (the event loop wraps every `run_pipeline` call), so:
+    ///   * only the turn's OWN task sees it — a concurrent mission/anticipation
+    ///     task reads `None` (see [`current_turn_scope`]);
+    ///   * it resets to `None` for the next turn BY CONSTRUCTION — a guest turn's
+    ///     scope can never leak into the owner's next turn.
+    /// `RefCell` gives interior mutability so the decision (known only mid-turn,
+    /// after STT) can be installed via [`set_turn_scope`] within the same scope.
+    static TURN_SCOPE: std::cell::RefCell<Option<Scope>>;
+}
+
+// Test-only thread-local override, mirroring `voiceid`'s `GATE_OVERRIDE`: a test
+// forces the current-turn scope on its OWN thread without establishing a task
+// scope. The outer `Option` is "is an override installed", the inner
+// `Option<Scope>` is the forced value (Some = guest scope, None = owner path).
+// Compiled out in release.
+#[cfg(test)]
+thread_local! {
+    static SCOPE_OVERRIDE: std::cell::RefCell<Option<Option<Scope>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run one turn's pipeline `fut` inside a FRESH per-turn guest-scope slot. The
+/// event loop wraps EVERY `run_pipeline` call in this, so the guest scope is
+/// confined to that turn's task and reset for the next turn. A background task
+/// (anticipation / mission) is NOT wrapped, so its [`current_turn_scope`] reads
+/// `None` and it is never governed by a guest turn.
+pub async fn with_turn_scope<F>(fut: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    TURN_SCOPE.scope(std::cell::RefCell::new(None), fut).await
+}
+
+/// Install THIS turn's guest scope (called once near the top of `run_pipeline`
+/// when the decision is active). A no-op if somehow called outside a turn scope
+/// (a background task), so it can never affect ambient work.
+pub fn set_turn_scope(scope: Scope) {
+    let _ = TURN_SCOPE.try_with(|c| *c.borrow_mut() = Some(scope));
+}
+
+/// Clear the per-turn guest scope (the OWNER-path branch). A no-op outside a turn
+/// scope. Belt-and-suspenders on top of the per-turn reset [`with_turn_scope`]
+/// already guarantees.
+pub fn clear_turn_scope() {
+    let _ = TURN_SCOPE.try_with(|c| *c.borrow_mut() = None);
+}
+
+/// The current TURN's installed guest scope — `None` (the OWNER path) when none is
+/// installed OR when called from a BACKGROUND task that is not a turn (a mission,
+/// the anticipation loop). This is the deep read consulted by the recall dispatch
+/// and the tool loop.
+///
+/// In TEST builds a thread-local override takes precedence (so a test can force a
+/// scope on its own thread); absent an override it falls through to the task-local
+/// (so a test exercising [`with_turn_scope`] observes the real mechanism).
+pub fn current_turn_scope() -> Option<Scope> {
+    #[cfg(test)]
+    if let Some(over) = SCOPE_OVERRIDE.with(|c| c.borrow().clone()) {
+        return over;
+    }
+    TURN_SCOPE.try_with(|c| c.borrow().clone()).unwrap_or(None)
+}
+
+/// Whether THIS turn is a GUEST turn — i.e. a guest scope is installed. The live
+/// recall dispatch (`grounded_facts` / `router::agent_facts`) consults this to
+/// WITHHOLD the owner's stored memory from a guest ENTIRELY: a guest turn feeds NO
+/// owner facts to the prompt and is offered NO owner-memory recall tool. The whole
+/// `user.*` / `user.model.*` / `user.world.*` / `agent.*` store is the OWNER's
+/// personal data — the "shared across agents" (`not agent.*`) tier is NOT safe for
+/// a bystander, since it still holds the owner's `user.*` rows — so a guest reads
+/// NONE of it. On the owner path this is false and the feed is byte-for-byte
+/// today's. This is the honest, fail-closed replacement for any namespace routing:
+/// there is no "safe subset" of the owner's memory to hand a bystander.
+pub fn is_guest_turn() -> bool {
+    // PRESENCE-ONLY — never clones the Scope (this runs at ~15 read sites per turn;
+    // the value is never inspected here, only Option::is_some()).
+    #[cfg(test)]
+    if let Some(over) = SCOPE_OVERRIDE.with(|c| c.borrow().clone()) {
+        return over.is_some();
+    }
+    TURN_SCOPE.try_with(|c| c.borrow().is_some()).unwrap_or(false)
+}
+
+/// THE WRITE-INTEGRITY CHOKEPOINT PREDICATE — the WRITE-side twin of
+/// [`is_guest_turn`]'s READ-side withholding.
+///
+/// ## The invariant it enforces
+/// **A guest turn leaves NO durable trace in the owner's state.** Rather than
+/// gate the UNBOUNDED, scattered durable-write CALL SITES (transcript, the passive
+/// learner, episodic, the CAUSA decision-trace, the optimizer trace, macro-capture,
+/// `record_event`, `record_interaction`, … — each of which a review keeps
+/// re-finding, whack-a-mole), the invariant is enforced ONCE at the BOUNDED,
+/// enumerable PERSISTENCE BOUNDARY: the finite set of durable-write PRIMITIVES.
+/// Each such primitive calls this and NO-OPs (writes nothing) when it returns true,
+/// so a guest turn STRUCTURALLY cannot durably write — no matter which caller
+/// reaches the primitive, now or in the future.
+///
+/// The gated primitives (the enumeration the tests pin) are:
+///   * every `Memory` INSERT/UPDATE write: `record_event`, `upsert_fact_at` (the
+///     single fact-write leaf that `upsert_fact` / `upsert_user_fact` — and thus
+///     the cloud `remember_fact` tool, `user_model`, `standing`, `macros::save`,
+///     `proactive::record_interaction` — all funnel through), `record_transcript`,
+///     `record_episode`, `save_notebook_entry`;
+///   * the optimizer [`crate::optimize::TraceStore`] (`record_returning_id` /
+///     `record_trace` / `label_outcome`);
+///   * `crate::macros::capture` (the recording buffer whose contents become durable
+///     at "stop recording");
+///   * `crate::episodic::record_episode`;
+///   * `crate::explain::record` (the decision-trace ring the owner reads back via
+///     "why did you do that");
+///   * `crate::calibrate::record` / `relabel` (the calibration window that shifts
+///     the owner's clarify threshold).
+///
+/// ## Background tasks are UNAFFECTED (by construction)
+/// The guest scope is a per-turn TASK-LOCAL ([`with_turn_scope`]). A concurrent
+/// BACKGROUND task — a mission, the anticipation / retention / reflection loop —
+/// runs OUTSIDE any turn scope and reads FALSE here, so its writes proceed
+/// normally. The one durable write that ESCAPES this chokepoint is the passive
+/// fact-learner: it is `tokio::spawn`ed (`spawn_learning_task`), so it runs in a
+/// DETACHED task that does NOT inherit the turn's task-local and would read FALSE
+/// here. It therefore keeps its OWN call-site gate (`should_learn_turn`, which
+/// refuses to SPAWN on a guest turn) — that gate is load-bearing and is NOT
+/// subsumed by this chokepoint.
+///
+/// ## HONESTY
+/// Only DURABLE owner-durable / owner-influencing state is gated. Telemetry emits,
+/// per-turn in-RAM scratch (the source accumulator, `take_turn_tool`, the verify
+/// outcome), secret-free latency aggregates, and the guest's OWN spoken reply are
+/// NOT durable owner state and flow normally.
+///
+/// ONE honest caveat about ordering: a single CONTENT-FREE capture MARKER —
+/// `record_event("audio", "utterance.captured", <wav_path>)` — is emitted DURING STT
+/// (overlapped with transcription), which is BEFORE the guest scope can be decided
+/// (the decision needs the TRANSCRIPT, for the explicit "guest mode" toggle, so it
+/// cannot be known pre-STT). At that instant `is_guest_turn()` is still false, so the
+/// chokepoint does not gate that one row. It carries NO transcript / NO utterance
+/// content / NO owner data (just a wav path + timestamp; the wav is discarded after
+/// the turn), the `events` table has NO owner-facing ROW reader, and it is
+/// retention-pruned — so no bystander's WORDS ever enter the durable log. The
+/// utterance CONTENT, which rides the router's `route.cloud` / `route.local` event
+/// payloads (recorded AFTER the scope is installed), IS gated here.
+pub fn guest_write_blocked() -> bool {
+    is_guest_turn()
+}
+
+/// GUEST = LOCAL-ONLY. The cloud-routing twin of [`crate::vault::deny_cloud`]:
+/// fold a guest turn into THIS turn's cloud-vs-local decision so a bystander's turn
+/// NEVER reaches the owner's PAID cloud brain. A guest conversation therefore stays
+/// on the on-device model, which closes a durable-write path that no per-sink gate
+/// should: with no cloud call there is NO obol spend row and NO bump of the owner's
+/// daily budget total (a durable, owner-readable, budget-influencing trace), NO
+/// egress of the guest's turn under the owner's API key — and it is MORE private for
+/// the guest too. This is a principled SCOPE EXTENSION (guest = local-only), not
+/// another per-sink write gate.
+///
+/// RESTRICT-ONLY + COMPOSABLE with the vault gate — `guest OR vault -> local`. It can
+/// only ever turn a would-be cloud turn LOCAL, never the reverse. With no guest scope
+/// installed (the owner path, and EVERY background task — it reads the task-local, so
+/// a mission/anticipation tick is unaffected) this is byte-for-byte `would_go_cloud`,
+/// so the owner still uses the cloud by default. Applied at the SAME two router seams
+/// vault uses: the `cloud_reachable` entry seam (which the conversation brain, the
+/// roster answer, capability routing, and agent selection all consult) and the
+/// actuating tool-loop `to_cloud` seam.
+pub fn deny_cloud(would_go_cloud: bool) -> bool {
+    would_go_cloud && !is_guest_turn()
+}
+
+/// `#[cfg(test)]`-only RAII guard forcing [`current_turn_scope`] to a value on the
+/// current thread, restoring the prior state on drop (so the override never leaks
+/// into another test). Mirrors `voiceid::GateOverride`; the whole seam is
+/// `cfg(test)`. Tests use THIS (never [`set_turn_scope`]) so the process-global
+/// slot the live path uses stays untouched across parallel tests.
+#[cfg(test)]
+pub(crate) struct ScopeOverride {
+    prev: Option<Option<Scope>>,
+}
+
+#[cfg(test)]
+impl ScopeOverride {
+    /// Force a GUEST scope in force on this thread.
+    pub(crate) fn guest(scope: Scope) -> Self {
+        let prev = SCOPE_OVERRIDE.with(|c| c.replace(Some(Some(scope))));
+        Self { prev }
+    }
+
+    /// Force the OWNER path (no guest scope) on this thread.
+    pub(crate) fn owner() -> Self {
+        let prev = SCOPE_OVERRIDE.with(|c| c.replace(Some(None)));
+        Self { prev }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ScopeOverride {
+    fn drop(&mut self) {
+        SCOPE_OVERRIDE.with(|c| *c.borrow_mut() = self.prev.take());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The explicit "guest mode on/off" toggle — a CONSERVATIVE, anchored-imperative
+// spoken classifier (mirrors `vault::classify_vault_command`). An ordinary
+// sentence that merely MENTIONS "guest mode" never toggles it.
+// ---------------------------------------------------------------------------
+
+/// An explicit guest-mode toggle parsed from a spoken utterance. Only these
+/// anchored imperative phrasings ever flip guest mode; a bare mention never does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestToggle {
+    /// "guest mode on" / "enable guest mode" / … — hand the mic to a guest.
+    On,
+    /// "guest mode off" / "disable guest mode" / … — the owner takes the mic back.
+    Off,
+}
+
+/// Normalize an utterance for anchored matching: lowercase, strip surrounding
+/// whitespace + trailing sentence punctuation, and collapse internal whitespace
+/// runs to single spaces. Pure. Mirrors `vault::normalize`.
+fn normalize(text: &str) -> String {
+    let lowered = text.trim().trim_end_matches(['.', '!', '?', ',']).to_lowercase();
+    lowered.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether the normalized utterance IS one of `phrases` — the whole thing or its
+/// leading imperative (so "guest mode on please" matches, but a sentence that
+/// merely mentions guest mode does not). Mirrors `vault::matches_phrase`.
+fn matches_phrase(norm: &str, phrases: &[&str]) -> bool {
+    phrases.iter().any(|p| {
+        norm == *p
+            || norm
+                .strip_prefix(p)
+                .is_some_and(|rest| rest.starts_with(' '))
+    })
+}
+
+/// The OFF anchor phrases — checked FIRST so a "guest mode off" utterance (which
+/// contains "guest mode") never reads as ON. Mirrors vault's off-precedence.
+const GUEST_OFF_PHRASES: &[&str] = &[
+    "guest mode off",
+    "turn off guest mode",
+    "disable guest mode",
+    "exit guest mode",
+    "leave guest mode",
+    "end guest mode",
+];
+
+/// The ON anchor phrases. NOTE: the BARE "guest mode" is deliberately absent —
+/// `matches_phrase` treats a phrase as a leading imperative, so "guest mode, what
+/// is that?" would otherwise engage guest mode when the user is merely ASKING. An
+/// intentional toggle uses an explicit verb / on-off form.
+const GUEST_ON_PHRASES: &[&str] = &[
+    "guest mode on",
+    "turn on guest mode",
+    "enable guest mode",
+    "enter guest mode",
+    "start guest mode",
+];
+
+/// CONSERVATIVELY classify a spoken guest-mode toggle. Anchored on the imperative
+/// phrase set (an ordinary sentence that merely mentions "guest" never triggers),
+/// with OFF taking precedence over ON. `None` for anything that is not a clear
+/// toggle. PURE — the boundary is unit-tested. Handled BEFORE normal routing, the
+/// exact discipline `vault::classify_vault_command` / `voiceid::classify_intent`
+/// use.
+pub fn classify_guest_toggle(text: &str) -> Option<GuestToggle> {
+    let norm = normalize(text);
+    if norm.is_empty() {
+        return None;
+    }
+    if matches_phrase(&norm, GUEST_OFF_PHRASES) {
+        return Some(GuestToggle::Off);
+    }
+    if matches_phrase(&norm, GUEST_ON_PHRASES) {
+        return Some(GuestToggle::On);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,17 +693,19 @@ mod tests {
         Scope::owner(vec!["*".to_string()], FocusProfile::Default)
     }
 
-    /// A representative SPECIALIST owner scope: a finite allowlist mixing read-only
-    /// tools with consequential/outward ones. Its guest projection must keep ONLY
-    /// the read-only ones it already holds.
+    /// A representative SPECIALIST owner scope: a finite allowlist mixing the ONE
+    /// non-personal guest tool it holds (`system_status`) with owner-data readers and
+    /// consequential/write tools. Its guest projection must keep ONLY the non-personal
+    /// tool it already holds, dropping every owner-data / consequential one.
     fn specialist_owner() -> Scope {
         Scope::owner(
             vec![
-                "recall_facts".to_string(),
-                "doc_search".to_string(),
-                "gmail_send".to_string(), // consequential/outward — dropped for guest
-                "remember_fact".to_string(), // a write — dropped for guest
-                "shell_run".to_string(),  // maximally dangerous — dropped for guest
+                "system_status".to_string(), // non-personal — kept for a guest
+                "recall_facts".to_string(),  // owner memory — dropped for guest
+                "doc_search".to_string(),    // owner documents — dropped for guest
+                "gmail_send".to_string(),     // consequential/outward — dropped for guest
+                "remember_fact".to_string(),  // a write — dropped for guest
+                "shell_run".to_string(),      // maximally dangerous — dropped for guest
             ],
             FocusProfile::Work,
         )
@@ -469,6 +753,22 @@ mod tests {
     }
 
     #[test]
+    fn an_unrecognized_speaker_cannot_un_scope_themselves() {
+        // SECURITY: the explicit "guest mode off" toggle only clears the PERSISTENT
+        // flag (guest_flag=false); it does NOT clear the per-turn voice signal. So an
+        // UNRECOGNIZED speaker who says "guest mode off" (guest_flag=false) is STILL
+        // auto-scoped to guest — the voice-gate auto-scope wins. A bystander can never
+        // talk their way out of the guest scope while voice-id is enforcing.
+        let owner = orchestrator_owner();
+        let d = decide(SpeakerState::Unrecognized, false, &armed_cfg(), &owner);
+        assert!(d.active, "an unrecognized speaker stays scoped even with the explicit flag OFF");
+        assert_eq!(d.reason, GuestReason::Unrecognized);
+        // Only a VERIFIED owner turning the flag off returns to the full owner scope.
+        let d2 = decide(SpeakerState::OwnerVerified, false, &armed_cfg(), &owner);
+        assert!(!d2.active, "the verified owner with the flag off gets the full owner scope");
+    }
+
+    #[test]
     fn explicit_guest_toggle_scopes_even_for_a_recognized_owner() {
         // The owner can hand the mic to a guest explicitly, even while recognized.
         let owner = orchestrator_owner();
@@ -511,17 +811,18 @@ mod tests {
     }
 
     #[test]
-    fn specialist_guest_keeps_only_its_own_read_only_tools() {
-        // A specialist owner's guest projection is the intersection: it keeps only
-        // the read-only tools the owner ALREADY held (recall_facts, doc_search) and
-        // drops the consequential/write ones (gmail_send, remember_fact, shell_run).
+    fn specialist_guest_keeps_only_its_own_non_personal_tools() {
+        // A specialist owner's guest projection is the intersection: it keeps ONLY
+        // the non-personal tool the owner ALREADY held (system_status) and drops the
+        // owner-data readers (recall_facts, doc_search) and the consequential/write
+        // ones (gmail_send, remember_fact, shell_run).
         let owner = specialist_owner();
         let d = decide(SpeakerState::Unrecognized, false, &armed_cfg(), &owner);
         assert!(d.active);
         assert_eq!(
             d.scope.tools,
-            vec!["recall_facts".to_string(), "doc_search".to_string()],
-            "guest keeps only the read-only tools the owner held"
+            vec!["system_status".to_string()],
+            "guest keeps only the non-personal tools the owner held"
         );
     }
 
@@ -593,17 +894,22 @@ mod tests {
 
     #[test]
     fn guest_read_only_tools_intersects_never_unions() {
-        // Wildcard owner -> the whole read-only set.
+        // Wildcard owner -> the whole non-personal guest set.
         let full = guest_read_only_tools(&["*".to_string()]);
         assert_eq!(full.len(), GUEST_READ_ONLY_TOOLS.len());
-        // A narrow owner -> only the overlap, and NEVER a tool the owner lacks.
+        // A narrow owner -> only the overlap, and NEVER a tool the owner lacks. Here
+        // the owner holds one guest tool (system_status) and one it doesn't grant a
+        // guest (gmail_send), so the guest keeps only system_status.
         let narrow = guest_read_only_tools(&[
-            "doc_search".to_string(),
-            "gmail_send".to_string(), // not read-only -> not admitted into the guest set
+            "system_status".to_string(),
+            "gmail_send".to_string(), // not a guest tool -> not admitted into the guest set
         ]);
-        assert_eq!(narrow, vec!["doc_search".to_string()]);
-        // An owner with NO read-only tools -> an empty guest set (nothing to grant).
+        assert_eq!(narrow, vec!["system_status".to_string()]);
+        // An owner with NO non-personal guest tools -> an empty guest set. Note an
+        // owner-DATA reader (doc_search) does NOT grant a guest anything.
         assert!(guest_read_only_tools(&["gmail_send".to_string()]).is_empty());
+        assert!(guest_read_only_tools(&["doc_search".to_string()]).is_empty(),
+            "an owner-data reader is never a guest tool");
     }
 
     // =====================================================================
@@ -690,61 +996,6 @@ mod tests {
     }
 
     // =====================================================================
-    // RECALL ROUTING: reuse of the existing namespace-isolation guard
-    // =====================================================================
-
-    #[test]
-    fn guest_recall_namespace_is_the_sentinel_owner_is_the_owner_namespace() {
-        let owner = orchestrator_owner();
-        assert_eq!(owner.recall_namespace("agent.darwin"), "agent.darwin", "owner recalls under its own ns");
-        let guest = guest_from(&owner, &FocusProfile::DeepFocus);
-        assert_eq!(guest.recall_namespace("agent.darwin"), GUEST_NAMESPACE, "guest recalls under the sentinel");
-        // The sentinel is free of SQL LIKE metacharacters so it can never wildcard.
-        assert!(!GUEST_NAMESPACE.contains('_'), "sentinel must avoid the LIKE '_' wildcard");
-        assert!(!GUEST_NAMESPACE.contains('%'), "sentinel must avoid the LIKE '%' wildcard");
-    }
-
-    #[tokio::test]
-    async fn guest_recall_sees_only_shared_facts_via_the_existing_guard() {
-        // END-TO-END proof that routing a guest through the reserved sentinel
-        // namespace and the EXISTING own+shared guard yields SHARED-ONLY recall —
-        // never the owner's private `agent.*` facts.
-        let path = std::env::temp_dir().join(format!("darwin-threshold-recall-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let mem = crate::memory::Memory::open(&path).expect("open temp memory");
-
-        // A shared fact (common knowledge) + the OWNER's private namespaced fact.
-        mem.upsert_fact("user.name", "Darwin").await.unwrap();
-        mem.upsert_fact("agent.darwin.secret_note", "the owner's private note").await.unwrap();
-
-        // The OWNER (recalling under its own namespace) sees BOTH.
-        let owner_ns = orchestrator_owner();
-        let owner_view = mem
-            .agent_scoped_facts(owner_ns.recall_namespace("agent.darwin"), 50)
-            .await
-            .unwrap();
-        let owner_keys: Vec<&str> = owner_view.iter().map(|(k, _)| k.as_str()).collect();
-        assert!(owner_keys.contains(&"user.name"));
-        assert!(owner_keys.contains(&"agent.darwin.secret_note"), "owner sees its private fact");
-
-        // The GUEST (recalling under the sentinel) sees ONLY the shared fact — the
-        // owner's private `agent.darwin.*` note is invisible.
-        let guest = guest_from(&owner_ns, &FocusProfile::DeepFocus);
-        let guest_view = mem
-            .agent_scoped_facts(guest.recall_namespace("agent.darwin"), 50)
-            .await
-            .unwrap();
-        let guest_keys: Vec<&str> = guest_view.iter().map(|(k, _)| k.as_str()).collect();
-        assert!(guest_keys.contains(&"user.name"), "guest sees shared knowledge");
-        assert!(
-            !guest_keys.contains(&"agent.darwin.secret_note"),
-            "guest MUST NOT see the owner's private fact: {guest_keys:?}"
-        );
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    // =====================================================================
     // TELEMETRY shape
     // =====================================================================
 
@@ -779,25 +1030,33 @@ mod tests {
     }
 
     #[test]
-    fn the_guest_tool_set_is_strictly_on_device_read_only() {
-        // REGRESSION: unified_search fans out to the OWNER's Gmail / Calendar / Slack —
-        // it is NOT on-device and NOT safe to hand a bystander; it must never be a
-        // guest tool (the exact thing guest mode exists to withhold).
-        assert!(
-            !GUEST_READ_ONLY_TOOLS.contains(&"unified_search"),
-            "unified_search reads the owner's connected cloud accounts — never a guest tool"
+    fn the_guest_tool_set_is_exactly_the_three_non_personal_tools() {
+        // The guest allowlist is narrowed to ONLY genuinely non-personal tools —
+        // ones whose dispatch touches NO owner-stored personal data and takes no
+        // consequential/write action.
+        assert_eq!(
+            GUEST_READ_ONLY_TOOLS,
+            &["system_status", "skill_list", "babel_translate"],
+            "the guest set is exactly the three non-personal tools"
         );
-        // The module's stated contract: every guest tool is a STRICT subset of the
-        // author's on-device read-only curation SAFE_LOCAL_TOOLS.
-        for t in GUEST_READ_ONLY_TOOLS {
+        // REGRESSION: NONE of the owner-data readers or write/outward tools may ever
+        // be a guest tool. `unified_search` fans out to the owner's connected cloud
+        // accounts; the memory-recall tools read the owner's fact store (the "shared"
+        // tier still holds the owner's user.* rows); user_model_query / world_query
+        // read the owner's profile / world graph; doc_search / search_files read the
+        // owner's documents / $HOME; remember_fact / skill_invoke write / dispatch.
+        for banned in [
+            "unified_search",
+            "recall_facts", "mnemosyne_recall", "episodic_recall",
+            "user_model_query", "world_query",
+            "doc_search", "search_files",
+            "remember_fact", "skill_invoke",
+            "open_url", "web_search", "gmail_send", "ui_actuate", "shell_run",
+        ] {
             assert!(
-                crate::anthropic::SAFE_LOCAL_TOOLS.contains(t),
-                "guest tool {t:?} must be in SAFE_LOCAL_TOOLS (proven on-device + read-only)"
+                !GUEST_READ_ONLY_TOOLS.contains(&banned),
+                "{banned:?} reads or writes the owner's data — must NEVER be a guest tool"
             );
-        }
-        // No write / outward / consequential tool slipped in.
-        for banned in ["remember_fact", "open_url", "web_search", "gmail_send", "ui_actuate", "shell_run"] {
-            assert!(!GUEST_READ_ONLY_TOOLS.contains(&banned), "{banned:?} must not be a guest tool");
         }
     }
 
@@ -822,5 +1081,354 @@ mod tests {
         });
         let wt = apply_profile(&weird.guest_profile, &BaseBehavior::default());
         assert!(wt.is_no_broader_than(&BaseBehavior::default()), "a typo'd guest profile can only quiet");
+    }
+
+    // =====================================================================
+    // LIVE WIRING: the per-turn scope global + the recall seam
+    // =====================================================================
+
+    #[test]
+    fn current_turn_scope_defaults_to_the_owner_path_and_the_override_restores() {
+        // Default (no install / no override) reads as the OWNER path (None) — so the
+        // recall dispatch and tool loop are byte-for-byte today's until a guest scope
+        // is installed.
+        assert!(current_turn_scope().is_none(), "no scope installed -> owner path");
+        {
+            let guest = guest_from(&orchestrator_owner(), &FocusProfile::DeepFocus);
+            let _o = ScopeOverride::guest(guest.clone());
+            assert_eq!(current_turn_scope(), Some(guest), "override installs a guest scope on this thread");
+        }
+        // Restored on drop — the override never leaks into the next test.
+        assert!(current_turn_scope().is_none(), "override restored the owner path on drop");
+        // An explicit OWNER override also reads as the owner path.
+        {
+            let _o = ScopeOverride::owner();
+            assert!(current_turn_scope().is_none(), "owner override -> owner path");
+        }
+        assert!(current_turn_scope().is_none());
+    }
+
+    #[tokio::test]
+    async fn the_guest_scope_is_confined_to_its_own_turn_and_never_leaks_or_touches_background_tasks() {
+        // FINDING 2 + 4: the per-turn scope is a TASK-LOCAL established by
+        // `with_turn_scope`. Prove (a) a BACKGROUND task (no wrapper — a mission /
+        // the anticipation loop) reads None, so it is NEVER governed by a guest turn;
+        // (b) the scope is visible WITHIN its own turn; (c) it resets for the next
+        // turn by construction — no cross-turn leak.
+        //
+        // NB: in test builds `current_turn_scope` prefers a thread-local override
+        // (used by the other guest tests); with NO override installed it falls through
+        // to the task-local, which is what this test exercises.
+
+        // (a) Outside any turn scope -> None (a concurrent mission/anticipation task).
+        assert!(current_turn_scope().is_none(), "a background task reads no scope");
+
+        // (b) A turn wraps its work in with_turn_scope; the installed scope is visible.
+        with_turn_scope(async {
+            assert!(current_turn_scope().is_none(), "a turn starts with no scope");
+            set_turn_scope(guest_from(&orchestrator_owner(), &FocusProfile::DeepFocus));
+            assert!(current_turn_scope().is_some(), "the scope is visible within its own turn");
+            // A clear within the turn takes effect immediately.
+            clear_turn_scope();
+            assert!(current_turn_scope().is_none(), "clear within the turn empties the slot");
+            set_turn_scope(guest_from(&orchestrator_owner(), &FocusProfile::DeepFocus));
+        })
+        .await;
+
+        // (c) The NEXT turn is a FRESH scope — the previous turn's scope did not leak.
+        with_turn_scope(async {
+            assert!(current_turn_scope().is_none(), "the guest scope did NOT leak into the next turn");
+        })
+        .await;
+
+        // And after all turns, a background task still reads None.
+        assert!(current_turn_scope().is_none(), "background tasks remain unaffected");
+    }
+
+    #[test]
+    fn is_guest_turn_tracks_the_installed_scope() {
+        // OWNER PATH (no guest scope): is_guest_turn() is false — the recall dispatch
+        // is byte-for-byte unchanged and feeds the owner's memory as today.
+        {
+            let _o = ScopeOverride::owner();
+            assert!(!is_guest_turn(), "owner path is not a guest turn");
+        }
+        // GUEST PATH: is_guest_turn() is true — the live recall dispatch consults
+        // this to WITHHOLD the owner's memory ENTIRELY (empty feed).
+        {
+            let guest = guest_from(&orchestrator_owner(), &FocusProfile::DeepFocus);
+            let _o = ScopeOverride::guest(guest);
+            assert!(is_guest_turn(), "an installed guest scope makes it a guest turn");
+        }
+        // Restored on drop — the override never leaks into the next test.
+        assert!(!is_guest_turn(), "override restored the owner path");
+    }
+
+    #[test]
+    fn install_site_invariant_holds_the_guest_scope_is_never_broader_than_the_owner() {
+        // The install-site SAFETY RAIL, exactly as `run_pipeline` evaluates it: the
+        // decided guest scope is asserted NO BROADER than the owner scope it was
+        // derived from, over the base the anticipation tick composes on. Proven here
+        // for every guest reason (auto + explicit) and a spread of guest profiles.
+        let owner_scope = Scope::owner(vec!["*".to_string()], FocusProfile::Default);
+        let base = BaseBehavior::default();
+        for gp in guest_profiles() {
+            let cfg = ThresholdConfigView { enabled: true, guest_profile: gp.clone() };
+            for (speaker, flag) in [
+                (SpeakerState::Unrecognized, false),
+                (SpeakerState::OwnerVerified, true),
+                (SpeakerState::Unenforced, true),
+            ] {
+                let d = decide(speaker, flag, &cfg, &owner_scope);
+                assert!(d.active, "guest should be active for ({speaker:?}, flag={flag})");
+                assert!(
+                    d.scope.is_no_broader_than(&owner_scope, &base),
+                    "install-site rail: guest scope broadened the owner ({gp:?}, {speaker:?}, flag={flag})"
+                );
+            }
+        }
+    }
+
+    // =====================================================================
+    // The explicit "guest mode on/off" toggle classifier
+    // =====================================================================
+
+    #[test]
+    fn guest_toggle_is_anchored_and_does_not_over_trigger() {
+        use GuestToggle::*;
+        // ON phrasings.
+        for u in [
+            "guest mode on",
+            "turn on guest mode",
+            "enable guest mode",
+            "enter guest mode please",
+            "start guest mode",
+            "Guest mode on.",
+        ] {
+            assert_eq!(classify_guest_toggle(u), Some(On), "{u:?} should turn guest mode ON");
+        }
+        // OFF phrasings (off wins even though they contain "guest mode").
+        for u in [
+            "guest mode off",
+            "turn off guest mode",
+            "disable guest mode",
+            "exit guest mode",
+            "leave guest mode",
+            "end guest mode.",
+        ] {
+            assert_eq!(classify_guest_toggle(u), Some(Off), "{u:?} should turn guest mode OFF");
+        }
+        // Ordinary sentences — including ones that MENTION guest mode — must NOT trip
+        // it. A bystander must never be able to widen anything, and a mere QUESTION
+        // about guest mode must not silently scope the turn.
+        for u in [
+            "what is guest mode",
+            "guest mode, what does that do?",
+            "tell me about guest mode",
+            "is guest mode on right now",
+            "a guest is coming over later",
+            "send an email to my guest",
+            "",
+            "   ",
+        ] {
+            assert_eq!(classify_guest_toggle(u), None, "{u:?} must not toggle guest mode");
+        }
+    }
+
+    // =====================================================================
+    // A guest scope's focus profile is a restrict-only knob (NOT wired to any
+    // ambient tick — that is a separate future feature; see the module doc).
+    // =====================================================================
+
+    #[test]
+    fn a_guest_scopes_focus_profile_is_provably_no_broader_than_the_owners() {
+        use crate::focus::SignalCategory;
+        // The guest scope carries a focus profile as a restrict-only knob. Composed
+        // on top of the owner's tuned behavior it is provably NO BROADER (it can only
+        // quiet further), which is the profile axis of `is_no_broader_than`. This is a
+        // PURE property of the scope; it is NOT read by the anticipation/mission loops
+        // (a per-turn scope must not govern ambient background tasks).
+        let owner_bases = [
+            BaseBehavior::default(),
+            apply_profile(&FocusProfile::Work, &BaseBehavior::default()).as_base(),
+            apply_profile(&FocusProfile::Sleep, &BaseBehavior::default()).as_base(),
+        ];
+        for owner_base in owner_bases {
+            let owner_tuned = apply_profile(&FocusProfile::Default, &owner_base);
+            let scope = guest_from(&orchestrator_owner(), &FocusProfile::DeepFocus);
+            let guest_tuned = scope.behavior(&owner_tuned.as_base());
+            assert!(
+                guest_tuned.is_no_broader_than(&owner_tuned.as_base()),
+                "the guest scope's profile must never surface more than the owner's tuned behavior"
+            );
+            assert!(guest_tuned.surfaces(SignalCategory::Critical), "critical floor holds");
+            assert!(!guest_tuned.surfaces(SignalCategory::News), "the guest profile quiets ordinary intel");
+        }
+    }
+
+    // =====================================================================
+    // WRITE-INTEGRITY CHOKEPOINT — the persistence-boundary enumeration
+    //
+    // THE invariant: a guest turn leaves NO durable trace in the owner's state.
+    // This test ENUMERATES every DURABLE-STORE write primitive (the finite
+    // persistence layer) and proves each is a NO-OP under a guest turn
+    // (with_turn_scope + set_turn_scope, the REAL task-local mechanism) and
+    // UNCHANGED for an owner turn. The three process-global RING primitives
+    // (macros::capture, explain::record, calibrate::record/relabel) are proven
+    // in their home modules (natural serialization); together they cover the
+    // full set guarded by threshold::guest_write_blocked.
+    // =====================================================================
+
+    /// Remove a temp DB and its WAL/SHM sidecars.
+    fn rm_db(path: &std::path::Path) {
+        for suffix in ["", "-wal", "-shm"] {
+            let mut s = path.to_path_buf().into_os_string();
+            s.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(s));
+        }
+    }
+
+    #[tokio::test]
+    async fn write_integrity_every_durable_store_primitive_is_a_noop_on_a_guest_turn() {
+        use crate::config::Config;
+        use crate::episodic;
+        use crate::memory::{Episode, Memory, NotebookCitation, NotebookEntry};
+        use crate::optimize::{self, Outcome, Trace, TraceStore};
+        use crate::voiceid::OwnerGate;
+
+        // Isolated on-disk stores (unique per test) so every assertion is EXACT and
+        // immune to any other test.
+        let base = std::env::temp_dir().join(format!("darwin-threshold-writeint-{}", std::process::id()));
+        let mem_path = std::path::PathBuf::from(format!("{}-mem.db", base.display()));
+        let trace_path = std::path::PathBuf::from(format!("{}-trace.db", base.display()));
+        rm_db(&mem_path);
+        rm_db(&trace_path);
+        let mem = Memory::open(&mem_path).unwrap();
+        let store = TraceStore::open(&trace_path).unwrap();
+
+        let mut cfg = Config::default();
+        cfg.episodic.enabled = true;
+        cfg.optimize.enabled = true;
+        // OwnerGate::OFF => voice-id not enforcing => the VoiceGate permits recording,
+        // so an OWNER turn WOULD record an episode (isolating the guest guard as the
+        // ONLY reason a guest turn does not).
+        let voice = episodic::VoiceGate::from_owner_gate(OwnerGate::OFF);
+
+        let episode = || Episode {
+            id: 0,
+            ts: String::new(),
+            agent_namespace: "agent.darwin".to_string(),
+            utterance_redacted: "hello there".to_string(),
+            topic: "conversation".to_string(),
+            salient_entities: vec![],
+            outcome: "ok".to_string(),
+            summary: "a greeting".to_string(),
+        };
+        let notebook = || NotebookEntry {
+            id: 0,
+            ts: String::new(),
+            agent_namespace: "agent.darwin".to_string(),
+            topic_key: "topic".to_string(),
+            topic: "Topic".to_string(),
+            synthesized: "a synthesized body".to_string(),
+            citations: vec![NotebookCitation {
+                source_id: 1,
+                title: "t".to_string(),
+                url: "https://example.com".to_string(),
+            }],
+        };
+        let a_trace = || Trace::new("hello there", "conversation", "agent.darwin", "clarify", "", Outcome::Success, 1, 1);
+
+        let guest = guest_from(&orchestrator_owner(), &FocusProfile::DeepFocus);
+
+        // ---- PHASE 1: GUEST TURN — every durable-write primitive must NO-OP ----
+        with_turn_scope(async {
+            set_turn_scope(guest.clone());
+            assert!(is_guest_turn(), "the guest scope is installed for this turn");
+
+            // Memory INSERT/UPDATE primitives.
+            mem.record_event("cloud", "route.cloud", "guest utterance").await.unwrap();
+            mem.upsert_fact("user.enum.fact", "leak").await.unwrap();
+            mem.upsert_user_fact("user.enum.userfact", "leak").await.unwrap();
+            mem.record_transcript(Some("/tmp/g.wav"), "guest utterance", "conversation", "cloud", Some("guest reply"))
+                .await
+                .unwrap();
+            mem.record_episode(&episode()).await.unwrap();
+            let nb_id = mem.save_notebook_entry(&notebook()).await.unwrap();
+            assert_eq!(nb_id, 0, "a guest notebook write returns the no-row sentinel and inserts nothing");
+
+            // The episodic recorder honestly reports it recorded NOTHING.
+            let recorded = episodic::record_episode(&cfg, &mem, "agent.darwin", "guest utterance", "guest reply", "conversation", false, voice)
+                .await
+                .unwrap();
+            assert!(!recorded, "episodic::record_episode records nothing for a guest (and says so)");
+
+            // Optimizer TraceStore primitives.
+            let direct = store.record_returning_id(&a_trace()).await.unwrap();
+            assert_eq!(direct, 0, "a guest trace INSERT returns the no-row sentinel and inserts nothing");
+            let rec = optimize::record_trace(&cfg, &store, "guest utterance", "conversation", "agent.darwin", "clarify", "", Outcome::Success, 1, 1)
+                .await
+                .unwrap();
+            assert!(rec.is_none(), "record_trace seeds no optimizer trace for a guest");
+        })
+        .await;
+
+        // Every durable store is EMPTY after the guest turn.
+        assert_eq!(mem.events_count().await.unwrap(), 0, "a guest turn wrote a durable event");
+        assert!(mem.get_fact("user.enum.fact").await.unwrap().is_none(), "a guest turn wrote a fact");
+        assert!(mem.get_fact("user.enum.userfact").await.unwrap().is_none(), "a guest turn wrote a user fact");
+        assert_eq!(mem.recent_exchanges(10).await.unwrap().len(), 0, "a guest turn wrote a transcript");
+        assert_eq!(mem.episodes_count().await.unwrap(), 0, "a guest turn wrote an episode");
+        assert_eq!(mem.notebook_entries_count().await.unwrap(), 0, "a guest turn wrote a notebook entry");
+        assert_eq!(store.count().await.unwrap(), 0, "a guest turn wrote an optimizer trace");
+
+        // ---- PHASE 2: OWNER TURN — every primitive writes exactly as today ----
+        // No turn scope installed => is_guest_turn() == false (the owner path).
+        assert!(!is_guest_turn(), "no scope installed -> owner path");
+        mem.record_event("cloud", "route.cloud", "owner utterance").await.unwrap();
+        mem.upsert_fact("user.enum.fact", "kept").await.unwrap();
+        mem.upsert_user_fact("user.enum.userfact", "kept").await.unwrap();
+        mem.record_transcript(Some("/tmp/o.wav"), "owner utterance", "conversation", "cloud", Some("owner reply"))
+            .await
+            .unwrap();
+        mem.record_episode(&episode()).await.unwrap();
+        let nb_id = mem.save_notebook_entry(&notebook()).await.unwrap();
+        assert!(nb_id > 0, "an owner notebook write returns a real row id");
+        let recorded = episodic::record_episode(&cfg, &mem, "agent.darwin", "owner utterance", "owner reply", "conversation", false, voice)
+            .await
+            .unwrap();
+        assert!(recorded, "an owner episodic write records");
+        let direct = store.record_returning_id(&a_trace()).await.unwrap();
+        assert!(direct > 0, "an owner trace INSERT returns a real row id");
+        let owner_trace_id = optimize::record_trace(&cfg, &store, "owner utterance", "conversation", "agent.darwin", "clarify", "", Outcome::Success, 1, 2)
+            .await
+            .unwrap()
+            .expect("an owner record_trace returns a row id");
+
+        // Every durable store now reflects the OWNER writes.
+        assert_eq!(mem.events_count().await.unwrap(), 1, "the owner event was not recorded");
+        assert_eq!(mem.get_fact("user.enum.fact").await.unwrap().as_deref(), Some("kept"));
+        assert_eq!(mem.get_fact("user.enum.userfact").await.unwrap().as_deref(), Some("kept"));
+        assert_eq!(mem.recent_exchanges(10).await.unwrap().len(), 1, "the owner transcript was not recorded");
+        // record_episode (direct) + episodic::record_episode == 2 episodes.
+        assert_eq!(mem.episodes_count().await.unwrap(), 2, "the owner episodes were not recorded");
+        assert_eq!(mem.notebook_entries_count().await.unwrap(), 1, "the owner notebook was not recorded");
+        // record_returning_id + record_trace == 2 traces.
+        assert_eq!(store.count().await.unwrap(), 2, "the owner traces were not recorded");
+
+        // ---- label_outcome: a guest turn relabels 0 rows; the owner path relabels 1.
+        let guest_relabel = with_turn_scope(async {
+            set_turn_scope(guest.clone());
+            store.label_outcome(owner_trace_id, Outcome::CorrectedNextTurn).await.unwrap()
+        })
+        .await;
+        assert_eq!(guest_relabel, 0, "a guest turn relabeled the owner's optimizer trace");
+        let owner_relabel = store.label_outcome(owner_trace_id, Outcome::CorrectedNextTurn).await.unwrap();
+        assert_eq!(owner_relabel, 1, "the owner path did not relabel the row");
+
+        drop(mem);
+        drop(store);
+        rm_db(&mem_path);
+        rm_db(&trace_path);
     }
 }

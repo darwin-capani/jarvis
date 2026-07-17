@@ -248,6 +248,15 @@ pub fn is_recording() -> bool {
 /// session cannot grow the buffer unbounded; excess is dropped (the macro is
 /// clamped to max_steps at persist time anyway).
 pub fn capture(utterance: &str, intent: &str) {
+    // THRESHOLD write-integrity chokepoint: a GUEST turn leaves NO durable trace.
+    // The recording buffer is owner-influencing state — its captured steps become
+    // durable (persisted as a macro fact) when the OWNER later says "stop recording",
+    // so a bystander's utterance must never be appended to the owner's in-progress
+    // macro. Refuse HERE, at the buffer primitive, no matter which caller reaches it.
+    // Background tasks read false and are unaffected.
+    if crate::threshold::guest_write_blocked() {
+        return;
+    }
     let mut guard = rec_lock();
     if let Some(rec) = guard.as_mut() {
         if rec.steps.len() < 256 {
@@ -622,7 +631,9 @@ mod tests {
 
     #[test]
     fn recording_buffer_captures_and_stops() {
-        // Serialize against the process-global recording slot by clearing first.
+        // Serialize every test that touches the PROCESS-GLOBAL recording slot on the
+        // crate-wide test lock so the guest-guard test below cannot interleave.
+        let _g = crate::confirm::PENDING_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_recording();
         assert!(!is_recording());
 
@@ -640,5 +651,37 @@ mod tests {
         // capture is a no-op when not recording.
         capture("stray command", "conversation");
         assert!(stop_recording().is_none());
+        clear_recording();
+    }
+
+    /// THRESHOLD write-integrity chokepoint (macros::capture). The recording buffer's
+    /// captured steps become DURABLE at "stop recording", so a GUEST turn must append
+    /// NOTHING even while a recording is in progress — a bystander's utterance can
+    /// never end up in the owner's saved macro. The owner's own steps still buffer.
+    #[test]
+    fn guest_turn_captures_nothing_into_the_recording_buffer() {
+        let _g = crate::confirm::PENDING_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_recording();
+        start_recording("gt");
+        // GUEST: capture appends nothing, even mid-recording.
+        {
+            let guest = crate::threshold::guest_from(
+                &crate::threshold::Scope::owner(vec!["*".to_string()], crate::focus::FocusProfile::Default),
+                &crate::focus::FocusProfile::DeepFocus,
+            );
+            let _o = crate::threshold::ScopeOverride::guest(guest);
+            assert!(crate::threshold::is_guest_turn());
+            capture("guest secret command", "conversation");
+        }
+        // OWNER: capture appends as usual.
+        capture("owner command", "web.open");
+        let (name, steps) = stop_recording().expect("a recording was in progress");
+        assert_eq!(name, "gt");
+        assert_eq!(
+            steps,
+            vec![("owner command".to_string(), "web.open".to_string())],
+            "the guest capture must be absent — only the owner's step is buffered"
+        );
+        clear_recording();
     }
 }
