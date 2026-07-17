@@ -147,18 +147,38 @@ the per-action confirm gate. Do this only once reads work and the previews look 
 
 ## 7. Make it permanent (LaunchAgents)
 
-Once it's proven by hand, install the boot agents so inference + daemon start on login and
-restart on crash:
+Once it's proven by hand, install the boot agents so inference + daemon + **the HUD** start
+on login and restart on crash — power-on then renders the visible DARWIN environment, not
+just the headless backend:
 
 ```sh
-cd ~/Downloads/darwin && scripts/install_boot.sh --install   # builds the binary + installs both plists
-# logs: state/logs/launchd-inference.log, state/logs/launchd-daemon.log
+cd ~/Downloads/darwin && scripts/install_boot.sh --install   # builds the daemon + installs all three plists
+# logs: state/logs/launchd-inference.log, state/logs/launchd-daemon.log, state/logs/launchd-hud.log
 # uninstall: scripts/uninstall_boot.sh
 ```
 
-The wrappers `boot/run_inference.sh` / `boot/run_daemon.sh` resolve the project root from
-their own location and source `state/env.sh` for secrets — so the plists never hard-code
-paths or keys.
+Three agents are rendered + loaded (in boot order): `com.darwin.inference`,
+`com.darwin.daemon`, and `com.darwin.hud`. The wrappers `boot/run_inference.sh` /
+`boot/run_daemon.sh` / `boot/run_hud.sh` resolve the project root from their own location
+and source `state/env.sh` for secrets — so the plists never hard-code paths or keys.
+`run_hud.sh` locates the built `DARWIN.app` (the bundle under this tree first, then
+`/Applications` / `~/Applications`) and execs it directly; the `com.darwin.hud` plist is
+constrained to the **Aqua** session (`LimitLoadToSessionType`) because a windowed GUI app
+needs a graphical login to reach the window server.
+
+> **`install_boot.sh --install` requires the HUD to be built first** (via `./install.sh`,
+> whose stage 5 builds `DARWIN.app`), exactly as it requires the `.venv`. It builds the
+> daemon but not the heavy Tauri app, and refuses to load a `com.darwin.hud` agent that
+> would just crash-loop with no app to launch.
+
+**Auto-login is still a guided manual step.** For the Mini to reach the Aqua session at
+power-on (so launchd starts the gui-domain agents, HUD included), enable *System Settings →
+Users & Groups → Automatically log in as this user*. This is a security/credential setting
+and is **intentionally not automated** by any installer.
+
+The fullscreen **kiosk takeover stays an explicit in-HUD action** — the HUD autostarts as a
+normal window; it is never auto-entered into kiosk, and kiosk's exit is always reachable
+(see `docs/HUD.md` / `hud/src-tauri/src/takeover.rs`).
 
 ---
 

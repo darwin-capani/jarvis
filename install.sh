@@ -30,8 +30,9 @@
 #                   persist that HF_HOME into state/env.sh so the RUNTIME (the
 #                   boot wrappers source it) reads the SAME cache
 #   5. BUILD      — cargo build --release (daemon + apps), swift build, HUD/Tauri .app
-#   6. AUTOSTART  — consent-gated (see --yes): render + load the 2 LaunchAgents
-#                   via scripts/install_boot.sh --install (RunAtLoad STARTS DARWIN)
+#   6. AUTOSTART  — consent-gated (see --yes): render + load the 3 LaunchAgents
+#                   (inference + daemon + HUD) via scripts/install_boot.sh
+#                   --install (RunAtLoad STARTS DARWIN, HUD included)
 #   7. FINISH     — "DARWIN IS ONLINE" + honest next-steps (TCC grants, keys, wake word)
 #
 # Flags:
@@ -39,9 +40,10 @@
 #                         (prereq provisioning is PLANNED, never executed)
 #   --yes / -y            assume "yes" to the consent prompts (the DARWIN-
 #                         actuation confirm()s). Today that is ONE gate: stage 6
-#                         AUTOSTART, loading the LaunchAgents that START the
-#                         armed OS (declining leaves autostart MANUAL, enable
-#                         later via scripts/install_boot.sh --install). Build-
+#                         AUTOSTART, loading the 3 LaunchAgents that START the
+#                         armed OS + render the HUD (declining leaves autostart
+#                         MANUAL, enable later via scripts/install_boot.sh
+#                         --install). Build-
 #                         prereq provisioning is NOT gated on this; it runs by
 #                         default, see --no-provision.
 #   --no-provision        DO NOT auto-install build prereqs. Revert to detect +
@@ -593,7 +595,9 @@ print_next_steps_directives() {
 
     ui_panel "6" "BOOT-TO-DARWIN" \
         "For a deployment Mac, enable auto-login so the gui-domain agents start at" \
-        "power-on (see ${UI_ICE}scripts/install_boot.sh${UI_RESET} checklist)." \
+        "power-on: inference + daemon + the ${UI_BRIGHT}HUD${UI_RESET} (login renders the visible DARWIN" \
+        "app, not just the backend). See the ${UI_ICE}scripts/install_boot.sh${UI_RESET} checklist." \
+        "Auto-login is a ${UI_BRIGHT}guided manual${UI_RESET} step — a security setting we never automate." \
         "${UI_YELLOW}Do not install these agents on a dev machine.${UI_RESET}"
 
     ui_panel "7" "REMOVE DARWIN COMPLETELY" \
@@ -1209,7 +1213,7 @@ BOOT_SCRIPT="$DARWIN_HOME/scripts/install_boot.sh"
 [ -f "$BOOT_SCRIPT" ] || BOOT_SCRIPT="$SRC_ROOT/scripts/install_boot.sh"
 
 if [ "$MODE" = "check" ]; then
-    plan "\"$BOOT_SCRIPT\" --install   # renders + bootstraps com.darwin.inference + com.darwin.daemon"
+    plan "\"$BOOT_SCRIPT\" --install   # renders + bootstraps com.darwin.inference + com.darwin.daemon + com.darwin.hud"
     ui_note "AUTOSTART is delegated to the existing scripts/install_boot.sh (its"
     ui_note "launchctl logic is reused verbatim, not reimplemented)."
     if [ -x "$BOOT_SCRIPT" ]; then
@@ -1219,13 +1223,13 @@ if [ "$MODE" = "check" ]; then
 else
     # THE DARWIN-ACTUATION CONSENT GATE (the confirm() that --yes assumes yes
     # to): loading these LaunchAgents does not just place files — RunAtLoad
-    # STARTS the armed OS (daemon + inference) now and at every login. All the
-    # stages above were build/placement; this is the step that turns it on, so
-    # it asks first. Declining is NOT fatal: the install stays complete, the
-    # stage-7 board reports AUTOSTART: MANUAL, and install_boot.sh enables it
-    # any time later.
+    # STARTS the armed OS (daemon + inference) AND renders the HUD (the visible
+    # DARWIN app) now and at every login. All the stages above were
+    # build/placement; this is the step that turns it on, so it asks first.
+    # Declining is NOT fatal: the install stays complete, the stage-7 board
+    # reports AUTOSTART: MANUAL, and install_boot.sh enables it any time later.
     if confirm "Load the LaunchAgents and start DARWIN now (autostart at every login)?"; then
-        ui_info "Loading the 2 LaunchAgents via scripts/install_boot.sh --install ..."
+        ui_info "Loading the 3 LaunchAgents via scripts/install_boot.sh --install ..."
         "$BOOT_SCRIPT" --install
         ui_ok "LaunchAgents installed + loaded (RunAtLoad starts them)."
     else
@@ -1360,13 +1364,15 @@ esac
 # it is BUILT). A truthful count when we have it; otherwise a neutral CONFIGURED.
 if [ -n "$AGENT_COUNT" ]; then AGENTS_TAG="$AGENT_COUNT READY"; else AGENTS_TAG="CONFIGURED"; fi
 
-# AUTOSTART: ENABLED only when BOTH rendered LaunchAgent plists are present in
-# ~/Library/LaunchAgents (stage 6 renders + bootstraps both); otherwise MANUAL.
+# AUTOSTART: ENABLED only when ALL THREE rendered LaunchAgent plists are present
+# in ~/Library/LaunchAgents (stage 6 renders + bootstraps inference + daemon +
+# HUD); otherwise MANUAL.
 AGENT_DIR="$HOME/Library/LaunchAgents"
 _loaded=0
 [ -f "$AGENT_DIR/com.darwin.inference.plist" ] && _loaded=$(( _loaded + 1 ))
 [ -f "$AGENT_DIR/com.darwin.daemon.plist" ]    && _loaded=$(( _loaded + 1 ))
-if [ "$_loaded" -eq 2 ]; then AUTOSTART_TAG="ENABLED"; else AUTOSTART_TAG="MANUAL"; fi
+[ -f "$AGENT_DIR/com.darwin.hud.plist" ]       && _loaded=$(( _loaded + 1 ))
+if [ "$_loaded" -eq 3 ]; then AUTOSTART_TAG="ENABLED"; else AUTOSTART_TAG="MANUAL"; fi
 
 # --- the cinematic finale + the HONEST status board ---
 ui_online

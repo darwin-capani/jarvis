@@ -11,7 +11,7 @@
 
 ## Phase 1.5 — Boot integration ✅ complete
 
-- Boot-to-DARWIN on the target Mac (any Apple Silicon Mac): auto-login + launchd LaunchAgents (`com.darwin.inference`, `com.darwin.daemon`, both KeepAlive) wrapping `boot/run_inference.sh` / `boot/run_daemon.sh`. Power-on → daemon + local AI live with no interaction. See `docs/ARCHITECTURE.md` § Boot experience.
+- Boot-to-DARWIN on the target Mac (any Apple Silicon Mac): auto-login + launchd LaunchAgents (`com.darwin.inference`, `com.darwin.daemon`, and `com.darwin.hud` — all KeepAlive) wrapping `boot/run_inference.sh` / `boot/run_daemon.sh` / `boot/run_hud.sh`. Power-on → daemon + local AI **and the visible DARWIN HUD** live with no interaction (the HUD agent is Aqua-session-scoped and execs the built `DARWIN.app`; it opens windowed — fullscreen kiosk stays an explicit, always-exitable in-HUD action, never auto-entered). Auto-login remains a guided manual step (a security/credential setting, never automated). See `docs/ARCHITECTURE.md` § Boot experience.
 - Installer: `scripts/install_boot.sh` (dry-run by default, `--install` to apply, `--uninstall` to remove; also `scripts/uninstall_boot.sh`).
 - Secrets convention: `state/env.sh` (gitignored, chmod 600), sourced by the boot wrappers for `ANTHROPIC_API_KEY`.
 - ANE groundwork pulled forward from Phase 3: `scripts/ane_probe.py` Core ML probe (model cached under `state/ane/`, `--loop N` for `powermetrics --samplers ane_power` verification). Aux-model selection stays in Phase 3.

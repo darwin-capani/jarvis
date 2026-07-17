@@ -9,7 +9,7 @@
 # It removes ONLY DARWIN's own footprint. Every target is a SPECIFIC, guarded path
 # (never a broad or globbed rm):
 #   - the install home  ~/Library/Application Support/DARWIN  (code, .venv, models, all state)
-#   - the 2 LaunchAgents (com.darwin.daemon / com.darwin.inference) — unloaded + removed
+#   - the 3 LaunchAgents (com.darwin.hud / com.darwin.daemon / com.darwin.inference) — unloaded + removed
 #   - the installed HUD app  /Applications/DARWIN.app  and  ~/Applications/DARWIN.app —
 #     each removed ONLY after its Info.plist verifies bundle id com.darwin.hud
 #   - the DARWIN Keychain items (ONLY the service "com.darwin.daemon") — your stored keys/tokens
@@ -51,7 +51,11 @@ DARWIN_HOME="$HOME/Library/Application Support/DARWIN"
 LOG_DIR="$HOME/Library/Logs/DARWIN"
 AGENT_DIR="$HOME/Library/LaunchAgents"
 KEYCHAIN_SERVICE="com.darwin.daemon"
-LABELS=("com.darwin.daemon" "com.darwin.inference")
+# Teardown order: unload the visible HUD first, then the daemon, then inference.
+# (This list drives the dry-run preview + the fallback loop used only when
+# scripts/install_boot.sh is absent; the normal path delegates to that script's
+# --uninstall, whose own LABELS is the single source of truth.)
+LABELS=("com.darwin.hud" "com.darwin.daemon" "com.darwin.inference")
 GUI_DOMAIN="gui/$(id -u)"
 # The HUD app install.sh places via place_hud_app (/Applications first, then
 # ~/Applications). Each is a SPECIFIC path, and is removed ONLY if its bundle
