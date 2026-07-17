@@ -423,6 +423,33 @@ pub async fn route(
         }
     }
 
+    // RUNBOOK VOICE COMMANDS (runbook.rs): "plan the runbook X" (PURE, read-only —
+    // render the typed DAG + which steps will PARK) / "run the runbook X" (execute —
+    // re-issue EACH step FRESH through the live tool gate, ONE AT A TIME). CONSERVATIVELY
+    // anchored (runbook::classify_runbook_command fires ONLY on the explicit "plan/run
+    // the runbook <name>" shapes whose name normalizes to a SAFE, CONFINED file stem — an
+    // ordinary sentence that merely mentions "runbook", or a path-shaped name, never
+    // triggers) and handled BEFORE normal routing so a runbook utterance never falls
+    // through to the model. SHIPS OFF ([runbook].enabled=false): with it off both verbs
+    // report the subsystem is off and NOTHING plans or runs. SAFETY: `run` carries NO
+    // authority — it mirrors the macro-replay dispatch, re-issuing each step through the
+    // SAME anthropic::execute_tool + gate a live tool call takes, so a consequential step
+    // PARKS FRESH for a spoken confirm (single slot, never batched, never pre-approved);
+    // a parked step produces no value, so its `${ref}` consumer BLOCKS rather than run on
+    // a fabricated one. Runs AFTER the owner voice-id all-scope gate, like the macro arm.
+    if let Some(cmd) = crate::runbook::classify_runbook_command(text) {
+        let prime = agents.orchestrator();
+        emit_agent_active(prime);
+        let response = handle_runbook_command(cmd, cfg, memory, prime, root).await;
+        return Ok(RouteOutcome {
+            routed_to: "local",
+            response,
+            agent: prime.name.clone(),
+            namespace: prime.namespace.clone(),
+            spoken: None,
+        });
+    }
+
     // ONE-WORD UNDO (F2): "undo that" / "revert that" / "what can you undo".
     // CONSERVATIVELY anchored (journal::classify_undo_command fires only on
     // explicit undo phrasings — a sentence merely mentioning "undo" never
@@ -2512,6 +2539,175 @@ fn select_agent<'a>(
 ) -> &'a Agent {
     let effective_cloud = cloud_reachable || to_cloud;
     agents.select_with_fallback(intent, text, effective_cloud, &crate::agents::LexicalAgentScorer)
+}
+
+/// Handle a RUNBOOK voice command (runbook.rs): PLAN (PURE, read-only render of the
+/// typed DAG + which steps PARK) or RUN (execute — re-issue each step FRESH through the
+/// live tool gate, one at a time). Gated by [runbook].enabled (OFF by default): with it
+/// off both verbs report the subsystem is off and do NOTHING.
+///
+/// RUN grants NO authority. It mirrors the macro-replay dispatch: each step routes once
+/// through the SAME `anthropic::execute_tool` + gate a live tool call takes, so a
+/// consequential step PARKS FRESH for a spoken confirm (the process-global single-slot
+/// pending, exactly as a live consequential call installs). It never batches or
+/// pre-approves; a parked step produces nothing, so its `${ref}` consumer BLOCKS rather
+/// than run on a fabricated value (the executor in runbook.rs enforces this). The named
+/// runbook is loaded from its CONFINED on-device store; an unsound runbook is refused
+/// whole. Emits the secret-free `runbook.plan` / `runbook.run` HUD frames.
+async fn handle_runbook_command(
+    cmd: crate::runbook::RunbookCommand,
+    cfg: &Config,
+    memory: &Memory,
+    agent: &Agent,
+    root: &Path,
+) -> String {
+    use crate::runbook::RunbookCommand;
+    if !cfg.runbook.enabled {
+        telemetry::emit("system", "runbook.blocked", json!({"reason": "disabled"}));
+        return "Runbooks are off ([runbook].enabled = false), sir — I'm not planning or \
+                running any."
+            .to_string();
+    }
+
+    // Load + parse the named runbook from its confined `state/runbooks/*.runbook.toml`
+    // store (load re-normalizes the name, so a path-y name is refused, never read).
+    let rb = match crate::runbook::load(root, cmd.name()) {
+        Ok(rb) => rb,
+        Err(e) => return format!("{e}, sir."),
+    };
+    // Bound: one runbook may hold at most [runbook].max_steps steps — never an
+    // unbounded DAG (mirrors the macro max_steps bound).
+    if rb.steps.len() > cfg.runbook.max_steps {
+        return format!(
+            "Runbook \"{}\" has {} steps, over the {}-step bound, sir — I won't run an \
+             unbounded DAG.",
+            rb.name,
+            rb.steps.len(),
+            cfg.runbook.max_steps
+        );
+    }
+    // The capability registry the checker resolves each step against; every TOOL's
+    // privilege is pinned to the SAME confirm::is_consequential_tool source the gate
+    // uses, so "will PARK" can never disagree with the gate.
+    let reg = crate::runbook::Registry::builtin();
+
+    match cmd {
+        // PLAN: PURE, read-only. Render the whole DAG + which steps PARK; run nothing.
+        RunbookCommand::Plan { .. } => {
+            let plan = crate::runbook::plan(&rb, &reg);
+            crate::runbook::emit_plan(&plan);
+            let errs = plan
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == crate::runbook::Severity::Error)
+                .count();
+            let mut out = format!(
+                "Runbook \"{}\", sir: {} step{}, {} will park for a fresh spoken confirm.",
+                plan.name,
+                plan.steps.len(),
+                if plan.steps.len() == 1 { "" } else { "s" },
+                plan.park_count,
+            );
+            if plan.is_runnable() {
+                out.push_str(" It type-checks and is ready to run.");
+            } else {
+                out.push_str(&format!(
+                    " It has {errs} error{} and will NOT run until they're fixed.",
+                    if errs == 1 { "" } else { "s" }
+                ));
+            }
+            out
+        }
+        // RUN: execute — walk the DAG one step at a time through the live gate.
+        RunbookCommand::Run { .. } => {
+            // The LIVE router seam: route each ResolvedStep through the SAME gated entry
+            // point (`anthropic::execute_tool`) a live tool call uses. It routes EXACTLY
+            // ONE step per call (runbook::run never batches), so a consequential step
+            // re-hits the confirmation gate + master switch + voice-id + lockdown FRESH.
+            // Runs under the orchestrator (darwin): its `["*"]` allowlist admits every
+            // tool, and execute_tool re-checks every safety gate regardless.
+            struct LiveRunbookRouter<'a> {
+                memory: &'a Memory,
+                allowed: Vec<String>,
+                namespace: String,
+            }
+            impl crate::runbook::RunbookRouter for LiveRunbookRouter<'_> {
+                fn route_step<'a>(
+                    &'a self,
+                    step: &'a crate::runbook::ResolvedStep,
+                ) -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = crate::runbook::StepResult> + Send + 'a>,
+                > {
+                    Box::pin(async move {
+                        let input = serde_json::Value::Object(step.input.clone());
+                        // `user_originated = false`: a runbook is an automated re-issue
+                        // whose later steps may consume an earlier step's output, so the
+                        // egress continuation guard treats an outward GET conservatively
+                        // — the runbook can never do MORE than a tool continuation could.
+                        let (out, is_error) = anthropic::execute_tool(
+                            &step.uses,
+                            &input,
+                            self.memory,
+                            &self.allowed,
+                            &self.namespace,
+                            false,
+                        )
+                        .await;
+                        // A consequential step is NEVER mapped to a produced value (it
+                        // parked / previewed / was refused); a benign step yields its
+                        // output. This is the load-bearing no-authority mapping.
+                        crate::runbook::classify_step_outcome(step.consequential, out, is_error)
+                    })
+                }
+            }
+
+            let live = LiveRunbookRouter {
+                memory,
+                allowed: agent.tools.clone(),
+                namespace: agent.namespace.clone(),
+            };
+            let report = crate::runbook::run(&rb, &reg, &live).await;
+            crate::runbook::emit_run(&report);
+
+            if report.refused_unsound {
+                let errs = crate::runbook::check(&rb, &reg)
+                    .iter()
+                    .filter(|d| d.severity == crate::runbook::Severity::Error)
+                    .count();
+                return format!(
+                    "Runbook \"{}\" didn't type-check, sir — I refused to run it ({errs} \
+                     error{}). Say \"plan the runbook {}\" and I'll show you what's wrong.",
+                    rb.name,
+                    if errs == 1 { "" } else { "s" },
+                    rb.name,
+                );
+            }
+            let count = |o: crate::runbook::RunOutcome| {
+                report.steps.iter().filter(|s| s.outcome == o).count()
+            };
+            let parked = count(crate::runbook::RunOutcome::Parked);
+            let mut out = format!(
+                "Ran runbook \"{}\" ({} step{}), sir: {} done, {} parked for confirm, {} \
+                 refused, {} blocked.",
+                report.name,
+                report.steps.len(),
+                if report.steps.len() == 1 { "" } else { "s" },
+                count(crate::runbook::RunOutcome::Done),
+                parked,
+                count(crate::runbook::RunOutcome::Refused),
+                count(crate::runbook::RunOutcome::Blocked),
+            );
+            if parked > 0 {
+                // Honest about the single-slot pending: only the most recent parked step
+                // is awaiting your "yes" — each consequential step re-gates on its own.
+                out.push_str(
+                    " The most recent parked step is awaiting your \"yes\"; each \
+                     consequential step re-gates fresh — none was pre-approved.",
+                );
+            }
+            out
+        }
+    }
 }
 
 /// Handle a non-replay MACRO control command (#27): start/stop recording, list, or

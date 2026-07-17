@@ -37,20 +37,24 @@
 //! the executor is generic over an injected router, so every property below is proven
 //! by unit tests with no store, network, or real client.
 
-// INTEGRATION SEAMS (where the live daemon wiring lands — the PURE seams below are the
-// substance + are covered by the hermetic tests in this file; the `runbook_plan` /
-// `runbook_run` op-dispatch is reconciled at integration, so the pending-wiring public
-// API stays `#![allow(dead_code)]` as the auditable contract surface, mirroring
-// lumen.rs / policy.rs / prosody.rs / triage.rs):
-//   * router.rs — a `classify_runbook_command` arm (mirroring the macro arm) hands a
+// INTEGRATION SEAMS (now WIRED — the op-dispatch below is reachable; the PURE seams are
+// the substance + are covered by the hermetic tests in this file):
+//   * router.rs — the [`classify_runbook_command`] arm (mirroring the macro arm) hands a
 //     runbook to [`plan`] / [`run`], where [`run`] re-issues each step through the SAME
-//     router + gate a live command takes (a consequential step PARKS FRESH).
+//     `anthropic::execute_tool` + gate a live tool call takes (a consequential step PARKS
+//     FRESH via [`classify_step_outcome`]). The named runbook is loaded from its confined
+//     on-device store by [`load`] (`state/runbooks/<name>.runbook.toml`).
 //   * config.rs — `[runbook]` (RunbookConfig, SHIPS OFF) gates the whole subsystem.
 //   * telemetry.rs — [`emit_plan`] / [`emit_run`] / [`status_frame`] are the SECRET-FREE
 //     frames the HUD renders (`status_frame` is already wired at daemon startup).
+//
+// A handful of pure inspection helpers (e.g. [`Registry::empty`]) remain part of the
+// auditable contract surface without an external caller yet, so the module keeps a
+// blanket dead-code allow rather than sprinkling per-item ones.
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -1163,6 +1167,167 @@ pub fn emit_run(report: &RunReport) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// OP-DISPATCH SURFACE — the reachable voice-command wiring (router.rs)
+//
+// The router classifies a spoken "plan/run the runbook <name>", loads the named
+// runbook from its confined on-device store, and hands it to [`plan`] (PURE render)
+// or [`run`] (execute — each consequential step PARKS FRESH). None of this adds
+// authority: [`load`] can only read a `state/runbooks/*.runbook.toml`, and
+// [`classify_step_outcome`] NEVER turns a consequential step's `execute_tool` output
+// into a produced value.
+// ---------------------------------------------------------------------------
+
+/// The on-device directory runbooks live in (repo-root-relative). A FIXED `state/...`
+/// constant so a runbook file can only ever be read from inside the daemon's own
+/// state dir — never an absolute path, never a climb.
+pub const RUNBOOK_SUBDIR: &str = "state/runbooks";
+
+/// Max length of a spoken runbook name (mirrors the macro name bound). A name longer
+/// than this is refused by [`normalize_runbook_name`] (returns `""`, so the classifier
+/// declines and the utterance falls through to the model).
+pub const MAX_RUNBOOK_NAME_LEN: usize = 64;
+
+/// A recognized spoken runbook control command. CONSERVATIVELY anchored (mirrors
+/// [`crate::macros::classify_macro_command`]): only the explicit "plan/run the runbook
+/// <name>" phrase shapes classify — a sentence that merely mentions "runbook" does NOT
+/// trigger. Both carry an already-normalized, CONFINED file stem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunbookCommand {
+    /// "plan the runbook X" / "preview the runbook X" — PURE, read-only: render the
+    /// typed DAG + which steps will PARK. Nothing runs.
+    Plan { name: String },
+    /// "run the runbook X" / "execute the runbook X" — execute: re-issue EACH step
+    /// FRESH through the live tool gate, one at a time (a consequential step PARKS).
+    Run { name: String },
+}
+
+impl RunbookCommand {
+    /// The (already-normalized) runbook name this command targets.
+    pub fn name(&self) -> &str {
+        match self {
+            RunbookCommand::Plan { name } | RunbookCommand::Run { name } => name,
+        }
+    }
+}
+
+/// Normalize + VALIDATE a spoken runbook name into a SAFE, CONFINED file stem:
+/// lowercased, trimmed, a trailing `.runbook.toml` / `.runbook` / `.toml` extension
+/// dropped, bounded to [`MAX_RUNBOOK_NAME_LEN`], and restricted to `[a-z0-9._-]` with
+/// NO path separator, NO `..`, and no leading dot — so the derived path can only ever
+/// address a file INSIDE the runbook dir, never climb out or become a dotfile. An
+/// unsafe or empty name returns `""` (the classifier then declines, so the utterance
+/// falls through to the model rather than addressing a surprising file). PURE.
+pub fn normalize_runbook_name(raw: &str) -> String {
+    let lowered = raw.trim().to_lowercase();
+    let stem = lowered
+        .strip_suffix(".runbook.toml")
+        .or_else(|| lowered.strip_suffix(".runbook"))
+        .or_else(|| lowered.strip_suffix(".toml"))
+        .unwrap_or(&lowered)
+        .trim();
+    if stem.is_empty() || stem.len() > MAX_RUNBOOK_NAME_LEN {
+        return String::new();
+    }
+    // Confinement: a plain stem only — never a path, a climb, or a dotfile.
+    if stem.starts_with('.') || stem.contains('/') || stem.contains('\\') || stem.contains("..") {
+        return String::new();
+    }
+    if !stem.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
+        return String::new();
+    }
+    stem.to_string()
+}
+
+/// Classify a spoken utterance as a runbook control command, or None. PURE and
+/// conservative: it fires ONLY on clear, anchored "plan/run the runbook <name>"
+/// phrasings whose name normalizes to a safe stem — an ordinary sentence that merely
+/// mentions "runbook" (or a path-shaped name) never triggers. PLAN is checked before
+/// RUN so a "plan" phrasing is never misread as a "run". Mirrors
+/// [`crate::macros::classify_macro_command`].
+pub fn classify_runbook_command(text: &str) -> Option<RunbookCommand> {
+    let t = text.trim().to_lowercase();
+    let t = t.trim_end_matches(['.', '!', '?']).trim();
+
+    // PLAN (PURE, read-only) — checked FIRST so a "plan" phrasing never reads as "run".
+    for lead in [
+        "plan the runbook ",
+        "plan runbook ",
+        "preview the runbook ",
+        "preview runbook ",
+    ] {
+        if let Some(rest) = t.strip_prefix(lead) {
+            let name = normalize_runbook_name(rest);
+            if !name.is_empty() {
+                return Some(RunbookCommand::Plan { name });
+            }
+        }
+    }
+
+    // RUN (execute — each consequential step PARKS fresh).
+    for lead in [
+        "run the runbook ",
+        "run runbook ",
+        "execute the runbook ",
+        "execute runbook ",
+    ] {
+        if let Some(rest) = t.strip_prefix(lead) {
+            let name = normalize_runbook_name(rest);
+            if !name.is_empty() {
+                return Some(RunbookCommand::Run { name });
+            }
+        }
+    }
+
+    None
+}
+
+/// The absolute path of the named runbook under `root`
+/// (`<root>/state/runbooks/<name>.runbook.toml`). `name` MUST already be a safe stem
+/// from [`normalize_runbook_name`]; the caller enforces that (see [`load`]).
+pub fn runbook_path(root: &Path, name: &str) -> PathBuf {
+    root.join(RUNBOOK_SUBDIR).join(format!("{name}.runbook.toml"))
+}
+
+/// LOAD + PARSE a named runbook from its confined on-device store. Re-normalizes the
+/// name (belt-and-suspenders — a path-y name is refused, never read) and returns the
+/// parsed (still-UNCHECKED — [`plan`]/[`run`] type-check it) [`Runbook`], or an honest
+/// error string (invalid name / not found / parse failure). The ONLY effect is a
+/// single file read of a `state/runbooks/*.runbook.toml`; it adds no authority.
+pub fn load(root: &Path, name: &str) -> Result<Runbook, String> {
+    let name = normalize_runbook_name(name);
+    if name.is_empty() {
+        return Err("that isn't a valid runbook name".to_string());
+    }
+    let path = runbook_path(root, &name);
+    let src = std::fs::read_to_string(&path)
+        .map_err(|_| format!("I have no runbook named \"{name}\""))?;
+    parse(&src).map_err(|e| format!("runbook \"{name}\" didn't parse: {e}"))
+}
+
+/// Map ONE [`crate::anthropic::execute_tool`] outcome `(out, is_error)` for a step of
+/// the given privilege into a [`StepResult`]. This is the PRODUCTION router's core
+/// decision, factored out PURE so its load-bearing invariant is unit-tested WITHOUT
+/// spawning a tool:
+///
+/// **A consequential step is NEVER mapped to a produced value.** With the master switch
+/// ON, `execute_tool` PARKED it (installed the single-slot pending) for a FRESH spoken
+/// confirm; with the switch OFF it returned a dry-run PREVIEW and executed nothing.
+/// Either way it produced no authority-bearing value, so a downstream `${ref}` consumer
+/// stays BLOCKED rather than run on a fabricated one. Only a BENIGN step yields a
+/// [`StepResult::Produced`]; any `is_error` (voice-id / policy-Never refusal) is a
+/// [`StepResult::Refused`] regardless of privilege.
+pub fn classify_step_outcome(consequential: bool, out: String, is_error: bool) -> StepResult {
+    if is_error {
+        return StepResult::Refused(out);
+    }
+    if consequential {
+        StepResult::Parked(out)
+    } else {
+        StepResult::Produced(Value::String(out))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1693,5 +1858,117 @@ mod tests {
         assert_eq!(f["enabled"], json!(false));
         assert_eq!(f["max_steps"], json!(DEFAULT_MAX_STEPS));
         assert!(f["honesty"].as_str().unwrap().to_lowercase().contains("park"));
+    }
+
+    // =====================================================================
+    // OP-DISPATCH — the reachable voice-command classifier + loader + the
+    // production outcome mapper (a consequential step never produces a value)
+    // =====================================================================
+
+    #[test]
+    fn classify_runbook_plan_and_run_phrasings() {
+        // PLAN (read-only) shapes.
+        for (utter, want) in [
+            ("plan the runbook morning", "morning"),
+            ("Plan runbook deploy-check.", "deploy-check"),
+            ("preview the runbook nightly_sweep", "nightly_sweep"),
+        ] {
+            assert_eq!(
+                classify_runbook_command(utter),
+                Some(RunbookCommand::Plan { name: want.to_string() }),
+                "{utter:?} should classify as PLAN {want}"
+            );
+        }
+        // RUN (execute) shapes.
+        for (utter, want) in [
+            ("run the runbook morning", "morning"),
+            ("Run runbook deploy-check!", "deploy-check"),
+            ("execute the runbook nightly_sweep", "nightly_sweep"),
+        ] {
+            assert_eq!(
+                classify_runbook_command(utter),
+                Some(RunbookCommand::Run { name: want.to_string() }),
+                "{utter:?} should classify as RUN {want}"
+            );
+        }
+        // A trailing `.runbook.toml` extension is normalized off the spoken name.
+        assert_eq!(
+            classify_runbook_command("run the runbook morning.runbook.toml"),
+            Some(RunbookCommand::Run { name: "morning".to_string() })
+        );
+    }
+
+    #[test]
+    fn classify_runbook_does_not_over_trigger() {
+        // A sentence that merely MENTIONS a runbook never triggers — only the anchored
+        // "plan/run the runbook <name>" shapes do.
+        for utter in [
+            "what is a runbook",
+            "tell me about the runbook feature",
+            "i wrote a runbook yesterday",
+            "should i run the tests",
+            "run the app",
+            "plan my day",
+            "runbook", // bare word, no verb + name
+            "run the runbook", // verb but no name
+            "plan the runbook ", // name is empty after the lead
+        ] {
+            assert_eq!(classify_runbook_command(utter), None, "{utter:?} must NOT trigger");
+        }
+    }
+
+    #[test]
+    fn runbook_name_normalization_is_confined() {
+        // Ordinary stems normalize; extensions are dropped.
+        assert_eq!(normalize_runbook_name("Morning"), "morning");
+        assert_eq!(normalize_runbook_name(" deploy-check "), "deploy-check");
+        assert_eq!(normalize_runbook_name("nightly.runbook.toml"), "nightly");
+        assert_eq!(normalize_runbook_name("nightly.toml"), "nightly");
+        // CONFINEMENT: a path-shaped or climbing name is refused (empty), so a spoken
+        // command can never address a file outside the runbook dir.
+        for bad in [
+            "../secrets",
+            "..",
+            "a/b",
+            "a\\b",
+            "/etc/passwd",
+            ".hidden",
+            "has space",
+            "weird$name",
+            "",
+        ] {
+            assert_eq!(normalize_runbook_name(bad), "", "{bad:?} must be refused");
+            // And a "run" of a path-y name never classifies (falls through to model).
+            assert_eq!(classify_runbook_command(&format!("run the runbook {bad}")), None);
+        }
+        // The derived path stays inside the runbook subdir.
+        let p = runbook_path(Path::new("/root"), "morning");
+        assert_eq!(p, Path::new("/root/state/runbooks/morning.runbook.toml"));
+        assert!(p.starts_with("/root/state/runbooks"));
+    }
+
+    #[test]
+    fn production_outcome_mapping_never_produces_from_a_consequential_step() {
+        // LOAD-BEARING: a consequential step's execute_tool output is NEVER a produced
+        // value — with the gate ON it PARKED, with it OFF it only previewed; both map to
+        // Parked, so no authority-bearing value ever reaches a downstream consumer.
+        match classify_step_outcome(true, "say 'confirm' to post".to_string(), false) {
+            StepResult::Parked(p) => assert!(p.contains("confirm")),
+            other => panic!("consequential must PARK, got {other:?}"),
+        }
+        // A benign step yields its produced value.
+        match classify_step_outcome(false, "ok".to_string(), false) {
+            StepResult::Produced(v) => assert_eq!(v, json!("ok")),
+            other => panic!("benign must Produce, got {other:?}"),
+        }
+        // An error is a refusal regardless of privilege (voice-id / policy-Never).
+        assert!(matches!(
+            classify_step_outcome(true, "unrecognized voice".to_string(), true),
+            StepResult::Refused(_)
+        ));
+        assert!(matches!(
+            classify_step_outcome(false, "not permitted".to_string(), true),
+            StepResult::Refused(_)
+        ));
     }
 }

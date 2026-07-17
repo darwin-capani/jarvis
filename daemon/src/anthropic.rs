@@ -12223,6 +12223,7 @@ mod tests {
         agent_id_from_namespace, agent_may_use, annotate_with, avoid_instruction,
         budget_exhausted_reply,
         build_messages, build_system_blocks, cite_annotation, citation_for_tool, clear_sources,
+        changeq_apply_tool,
         cloud_summary_candidates, confidence_tail, current_sources, dispatch_tool,
         answer_annotation_telemetry, answers, capability_label,
         downgrade_always_if_unattended,
@@ -14409,6 +14410,46 @@ mod tests {
         assert!(!outcome.contains("not permitted"), "github_list_prs is allowed, not refused: {outcome}");
         assert!(outcome.contains("Settings"), "missing-token message expected: {outcome}");
         cleanup_temp_memory(&mem_path("allowlist"));
+    }
+
+    /// CHANGE QUEUE apply (changeq.rs) routes ONLY to the EXISTING gated re-validation
+    /// — it invents NO new authority. `changeq_apply_tool` resolves a queued proposal
+    /// and surfaces THAT type's pre-existing apply script + `<ts>` (the same script a
+    /// human already runs), stating plainly it has applied NOTHING itself. This is the
+    /// reachable LLM-tool core (granted to steve); the deferred router wiring never
+    /// added a second apply path.
+    #[test]
+    fn changeq_apply_routes_to_the_existing_gated_script_and_invents_no_authority() {
+        // Register a proposal on the process-global queue (unique ts so we find OURS).
+        let ts = 1_777_500_777;
+        let prov = crate::changeq::Provenance::new("steve", "claude-opus-4-8", "run", "deadbeef");
+        crate::changeq::on_proposal(crate::changeq::ChangeKind::Code, ts, prov, "diff: +2/-0")
+            .expect("armed-by-default queue accepts the register");
+
+        let reply = changeq_apply_tool("code", ts);
+        // It routes to the EXISTING, human-gated apply command (script + ts) — never a
+        // new changeq-specific apply binary.
+        assert!(
+            reply.contains(&format!("scripts/apply_code_diff.sh {ts}")),
+            "apply must surface the existing script + ts: {reply}"
+        );
+        // It applies NOTHING itself and says so honestly.
+        assert!(reply.contains("NOT applied"), "must be explicit it applied nothing: {reply}");
+        assert!(reply.contains("PROPOSE-ONLY"), "must name the propose-only contract: {reply}");
+        // It never fabricates a changeq-owned apply authority.
+        assert!(
+            !reply.to_lowercase().contains("changeq_apply.sh")
+                && !reply.contains("apply_changeq"),
+            "must not invent a changeq apply authority: {reply}"
+        );
+
+        // An unqueued proposal is an honest miss — never a fabricated apply route.
+        let miss = changeq_apply_tool("code", 424242);
+        assert!(miss.contains("no code proposal"), "unqueued -> honest miss: {miss}");
+        assert!(
+            miss.to_lowercase().contains("won't fabricate"),
+            "must refuse to fabricate an apply route: {miss}"
+        );
     }
 
     /// CODE INTELLIGENCE (task #16) ownership + OFF-gate, fully hermetic.
