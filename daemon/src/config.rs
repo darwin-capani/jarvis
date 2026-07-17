@@ -800,8 +800,10 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // knowledge-graph build only over chunks the confined indexer already produced.
     // It is a real parsed DocSearchConfig field, so it MUST be listed here or the
     // daemon falsely warns "unknown config key docsearch.build_graph ignored" while
-    // still honoring it. Listed here so none reads as a typo; the `roots` array is
-    // validated structurally by serde.
+    // still honoring it. `spotlight` + `spotlight_max_candidates` (spotlight.rs)
+    // gate/bound the READ-ONLY mdfind/mdls Spotlight bridge (SHIPS ON — inert
+    // without roots; candidates run the same confined pipeline). Listed here so
+    // none reads as a typo; the `roots` array is validated structurally by serde.
     (
         "docsearch",
         &[
@@ -814,6 +816,8 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "chunk_chars",
             "chunk_overlap",
             "build_graph",
+            "spotlight",
+            "spotlight_max_candidates",
         ],
     ),
     // [code] — CODE INTELLIGENCE (code.rs): code_explain (grounded answers over the
@@ -2598,6 +2602,19 @@ pub struct DocSearchConfig {
     /// shared world tier; it never re-walks the disk and never writes an agent's
     /// private namespace. Inert until docsearch has roots + an index.
     pub build_graph: bool,
+    /// SPOTLIGHT BRIDGE (spotlight.rs): when true, a file search ALSO asks macOS
+    /// Spotlight (READ-ONLY `mdfind`, always `-onlyin` per allowlisted root —
+    /// never an unrestricted query) for candidate files, absorbed through the
+    /// SAME confined/bounded/honest-skip indexing pipeline, and enriches cited
+    /// hits with `mdls` metadata (absent when unreadable — never fabricated).
+    /// SHIPS ON (full-power default) — INERT WITHOUT ROOTS: it is additionally
+    /// gated on `enabled` + a non-empty `roots`, so it can never widen what
+    /// docsearch may touch. Nothing here can mutate Spotlight state.
+    pub spotlight: bool,
+    /// Bound: max Spotlight candidate paths considered per search (the mdfind
+    /// result list is capped HERE before any confinement/read work). Clamped to
+    /// a hard ceiling in spotlight.rs so a typo can never bulk-ingest a disk.
+    pub spotlight_max_candidates: usize,
 }
 
 impl Default for DocSearchConfig {
@@ -2629,6 +2646,13 @@ impl Default for DocSearchConfig {
             // user.world.* tier (provenance-tagged, deduped, bounded). Inert until
             // docsearch has roots + an index.
             build_graph: true,
+            // SHIPS ON (full-power default) — INERT WITHOUT ROOTS: the Spotlight
+            // bridge is READ-ONLY (mdfind/mdls only) and root-confined; with no
+            // allowlisted root it never issues a query at all.
+            spotlight: true,
+            // A focused candidate list per search; clamped to a hard ceiling in
+            // spotlight.rs regardless of what is configured here.
+            spotlight_max_candidates: 64,
         }
     }
 }
@@ -5951,6 +5975,13 @@ mod tests {
             cfg.docsearch.chunk_overlap < cfg.docsearch.chunk_chars,
             "overlap must be smaller than the chunk window or chunking never advances"
         );
+        // The READ-ONLY Spotlight bridge SHIPS ON (inert without roots, like the
+        // subsystem itself) with a real, finite candidate bound.
+        assert!(cfg.docsearch.spotlight, "Spotlight bridge SHIPS ON (read-only; inert without roots)");
+        assert!(
+            cfg.docsearch.spotlight_max_candidates > 0,
+            "spotlight_max_candidates must be a real bound"
+        );
 
         // The operator can turn it on, allowlist a root, and retune the bounds —
         // all known keys, all round-tripping.
@@ -5965,6 +5996,8 @@ mod tests {
             chunk_chars = 800
             chunk_overlap = 100
             build_graph = true
+            spotlight = false
+            spotlight_max_candidates = 16
         "#;
         let (cfg, issues) = Config::parse(raw);
         assert!(issues.is_empty(), "docsearch keys must all be known: {issues:?}");
@@ -5979,6 +6012,10 @@ mod tests {
         // `build_graph` is a real parsed field, so it must round-trip AND be a known
         // key (no false "unknown config key docsearch.build_graph ignored").
         assert!(cfg.docsearch.build_graph);
+        // The Spotlight keys round-trip too (an operator can turn the bridge off
+        // and retune the candidate bound without an unknown-key diagnostic).
+        assert!(!cfg.docsearch.spotlight);
+        assert_eq!(cfg.docsearch.spotlight_max_candidates, 16);
 
         // A typo'd docsearch key is diagnosed, not silently swallowed.
         let (_cfg, issues) = Config::parse("[docsearch]\nenabledd = true\n");

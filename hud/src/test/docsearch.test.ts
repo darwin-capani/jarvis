@@ -6,6 +6,7 @@ import {
   parseDocIndexStatus,
   parseDocSearchResult,
   parsePdfJailAvailable,
+  parseSpotlightAvailable,
   type DocIndexStatus,
   type DocSearchResult,
   type TelemetryEnvelope,
@@ -187,12 +188,30 @@ describe("parsePdfJailAvailable (strict, never overclaims the jail)", () => {
   });
 });
 
+describe("parseSpotlightAvailable (strict, never overclaims the bridge)", () => {
+  it("reports the bridge answering only on a literal JSON true", () => {
+    expect(parseSpotlightAvailable({ spotlight_available: true })).toBe(true);
+    expect(parseSpotlightAvailable({ spotlight_available: false })).toBe(false);
+  });
+
+  it("coerces absent/malformed/truthy-but-not-boolean to false (the safe direction)", () => {
+    // An OLDER daemon's status frame has no spotlight leg at all — that must
+    // read as "not answering", never as a working integration.
+    expect(parseSpotlightAvailable({ pdfjail_available: true })).toBe(false);
+    expect(parseSpotlightAvailable({})).toBe(false);
+    expect(parseSpotlightAvailable({ spotlight_available: "true" })).toBe(false);
+    expect(parseSpotlightAvailable({ spotlight_available: 1 })).toBe(false);
+    expect(parseSpotlightAvailable({ spotlight_available: null })).toBe(false);
+  });
+});
+
 describe("docsearch reducer", () => {
-  it("starts with no index, no search, and an unknown (null) pdf-jail status", () => {
+  it("starts with no index, no search, and unknown (null) pdf-jail + spotlight statuses", () => {
     const s = connected();
     expect(s.docIndex).toBeNull();
     expect(s.docSearch).toBeNull();
     expect(s.pdfJailAvailable).toBeNull();
+    expect(s.spotlightAvailable).toBeNull();
   });
 
   it("sets the pdf-jail guard status from docsearch.status (system channel)", () => {
@@ -203,9 +222,30 @@ describe("docsearch reducer", () => {
     expect(s.pdfJailAvailable).toBe(false);
   });
 
+  it("sets the spotlight bridge status from the SAME docsearch.status frame", () => {
+    let s = tel(
+      connected(),
+      env("docsearch.status", { pdfjail_available: true, spotlight_available: true }, "system"),
+    );
+    expect(s.spotlightAvailable).toBe(true);
+    // Latest-wins, independently of the jail leg.
+    s = tel(s, env("docsearch.status", { pdfjail_available: true, spotlight_available: false }, "system"));
+    expect(s.spotlightAvailable).toBe(false);
+    expect(s.pdfJailAvailable).toBe(true);
+  });
+
+  it("an OLDER daemon's status frame (no spotlight leg) reads as not-answering", () => {
+    const s = tel(connected(), env("docsearch.status", { pdfjail_available: true }, "system"));
+    expect(s.spotlightAvailable).toBe(false);
+  });
+
   it("a malformed docsearch.status frame reads as the in-process fallback, not armed", () => {
-    const s = tel(connected(), env("docsearch.status", { pdfjail_available: "yes" }, "system"));
+    const s = tel(
+      connected(),
+      env("docsearch.status", { pdfjail_available: "yes", spotlight_available: "yes" }, "system"),
+    );
     expect(s.pdfJailAvailable).toBe(false);
+    expect(s.spotlightAvailable).toBe(false);
   });
 
   it("sets the index status from docsearch.indexed", () => {
@@ -236,7 +276,11 @@ describe("DocSearchPanel (cited, honest, review-only)", () => {
     index: DocIndexStatus | null,
     search: DocSearchResult | null,
     pdfJail: boolean | null = null,
-  ) => renderToStaticMarkup(createElement(DocSearchPanel, { index, search, pdfJail }));
+    spotlight: boolean | null = null,
+  ) =>
+    renderToStaticMarkup(
+      createElement(DocSearchPanel, { index, search, pdfJail, spotlight }),
+    );
 
   it("shows the green ARMED guard pill when the daemon reports the pdf jail present", () => {
     const html = render(parseDocIndexStatus(indexedNeural), null, true);
@@ -263,6 +307,27 @@ describe("DocSearchPanel (cited, honest, review-only)", () => {
     const html = render(parseDocIndexStatus({ files: 0, chunks: 0, embedded_chunks: 0 }), null, false);
     expect(html).toMatch(/NOT INDEXED/i);
     expect(html).not.toContain("PDF JAIL");
+  });
+
+  it("shows the green SPOTLIGHT ON pill when the daemon reports the bridge answering", () => {
+    const html = render(parseDocIndexStatus(indexedNeural), null, null, true);
+    expect(html).toContain("SPOTLIGHT ON");
+    expect(html).not.toContain("SPOTLIGHT IDLE");
+    expect(html).toContain("docsearch-pill spotlight-on");
+  });
+
+  it("shows the dim SPOTLIGHT IDLE pill when the bridge has not answered (honest false)", () => {
+    // False covers "no search has queried Spotlight yet" AND "mdfind absent /
+    // Spotlight indexing disabled" — idle is normal, so the pill is dim, not amber.
+    const html = render(parseDocIndexStatus(indexedNeural), null, null, false);
+    expect(html).toContain("SPOTLIGHT IDLE");
+    expect(html).not.toContain("SPOTLIGHT ON");
+    expect(html).toContain("docsearch-pill spotlight-idle");
+  });
+
+  it("claims nothing about spotlight before a status frame arrives (older daemons)", () => {
+    const html = render(parseDocIndexStatus(indexedNeural), null, null, null);
+    expect(html).not.toContain("SPOTLIGHT");
   });
 
   it("renders nothing before any index or search", () => {

@@ -357,6 +357,12 @@ mod skills;
 // Hermetically tested (tmutil exec injected; never spawned under test).
 mod snapshot;
 mod speech;
+// SPOTLIGHT BRIDGE (spotlight.rs): READ-ONLY mdfind/mdls candidate generation +
+// metadata enrichment for docsearch — root-confined (`-onlyin` per allowlisted
+// root, never an unrestricted query), bounded, honest. Candidates run the SAME
+// docsearch confinement/allowlist/extraction pipeline; nothing here can mutate
+// Spotlight state. Hermetically tested (runner injected; never spawned in tests).
+mod spotlight;
 mod standing;
 mod tcc;
 mod telemetry;

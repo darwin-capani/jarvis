@@ -700,6 +700,8 @@ max_depth = 16                 # bound: recursion depth under each root (root = 
 chunk_chars = 1200             # chunk window size in chars.
 chunk_overlap = 200            # overlap between consecutive chunks (must be < chunk_chars).
 build_graph = true             # KNOWLEDGE-GRAPH build over already-indexed chunks, SHIPS ON (full-power default) — INERT WITHOUT INDEXED DOCS: the deterministic extractor only reads chunks the confined allowlisted indexer produced (never re-walks disk) and writes the shared user.world.* tier (provenance-tagged, deduped, bounded). Inert until docsearch has roots + an index. Set false to disable.
+spotlight = true               # macOS SPOTLIGHT BRIDGE (spotlight.rs), SHIPS ON (full-power default) — READ-ONLY (mdfind/mdls only; nothing can mutate Spotlight state) and INERT WITHOUT ROOTS: every mdfind query is confined with -onlyin to the roots above (never an unrestricted whole-Mac query), and every candidate re-runs the SAME path-confinement/allowlist/size/extraction pipeline before it may be indexed. Cited hits gain mdls metadata (content type / last used / authors) when readable — absent when not, never fabricated. Set false to disable.
+spotlight_max_candidates = 64  # bound: max Spotlight candidate paths considered per search (clamped to a hard ceiling in code).
 
 # [code] — CODE INTELLIGENCE (code.rs): code_explain (a grounded, CITED answer over
 # the on-device code index — never fabricating code not indexed) + code_propose_diff

@@ -40,6 +40,12 @@
 //! / scanned / image-only file — or one whose parser PANICS — is SKIPPED with a
 //! logged reason and is NEVER indexed as empty/garbage and NEVER crashes the walk.
 //! Other binaries (images, archives, ...) remain out of scope and are skipped.
+//!
+//! Besides the walk, the index accepts ADDITIONAL CANDIDATES from the READ-ONLY
+//! macOS Spotlight bridge ([`crate::spotlight`], gated by `[docsearch].spotlight`)
+//! via [`DocIndex::absorb_candidates`] — every candidate is RE-CONFINED and runs
+//! the SAME allowlist/size/extraction/bounds pipeline as a walk-discovered file,
+//! so Spotlight can only ever surface files the walk itself would be allowed to.
 
 use std::collections::HashSet;
 use std::io::{Cursor, Read};
@@ -624,21 +630,31 @@ pub fn pdfjail_available() -> bool {
 }
 
 /// Build the `docsearch.status` telemetry payload. Pure + total so the exact wire
-/// shape the HUD's `parsePdfJailAvailable` reads is unit-tested without touching
-/// the telemetry bus (mirrors `policy::snapshot_payload`).
-fn status_payload(pdfjail_available: bool) -> serde_json::Value {
-    serde_json::json!({ "pdfjail_available": pdfjail_available })
+/// shape the HUD's `parsePdfJailAvailable` / `parseSpotlightAvailable` read is
+/// unit-tested without touching the telemetry bus (mirrors `policy::snapshot_payload`).
+fn status_payload(pdfjail_available: bool, spotlight_available: bool) -> serde_json::Value {
+    serde_json::json!({
+        "pdfjail_available": pdfjail_available,
+        "spotlight_available": spotlight_available,
+    })
 }
 
 /// Emit the ambient document-extraction guard status as `docsearch.status`
 /// telemetry for the HUD's DocSearchPanel (system channel, on the audit-snapshot
 /// cadence — see `audit_snapshot_task` in main.rs). READ-ONLY and SECRET-FREE
-/// (one boolean): whether THIS process finds the pdfjail helper next to its
+/// (two booleans): whether THIS process finds the pdfjail helper next to its
 /// executable, i.e. whether PDF extraction runs memory-jailed or on the weaker
-/// in-process fallback guard ([`pdf_text_in_process`]'s documented residuals).
-/// One `stat()` per tick.
+/// in-process fallback guard ([`pdf_text_in_process`]'s documented residuals) —
+/// and whether the READ-ONLY Spotlight candidate generator is actually answering
+/// ([`crate::spotlight::spotlight_available`]: mdfind present AND at least one
+/// real query succeeded; honest false when Spotlight indexing is disabled).
+/// One `stat()` (each) per tick.
 pub fn emit_status() {
-    crate::telemetry::emit("system", "docsearch.status", status_payload(pdfjail_available()));
+    crate::telemetry::emit(
+        "system",
+        "docsearch.status",
+        status_payload(pdfjail_available(), crate::spotlight::spotlight_available()),
+    );
 }
 
 /// Warn ONCE per process that the memory-jail helper is absent and PDF extraction
@@ -1419,6 +1435,153 @@ impl DocIndex {
                 .await?;
         }
         self.status().await
+    }
+
+    /// The store's current footprint for the absorption budgets: every DISTINCT
+    /// indexed file path plus the total chunk count, read under one lock so the
+    /// two are mutually consistent.
+    async fn indexed_footprint(&self) -> Result<(HashSet<String>, usize)> {
+        let st = self.state.lock().await;
+        let mut stmt = st.conn.prepare("SELECT DISTINCT file_path FROM doc_chunks")?;
+        let paths = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<HashSet<_>, _>>()?;
+        let chunks: i64 = st.conn.query_row("SELECT COUNT(*) FROM doc_chunks", [], |r| r.get(0))?;
+        Ok((paths, chunks.max(0) as usize))
+    }
+
+    /// ABSORB additional candidate files (today: Spotlight's — see
+    /// [`crate::spotlight`]) into the index through the SAME pipeline the walk
+    /// feeds: every candidate is RE-CONFINED here ([`confine`] against the
+    /// canonicalized `roots` — an out-of-root path is DROPPED whatever the
+    /// generator claimed), hidden entries are skipped (the walk's privacy rule),
+    /// the extension allowlist + per-file size cap gate the read, extraction runs
+    /// behind the panic-safe HONEST-SKIP guard, and chunking/embedding/storage are
+    /// byte-for-byte the reindex path's. BOUNDED: absorption never grows the store
+    /// past `max_files` distinct files or `max_chunks` total chunks — a full store
+    /// absorbs nothing. Already-indexed files are skipped (never duplicated).
+    /// Returns how many NEW files were absorbed. NETWORK: never — same contract
+    /// as [`Self::reindex`].
+    pub async fn absorb_candidates(
+        &self,
+        roots: &[String],
+        candidates: Vec<Discovered>,
+        bounds: &IndexBounds,
+        embedder: &dyn Embedder,
+    ) -> Result<u64> {
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        let (indexed, chunk_count) = self.indexed_footprint().await?;
+        let file_budget = bounds.max_files.saturating_sub(indexed.len());
+        let chunk_budget = bounds.max_chunks.saturating_sub(chunk_count);
+        if file_budget == 0 || chunk_budget == 0 {
+            return Ok(0); // the store is at its ceiling — absorb nothing
+        }
+
+        // The gather phase is BLOCKING work (canonicalize/stat/read + the
+        // extractors, which can sit in the pdfjail watchdog) — run it on the
+        // blocking pool exactly like the reindex gather.
+        struct Pending {
+            root: String,
+            file_path: String,
+            byte_offset: usize,
+            text: String,
+        }
+        let roots = roots.to_vec();
+        let bounds = *bounds;
+        let pending: Vec<Pending> = tokio::task::spawn_blocking(move || {
+            let canon = canonical_roots(&roots);
+            let mut pending: Vec<Pending> = Vec::new();
+            let mut files_taken = 0usize;
+            'cands: for c in &candidates {
+                if files_taken >= file_budget || pending.len() >= chunk_budget {
+                    break;
+                }
+                // RE-CONFINE (defense in depth): the candidate must resolve
+                // inside an allowlisted root NOW, whatever produced it.
+                let Some(real) = confine(&c.path, &canon) else {
+                    continue;
+                };
+                let Some(root) = canon.iter().find(|r| real.starts_with(r)) else {
+                    continue;
+                };
+                // The walk never surfaces hidden entries; neither may a candidate.
+                let hidden = real
+                    .strip_prefix(root)
+                    .map(|rel| {
+                        rel.components().any(|comp| {
+                            matches!(comp, Component::Normal(n)
+                                if n.to_string_lossy().starts_with('.'))
+                        })
+                    })
+                    .unwrap_or(true);
+                if hidden {
+                    continue;
+                }
+                let file_path = real.display().to_string();
+                if indexed.contains(&file_path) {
+                    continue; // already indexed — never duplicated
+                }
+                // The SAME per-file gates as the walk: extension allowlist,
+                // metadata size cap (no read yet), then read + guarded extract.
+                let Some(kind) = classify(&real) else {
+                    continue;
+                };
+                let Ok(meta) = std::fs::metadata(&real) else {
+                    continue;
+                };
+                if !meta.is_file() || meta.len() as usize > bounds.max_file_bytes {
+                    continue;
+                }
+                let Ok(bytes) = std::fs::read(&real) else {
+                    continue;
+                };
+                let Some(content) = extract_text(&real, kind, &bytes, bounds.max_file_bytes)
+                else {
+                    continue; // HONEST SKIP (corrupt/encrypted/scanned/binary)
+                };
+                let chunks = chunk_text(&content, bounds.chunk_chars, bounds.chunk_overlap);
+                if chunks.is_empty() {
+                    continue;
+                }
+                let root_s = root.display().to_string();
+                files_taken += 1;
+                for ch in chunks {
+                    if pending.len() >= chunk_budget {
+                        break 'cands;
+                    }
+                    pending.push(Pending {
+                        root: root_s.clone(),
+                        file_path: file_path.clone(),
+                        byte_offset: ch.byte_offset,
+                        text: ch.text,
+                    });
+                }
+            }
+            pending
+        })
+        .await
+        .context("candidate absorption gather/extraction task failed")?;
+        if pending.is_empty() {
+            return Ok(0);
+        }
+
+        // Embed ON-DEVICE in one batched call, storing vector-less on ANY error —
+        // the same fallback discipline as reindex (search then reports BM25).
+        let texts: Vec<String> = pending.iter().map(|p| p.text.clone()).collect();
+        let vectors: Option<Vec<Vec<f64>>> = match embedder.embed(&texts).await {
+            Ok(v) if v.len() == texts.len() && v.iter().all(|x| !x.is_empty()) => Some(v),
+            _ => None,
+        };
+        let mut absorbed: HashSet<String> = HashSet::new();
+        for (i, p) in pending.iter().enumerate() {
+            let vec = vectors.as_ref().map(|vs| vs[i].as_slice());
+            self.insert_chunk(&p.root, &p.file_path, p.byte_offset, &p.text, vec)
+                .await?;
+            absorbed.insert(p.file_path.clone());
+        }
+        Ok(absorbed.len() as u64)
     }
 
     /// SEARCH: rank the stored chunks against `query` and return at most `k` CITED
@@ -2382,19 +2545,20 @@ mod tests {
     }
 
     /// The `docsearch.status` wire shape must match the HUD's
-    /// `parsePdfJailAvailable` (events.ts): one snake_case boolean, no wrapper.
-    /// The HUD treats anything but a literal `true` as the in-process fallback
-    /// (never overclaims the stronger guard), so the payload must be a REAL
-    /// JSON boolean, not a string.
+    /// `parsePdfJailAvailable` + `parseSpotlightAvailable` (events.ts): flat
+    /// snake_case booleans, no wrapper. The HUD treats anything but a literal
+    /// `true` as the weaker/absent state (never overclaims a guard or the
+    /// Spotlight integration), so the payloads must be REAL JSON booleans, not
+    /// strings.
     #[test]
     fn status_payload_wire_shape_matches_the_hud_parser() {
         assert_eq!(
-            status_payload(true),
-            serde_json::json!({ "pdfjail_available": true })
+            status_payload(true, false),
+            serde_json::json!({ "pdfjail_available": true, "spotlight_available": false })
         );
         assert_eq!(
-            status_payload(false),
-            serde_json::json!({ "pdfjail_available": false })
+            status_payload(false, true),
+            serde_json::json!({ "pdfjail_available": false, "spotlight_available": true })
         );
     }
 
@@ -2709,5 +2873,141 @@ mod tests {
         assert!(extension_allowed(Path::new("a.pdf")));
         assert!(extension_allowed(Path::new("a.docx")));
         assert!(!extension_allowed(Path::new("a.png")));
+    }
+
+    // =====================================================================
+    // CANDIDATE ABSORPTION (the Spotlight seam, crate::spotlight) — extra
+    // candidates run the SAME confined, bounded, honest-skip pipeline.
+    // =====================================================================
+
+    /// Build a Discovered for an absorb test the way the generator would:
+    /// canonical real path + its canonical root.
+    fn discovered(t: &TempTree, root_sub: &str, path: &PathBuf) -> Discovered {
+        Discovered {
+            path: fs::canonicalize(path).unwrap(),
+            root: fs::canonicalize(t.join(root_sub)).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn absorb_candidates_indexes_new_confined_files_and_search_cites_them() {
+        let t = TempTree::new("absorb");
+        t.write("docs/walked.md", "a note the walk already indexed");
+        let idx = DocIndex::open(&t.db_path()).unwrap();
+        let roots = roots_of(&t, "docs");
+        let bounds = IndexBounds::default();
+        idx.reindex(&roots, &bounds, &DownEmbedder).await.unwrap();
+        assert_eq!(idx.status().await.unwrap().files, 1);
+
+        // A NEW file appears after the reindex (exactly what Spotlight surfaces:
+        // the OS index is fresher than ours). Absorb it as a candidate.
+        let fresh = t.write("docs/fresh.md", "the freshly created launch checklist");
+        let n = idx
+            .absorb_candidates(&roots, vec![discovered(&t, "docs", &fresh)], &bounds, &DownEmbedder)
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "the new confined candidate is absorbed");
+        assert_eq!(idx.status().await.unwrap().files, 2);
+
+        // ...and it is now retrievable + CITED like any walk-indexed file.
+        let fresh_real = fs::canonicalize(&fresh).unwrap().display().to_string();
+        let r = idx.search("launch checklist", 5, &DownEmbedder).await;
+        assert!(!r.hits.is_empty(), "the absorbed file must be searchable");
+        assert_eq!(r.hits[0].file_path, fresh_real, "cites the absorbed file: {:?}", r.hits);
+
+        // Re-absorbing the same file is a no-op (never duplicated).
+        let again = idx
+            .absorb_candidates(&roots, vec![discovered(&t, "docs", &fresh)], &bounds, &DownEmbedder)
+            .await
+            .unwrap();
+        assert_eq!(again, 0, "an already-indexed file is never absorbed twice");
+        assert_eq!(idx.status().await.unwrap().files, 2);
+    }
+
+    #[tokio::test]
+    async fn absorb_drops_out_of_root_hidden_oversize_and_unlisted_candidates() {
+        let t = TempTree::new("absorb-drop");
+        let root = t.join("docs");
+        fs::create_dir_all(&root).unwrap();
+        // OUT-OF-ROOT: an absolute-elsewhere file handed straight to absorb —
+        // even if a (hostile) generator claims it, re-confinement DROPS it.
+        let outside = t.write("outside/secret.md", "OUTSIDE — must never be indexed");
+        // HIDDEN: a dotfile under the root (the walk's privacy rule).
+        let hidden = t.write("docs/.secret.md", "hidden — must never be indexed");
+        // OVERSIZE: a within-root file past the per-file byte cap.
+        let big = t.write("docs/big.md", &"x ".repeat(10_000));
+        // UNLISTED extension: a within-root binary.
+        let png = t.write("docs/photo.png", "not really a png but unlisted anyway");
+
+        let idx = DocIndex::open(&t.db_path()).unwrap();
+        let roots = roots_of(&t, "docs");
+        let bounds = IndexBounds {
+            max_file_bytes: 4096,
+            ..IndexBounds::default()
+        };
+        let candidates = vec![
+            // The out-of-root candidate even LIES about its root — absorb must
+            // re-derive confinement from the real path, not trust the claim.
+            Discovered {
+                path: fs::canonicalize(&outside).unwrap(),
+                root: fs::canonicalize(&root).unwrap(),
+            },
+            discovered(&t, "docs", &hidden),
+            discovered(&t, "docs", &big),
+            discovered(&t, "docs", &png),
+        ];
+        let n = idx
+            .absorb_candidates(&roots, candidates, &bounds, &DownEmbedder)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "every out-of-scope candidate must be dropped");
+        assert_eq!(idx.status().await.unwrap().chunks, 0, "nothing was stored");
+        // The outside file's content in particular never reached the store.
+        let all = idx.all_chunks().await.unwrap();
+        assert!(all.is_empty(), "no candidate row: {all:?}");
+    }
+
+    #[tokio::test]
+    async fn absorb_respects_the_file_and_chunk_ceilings_of_a_full_store() {
+        let t = TempTree::new("absorb-bounds");
+        t.write("docs/a.md", "file a content here for the index");
+        t.write("docs/b.md", "file b content here for the index");
+        let idx = DocIndex::open(&t.db_path()).unwrap();
+        let roots = roots_of(&t, "docs");
+        // A store already AT its max_files ceiling absorbs nothing.
+        let tight = IndexBounds {
+            max_files: 2,
+            ..IndexBounds::default()
+        };
+        idx.reindex(&roots, &tight, &DownEmbedder).await.unwrap();
+        assert_eq!(idx.status().await.unwrap().files, 2);
+        let extra = t.write("docs/c.md", "file c arrives after the index is full");
+        let n = idx
+            .absorb_candidates(&roots, vec![discovered(&t, "docs", &extra)], &tight, &DownEmbedder)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "a full store (max_files) absorbs nothing");
+        assert_eq!(idx.status().await.unwrap().files, 2);
+
+        // And the CHUNK ceiling caps what one absorption may add.
+        let chunk_tight = IndexBounds {
+            max_files: 100,
+            max_chunks: 3,
+            chunk_chars: 64,
+            chunk_overlap: 8,
+            ..IndexBounds::default()
+        };
+        idx.forget().await.unwrap();
+        idx.reindex(&roots, &chunk_tight, &DownEmbedder).await.unwrap();
+        let before = idx.status().await.unwrap().chunks;
+        let long = t.write("docs/long.md", &"words and more words ".repeat(50));
+        idx.absorb_candidates(&roots, vec![discovered(&t, "docs", &long)], &chunk_tight, &DownEmbedder)
+            .await
+            .unwrap();
+        let after = idx.status().await.unwrap().chunks;
+        assert!(
+            after <= chunk_tight.max_chunks as u64 && after >= before,
+            "absorption stays under max_chunks: {before} -> {after}"
+        );
     }
 }

@@ -6177,11 +6177,14 @@ export function parseOptimizerProposal(
  *     transcript). `method` is the backend that ACTUALLY ran, so the panel never *
  *     claims neural when it fell back to BM25. The daemon NEVER fabricates a hit;  *
  *     the parser carries that forward — it surfaces ONLY real returned hits.     *
- *   - `system / docsearch.status` ({pdfjail_available}) — emitted every audit-   *
- *     snapshot tick (main.rs::audit_snapshot_task -> docsearch::emit_status):    *
- *     whether the daemon found its pdfjail memory-jail helper, i.e. whether PDF  *
- *     extraction runs jailed or on the weaker in-process fallback guard. One     *
- *     boolean, so a production install silently on the fallback is VISIBLE.     *
+ *   - `system / docsearch.status` ({pdfjail_available, spotlight_available}) —   *
+ *     emitted every audit-snapshot tick (main.rs::audit_snapshot_task ->         *
+ *     docsearch::emit_status): whether the daemon found its pdfjail memory-jail  *
+ *     helper (PDF extraction jailed vs the weaker in-process fallback guard),    *
+ *     and whether the READ-ONLY Spotlight candidate bridge is actually           *
+ *     answering (mdfind present + at least one real query succeeded — honest     *
+ *     false when Spotlight indexing is disabled). Flat booleans, so a            *
+ *     production install silently degraded on either front is VISIBLE.           *
  *                                                                                *
  * 100% ON-DEVICE: telemetry is the local 127.0.0.1 broadcast only — file         *
  * contents + embeddings never leave the device. SHIPPED-OFF: the feature is      *
@@ -6288,6 +6291,17 @@ export function parseDocSearchResult(data: Record<string, unknown>): DocSearchRe
  *  jailed is merely conservative). NEVER throws. */
 export function parsePdfJailAvailable(data: Record<string, unknown>): boolean {
   return bool(data, "pdfjail_available") === true;
+}
+
+/** Parse a `docsearch.status` payload's Spotlight leg: whether the daemon's
+ *  READ-ONLY Spotlight candidate bridge (spotlight.rs: mdfind/mdls, root-
+ *  confined) is ACTUALLY answering — mdfind present AND at least one real query
+ *  returned successfully. STRICT, same rule as the pdfjail parse: only a literal
+ *  JSON `true` claims the integration (an absent field — an older daemon — a
+ *  malformed or truthy-but-not-boolean value all coerce to `false`), because
+ *  overclaiming a working integration is the dishonest direction. NEVER throws. */
+export function parseSpotlightAvailable(data: Record<string, unknown>): boolean {
+  return bool(data, "spotlight_available") === true;
 }
 
 /* ------------------------------------------------------------------------ *

@@ -150,6 +150,7 @@ import {
   parseDocIndexStatus,
   parseDocSearchResult,
   parsePdfJailAvailable,
+  parseSpotlightAvailable,
   parseCapabilityMap,
   parseDistillStatus,
   parseSyncStatus,
@@ -836,6 +837,13 @@ export interface HudState {
    *  fallback is never silent. Null until the first status frame arrives (an
    *  older daemon never sends one), in which case the panel claims nothing. */
   pdfJailAvailable: boolean | null;
+  /** Whether the daemon's READ-ONLY Spotlight candidate bridge (spotlight.rs:
+   *  root-confined mdfind/mdls) is ACTUALLY answering (docsearch.status, same
+   *  cadence): mdfind present AND at least one real query succeeded. `false`
+   *  honestly covers "not yet queried", "Spotlight indexing disabled", and a
+   *  malformed payload — the DocSearchPanel pill never overclaims. Null until
+   *  the first status frame (an older daemon), in which case claim nothing. */
+  spotlightAvailable: boolean | null;
   /** The self-distillation pipeline's honest state (distill.status): armed/
    *  inert, examples ready, last run — and that adapters are NEVER auto-
    *  promoted. Null until the first frame. REVIEW-ONLY. */
@@ -1508,6 +1516,7 @@ export function initialState(): HudState {
     docIndex: null,
     docSearch: null,
     pdfJailAvailable: null,
+    spotlightAvailable: null,
     distill: null,
     federatedSync: null,
     fleet: null,
@@ -2925,12 +2934,17 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
     case "docsearch.status": {
       // The daemon's periodic document-extraction guard status (main.rs::
       // audit_snapshot_task -> docsearch::emit_status): whether the pdfjail
-      // memory-jail helper sits next to the running darwind. parsePdfJailAvailable
-      // is STRICT — only a literal JSON `true` claims the jail is armed (never
-      // overclaim the stronger guard) — so `false` here honestly covers both "the
-      // daemon says the helper is missing" and "the payload was malformed". The
-      // DocSearchPanel shows the amber PDF JAIL MISSING pill on `false`.
-      return { ...s, pdfJailAvailable: parsePdfJailAvailable(env.data) };
+      // memory-jail helper sits next to the running darwind, and whether the
+      // READ-ONLY Spotlight candidate bridge is actually answering. Both parses
+      // are STRICT — only a literal JSON `true` claims the stronger/working
+      // state (never overclaim) — so `false` honestly covers "the daemon says
+      // no" and "the payload was malformed". The DocSearchPanel shows the amber
+      // PDF JAIL MISSING pill / the dim SPOTLIGHT IDLE pill on `false`.
+      return {
+        ...s,
+        pdfJailAvailable: parsePdfJailAvailable(env.data),
+        spotlightAvailable: parseSpotlightAvailable(env.data),
+      };
     }
 
     case "capability.map": {

@@ -9468,6 +9468,17 @@ fn docsearch_db_path() -> std::path::PathBuf {
     root.join("state").join("docsearch.db")
 }
 
+/// Load the live [docsearch] config from the on-disk darwin.toml (one source of
+/// truth, like load_code_config). When no root is resolved, returns the default —
+/// whose EMPTY roots keep the Spotlight bridge inert (it never widens scope).
+fn load_docsearch_config() -> crate::config::DocSearchConfig {
+    let Some(root) = ROOT.get() else {
+        return crate::config::DocSearchConfig::default();
+    };
+    let (cfg, _issues) = crate::config::Config::load(&root.join("config").join("darwin.toml"));
+    cfg.docsearch
+}
+
 /// Run the `doc_search` tool: an on-device file RAG over the user's indexed files.
 /// READ-ONLY — it opens the local doc-chunk store and ranks the stored chunks via
 /// [`crate::docsearch::DocIndex::search`] (neural on-device embeddings when the
@@ -9497,7 +9508,21 @@ async fn doc_search_tool(
             return "I couldn't open the on-device file index just now, sir.".to_string();
         }
     };
+    // SPOTLIGHT CANDIDATE GENERATION (READ-ONLY, config-gated on
+    // [docsearch].spotlight AND the indexer's own enabled+roots permit): ask the
+    // OS index for files matching the query UNDER THE ALLOWLISTED ROOTS ONLY
+    // (`-onlyin` per root — never an unrestricted query) and absorb them through
+    // the SAME confined/bounded/honest-skip indexing pipeline BEFORE ranking, so
+    // a file the bounded walk missed (or that appeared since the last reindex)
+    // is retrievable + cited exactly like any other. Any failure degrades to 0
+    // absorbed and the search proceeds over the index as it was.
+    let ds_cfg = load_docsearch_config();
+    crate::spotlight::augment_index(&ds_cfg, &idx, query, embedder).await;
     let DocSearchResult { hits, method } = idx.search(query, k, embedder).await;
+    // Spotlight METADATA ENRICHMENT (mdls, READ-ONLY, same gate): optional
+    // content-type / last-used / authors per cited hit — absent when unreadable,
+    // NEVER fabricated. Parallel to `hits` (one Option per hit, same order).
+    let enrichment = crate::spotlight::enrich_hits(&ds_cfg, &hits).await;
     let method_note = method.description();
     // Surface the CITED result to the HUD's read-only file-search panel. Carries
     // only what the persona already speaks aloud / shows in the transcript: the
@@ -9512,13 +9537,30 @@ async fn doc_search_tool(
         json!({
             "query": query,
             "method": method.as_str(),
-            "hits": hits.iter().map(|h| json!({
-                "file_path": h.file_path,
-                "root": h.root,
-                "byte_offset": h.byte_offset,
-                "snippet": h.snippet,
-                "score": h.score,
-            })).collect::<Vec<_>>(),
+            "hits": hits.iter().zip(enrichment.iter()).map(|(h, m)| {
+                let mut hit = json!({
+                    "file_path": h.file_path,
+                    "root": h.root,
+                    "byte_offset": h.byte_offset,
+                    "snippet": h.snippet,
+                    "score": h.score,
+                });
+                // Spotlight metadata rides along ONLY when actually read (the
+                // HUD parser tolerates the extra optional keys); an unreadable
+                // file carries none — never a fabricated field.
+                if let Some(m) = m {
+                    if let Some(ct) = &m.content_type {
+                        hit["content_type"] = json!(ct);
+                    }
+                    if let Some(lu) = &m.last_used {
+                        hit["last_used"] = json!(lu);
+                    }
+                    if let Some(a) = &m.authors {
+                        hit["authors"] = json!(a);
+                    }
+                }
+                hit
+            }).collect::<Vec<_>>(),
         }),
     );
     if hits.is_empty() {
@@ -9535,12 +9577,30 @@ async fn doc_search_tool(
     }
     let lines: Vec<String> = hits
         .iter()
-        .map(|h| {
-            // CITE the real file + offset, then the real chunk snippet.
-            format!(
+        .zip(enrichment.iter())
+        .map(|(h, m)| {
+            // CITE the real file + offset, then the real chunk snippet. When
+            // Spotlight metadata was readable, append it — real values only.
+            let mut line = format!(
                 "- {} (offset {}):\n  {}",
                 h.file_path, h.byte_offset, h.snippet
-            )
+            );
+            if let Some(m) = m {
+                let mut extras: Vec<String> = Vec::new();
+                if let Some(ct) = &m.content_type {
+                    extras.push(format!("type {ct}"));
+                }
+                if let Some(lu) = &m.last_used {
+                    extras.push(format!("last used {lu}"));
+                }
+                if let Some(a) = &m.authors {
+                    extras.push(format!("by {a}"));
+                }
+                if !extras.is_empty() {
+                    line.push_str(&format!("\n  [{}]", extras.join("; ")));
+                }
+            }
+            line
         })
         .collect();
     format!(

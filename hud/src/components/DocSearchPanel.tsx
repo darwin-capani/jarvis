@@ -37,17 +37,20 @@ import Frame from "./Frame";
  * The reducer only ever sets `docIndex` from a defensively-parsed
  * `docsearch.indexed` (counts only, never a path), `docSearch` from a parsed
  * `docsearch.searched` (only real returned hits, with the honest method), and
- * `pdfJail` from a STRICT `docsearch.status` parse (only a literal `true`
- * claims the jail is armed), so this component can trust the fields it is handed.
+ * `pdfJail` / `spotlight` from a STRICT `docsearch.status` parse (only a
+ * literal `true` claims the jail is armed / the READ-ONLY Spotlight candidate
+ * bridge is answering), so this component can trust the fields it is handed.
  */
 export default function DocSearchPanel({
   index,
   search,
   pdfJail,
+  spotlight,
 }: {
   index: DocIndexStatus | null;
   search: DocSearchResult | null;
   pdfJail: boolean | null;
+  spotlight: boolean | null;
 }) {
   // Nothing to show until the user has either built an index or run a search —
   // render nothing rather than a placeholder, mirroring the other event-fed
@@ -59,7 +62,7 @@ export default function DocSearchPanel({
     <div className="docsearch-panel">
       <Frame title="FILE SEARCH // ON-DEVICE" tag="PRIVATE · REVIEW ONLY">
         <div className="docsearch-body">
-          <IndexStatusRow index={index} pdfJail={pdfJail} />
+          <IndexStatusRow index={index} pdfJail={pdfJail} spotlight={spotlight} />
           <SearchResults search={search} />
 
           <div className="docsearch-foot dim-note">
@@ -87,9 +90,11 @@ export default function DocSearchPanel({
 function IndexStatusRow({
   index,
   pdfJail,
+  spotlight,
 }: {
   index: DocIndexStatus | null;
   pdfJail: boolean | null;
+  spotlight: boolean | null;
 }) {
   if (index === null || index.chunks === 0) {
     return (
@@ -142,6 +147,23 @@ function IndexStatusRow({
             }
           >
             {pdfJail ? "PDF JAIL ARMED" : "PDF JAIL MISSING"}
+          </span>
+        )}
+        {/* The READ-ONLY Spotlight candidate bridge (docsearch.status, same
+            precedent as the pdfjail pill). Null = no status frame yet (an older
+            daemon) — claim nothing. IDLE covers both "no search has queried
+            Spotlight yet this daemon run" and "mdfind is absent / Spotlight
+            indexing is disabled" — the strict parse never overclaims. */}
+        {spotlight !== null && (
+          <span
+            className={`docsearch-pill ${spotlight ? "spotlight-on" : "spotlight-idle"}`}
+            title={
+              spotlight
+                ? "macOS Spotlight is feeding read-only candidates: file searches also ask mdfind, confined with -onlyin to your allowlisted roots (never an unrestricted query); every candidate re-runs the same path-confinement and extraction rules before it can be indexed"
+                : "Spotlight has not answered a query yet this daemon run — either no file search has run, or mdfind is unavailable / Spotlight indexing is disabled; searches still run over the on-device index"
+            }
+          >
+            {spotlight ? "SPOTLIGHT ON" : "SPOTLIGHT IDLE"}
           </span>
         )}
       </div>
