@@ -32,13 +32,34 @@
 //!     copies every readable process's full argv+env block into the caller's
 //!     heap on refresh (its refresh-kind gates only skip the parsing, not the
 //!     read), which would expose terminal-exported secrets to core dumps /
-//!     debuggers / any future memory-disclosure bug. The daemon's two other
-//!     sysinfo users (vitals.rs, telemetry.rs) are HOST-level only and are
-//!     constructed with cpu+memory refresh kinds and NO process refresh
-//!     (review-caught: they previously used `System::new_all()`, whose
-//!     everything-refresh DID sysctl and retain every process's argv+env —
-//!     the process-wide claim above is only true because those constructors
-//!     exclude the per-process API entirely).
+//!     debuggers / any future memory-disclosure bug.
+//!
+//!     WHOLE-DAEMON INVARIANT (a checked property, not just this module's).
+//!     NO code path anywhere in darwind issues `KERN_PROCARGS2` or any
+//!     argv/env/path flavor:
+//!       - The daemon's TWO per-process readers — this module AND introspect.rs's
+//!         resource sentinel — read ONLY the fixed-size libproc structs:
+//!         `proc_pidinfo(PROC_PIDTBSDINFO)` (name/ppid/uid/start-time, here) and
+//!         `proc_pidinfo(PROC_PIDTASKINFO)` (resident bytes + cumulative CPU
+//!         ticks, in BOTH). Neither struct has an argv, environment, or
+//!         exe/cwd/open-file field, so nothing downstream can surface one.
+//!         introspect deliberately SHARES this module's reader ([`pidinfo`] /
+//!         [`ticks_to_ns`]) rather than sysinfo's per-process API: sysinfo's
+//!         `refresh_processes` would sysctl KERN_PROCARGS2 and copy its OWN
+//!         tracked micro-apps' env — including a live `DARWIN_APP_TOKEN` — onto
+//!         the daemon heap every sentinel tick (review-caught: introspect used
+//!         sysinfo's per-process API before this).
+//!       - The THREE host-level sysinfo users (vitals.rs, telemetry.rs,
+//!         actions.rs) construct `System` with cpu + memory refresh kinds ONLY
+//!         and NEVER refresh the process table (no `new_all` / `refresh_all` /
+//!         `refresh_processes` / `.process(_)` / `.processes()` anywhere), so
+//!         sysinfo never reaches its per-process sysctl path (review-caught:
+//!         they previously used `System::new_all()`, whose everything-refresh
+//!         DID sysctl and retain every process's argv+env).
+//!
+//!     The mechanical check is a repo-wide grep for `refresh_processes` /
+//!     `ProcessRefreshKind` / `.process(` / `.processes()` / `new_all` over
+//!     `daemon/src/*.rs`: it must find NO per-process sysinfo call in the daemon.
 //!   * HONEST / degrades cleanly — every field is a REAL read; anything that
 //!     cannot be read degrades to `None`/JSON null, NEVER a fabricated value
 //!     (the vitals.rs `on_ac` precedent). In particular CPU % is a TWO-SAMPLE
@@ -406,9 +427,10 @@ fn timebase() -> Option<(u64, u64)> {
 }
 
 /// Convert mach CPU ticks to nanoseconds, or `None` when the timebase is
-/// unknown (honest absent, never a guessed scale).
+/// unknown (honest absent, never a guessed scale). Also reused by introspect.rs's
+/// resource sentinel so it shares this KERN_PROCARGS2-free reader (see module doc).
 #[cfg(target_os = "macos")]
-fn ticks_to_ns(ticks: u64) -> Option<u64> {
+pub(crate) fn ticks_to_ns(ticks: u64) -> Option<u64> {
     let (numer, denom) = timebase()?;
     Some(((u128::from(ticks) * u128::from(numer)) / u128::from(denom)) as u64)
 }
@@ -422,9 +444,11 @@ fn cstr_lossy(bytes: &[libc::c_char]) -> String {
 }
 
 /// One fixed-size `proc_pidinfo` struct fill, or `None` on any failure (dead
-/// pid, EPERM, short read) — the caller degrades honestly.
+/// pid, EPERM, short read) — the caller degrades honestly. Reused by
+/// introspect.rs's resource sentinel (for `PROC_PIDTASKINFO`) so BOTH per-process
+/// readers issue only fixed-size struct reads, never KERN_PROCARGS2 (module doc).
 #[cfg(target_os = "macos")]
-fn pidinfo<T: Copy>(pid: i32, flavor: libc::c_int) -> Option<T> {
+pub(crate) fn pidinfo<T: Copy>(pid: i32, flavor: libc::c_int) -> Option<T> {
     let size = std::mem::size_of::<T>() as libc::c_int;
     // SAFETY: T is a plain-old-data kernel struct (proc_bsdinfo /
     // proc_taskinfo) for which all-zeroes is a valid bit pattern; the kernel

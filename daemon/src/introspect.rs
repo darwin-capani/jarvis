@@ -14,9 +14,16 @@
 //!      exactly what was written (SHA-256, `sha2` is already a dep); the sentinel
 //!      re-reads the on-disk `state/apps/<name>/<name>.sb` and flags any
 //!      post-launch tampering. Pure, CI-tested.
-//!   2. **Resource sampling.** Per-app RSS / CPU via `sysinfo` (already a dep) —
-//!      same-UID, no entitlement — classified against a rolling per-app baseline.
-//!      The classifier is pure and CI-tested; the live sample is device-gated.
+//!   2. **Resource sampling.** Per-app RSS / CPU via the SAME fixed-size libproc
+//!      struct read `procwatch.rs` uses (`proc_pidinfo(PROC_PIDTASKINFO)`, shared
+//!      via [`crate::procwatch::pidinfo`]) — same-UID, no entitlement — classified
+//!      against a rolling per-app baseline. This deliberately does NOT use
+//!      sysinfo's per-process API: sysinfo's `refresh_processes` sysctls
+//!      `KERN_PROCARGS2` and copies each tracked micro-app's FULL argv+env —
+//!      including its live `DARWIN_APP_TOKEN` — onto the daemon heap, whereas the
+//!      `proc_taskinfo` struct carries only resident bytes + cumulative CPU ticks
+//!      and NO argv/env/path. The classifier is pure and CI-tested; the live
+//!      sample is device-gated. See procwatch.rs's whole-daemon secret-free invariant.
 //!
 //! Everything relays through the EXISTING `telemetry::emit("system", …)` bus
 //! (byte-identical envelope shape to `app.data`/`app.log`), so the HUD renders it
@@ -30,7 +37,7 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -77,12 +84,17 @@ pub fn detect_profile_drift(app: &str, expected_fp: &str, on_disk: &str) -> Opti
     }
 }
 
-/// One resource reading of a micro-app process (same-UID, via sysinfo).
+/// One resource reading of a micro-app process (same-UID, via the libproc
+/// `proc_taskinfo` struct — NOT sysinfo; see the module doc's secret-free note).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResourceSample {
-    /// Resident set size in bytes.
+    /// Resident set size in bytes (`pti_resident_size`).
     pub rss_bytes: u64,
-    /// CPU usage percent since the previous refresh.
+    /// CPU percent over the tick interval — the same meaning sysinfo's
+    /// `.cpu_usage()` gave: percent of one core-second consumed per wall-second
+    /// since this pid's previous sample (a two-sample delta of cumulative task
+    /// CPU time). The FIRST sample of a pid has no prior, so it is 0.0 — the
+    /// sentinel SEEDS (never classifies) a first sample, so 0.0 cannot false-trip.
     pub cpu_percent: f32,
 }
 
@@ -783,14 +795,51 @@ pub fn status_summary() -> String {
 // Runtime sentinel (device-gated; never run in tests)
 // ===========================================================================
 
-/// Sample one live process's RSS/CPU via sysinfo. `sys` must already have been
-/// refreshed for `pid` this tick. `None` if the process is gone.
-fn sample_process(sys: &sysinfo::System, pid: u32) -> Option<ResourceSample> {
-    let proc = sys.process(sysinfo::Pid::from_u32(pid))?;
-    Some(ResourceSample {
-        rss_bytes: proc.memory(),
-        cpu_percent: proc.cpu_usage(),
-    })
+/// The per-tick CPU percent from two cumulative task-CPU-time readings
+/// (nanoseconds) taken `elapsed_ns` wall-nanoseconds apart. PURE — the arithmetic
+/// seam is factored out of the device-gated reader so it can be unit-tested.
+///
+/// The result carries the SAME meaning sysinfo's `.cpu_usage()` gave: percent of
+/// one core-second consumed per wall-second over the interval, so a fully-busy
+/// single thread reads ~100% and a multi-threaded runaway honestly exceeds 100%.
+///
+/// Returns 0.0 — NEVER a fabricated positive load — for every case with no honest
+/// delta: the FIRST observation of a pid (`prev_cpu_ns` is `None`), a non-positive
+/// interval (a same-instant / clock-quirk reading), and a cumulative counter that
+/// (impossibly) went backwards on a reused pid (saturating delta of 0). On a first
+/// sample the sentinel SEEDS the baseline and never classifies it, so a first-tick
+/// 0.0 cannot cause a false anomaly (see `resource_decision` / `sentinel_tick`).
+fn cpu_percent_over_tick(prev_cpu_ns: Option<u64>, now_cpu_ns: u64, elapsed_ns: u64) -> f32 {
+    let Some(prev) = prev_cpu_ns else { return 0.0 };
+    if elapsed_ns == 0 {
+        return 0.0;
+    }
+    let delta = now_cpu_ns.saturating_sub(prev);
+    ((delta as f64 / elapsed_ns as f64) * 100.0) as f32
+}
+
+/// Read one live process's resident bytes and CUMULATIVE task CPU time (ns) via
+/// the SAME libproc struct read `procwatch.rs` uses — one
+/// `proc_pidinfo(PROC_PIDTASKINFO)` fill, which NEVER issues `KERN_PROCARGS2`, so
+/// no argv/env byte of the tracked micro-app transits the daemon heap. Returns
+/// `(rss_bytes, cpu_ns)`; `cpu_ns` is `None` only when the mach timebase itself
+/// was unreadable (CPU then degrades to a non-tripping 0.0, RSS still classifies).
+/// `None` for the whole read when the process is gone / TASKINFO is unreadable —
+/// the caller then skips this pid for the tick. DEVICE-GATED (never run in tests).
+#[cfg(target_os = "macos")]
+fn read_task(pid: u32) -> Option<(u64, Option<u64>)> {
+    let task: libc::proc_taskinfo =
+        crate::procwatch::pidinfo(pid as i32, libc::PROC_PIDTASKINFO)?;
+    let cpu_ns = crate::procwatch::ticks_to_ns(
+        task.pti_total_user.saturating_add(task.pti_total_system),
+    );
+    Some((task.pti_resident_size, cpu_ns))
+}
+
+/// Off macOS there is no libproc: an honest absent reading, never a fabrication.
+#[cfg(not(target_os = "macos"))]
+fn read_task(_pid: u32) -> Option<(u64, Option<u64>)> {
+    None
 }
 
 /// One sentinel tick: for each running app, (a) re-read its on-disk profile and
@@ -799,22 +848,23 @@ fn sample_process(sys: &sysinfo::System, pid: u32) -> Option<ResourceSample> {
 /// plus per-finding `introspect.profile_drift` / `introspect.anomaly`. READ-ONLY.
 async fn sentinel_tick(
     registry: &std::sync::Arc<crate::apps::AppRegistry>,
-    sys: &mut sysinfo::System,
     // name -> (pid the baseline was seeded under, the baseline sample). The pid is
     // tracked so a relaunched app (new pid, same name) re-seeds instead of being
     // judged against the previous process's baseline.
     baselines: &mut HashMap<String, (u32, ResourceSample)>,
+    // pid -> (cumulative task CPU ns, wall Instant) of this pid's PREVIOUS
+    // observation — the two-sample delta each tick's CPU % is derived from. Keyed
+    // by pid so a relaunch (new pid) starts a fresh CPU baseline; pruned to the
+    // currently-tracked pids at the end of the tick.
+    cpu_state: &mut HashMap<u32, (u64, Instant)>,
     thresholds: &AnomalyThresholds,
 ) {
     let apps = registry.observed_apps().await;
     let expected = snapshot_expected();
     let pids = snapshot_pids();
-
-    // Refresh only the pids we track (same-UID children), then drop dead ones.
-    let track: Vec<sysinfo::Pid> = pids.values().map(|p| sysinfo::Pid::from_u32(*p)).collect();
-    if !track.is_empty() {
-        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&track), true);
-    }
+    // One wall-clock reading for the whole tick: every per-pid CPU delta is taken
+    // against THIS instant (all tracked pids are sampled within the same tick).
+    let now = Instant::now();
 
     let mut drift_count = 0usize;
     let mut anomaly_count = 0usize;
@@ -852,7 +902,29 @@ async fn sentinel_tick(
         // resource_decision; a relaunch with a new pid re-seeds rather than being
         // judged against the previous process's baseline).
         if let Some(pid) = pids.get(name).copied() {
-            if let Some(sample) = sample_process(sys, pid) {
+            if let Some((rss_bytes, cpu_ns)) = read_task(pid) {
+                // Derive this tick's CPU % from the delta against this pid's
+                // previous cumulative reading. A FIRST observation (no prior) and
+                // an unreadable timebase (`cpu_ns` None) both yield an honest 0.0 —
+                // the sentinel SEEDS (never classifies) a first sample, so a 0.0
+                // here can never trip a false anomaly. RSS classifies regardless.
+                let prev = cpu_state.get(&pid).copied();
+                let cpu_percent = match cpu_ns {
+                    Some(c) => {
+                        let elapsed_ns = prev
+                            .map(|(_, t)| {
+                                u64::try_from(now.saturating_duration_since(t).as_nanos())
+                                    .unwrap_or(u64::MAX)
+                            })
+                            .unwrap_or(0);
+                        let pct = cpu_percent_over_tick(prev.map(|(ns, _)| ns), c, elapsed_ns);
+                        // Store this pid's cumulative CPU time for the NEXT tick's delta.
+                        cpu_state.insert(pid, (c, now));
+                        pct
+                    }
+                    None => 0.0,
+                };
+                let sample = ResourceSample { rss_bytes, cpu_percent };
                 match resource_decision(name, baselines.get(name).copied(), pid, sample, thresholds)
                 {
                     BaselineOutcome::Seed | BaselineOutcome::UpdateHealthy => {
@@ -872,8 +944,9 @@ async fn sentinel_tick(
         }
     }
 
-    // Forget baselines for apps that are no longer running/tracked.
+    // Forget baselines for apps, and per-pid CPU state for pids, no longer tracked.
     baselines.retain(|name, _| pids.contains_key(name));
+    cpu_state.retain(|pid, _| pids.values().any(|p| p == pid));
 
     set_last_snapshot(running, drift_count, anomaly_count);
     let (event, payload) = ev_snapshot(running, drift_count, anomaly_count);
@@ -904,10 +977,10 @@ pub async fn sentinel_task(
 ) {
     tokio::time::sleep(Duration::from_secs(startup_delay_secs)).await;
     let interval = Duration::from_secs(interval_secs.max(1));
-    let mut sys = sysinfo::System::new();
     let mut baselines: HashMap<String, (u32, ResourceSample)> = HashMap::new();
+    let mut cpu_state: HashMap<u32, (u64, Instant)> = HashMap::new();
     loop {
-        sentinel_tick(&registry, &mut sys, &mut baselines, &thresholds).await;
+        sentinel_tick(&registry, &mut baselines, &mut cpu_state, &thresholds).await;
         tokio::time::sleep(interval).await;
     }
 }
@@ -1038,6 +1111,47 @@ mod tests {
         let base = ResourceSample { rss_bytes: 0, cpu_percent: 0.0 };
         let now = ResourceSample { rss_bytes: 500 * 1024 * 1024, cpu_percent: 1.0 };
         assert!(classify_anomalies("app", &base, &now, &th).is_empty());
+    }
+
+    // -- CPU %-over-tick derivation (PURE; the device read is never tested) ---
+
+    #[test]
+    fn cpu_percent_first_sample_is_zero_never_fabricated() {
+        // No prior cumulative reading => no honest delta => 0.0. The sentinel
+        // SEEDS (never classifies) a first sample, so this 0.0 can't false-trip.
+        assert_eq!(cpu_percent_over_tick(None, 5_000_000_000, 10_000_000_000), 0.0);
+    }
+
+    #[test]
+    fn cpu_percent_normal_delta_is_core_seconds_per_wall_second() {
+        // 1s of CPU consumed over a 10s wall interval = 10% of one core — the
+        // same meaning sysinfo's .cpu_usage() carried.
+        assert_eq!(
+            cpu_percent_over_tick(Some(1_000_000_000), 2_000_000_000, 10_000_000_000),
+            10.0
+        );
+        // A fully-pegged single thread over the whole interval = ~100%.
+        assert_eq!(cpu_percent_over_tick(Some(0), 10_000_000_000, 10_000_000_000), 100.0);
+        // A multi-threaded runaway (2 cores for the interval) honestly exceeds 100%.
+        assert_eq!(cpu_percent_over_tick(Some(0), 20_000_000_000, 10_000_000_000), 200.0);
+    }
+
+    #[test]
+    fn cpu_percent_zero_elapsed_is_zero_not_a_divide_by_zero() {
+        // A same-instant / clock-quirk reading yields no rate — 0.0, never NaN/inf.
+        let pct = cpu_percent_over_tick(Some(1_000_000_000), 2_000_000_000, 0);
+        assert_eq!(pct, 0.0);
+        assert!(pct.is_finite());
+    }
+
+    #[test]
+    fn cpu_percent_counter_going_backwards_clamps_to_zero() {
+        // A reused pid (or clock quirk) whose cumulative CPU time is LOWER than the
+        // stored prior => saturating delta of 0 => 0.0, never a negative/garbage load.
+        assert_eq!(
+            cpu_percent_over_tick(Some(5_000_000_000), 1_000_000_000, 10_000_000_000),
+            0.0
+        );
     }
 
     #[test]

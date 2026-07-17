@@ -45,7 +45,8 @@ pub struct Config {
     /// [introspect] — MICRO-APP INTROSPECTION (introspect.rs). `enabled` SHIPS ON
     /// (full-power default). READ-ONLY DEFENSE: a slow sentinel over darwind's OWN
     /// sandboxed children that flags SBPL profile-drift (on-disk tamper) and RSS/
-    /// CPU anomalies via sysinfo (same-UID, no entitlement, no ES/ptrace). It
+    /// CPU anomalies via a same-UID libproc struct read (`PROC_PIDTASKINFO`, shared
+    /// with procwatch — no KERN_PROCARGS2, no entitlement, no ES/ptrace). It
     /// emits telemetry for the HUD/posture and takes NO action — reacting to a
     /// finding would be consequential and rides the existing gates. Inert until an
     /// app runs; with it false the sentinel loop is not spawned (the cheap
