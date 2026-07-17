@@ -37,6 +37,7 @@
 //! Nothing here speaks, acts, or reaches the network. It remembers, and it shows.
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use chrono::Utc;
@@ -475,6 +476,166 @@ pub fn empty_reply() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// SHARE GUARD BRIDGE — resolve an artifact, then FORWARD it to the sandboxed
+// share-guard micro-app for on-device PII redaction. DAEMON SIDE IS READ-ONLY.
+// ---------------------------------------------------------------------------
+//
+// "Scrub this artifact before I share it" is resolved DAEMON-SIDE and honestly:
+// the daemon READS the addressed ArtifactRef out of THIS registry ([`peek`] —
+// read-only, most-recent fallback) and forwards the payload the app expects to
+// the share-guard app's own per-app socket. It forwards exactly ONE of two op
+// lines, mirroring `apps/share-guard/Sources/share-guard/Op.swift` (the FROZEN
+// wire contract the app decodes):
+//   * scrub.text  {type:"op", op:"scrub.text",  text:<preview>, artifact_id:"<id>"}
+//   * scrub.image {type:"op", op:"scrub.image", path:<staged>,  artifact_id:"<id>"}
+//
+// HONESTY + SAFETY (load-bearing):
+//   * The daemon opens NO network, SENDS nothing outward, and takes no action of
+//     its own — it READS the registry and FORWARDS to a DEFAULT-DENY
+//     (net_hosts=[]) sandboxed app that itself CANNOT send. The app writes only a
+//     REDACTED COPY inside its own sandbox dir; the user shares that copy.
+//   * `artifact_id` (serialized as a STRING — the app decodes it as one) rides
+//     along purely for HUD correlation.
+//   * The registry holds only a compact, secret-free PREVIEW (never a raw body),
+//     so the text path forwards THAT preview — honest about what the daemon has.
+
+/// The project-root-relative dir the host stages a to-be-scrubbed IMAGE under —
+/// the share-guard manifest's `fs_read` input dir. The daemon copies the image
+/// here (a benign write into the app's OWN input sandbox) so the sandboxed app —
+/// which cannot reach the original path — can read it.
+pub const SHARE_GUARD_INPUT_REL: &str = "state/tmp/share-guard/input";
+
+/// The registered micro-app name (its manifest `[app].name` / on-disk dir). The
+/// forward is addressed to this app's own per-app socket.
+pub const SHARE_GUARD_APP: &str = "share-guard";
+
+/// Image file extensions an Image artifact's preview may name — the ONLY case the
+/// bridge takes the scrub.image (stage-then-forward) path. Anything else (a text
+/// preview, or a non-Image kind) takes the scrub.text path.
+const IMAGE_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "heic", "heif", "gif", "tiff", "tif", "bmp", "webp",
+];
+
+/// The forward the daemon will make to the share-guard app for one artifact —
+/// exactly one of the two op lines the app's `Op.swift` decodes. This is a PURE
+/// decision: the caller performs the (benign, in-sandbox) side effects (an image
+/// COPY for the image path) and the socket forward; this only decides WHAT to
+/// forward. Neither variant ever carries an outward/network op — the only ops are
+/// `scrub.text` / `scrub.image`, both consumed by the offline sandboxed app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScrubForward {
+    /// Forward the artifact's TEXT (its registry preview) as `scrub.text`. No file
+    /// staging — the payload rides in the op line itself. `op_line` is the
+    /// complete JSONL the daemon writes to the app's socket verbatim.
+    Text { op_line: String },
+    /// Stage the artifact's IMAGE (copy `stage_from` -> `stage_to`, INSIDE the
+    /// app's own input sandbox) and forward `scrub.image` naming the staged path.
+    Image {
+        op_line: String,
+        stage_from: PathBuf,
+        stage_to: PathBuf,
+    },
+}
+
+impl ScrubForward {
+    /// The op line the daemon forwards to the app's socket (both variants carry
+    /// exactly one). Always a `scrub.text`/`scrub.image` op — never outward.
+    pub fn op_line(&self) -> &str {
+        match self {
+            ScrubForward::Text { op_line } => op_line,
+            ScrubForward::Image { op_line, .. } => op_line,
+        }
+    }
+}
+
+/// Build the `scrub.text` op line for a text payload + a correlation id. The id is
+/// serialized as a STRING (the app decodes `artifact_id` as one). Pure.
+fn scrub_text_op_line(text: &str, artifact_id: &str) -> String {
+    json!({
+        "type": "op",
+        "op": "scrub.text",
+        "text": text,
+        "artifact_id": artifact_id,
+    })
+    .to_string()
+}
+
+/// Build the `scrub.image` op line naming the STAGED path + the correlation id.
+/// Pure.
+fn scrub_image_op_line(staged_path: &str, artifact_id: &str) -> String {
+    json!({
+        "type": "op",
+        "op": "scrub.image",
+        "path": staged_path,
+        "artifact_id": artifact_id,
+    })
+    .to_string()
+}
+
+/// If this artifact is an IMAGE whose preview names an image FILE, return that
+/// path — the scrub.image path stages+forwards it. Otherwise `None` (=> scrub.text).
+/// CONSERVATIVE: only an [`ArtifactKind::Image`] whose trimmed preview ends in a
+/// known image extension is treated as a stageable file; a descriptive image
+/// preview (no extension) falls through to the honest text path.
+fn image_source_path(artifact: &ArtifactRef) -> Option<PathBuf> {
+    if artifact.kind != ArtifactKind::Image {
+        return None;
+    }
+    let preview = artifact.preview_payload.trim();
+    if preview.is_empty() {
+        return None;
+    }
+    let path = Path::new(preview);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())?
+        .to_ascii_lowercase();
+    if IMAGE_EXTS.contains(&ext.as_str()) {
+        Some(path.to_path_buf())
+    } else {
+        None
+    }
+}
+
+/// Decide + build the forward for ONE resolved artifact. `input_dir` is the app's
+/// staging dir ([`SHARE_GUARD_INPUT_REL`] resolved to an absolute path). READ-ONLY
+/// over the artifact (borrowed immutably): an Image artifact naming a file yields
+/// the stage-then-`scrub.image` forward; everything else yields `scrub.text` over
+/// the artifact's preview. Pure.
+pub fn scrub_forward(artifact: &ArtifactRef, input_dir: &Path) -> ScrubForward {
+    let artifact_id = artifact.id.to_string();
+    match image_source_path(artifact) {
+        Some(src) => {
+            let ext = src
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+                .unwrap_or_else(|| "img".to_string());
+            let stage_to = input_dir.join(format!("artifact-{artifact_id}.{ext}"));
+            let op_line = scrub_image_op_line(&stage_to.to_string_lossy(), &artifact_id);
+            ScrubForward::Image {
+                op_line,
+                stage_from: src,
+                stage_to,
+            }
+        }
+        None => {
+            let op_line = scrub_text_op_line(&artifact.preview_payload, &artifact_id);
+            ScrubForward::Text { op_line }
+        }
+    }
+}
+
+/// Resolve the artifact to scrub — a specific `id`, or (when `id` is `None`) the
+/// MOST RECENT — out of the process-global registry. READ-ONLY (delegates to
+/// [`peek`]); returns an owned clone, or `None` when there is nothing to scrub
+/// (empty registry / unknown id). The caller then answers honestly (never
+/// fabricates an artifact to hand to Share Guard).
+pub fn resolve_for_scrub(id: Option<u64>) -> Option<ArtifactRef> {
+    peek(id)
+}
+
+// ---------------------------------------------------------------------------
 // INTENT — "what did you just do" / "peek" (explicit, phrase-anchored)
 // ---------------------------------------------------------------------------
 
@@ -790,6 +951,169 @@ mod tests {
     #[test]
     fn peek_unknown_id_is_none() {
         assert!(peek(Some(u64::MAX)).is_none(), "an id never registered -> None");
+    }
+
+    // ---- share guard bridge: resolve + forward payload construction ----------
+
+    /// Build a bare ArtifactRef for the bridge tests (the registry stamps id/ts in
+    /// production; here we set them directly to exercise the pure builder).
+    fn art(id: u64, kind: ArtifactKind, preview: &str) -> ArtifactRef {
+        ArtifactRef {
+            id,
+            kind,
+            title: "T".to_string(),
+            provenance: Provenance::new("darwin", vec![]),
+            preview_payload: preview.to_string(),
+            ts: "2026-07-16T00:00:00Z".to_string(),
+        }
+    }
+
+    /// Parse an op line back to JSON for assertions.
+    fn op_json(line: &str) -> Value {
+        serde_json::from_str(line).expect("op line is valid JSON")
+    }
+
+    #[test]
+    fn scrub_forward_text_artifact_builds_the_scrub_text_op_the_app_expects() {
+        // A text-bearing artifact (report) forwards its PREVIEW as scrub.text, with
+        // the id carried as a STRING for HUD correlation. Exactly the shape
+        // apps/share-guard/.../Op.swift decodes.
+        let a = art(5, ArtifactKind::Report, "draft to foo@bar.com, card 4111 1111 1111 1111");
+        let fwd = scrub_forward(&a, Path::new("/root/state/tmp/share-guard/input"));
+        let ScrubForward::Text { op_line } = &fwd else {
+            panic!("a text artifact must take the scrub.text path, got {fwd:?}");
+        };
+        let j = op_json(op_line);
+        assert_eq!(j["type"], "op");
+        assert_eq!(j["op"], "scrub.text");
+        assert_eq!(j["text"], "draft to foo@bar.com, card 4111 1111 1111 1111");
+        // artifact_id is a STRING (the Swift decoder reads it as one), never a number.
+        assert_eq!(j["artifact_id"], "5");
+        assert!(j["artifact_id"].is_string(), "artifact_id must be a string");
+    }
+
+    #[test]
+    fn scrub_forward_image_artifact_stages_then_builds_scrub_image_op() {
+        // An Image artifact whose preview names an image FILE takes the stage-then-
+        // scrub.image path: the daemon copies the source INTO the app's own input
+        // sandbox and forwards the STAGED path (never the original — the sandboxed
+        // app cannot reach it).
+        let input = Path::new("/root/state/tmp/share-guard/input");
+        let a = art(9, ArtifactKind::Image, "/Users/me/Desktop/receipt.PNG");
+        let fwd = scrub_forward(&a, input);
+        let ScrubForward::Image { op_line, stage_from, stage_to } = &fwd else {
+            panic!("an image-file artifact must take the scrub.image path, got {fwd:?}");
+        };
+        // Stage FROM the artifact's own path, TO the app's input sandbox (ext lowercased).
+        assert_eq!(stage_from, Path::new("/Users/me/Desktop/receipt.PNG"));
+        assert_eq!(stage_to, &input.join("artifact-9.png"));
+        let j = op_json(op_line);
+        assert_eq!(j["type"], "op");
+        assert_eq!(j["op"], "scrub.image");
+        // The forwarded path is the STAGED copy inside the sandbox, not the original.
+        assert_eq!(j["path"], input.join("artifact-9.png").to_string_lossy().as_ref());
+        assert_eq!(j["artifact_id"], "9");
+    }
+
+    #[test]
+    fn scrub_forward_non_image_kinds_always_take_the_text_path() {
+        // Every non-Image kind — even one whose preview happens to end like a file —
+        // forwards as scrub.text (only an Image kind stages an image).
+        for kind in [
+            ArtifactKind::Report,
+            ArtifactKind::Chart,
+            ArtifactKind::Draft,
+            ArtifactKind::CodeDiff,
+            ArtifactKind::Notebook,
+            ArtifactKind::Forecast,
+            ArtifactKind::DocSearch,
+            ArtifactKind::Other("custom".into()),
+        ] {
+            let a = art(1, kind.clone(), "notes.png");
+            assert!(
+                matches!(scrub_forward(&a, Path::new("/in")), ScrubForward::Text { .. }),
+                "kind {kind:?} must forward as scrub.text",
+            );
+        }
+        // An Image artifact whose preview is DESCRIPTIVE (no file extension) also
+        // falls through to the honest text path — nothing to stage.
+        let described = art(2, ArtifactKind::Image, "a screenshot of the settings pane");
+        assert!(matches!(
+            scrub_forward(&described, Path::new("/in")),
+            ScrubForward::Text { .. }
+        ));
+    }
+
+    #[test]
+    fn scrub_forward_is_read_only_and_never_egresses() {
+        // The daemon side is READ-ONLY + non-egressing: the builder never mutates
+        // the artifact, and the ONLY op it can ever emit is scrub.text/scrub.image
+        // (both consumed by the offline, default-deny sandboxed app) — never an
+        // outward/network op.
+        let text = art(3, ArtifactKind::Report, "hello");
+        let before = text.clone();
+        let ft = scrub_forward(&text, Path::new("/in"));
+        assert_eq!(text, before, "scrub_forward must not mutate the artifact");
+        assert_eq!(op_json(ft.op_line())["op"], "scrub.text");
+        // Text path carries NO staging (nothing is copied/written for text).
+        assert!(matches!(ft, ScrubForward::Text { .. }));
+
+        let img = art(4, ArtifactKind::Image, "/x/y.jpeg");
+        let fi = scrub_forward(&img, Path::new("/in"));
+        let op = op_json(fi.op_line());
+        assert_eq!(op["op"], "scrub.image");
+        // Neither op is ever anything other than the two offline scrub ops.
+        for f in [&ft, &fi] {
+            let name = op_json(f.op_line())["op"].as_str().unwrap().to_string();
+            assert!(
+                name == "scrub.text" || name == "scrub.image",
+                "the bridge only ever forwards scrub.* ops, got {name:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn most_recent_fallback_builds_the_forward_for_the_newest_artifact() {
+        // resolve_for_scrub(None) resolves to the MOST RECENT (peek(None) ==
+        // most_recent). Proven deterministically on a fresh registry: the None
+        // fallback picks the newest, and the forward carries THAT artifact's payload.
+        let mut reg = Registry::new(4);
+        reg.register(ArtifactKind::Report, "old", Provenance::new("a", vec![]), "old preview")
+            .unwrap();
+        let id2 = reg
+            .register(ArtifactKind::Report, "new", Provenance::new("a", vec![]), "new preview foo@bar.com")
+            .unwrap();
+        // The None-fallback target is most_recent — the newest, id2.
+        let newest = reg.most_recent().expect("registry has entries");
+        assert_eq!(newest.id, id2, "most-recent is the newest registration");
+        let j = op_json(scrub_forward(newest, Path::new("/in")).op_line());
+        assert_eq!(j["op"], "scrub.text");
+        assert_eq!(j["text"], "new preview foo@bar.com", "forward carries the newest payload");
+        assert_eq!(j["artifact_id"], id2.to_string());
+    }
+
+    #[test]
+    fn resolve_for_scrub_reads_the_addressed_artifact_out_of_the_global() {
+        // Global round-trip: register, then resolve_for_scrub(Some(id)) reads OUR
+        // exact artifact back out (read-only) and the forward is built from it.
+        // Address by the returned id (the global registry is shared across tests).
+        let id = register(
+            ArtifactKind::Draft,
+            "scrub round-trip",
+            "veronica",
+            vec![],
+            "call me at 415-555-0199",
+        )
+        .expect("armed-by-default registry accepts the register");
+        let resolved = resolve_for_scrub(Some(id)).expect("registered artifact resolves");
+        assert_eq!(resolved.id, id);
+        assert_eq!(resolved.title, "scrub round-trip");
+        let j = op_json(scrub_forward(&resolved, Path::new("/in")).op_line());
+        assert_eq!(j["op"], "scrub.text");
+        assert_eq!(j["text"], "call me at 415-555-0199");
+        assert_eq!(j["artifact_id"], id.to_string());
+        // An id never registered -> nothing to scrub (honest None, not a fabrication).
+        assert!(resolve_for_scrub(Some(u64::MAX)).is_none());
     }
 
     // ---- intent classification ----------------------------------------------

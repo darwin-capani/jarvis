@@ -1909,6 +1909,17 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
             // Mnemosyne's recollective remit; the orchestrator also holds it via the
             // tools wildcard. Read-only, opens no surface.
             "artifact_peek",
+            // SHARE GUARD SCRUB (artifact.rs -> share-guard micro-app): the sibling
+            // of artifact_peek over the SAME registry — "scrub this before I share
+            // it" resolves the addressed (or most recent) artifact and FORWARDS it to
+            // the offline, default-deny sandboxed share-guard app for on-device PII
+            // redaction. DAEMON SIDE READ-ONLY: it reads the artifact + forwards to
+            // the app's own socket, opens no network, and SENDS NOTHING outward; the
+            // app (net_hosts=[]) cannot upload and writes only a redacted COPY in its
+            // sandbox — the user shares that copy. Squarely Mnemosyne's recollective
+            // remit (she owns the artifact registry surface); the orchestrator also
+            // holds it via the wildcard. Not consequential — it never parks.
+            "share_guard_scrub",
             // SEMANTIC PASTEBOARD: pasteboard_recall is READ-ONLY recall over the
             // user's PII-redacted, bounded, transient clipboard history ("the thing
             // I copied about the lease"). It ranks the stored clips by meaning via
