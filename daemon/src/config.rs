@@ -337,12 +337,16 @@ pub struct Config {
     pub vitals: VitalsConfig,
     /// [procwatch] — PROCESS OBSERVATORY (procwatch.rs). `enabled` SHIPS ON
     /// (armed-by-default). STRICTLY READ-ONLY: a bounded poll that snapshots the
-    /// LIVE process table and emits one SECRET-FREE `system.processes` frame
+    /// LIVE process table via DIRECT libproc fixed-size struct reads
+    /// (TBSDINFO/TASKINFO) and emits one SECRET-FREE `system.processes` frame
     /// (total count, top-N by CPU/memory, new-since-last-poll, load average) to
-    /// the HUD. Process NAME + pid only — NEVER argv/env/open files (those can
-    /// carry secrets). It never kills/signals/renices anything — no such code
-    /// path exists. `poll_secs` is the cadence (clamped to a sane floor);
-    /// `top_n` the per-list size (hard-capped at 32).
+    /// the HUD. Process NAME + pid only — the argv/env sysctl (KERN_PROCARGS2)
+    /// and every path flavor are NEVER issued, so argv/env/open files (which
+    /// can carry secrets) never even transit daemon memory. CPU % is a
+    /// two-sample delta: the first poll honestly reports null, never 0.0. It
+    /// never kills/signals/renices anything — no such code path exists.
+    /// `poll_secs` is the cadence (clamped to a sane floor); `top_n` the
+    /// per-list size (hard-capped at 32).
     pub procwatch: ProcwatchConfig,
     /// [snapshot] — SAFETY SNAPSHOT (snapshot.rs). `enabled` SHIPS ON
     /// (armed-by-default). BENIGN-ONLY: before a consequential, hard-to-reverse
@@ -1068,10 +1072,11 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("vitals", &["enabled", "poll_secs"]),
     // [procwatch] — PROCESS OBSERVATORY (procwatch.rs). `enabled` SHIPS ON
     // (armed-by-default). STRICTLY READ-ONLY: a bounded poll of the LIVE process
-    // table -> one SECRET-FREE `system.processes` frame (name + pid only —
-    // never argv/env/open files; no kill/signal/renice path exists). `poll_secs`
-    // is the cadence (clamped to a sane floor); `top_n` the per-list size
-    // (hard-capped at 32). Listed so none reads as a typo.
+    // table via direct libproc fixed-size struct reads -> one SECRET-FREE
+    // `system.processes` frame (name + pid only — the argv/env sysctl is never
+    // issued; no kill/signal/renice path exists). `poll_secs` is the cadence
+    // (clamped to a sane floor); `top_n` the per-list size (hard-capped at 32).
+    // Listed so none reads as a typo.
     ("procwatch", &["enabled", "poll_secs", "top_n"]),
     // [snapshot] — SAFETY SNAPSHOT (snapshot.rs). `enabled` SHIPS ON (armed-by-
     // default). BENIGN-ONLY: before a consequential step (a self-heal apply, a
@@ -1955,10 +1960,15 @@ impl Default for VitalsConfig {
 ///     table and surfaces one bounded, SECRET-FREE frame (total count, top-N by
 ///     CPU/memory, new-since-last-poll, load average). The wire carries process
 ///     NAME + pid (+ ppid/uid) only — NEVER argv/command line, NEVER
-///     environment, NEVER open files/paths (those routinely carry secrets; the
-///     collector never reads them, by construction). It OBSERVES only: no
-///     kill/signal/renice code path exists. OFF => the poll never spawns and
-///     the panel stays honestly empty.
+///     environment, NEVER open files/paths (those routinely carry secrets).
+///     Secret-free AT THE SYSCALL BOUNDARY, by construction: the collector
+///     issues only per-pid fixed-size libproc struct reads (PROC_PIDTBSDINFO /
+///     PROC_PIDTASKINFO) — the kernel's argv/env block (KERN_PROCARGS2) and
+///     every path flavor are never requested, so no argv/env byte ever transits
+///     daemon memory. CPU % is a two-sample delta; the FIRST poll honestly
+///     reports cpu as null (empty top-CPU list), never a fabricated 0.0. It
+///     OBSERVES only: no kill/signal/renice code path exists. OFF => the poll
+///     never spawns and the panel stays honestly empty.
 ///   - `poll_secs` (default 10): the snapshot cadence. Clamped at read time to
 ///     a sane floor (>= [`procwatch::PROCWATCH_MIN_POLL_SECS`]) so a
 ///     hostile/typo'd 0 can't busy-spin the poll.

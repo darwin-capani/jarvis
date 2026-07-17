@@ -71,22 +71,25 @@ export interface HardwareVitalsData {
 /** system / system.processes — procwatch.rs::procwatch_task, every
  *  [procwatch].poll_secs. A STRICTLY READ-ONLY, SECRET-FREE reduction of the
  *  LIVE process table: process NAME + pid (+ ppid/uid) only — NEVER
- *  argv/command line, NEVER environment, NEVER open files/paths. Parsed
- *  defensively by core/procwatch.ts (parseProcesses); the shape is documented
- *  here for the wire. */
+ *  argv/command line, NEVER environment, NEVER open files/paths (the daemon
+ *  reads only fixed-size libproc structs; the argv/env sysctl is never
+ *  issued). CPU % is a TWO-SAMPLE delta: on the FIRST poll every cpu_pct is
+ *  null and top_cpu is honestly EMPTY (warm-up, never a fabricated 0.0).
+ *  Parsed defensively by core/procwatch.ts (parseProcesses); the shape is
+ *  documented here for the wire. */
 export interface SystemProcessesData {
-  total: number; // live process count
+  total: number; // the KERNEL'S live pid count (includes pids the unprivileged daemon can't inspect; those can't appear in the lists)
   new_since_poll: number | null; // null on the FIRST poll (no baseline yet)
   top_cpu: Array<{
     name: string; // short process name, <= 64 chars — never a command line
     pid: number;
     ppid: number | null; // null where unreadable (honest absent)
     uid: number | null; // null where unavailable (honest absent)
-    cpu_pct: number; // can honestly exceed 100 on multi-core
-    mem_bytes: number;
+    cpu_pct: number | null; // two-sample delta; null until a baseline exists. Can honestly exceed 100 on multi-core
+    mem_bytes: number | null; // null where TASKINFO was unreadable
   }>;
-  top_mem: SystemProcessesData["top_cpu"]; // same entry shape, ranked by memory
-  load_avg: [number, number, number]; // 1 / 5 / 15 min
+  top_mem: SystemProcessesData["top_cpu"]; // same entry shape, ranked by memory (measured rows only)
+  load_avg: [number, number, number] | null; // 1 / 5 / 15 min; null when unreadable
 }
 
 /** system / daemon.started — main.rs. `cloud_key_present` added by contract #2. */

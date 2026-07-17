@@ -44,6 +44,19 @@ const FULL = {
   load_avg: [2.31, 1.9, 1.4],
 };
 
+/** The daemon's FIRST-poll frame: cpu is a two-sample delta, so top_cpu is
+ *  honestly EMPTY, every entry cpu_pct is null, and new_since_poll is null. */
+const FIRST_POLL = {
+  total: 421,
+  new_since_poll: null,
+  top_cpu: [],
+  top_mem: [
+    { name: "inferenced", pid: 777, ppid: 501, uid: 501, cpu_pct: null, mem_bytes: 4_200_000_000 },
+    { name: "WindowServer", pid: 402, ppid: 1, uid: 88, cpu_pct: null, mem_bytes: 900_000_000 },
+  ],
+  load_avg: [2.31, 1.9, 1.4],
+};
+
 /* ------------------------------------------------------------------------- */
 describe("parseProcesses", () => {
   it("parses a full, honest frame", () => {
@@ -77,6 +90,18 @@ describe("parseProcesses", () => {
     // that to 0 would claim "nothing new" that was never measured.
     const p = parseProcesses({ ...FULL, new_since_poll: null });
     expect(p.newSincePoll).toBeNull();
+  });
+
+  it("preserves the whole first-poll warm-up shape honestly", () => {
+    // cpu% is a two-sample delta: the first frame carries an EMPTY top_cpu
+    // and null cpu_pct on every top_mem entry. The parser must keep those
+    // nulls — coercing any to 0 would fabricate a "0.0% cpu" never measured.
+    const p = parseProcesses(FIRST_POLL);
+    expect(p.topCpu).toEqual([]);
+    expect(p.newSincePoll).toBeNull();
+    expect(p.topMem).toHaveLength(2);
+    expect(p.topMem[0].cpuPct).toBeNull();
+    expect(p.topMem[0].memBytes).toBe(4_200_000_000);
   });
 
   it("drops rows without a valid pid and preserves unreadable fields as null", () => {
@@ -199,6 +224,18 @@ describe("ProcPanel", () => {
     const html = renderToStaticMarkup(createElement(ProcPanel, { proc: first }));
     expect(html).toContain("new since poll");
     expect(html).toContain("—");
+  });
+
+  it("renders the first-poll frame as an honest warm-up, never 0.0%", () => {
+    // First poll: processes ARE visible (total > 0) but cpu has no baseline
+    // yet — the TOP CPU list must read as warming up, and every entry's cpu
+    // column as "—". A fabricated "0.0%" would claim a measurement that was
+    // never taken (the vitals on_ac precedent).
+    const first = parseProcesses(FIRST_POLL);
+    const html = renderToStaticMarkup(createElement(ProcPanel, { proc: first }));
+    expect(html).toContain("cpu warming up — deltas need two polls");
+    expect(html).not.toContain("0.0%");
+    expect(html).toContain("—"); // the unknown new-since-poll count
   });
 
   it("renders an honest empty-list line for an empty table", () => {

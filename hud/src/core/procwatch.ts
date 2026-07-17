@@ -8,9 +8,12 @@
  * The daemon emits `system.processes` every [procwatch].poll_secs carrying a
  * STRICTLY READ-ONLY, SECRET-FREE reduction of the LIVE process table: total
  * process count, top-N by CPU and by memory (process NAME + pid + ppid/uid +
- * cpu/mem ONLY — never argv/env/open files; the daemon never reads those, by
- * construction), how many processes are new since the last poll (null on the
- * very first poll — no baseline yet), and the load average as context.
+ * cpu/mem ONLY — never argv/env/open files; the daemon reads only fixed-size
+ * libproc structs and never issues the argv/env sysctl), how many processes
+ * are new since the last poll (null on the very first poll — no baseline
+ * yet), and the load average as context. CPU % is a TWO-SAMPLE delta: on the
+ * first poll every cpu_pct is null and top_cpu is honestly EMPTY (warm-up,
+ * never a fabricated 0.0%); real deltas arrive from the second poll on.
  *
  * This module parses that shape DEFENSIVELY: a missing/malformed field
  * degrades to an honest "unknown"/null (never a fabricated value), a hostile
@@ -33,15 +36,18 @@ export interface ProcEntry {
   ppid: number | null;
   /** Owning uid, or null where unavailable (honest absent). */
   uid: number | null;
-  /** CPU percent — can honestly exceed 100 on multi-core (the daemon sums
-   *  across cores). Null when unreadable, NEVER a fabricated 0. */
+  /** CPU percent — a two-sample delta that can honestly exceed 100 on
+   *  multi-core (the daemon sums across cores). Null when no baseline exists
+   *  yet (first poll / brand-new process) or unreadable — NEVER a fabricated
+   *  0. */
   cpuPct: number | null;
   /** Resident memory bytes, or null when unreadable. */
   memBytes: number | null;
 }
 
 export interface ProcessesFrame {
-  /** Total live process count, or null when unreadable. */
+  /** The KERNEL'S live pid count (includes pids the unprivileged daemon can't
+   *  inspect — those can't appear in the lists), or null when unreadable. */
   total: number | null;
   /** Processes started since the previous poll, or null on the FIRST poll
    *  (no baseline yet — the daemon says null, never a fabricated 0, and we

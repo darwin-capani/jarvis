@@ -87,8 +87,15 @@ export default function ProcPanel({ proc }: { proc: ProcessesFrame | null }) {
         TOP CPU <span className="tag">{topCpu.length}</span>
       </div>
       <div className="tickers sub">
+        {/* CPU % is a two-sample delta: the daemon's FIRST poll has no
+            baseline, so top_cpu arrives honestly EMPTY (never a fabricated
+            0.0% list). With processes visible, an empty list means warm-up. */}
         {topCpu.length === 0 && (
-          <div className="tick-entry v">no process readings visible</div>
+          <div className="tick-entry v">
+            {proc.total !== null && proc.total > 0
+              ? "cpu warming up — deltas need two polls"
+              : "no process readings visible"}
+          </div>
         )}
         {topCpu.map((e) => (
           <ProcRow
