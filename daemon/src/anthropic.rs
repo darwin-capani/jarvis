@@ -1325,6 +1325,16 @@ fn tool_defs() -> &'static Value {
                 }
             },
             {
+                "name": "share_guard_scrub",
+                "description": "Scrub an artifact for PII BEFORE the user shares it — resolve one of your produced artifacts (from the in-memory Artifact Registry) and hand it to the on-device Share Guard micro-app, which detects emails, phone numbers, and Luhn-valid card/account numbers and writes a REDACTED COPY inside its own sandbox. Call this when the user says 'scrub this before I share it', 'redact the last report/draft', 'clean that up before I send it', or 'run Share Guard on that'. DEFENSIVE + ON-DEVICE ONLY: the daemon side is READ-ONLY — it reads the artifact's text (or stages its image) out of the registry and FORWARDS it to Share Guard's own socket. It SENDS NOTHING outward and opens no network; Share Guard is fully offline (it cannot upload) and writes only a redacted COPY of the payload in its sandbox — DARWIN cannot send, the user shares the scrubbed copy themselves. HONEST: redaction is best-effort text detection, not a guarantee; when nothing has been produced yet it says so plainly and never invents an artifact. With no id it scrubs the MOST RECENT artifact. Report that you handed a copy to Share Guard for on-device redaction — never claim anything was sent anywhere.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer", "description": "Optional registry id of a specific artifact to scrub. Omit to scrub the MOST RECENT artifact."}
+                    }
+                }
+            },
+            {
                 "name": "shell_run",
                 "description": "Run a SHELL COMMAND in an on-device SANDBOX — the HIGHEST-RISK capability (arbitrary command execution), maximally gated; it ships ON but NEVER auto-runs (every command parks per-action for a spoken yes). Call this ONLY when the user explicitly asks you to run a terminal/shell command on their machine ('run `ls`', 'execute this command', 'run a quick git status'). It NEVER auto-runs: every command is treated as CONSEQUENTIAL, so it PARKS for the user's spoken 'yes' on a later turn and only then executes — and only when the consequential-actions master switch is on, the speaker's voice is recognized, and the system isn't in lockdown. A destructive or exfiltration command (rm -rf, dd, mkfs, sudo, a fork bomb, curl|sh, writes to /etc or ~/.claude or the daemon's own state, killing the daemon, any networking tool like ssh/nc/curl) is REFUSED outright before it can even be confirmed. When it does run, it runs under a DENY-DEFAULT sandbox: NO network at all, file writes confined to a throwaway scratch directory, and the Keychain / ~/.claude / the daemon's secrets categorically unreachable. The command's real output is returned faithfully (bounded + with a timeout) — NEVER fabricated; if it produced no output or failed, say so honestly. The sandboxed shell ships ON but is INERT WITHOUT device support (needs /usr/bin/sandbox-exec + /bin/sh); when [shell] is disabled it does nothing and says so. Be explicit that you are proposing to run a command and that it needs the user's confirmation; never claim a command ran or report output unless it actually executed.",
                 "input_schema": {
@@ -3635,6 +3645,18 @@ struct ChangeqApplyArgs {
 #[derive(Deserialize)]
 struct ArtifactPeekArgs {
     /// Optional registry id to peek. Absent => the MOST RECENT artifact.
+    #[serde(default)]
+    id: Option<u64>,
+}
+
+// -- SHARE GUARD SCRUB tool args (crate::artifact -> share-guard micro-app) -------
+// share_guard_scrub is READ-ONLY on the daemon side: it resolves the addressed (or
+// most recent) artifact out of the in-memory registry and FORWARDS it to the
+// offline, default-deny sandboxed share-guard app for on-device PII redaction. The
+// daemon sends nothing outward; the app writes only a redacted copy in its sandbox.
+#[derive(Deserialize)]
+struct ShareGuardScrubArgs {
+    /// Optional registry id to scrub. Absent => the MOST RECENT artifact.
     #[serde(default)]
     id: Option<u64>,
 }
@@ -8019,6 +8041,20 @@ async fn dispatch_tool(
             Ok(args) => Ok(artifact_peek_tool(args.id)),
             Err(e) => Err(anyhow!("invalid artifact_peek arguments: {e}")),
         },
+        // -- SHARE GUARD SCRUB (crate::artifact -> share-guard micro-app) -----
+        // READ-ONLY on the daemon side + benign: resolve the addressed (or most
+        // recent) artifact out of the in-memory registry and FORWARD it (scrub.text,
+        // or a staged scrub.image) to the OFFLINE, default-deny sandboxed share-guard
+        // app for on-device PII redaction. The daemon opens no network and SENDS
+        // NOTHING outward; the app (net_hosts=[]) cannot upload and writes only a
+        // redacted COPY inside its own sandbox. NOT in CONSEQUENTIAL_TOOLS — it takes
+        // no outward/irreversible action (a resolve + an in-sandbox forward), so it
+        // never parks. Gated by [artifact].enabled (armed-by-default); empty registry
+        // => an honest "nothing to scrub" reply, never a fabricated artifact.
+        "share_guard_scrub" => match serde_json::from_value::<ShareGuardScrubArgs>(input.clone()) {
+            Ok(args) => Ok(share_guard_scrub_tool(args.id).await),
+            Err(e) => Err(anyhow!("invalid share_guard_scrub arguments: {e}")),
+        },
         // -- SANDBOXED SHELL / TERMINAL (crate::shell, #43) -------------------
         // The HIGHEST-RISK tool: arbitrary command execution. It ships ON
         // ([shell].enabled=true) but NEVER auto-runs: it is CONSEQUENTIAL (it is in
@@ -9472,6 +9508,94 @@ fn artifact_peek_tool(id: Option<u64>) -> String {
             reply
         }
         None => crate::artifact::empty_reply(),
+    }
+}
+
+/// `share_guard_scrub` — resolve an artifact and hand it to the on-device Share
+/// Guard app for PII redaction. DAEMON SIDE IS READ-ONLY: it reads the addressed
+/// (or most recent) artifact out of the in-memory registry, builds the exact op
+/// line the app expects ([`crate::artifact::scrub_forward`]), stages an image copy
+/// into the app's OWN input sandbox when the artifact is an image file, and
+/// FORWARDS the op to the app's per-app socket. It opens NO network and SENDS
+/// NOTHING outward; the offline, default-deny app writes only a redacted COPY in
+/// its sandbox and cannot upload — the user shares that copy themselves.
+///
+/// Honest failure modes: registry off / empty => a plain "nothing to scrub";
+/// runtime not up => an honest "can't reach the bridge"; app not built =>
+/// [`crate::apps::start`]'s "isn't runnable yet"; image stage failure => report it
+/// and forward nothing.
+async fn share_guard_scrub_tool(id: Option<u64>) -> String {
+    let cfg = load_artifact_config();
+    if !cfg.enabled {
+        return "The artifact registry is off, sir — enable [artifact] so I can resolve an \
+                artifact to hand to Share Guard. While it's off I remember nothing to scrub."
+            .to_string();
+    }
+    let Some(artifact) = crate::artifact::resolve_for_scrub(id) else {
+        return crate::artifact::empty_reply();
+    };
+    let Some(registry) = crate::apps::global_registry() else {
+        return "I couldn't reach the Share Guard bridge, sir — the app runtime isn't up yet."
+            .to_string();
+    };
+
+    let input_dir = registry
+        .project_root()
+        .join(crate::artifact::SHARE_GUARD_INPUT_REL);
+    let forward = crate::artifact::scrub_forward(&artifact, &input_dir);
+
+    // IMAGE PATH: stage a COPY of the artifact's image into the app's own input
+    // sandbox (a benign, on-device write; nothing leaves the machine) so the
+    // sandboxed app — which cannot reach the original path — can read it.
+    if let crate::artifact::ScrubForward::Image {
+        stage_from,
+        stage_to,
+        ..
+    } = &forward
+    {
+        if let Some(parent) = stage_to.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return format!(
+                    "I couldn't prepare Share Guard's input dir, sir: {e}. Nothing was staged or sent."
+                );
+            }
+        }
+        if let Err(e) = std::fs::copy(stage_from, stage_to) {
+            return format!(
+                "I couldn't stage that image for Share Guard, sir: {e}. Nothing was sent."
+            );
+        }
+    }
+
+    // Make the forward REACHABLE: bring the app up if it isn't (idempotent when
+    // already running; an unbuilt/spec-only entry fails here with an honest
+    // reason). The daemon does not send anything outward — it forwards the op to
+    // the app's own socket, and the app is offline.
+    if let Err(e) = crate::apps::start(&registry, crate::artifact::SHARE_GUARD_APP).await {
+        return format!("Share Guard couldn't be started, sir: {e}. Nothing was sent.");
+    }
+    match crate::apps::send_op(&registry, crate::artifact::SHARE_GUARD_APP, forward.op_line()).await
+    {
+        Ok(()) => {
+            crate::telemetry::emit(
+                "system",
+                "app.op_forwarded",
+                json!({
+                    "name": crate::artifact::SHARE_GUARD_APP,
+                    "op": "scrub",
+                    "artifact_id": artifact.id,
+                }),
+            );
+            format!(
+                "Handed \"{}\" to Share Guard, sir — it's redacting a COPY on-device inside its \
+                 own sandbox (best-effort: emails, phone numbers, card/account numbers). Nothing \
+                 was sent out; share the scrubbed copy it writes yourself.",
+                artifact.title
+            )
+        }
+        Err(e) => format!(
+            "I couldn't reach Share Guard to hand it that artifact, sir: {e}. Nothing was sent."
+        ),
     }
 }
 
@@ -13575,6 +13699,7 @@ mod tests {
                 "changeq_list",
                 "changeq_apply",
                 "artifact_peek",
+                "share_guard_scrub",
                 "shell_run",
                 "ui_actuate",
                 "unified_search",

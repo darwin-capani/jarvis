@@ -2310,6 +2310,11 @@ async fn main() -> Result<()> {
     // session HMAC key is initialized lazily on first token mint and never
     // logged.
     let app_registry = apps::AppRegistry::discover(&root);
+    // Publish the process-global registry handle so a model-callable tool that
+    // isn't given the router's explicit Arc (e.g. `share_guard_scrub`, which runs
+    // under anthropic::execute_tool) can still reach the app runtime to forward an
+    // op. Idempotent; the router's explicit threading stays the primary path.
+    apps::set_global_registry(app_registry.clone());
 
     // Deferred from Config::load (audit fix): telemetry did not exist yet
     // when the config was parsed, so misconfiguration was a buried log WARN.
