@@ -1446,45 +1446,98 @@ EMBED_MAX_BATCH = 256
 #
 # A chunk is closed by WHICHEVER cap hits first:
 #   - EMBED_BATCH_CHUNK rows, or
-#   - EMBED_CHUNK_TOKEN_BUDGET PADDED tokens (rows x the chunk's max length).
-# The token budget is the worst-case bound: without it, 32 rows x 512 tokens =
+#   - EMBED_CHUNK_TOKEN_BUDGET PADDED tokens (rows x the chunk's max length), or
+#   - EMBED_CHUNK_WASTE_FACTOR: padded tokens would exceed this multiple of the
+#     chunk's REAL tokens (the padding-waste guard).
+# The token budget is the activation bound: without it, 32 rows x 512 tokens =
 # 16384 padded tokens in ONE forward — an activation spike the old per-text path
-# (never more than 512 tokens in flight) could not hit. With it, a hostile batch
-# of max-length texts degrades to a few texts per forward (the old cost), while
-# a realistic short-fact batch (~15 tokens/text) still packs EMBED_BATCH_CHUNK
-# rows into one forward. A single text is always a legal chunk of one (<= 512
-# padded tokens <= the budget by construction).
+# (never more than 512 tokens in flight) could not hit. The waste guard bounds
+# AMPLIFICATION: without it, a crafted short/long mix (31 one-token texts + one
+# 128-token text = 32 rows x maxlen 128) computes 4096 padded positions for 159
+# real tokens — ~26x the PADDED TOKENS (~3x the GPU time, per-forward overhead
+# absorbs the rest — review-measured) of the per-text path for the same
+# request, all under the engine lock. With the guard, a multi-row
+# chunk's padded cost is <= EMBED_CHUNK_WASTE_FACTOR x its real tokens BY
+# CONSTRUCTION, so no length mix can multiply lock-hold time past that factor;
+# a single row is always a legal chunk of one (exact cost, nothing to waste).
+# A realistic short-fact batch (~15 tokens/text, near-uniform) triggers neither
+# cap and still packs EMBED_BATCH_CHUNK rows into one forward.
 EMBED_BATCH_CHUNK = 32
 EMBED_CHUNK_TOKEN_BUDGET = 4096
+EMBED_CHUNK_WASTE_FACTOR = 2
 
 
-def _pack_embed_chunks(lengths, row_cap=None, token_budget=None):
+def _pack_embed_chunks(lengths, row_cap=None, token_budget=None, waste_factor=None):
     """PURE, ORDER-PRESERVING chunker for the batched embed forward: split the
     row index space [0, len(lengths)) into contiguous [start, end) ranges where
-    each range holds at most `row_cap` rows AND at most `token_budget` PADDED
+    each range holds at most `row_cap` rows, at most `token_budget` PADDED
     tokens (rows x the range's max length — the true activation footprint of the
-    padded forward). Greedy: extend the current chunk until adding the next row
-    would break a cap, then close it. A single row always forms a legal chunk,
-    whatever its length (it cannot be split). Returns a list of (start, end)."""
+    padded forward), AND — for multi-row ranges — padded tokens no more than
+    `waste_factor` x the range's REAL tokens (the amplification guard). Greedy:
+    extend the current chunk until adding the next row would break a cap, then
+    close it. A single row always forms a legal chunk, whatever its length (it
+    cannot be split, and alone it wastes nothing). Returns a list of (start, end).
+
+    INVARIANT (tested): for every returned multi-row range,
+    rows x max(lengths) <= min(token_budget, waste_factor x sum(lengths)) — so a
+    crafted short/long mix cannot multiply the GPU cost of the padded forward
+    past waste_factor of what the per-text path would have paid."""
     if row_cap is None:
         row_cap = EMBED_BATCH_CHUNK
     if token_budget is None:
         token_budget = EMBED_CHUNK_TOKEN_BUDGET
+    if waste_factor is None:
+        waste_factor = EMBED_CHUNK_WASTE_FACTOR
     ranges = []
     start = 0
     cur_max = 0
+    real = 0  # real (unpadded) tokens in the current chunk
     for i, n in enumerate(lengths):
         rows = i - start + 1
         new_max = n if n > cur_max else cur_max
-        # The padded cost if row i joins the current chunk.
-        if i > start and (rows > row_cap or rows * new_max > token_budget):
+        # The padded cost if row i joins the current chunk, vs all three caps.
+        padded = rows * new_max
+        if i > start and (
+            rows > row_cap
+            or padded > token_budget
+            or padded > waste_factor * (real + n)
+        ):
             ranges.append((start, i))
             start = i
             new_max = n
+            real = 0
         cur_max = new_max
+        real += n
     if start < len(lengths):
         ranges.append((start, len(lengths)))
     return ranges
+
+
+def _plan_embed_batches(lengths, row_cap=None, token_budget=None, waste_factor=None):
+    """PURE planner for the batched embed forwards: pack rows LENGTH-SORTED so
+    chunkmates have near-equal lengths, then return each chunk as a list of
+    ORIGINAL indices (the caller computes in plan order and writes each result
+    back to its original slot, so output order is untouched).
+
+    Why sort: the greedy packer alone admits crafted short/long mixes with up to
+    ~26x padded-token amplification (e.g. one 128-token text + 31 one-token
+    texts packs as 32 rows x maxlen 128 = 4096 padded positions for 159 real
+    tokens — review-confirmed), multiplying the GPU time spent under the engine
+    lock vs the per-text path for the SAME request. Sorting makes each chunk's
+    lengths adjacent in the distribution (so the packer's waste guard almost
+    never has to fragment a real batch), while the packer's
+    EMBED_CHUNK_WASTE_FACTOR cap HARD-bounds amplification for any residual
+    mix. Each row's vector depends only on its own tokens (causal mask + masked
+    pool), so grouping order cannot change any result. The sort is stable ->
+    deterministic plan."""
+    order = sorted(range(len(lengths)), key=lambda i: lengths[i])
+    ranges = _pack_embed_chunks(
+        [lengths[i] for i in order],
+        row_cap=row_cap,
+        token_budget=token_budget,
+        waste_factor=waste_factor,
+    )
+    return [order[a:b] for a, b in ranges]
 
 
 def _pool_normalize(mx, hidden, lengths):
@@ -3706,12 +3759,12 @@ class InferenceEngine:
                 "this model does not expose an inner decoder stack for embeddings"
             )
         encoded = [self._embed_encode(t) for t in texts]
-        vectors = []
-        # Chunk by BOTH caps (rows AND padded tokens) so the padded activation
-        # tensor stays bounded even for a hostile batch of max-length texts —
-        # see _pack_embed_chunks.
-        for start, end in _pack_embed_chunks([len(ids) for ids in encoded]):
-            chunk = encoded[start:end]
+        vectors = [None] * len(encoded)
+        # Plan chunks LENGTH-SORTED and bounded by BOTH caps (rows AND padded
+        # tokens), then write each result back to its ORIGINAL slot — output
+        # order is untouched. See _plan_embed_batches / _pack_embed_chunks.
+        for indices in _plan_embed_batches([len(ids) for ids in encoded]):
+            chunk = [encoded[i] for i in indices]
             lengths = [len(ids) for ids in chunk]
             maxlen = max(lengths)
             # Pad id is irrelevant to the result: pad positions are never attended
@@ -3720,7 +3773,8 @@ class InferenceEngine:
             hidden = inner(mx.array(padded))  # [chunk, maxlen, hidden]
             normed = _pool_normalize(mx, hidden, lengths)  # [chunk, hidden]
             mx.eval(normed)
-            vectors.extend([[float(x) for x in row] for row in normed.tolist()])
+            for i, row in zip(indices, normed.tolist()):
+                vectors[i] = [float(x) for x in row]
         return vectors
 
     def _embed_one(self, mx, text):

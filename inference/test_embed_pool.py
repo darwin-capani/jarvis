@@ -89,20 +89,22 @@ class PackEmbedChunksTests(unittest.TestCase):
     """The PURE order-preserving chunker that bounds each padded forward by BOTH
     a row cap and a padded-token budget (rows x chunk max length)."""
 
-    def _check_invariants(self, lengths, ranges, row_cap, token_budget):
+    def _check_invariants(self, lengths, ranges, row_cap, token_budget, waste=2):
         # Contiguous, ordered, complete cover of [0, len(lengths)).
         self.assertEqual(ranges[0][0], 0)
         self.assertEqual(ranges[-1][1], len(lengths))
         for (a, b), (c, _d) in zip(ranges, ranges[1:]):
             self.assertLess(a, b)
             self.assertEqual(b, c)
-        # Every chunk respects both caps (a single row is always legal).
+        # Every multi-row chunk respects ALL three caps (a single row is always
+        # legal): rows, padded-token budget, and the amplification guard.
         for a, b in ranges:
             rows = b - a
             padded = rows * max(lengths[a:b])
             if rows > 1:
                 self.assertLessEqual(rows, row_cap)
                 self.assertLessEqual(padded, token_budget)
+                self.assertLessEqual(padded, waste * sum(lengths[a:b]))
 
     def test_short_facts_pack_into_one_chunk(self):
         """A realistic MNEMOSYNE batch (short facts) stays ONE forward."""
@@ -141,6 +143,90 @@ class PackEmbedChunksTests(unittest.TestCase):
 
     def test_empty_input_gives_no_ranges(self):
         self.assertEqual(server._pack_embed_chunks([], 32, 1024), [])
+
+    def test_waste_guard_defeats_the_review_pattern_even_unsorted(self):
+        """The review-confirmed amplification pattern fed to the RAW (unsorted)
+        packer: 31 one-token texts then a 128-token text used to pack as one
+        32x128 chunk (4096 padded for 159 real). The waste guard must now close
+        the chunk before the 128 joins, so padded stays within 2x real."""
+        lengths = [1] * 31 + [128]
+        ranges = server._pack_embed_chunks(lengths, row_cap=32, token_budget=4096)
+        self._check_invariants(lengths, ranges, 32, 4096)
+        padded = sum((b - a) * max(lengths[a:b]) for a, b in ranges)
+        self.assertLessEqual(padded, 2 * sum(lengths))
+
+    def test_waste_guard_fuzz_never_amplifies_past_factor(self):
+        """Deterministic fuzz over adversarial length mixes: for EVERY multi-row
+        chunk the packer emits, padded <= 2x real (single-row chunks are exact
+        by definition). Patterns chosen to attack the guard's boundaries."""
+        patterns = [
+            [1, 512] * 64,
+            [512, 1] * 64,
+            ([128] + [1] * 31) * 8,
+            list(range(1, 257)),
+            list(range(256, 0, -1)),
+            [1, 1, 511, 1, 1, 511] * 20,
+            [7] * 200,
+            [512] * 40 + [1] * 40,
+        ]
+        for lengths in patterns:
+            ranges = server._pack_embed_chunks(lengths, row_cap=32, token_budget=4096)
+            self._check_invariants(lengths, ranges, 32, 4096)
+
+
+class PlanEmbedBatchesTests(unittest.TestCase):
+    """The LENGTH-SORTED planner that kills padded-token amplification while
+    preserving output order via original-index groups."""
+
+    def _padded_total(self, lengths, plan):
+        return sum(len(g) * max(lengths[i] for i in g) for g in plan)
+
+    def _check_cover(self, lengths, plan, row_cap, token_budget):
+        # Every original index appears EXACTLY once across the plan.
+        flat = [i for g in plan for i in g]
+        self.assertEqual(sorted(flat), list(range(len(lengths))))
+        # Both caps hold for every multi-row chunk.
+        for g in plan:
+            if len(g) > 1:
+                self.assertLessEqual(len(g), row_cap)
+                self.assertLessEqual(len(g) * max(lengths[i] for i in g), token_budget)
+
+    def test_review_confirmed_amplification_pattern_collapses(self):
+        """The exact upheld-finding pattern: ([128] + [1]*31) x 8 packed 32768
+        padded tokens for 1272 real under the unsorted packer (25.8x). Sorted
+        planning must bring the waste down to a small constant factor."""
+        lengths = ([128] + [1] * 31) * 8
+        plan = server._plan_embed_batches(lengths, row_cap=32, token_budget=4096)
+        self._check_cover(lengths, plan, 32, 4096)
+        real = sum(lengths)  # 1272
+        padded = self._padded_total(lengths, plan)
+        self.assertLessEqual(
+            padded, 2 * real,
+            f"sorted plan should not amplify: padded={padded} real={real}",
+        )
+
+    def test_interleaved_extremes_collapse_too(self):
+        lengths = [1, 512] * 64
+        plan = server._plan_embed_batches(lengths, row_cap=32, token_budget=4096)
+        self._check_cover(lengths, plan, 32, 4096)
+        real = sum(lengths)
+        self.assertLessEqual(self._padded_total(lengths, plan), 2 * real)
+
+    def test_uniform_batch_is_one_chunk_and_order_is_identity_coverage(self):
+        lengths = [14] * 8
+        plan = server._plan_embed_batches(lengths, row_cap=32, token_budget=4096)
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(sorted(plan[0]), list(range(8)))
+
+    def test_empty_input_gives_empty_plan(self):
+        self.assertEqual(server._plan_embed_batches([], 32, 4096), [])
+
+    def test_plan_is_deterministic(self):
+        lengths = [5, 3, 9, 3, 7, 1, 512, 2]
+        a = server._plan_embed_batches(lengths, 4, 64)
+        b = server._plan_embed_batches(lengths, 4, 64)
+        self.assertEqual(a, b)
+        self._check_cover(lengths, a, 4, 64)
 
 
 if __name__ == "__main__":

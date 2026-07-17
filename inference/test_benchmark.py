@@ -144,5 +144,27 @@ class ReportShapeTests(unittest.TestCase):
         json.dumps(self._synthetic_report())  # must not raise
 
 
+class CosineTests(unittest.TestCase):
+    """The pure cosine used to RECORD single-vs-batched embed agreement."""
+
+    def test_identical_vectors_are_one(self):
+        self.assertAlmostEqual(benchmark.cosine([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]), 1.0)
+
+    def test_orthogonal_vectors_are_zero(self):
+        self.assertAlmostEqual(benchmark.cosine([1.0, 0.0], [0.0, 1.0]), 0.0)
+
+    def test_opposite_vectors_are_minus_one(self):
+        self.assertAlmostEqual(benchmark.cosine([1.0, 0.0], [-1.0, 0.0]), -1.0)
+
+    def test_scale_invariant(self):
+        self.assertAlmostEqual(
+            benchmark.cosine([1.0, 2.0], [10.0, 20.0]), 1.0, places=9
+        )
+
+    def test_zero_norm_side_is_honest_zero_not_nan(self):
+        self.assertEqual(benchmark.cosine([0.0, 0.0], [1.0, 2.0]), 0.0)
+        self.assertEqual(benchmark.cosine([1.0, 2.0], [0.0, 0.0]), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

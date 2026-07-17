@@ -48,6 +48,7 @@ device-gated part, exercised by actually running this CLI on the target Mac.
 """
 import argparse
 import json
+import math
 import os
 import platform
 import re
@@ -128,6 +129,20 @@ def summarize_metric(values, warmup=1):
         "warmup": warmup,
         "runs": kept,
     }
+
+
+def cosine(a, b):
+    """PURE cosine similarity between two equal-length vectors (plain floats).
+    Used to RECORD the numerical agreement between the per-text and batched
+    embed paths in the baseline, so the 'vectors preserved' claim is
+    reproducible from the tree instead of living only in a change record.
+    A zero-norm side yields 0.0 (honest no-agreement, never a div-by-zero)."""
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (na * nb)
 
 
 def summarize_runs(run_dicts, keys, warmup=1):
@@ -601,6 +616,13 @@ def bench_embed(eng, runs, warmup):
         t0 = time.perf_counter()
         eng.embed(batch)
         batched_ms.append((time.perf_counter() - t0) * 1000.0)
+    # NUMERICAL AGREEMENT between the two call shapes, recorded in the baseline
+    # so the "vectors preserved" claim is reproducible from the tree and
+    # regression-protected: min cosine over the batch between each text's
+    # per-text vector and its batched vector (both REAL vectors computed here).
+    single_vecs = [eng.embed([t])[0] for t in batch]
+    batched_vecs = eng.embed(batch)
+    min_cosine = min(cosine(a, b) for a, b in zip(single_vecs, batched_vecs))
     single_total = summarize_metric(single_batch_ms, warmup=warmup)
     batched_total = summarize_metric(batched_ms, warmup=warmup)
     return {
@@ -616,6 +638,7 @@ def bench_embed(eng, runs, warmup):
             "batched_per_text_ms": batched_total["median"] / n,
             "speedup": (single_total["median"] / batched_total["median"]
                         if batched_total["median"] else None),
+            "min_cosine_single_vs_batched": min_cosine,
         },
     }
 
