@@ -2574,9 +2574,12 @@ impl Default for LifeLogConfig {
 ///
 /// HONESTY: file CONTENTS + EMBEDDINGS never leave the device — embedding is the
 /// on-device MLX embed op and falls back to lexical BM25 when that server is down
-/// (the search reports which actually ran). v1 indexes TEXT-LIKE files only; PDFs
-/// and other binaries are OUT OF SCOPE (a PDF needs a parser dependency — they are
-/// skipped, never silently "indexed"). The index is FORGETTABLE (clear it).
+/// (the search reports which actually ran). Indexed content: TEXT-LIKE files PLUS
+/// born-digital PDFs and Office OOXML documents (.docx/.xlsx/.pptx), all extracted
+/// on-device (docsearch.rs's panic-safe guarded extractors); a scanned/encrypted/
+/// corrupt file is honestly SKIPPED, never indexed as garbage. Other binaries
+/// (images, archives, legacy .doc/.xls/.ppt) remain out of scope. The index is
+/// FORGETTABLE (clear it).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct DocSearchConfig {
