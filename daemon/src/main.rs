@@ -4354,10 +4354,36 @@ fn handle_voice_id(
     owner_profile: &mut Option<voiceid::OwnerProfile>,
     enrollment: &mut Option<voiceid::Enrollment>,
 ) -> Option<String> {
+    // Whether an owner is enrolled, and whether THIS utterance verifies as that
+    // owner — computed up front because the explicit Forget/Enroll intents below
+    // MUTATE the owner profile and MUST be gated on owner verification: an
+    // unrecognized speaker must not be able to delete or overwrite the owner's
+    // voice (which turns voice-id off and un-scopes them — the "forget my voice"
+    // takeover the review found). Fail-closed: no usable embedding while enrolled
+    // -> not the owner. The FIRST enroll (no owner yet) stays open to bootstrap.
+    let enrolled = owner_profile.as_ref().is_some_and(|p| p.is_enrolled());
+    let is_verified_owner = match (enrolled, owner_profile.as_ref(), embedding) {
+        (true, Some(p), Some(emb)) => p.verify(emb).verified,
+        _ => false,
+    };
+
     // 1. EXPLICIT intents first. A "forget" clears the profile + any session;
-    //    an "enroll" starts (or restarts) a capture session.
+    //    an "enroll" starts (or restarts) a capture session. Once an owner is
+    //    enrolled, BOTH require the VERIFIED owner (the profile is protected).
     match voiceid::classify_intent(text) {
         Some(voiceid::VoiceIntent::Forget) => {
+            // SPEAKER GUARD: with an owner enrolled + enforcing, an UNVERIFIED
+            // speaker's "forget my voice" is refused — else it deletes the profile,
+            // voice-id goes OFF, and the speaker gains the full owner scope on the
+            // next turn (defeating threshold's can't-un-scope rail).
+            if enrolled && !is_verified_owner {
+                telemetry::emit(
+                    "system",
+                    "voiceid.forget_refused",
+                    json!({"reason": "unverified_speaker"}),
+                );
+                return Some("Only the enrolled owner can turn off voice recognition — I couldn't verify your voice, so I'm leaving it on.".to_string());
+            }
             *enrollment = None;
             let had = owner_profile.as_ref().is_some_and(|p| p.is_enrolled());
             *owner_profile = None;
@@ -4385,6 +4411,18 @@ fn handle_voice_id(
             });
         }
         Some(voiceid::VoiceIntent::Enroll) => {
+            // SPEAKER GUARD: a re-enroll OVERWRITES the owner profile, so once an
+            // owner is enrolled only the VERIFIED owner may re-enroll — else a
+            // bystander takes over the owner identity. The first enroll (unenrolled)
+            // is open (that is how the owner is bootstrapped).
+            if enrolled && !is_verified_owner {
+                telemetry::emit(
+                    "system",
+                    "voiceid.enroll_refused",
+                    json!({"reason": "unverified_speaker"}),
+                );
+                return Some("An owner voice is already enrolled — only the enrolled owner can re-enroll, and I couldn't verify your voice.".to_string());
+            }
             *enrollment = Some(voiceid::Enrollment::begin(
                 cfg.voice_id.min_enroll_samples,
                 cfg.voice_id.threshold,
@@ -4454,7 +4492,7 @@ fn handle_voice_id(
     //    behavior). ENROLLED -> verify; a missing embedding (no usable audio /
     //    embed error) is FAIL-CLOSED: verified=false (an unverified speaker for
     //    the consequential path), but ordinary replies still flow.
-    let enrolled = owner_profile.as_ref().is_some_and(|p| p.is_enrolled());
+    // (`enrolled` computed above.)
     let (gate, outcome) = if let (true, Some(profile)) = (enrolled, owner_profile.as_ref()) {
         let outcome = match embedding {
             Some(emb) => profile.verify(emb),
@@ -5170,6 +5208,51 @@ mod tests {
             !resolve_explicit_guest(None, SpeakerState::Unrecognized, &mut flag),
             "a persisted ON flag NEVER makes an Unrecognized speaker Explicit (auto-guest governs)"
         );
+    }
+
+    // The voice-id enroll/forget handler MUTATES the owner profile, so once an owner
+    // is enrolled it must require the VERIFIED owner — else an unrecognized bystander
+    // could delete the profile ("forget my voice") to turn voice-id OFF and un-scope
+    // themselves, or overwrite it ("enroll my voice") to take over the owner identity.
+    #[test]
+    fn voiceid_forget_and_reenroll_require_the_verified_owner() {
+        use super::{config, handle_voice_id, voiceid};
+        use std::sync::Arc;
+        let cfg = Arc::new(config::Config::default());
+        // Refusal paths return BEFORE touching disk, so a bogus root is never read.
+        let root = std::path::Path::new("/no/such/test/root");
+        let owner_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
+        let stranger_vec = vec![0.0_f32, 1.0, 0.0, 0.0]; // orthogonal -> never verifies
+        let mut enrollment: Option<voiceid::Enrollment> = None;
+
+        let enrolled_owner = || {
+            let mut p = voiceid::OwnerProfile::new(voiceid::DEFAULT_THRESHOLD);
+            p.enroll(owner_vec.clone());
+            Some(p)
+        };
+
+        // (1) enrolled owner + UNVERIFIED speaker "forget my voice" -> REFUSED; profile survives.
+        let mut prof = enrolled_owner();
+        let r = handle_voice_id("forget my voice", Some(&stranger_vec), root, &cfg, &mut prof, &mut enrollment);
+        assert!(r.unwrap().contains("Only the enrolled owner"), "unverified forget must be refused");
+        assert!(prof.as_ref().is_some_and(|p| p.is_enrolled()), "the owner profile MUST survive an unverified forget");
+
+        // (2) enrolled owner + UNVERIFIED speaker "enroll my voice" -> REFUSED (no takeover); no session.
+        let r = handle_voice_id("enroll my voice", Some(&stranger_vec), root, &cfg, &mut prof, &mut enrollment);
+        assert!(r.unwrap().contains("already enrolled"), "unverified re-enroll must be refused");
+        assert!(prof.as_ref().is_some_and(|p| p.is_enrolled()) && enrollment.is_none(), "a stranger starts no enrollment");
+
+        // (3) enrolled owner + VERIFIED owner "forget my voice" -> ALLOWED (profile cleared).
+        //     (root is bogus so the disk delete errors+warns, but the in-RAM profile clears.)
+        let mut prof = enrolled_owner();
+        let r = handle_voice_id("forget my voice", Some(&owner_vec), root, &cfg, &mut prof, &mut enrollment);
+        assert!(r.is_some() && prof.is_none(), "the verified owner may forget their own voice");
+
+        // (4) UNENROLLED: the FIRST enroll is OPEN (bootstrapping the owner).
+        let mut none_prof: Option<voiceid::OwnerProfile> = None;
+        let r = handle_voice_id("enroll my voice", Some(&stranger_vec), root, &cfg, &mut none_prof, &mut enrollment);
+        assert!(r.unwrap().to_lowercase().contains("enroll your voice"), "the first enroll bootstraps the owner");
+        assert!(enrollment.is_some(), "bootstrap enroll starts a capture session");
     }
 
     /// STARTUP-ORDER pin (source-level, like forge.rs's no_auto_deploy proof):
