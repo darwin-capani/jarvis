@@ -5,7 +5,7 @@ import inside its measurement functions, so importing the module here touches no
 weights. The model runs are the device-gated part, exercised by actually running
 `benchmark.py` on the target Mac (not under this test).
 
-Run: /Users/darwincapani/Downloads/jarvis/.venv/bin/python -m unittest test_benchmark
+Run: .venv/bin/python inference/test_benchmark.py   (from the repo root)
 """
 import sys
 import unittest
