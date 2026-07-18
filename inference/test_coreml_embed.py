@@ -149,5 +149,48 @@ class ConfigDefaultTests(unittest.TestCase):
         self.assertEqual(settings["embedder"], server.EMBEDDER_COREML)
 
 
+class TruncationSurfacingTests(unittest.TestCase):
+    """SEQ-cap truncation must NOT be silent — `_encode` emits a throttled warn
+    naming how many inputs were capped (review-caught: the docstring claimed it
+    was surfaced but nothing signalled it at runtime). Pure: stub tokenizer."""
+
+    def _engine_with(self, id_rows):
+        import coreml_embed as ce
+        e = ce.CoreMLEmbedder.__new__(ce.CoreMLEmbedder)
+        e._trunc_seen = 0
+        e._trunc_warned_at = 0
+        e._tokenizer = lambda norm, **kw: {"input_ids": id_rows}
+        return ce, e
+
+    def _capture(self, ce):
+        import logging
+        msgs = []
+        h = logging.Handler()
+        h.emit = lambda r: msgs.append(r.getMessage())
+        ce.log.addHandler(h)
+        ce.log.setLevel(logging.WARNING)
+        return msgs
+
+    def test_truncated_input_emits_a_warning(self):
+        ce, e = self._engine_with([[1] * ce_SEQ(), [1, 2, 3]])
+        msgs = self._capture(ce)
+        rows = e._encode(["x" * 5000, "hi"])
+        self.assertEqual([len(r) for r in rows], [ce_SEQ(), 3])
+        self.assertTrue(any("exceeded the" in m and "cap" in m for m in msgs))
+        self.assertEqual(e._trunc_seen, 1)
+
+    def test_no_truncation_is_silent(self):
+        ce, e = self._engine_with([[1, 2, 3], [4, 5]])  # both under SEQ
+        msgs = self._capture(ce)
+        e._encode(["hi", "yo"])
+        self.assertFalse(any("cap" in m for m in msgs))
+        self.assertEqual(e._trunc_seen, 0)
+
+
+def ce_SEQ():
+    import coreml_embed as ce
+    return ce.SEQ
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

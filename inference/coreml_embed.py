@@ -43,8 +43,12 @@ ComputeUnit.ALL — never that any op actually ran on the ANE.
 
 TRUNCATION: inputs are tokenized to a FIXED sequence length of 512 tokens
 (SEQ) — bge-small's native maximum. Inputs longer than 512 tokens are TRUNCATED
-to the first 512, surfaced honestly (the caller caps the batch; this caps the
-per-text length). 512 covers docsearch's ~1200-char (~300-token) chunks and
+to the first 512, and when that actually happens `_encode` emits a throttled
+WARNING naming how many inputs were capped (never silent). 512 covers
+docsearch's ~1200-char (~300-token) English chunks comfortably, but note that
+dense/CJK scripts run closer to one token per character, so a 1200-char CJK
+chunk can exceed 512 tokens and lose its tail — index smaller chunks (lower
+[docsearch].chunk_chars) if that matters for your corpus. 512 covers
 every short user fact.
 
 CONVERT-ON-FIRST-USE (ATOMIC): the compiled model + tokenizer are cached under
@@ -110,6 +114,10 @@ DIM = 384
 # covers those chunks natively and safely. Short facts pad to 512 (padding is
 # masked out, so their vectors are unchanged vs a shorter seq).
 SEQ = 512
+# Throttle for the truncation warning: log once, then again every N cumulative
+# truncated inputs, so indexing a long-chunk corpus surfaces tail loss without
+# a per-batch log flood.
+WARN_TRUNC_EVERY = 128
 # ONE fixed-shape (1, SEQ) graph, looped per text. MEASURED on this M1 Pro at
 # seq=512 / ComputeUnit.ALL: looping the (1, 512) graph is ~1.57x FASTER per text
 # than a fixed (8, 512) batched graph (~19.7 vs ~31 ms/text for K=8) — the large
@@ -206,6 +214,8 @@ class CoreMLEmbedder:
         self._loaded = False
         self._tokenizer = None
         self._model = None  # the (1, SEQ) MLModel, looped per text
+        self._trunc_seen = 0        # cumulative truncated inputs (for the warn throttle)
+        self._trunc_warned_at = 0   # _trunc_seen value at the last warn
 
     def _validate_predict(self, model):
         """Run a tiny (1, SEQ) predict to VALIDATE a compiled graph actually runs
@@ -306,14 +316,33 @@ class CoreMLEmbedder:
             # VALIDATE-LOAD in the temp dir BEFORE publishing: a partial/corrupt
             # write is caught here and never becomes the trusted cache.
             self._load_from(tmp)
-            # Publish atomically. A pre-existing final dir only reaches here when
-            # it already FAILED validate-load (so it is stale/corrupt); replace
-            # it. os.replace of a directory is atomic within one filesystem, and
-            # `tmp` is a sibling of `self._dir` so they share one.
+            # Publish. `os.replace` of a directory is atomic within one
+            # filesystem (tmp is a sibling of self._dir), BUT os.replace onto a
+            # NON-EMPTY dir raises ENOTEMPTY — and .mlpackage IS a directory. So
+            # we never replace a populated dir: we ATOMICALLY move any existing
+            # dir aside first (renaming a dir to a fresh name is atomic), then
+            # replace into the vacated name. Two processes converting at once end
+            # with a valid dir whoever wins the last rename; a loser whose
+            # replace fails just loads the winner's already-published valid cache
+            # (see ensure_loaded) instead of crashing to the mean-pool fallback.
+            trash = None
             if os.path.exists(self._dir):
-                shutil.rmtree(self._dir, ignore_errors=True)
-            os.replace(tmp, self._dir)
-            tmp = None
+                trash = f"{self._dir}.stale-{os.getpid()}"
+                try:
+                    os.replace(self._dir, trash)  # atomic vacate
+                except OSError:
+                    trash = None  # a concurrent process already moved/replaced it
+            try:
+                os.replace(tmp, self._dir)
+                tmp = None
+            except OSError:
+                # Lost the publish race: a concurrent process already put a dir
+                # in place. If it validate-loads it's the winner's good cache —
+                # keep it and drop ours; otherwise re-raise so we don't trust it.
+                if self._try_load_final() is None:
+                    raise
+            if trash is not None:
+                shutil.rmtree(trash, ignore_errors=True)
         finally:
             if tmp is not None and os.path.isdir(tmp):
                 shutil.rmtree(tmp, ignore_errors=True)
@@ -423,12 +452,42 @@ class CoreMLEmbedder:
 
     def _encode(self, texts):
         """Tokenize a list of strings to a list of token-id lists, truncated to
-        SEQ. Empty/whitespace-only inputs fall back to a single space."""
+        SEQ. Empty/whitespace-only inputs fall back to a single space. When any
+        input is actually truncated (its full token length exceeded SEQ), emit a
+        THROTTLED warning so tail loss is never silent — the tail of an
+        over-long chunk is not in its vector, which recall should know about."""
         norm = [normalize_text(t) for t in texts]
         enc = self._tokenizer(
             norm, truncation=True, max_length=SEQ, return_attention_mask=False
         )
-        return enc["input_ids"]
+        ids = enc["input_ids"]
+        # Detect real truncation without a second full tokenize: a row at exactly
+        # SEQ was capped iff its untruncated length would exceed SEQ. The fast
+        # tokenizer reports overflow via `num_truncated_tokens` when asked; fall
+        # back to the len==SEQ proxy if that field is absent.
+        n_trunc = getattr(enc, "num_truncated_tokens", None)
+        if n_trunc is None:
+            n_capped = sum(1 for row in ids if len(row) >= SEQ)
+        else:
+            vals = n_trunc if isinstance(n_trunc, (list, tuple)) else [n_trunc]
+            n_capped = sum(1 for v in vals if v and v > 0)
+        if n_capped:
+            self._warn_truncated(n_capped, len(ids))
+        return ids
+
+    def _warn_truncated(self, n_capped, total):
+        """Throttled (once per WARN_TRUNC_EVERY occurrences) truncation warning,
+        so indexing a corpus of over-long chunks logs the tail loss without
+        flooding the log on every batch."""
+        self._trunc_seen += n_capped
+        if self._trunc_seen - self._trunc_warned_at >= WARN_TRUNC_EVERY or self._trunc_warned_at == 0:
+            self._trunc_warned_at = self._trunc_seen
+            log.warning(
+                "coreml embed: %d/%d input(s) exceeded the %d-token cap and were "
+                "truncated (tail not embedded); %d truncated so far. Lower "
+                "[docsearch].chunk_chars if this corpus has long/dense chunks.",
+                n_capped, total, SEQ, self._trunc_seen,
+            )
 
     def _predict(self, ids, mask):
         """Run one (1, SEQ) predict; returns a numpy (1, DIM) array."""
