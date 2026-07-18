@@ -1,0 +1,2828 @@
+{
+  "eval_meta": {
+    "corpus_facts": 100,
+    "queries": 36,
+    "relevant_per_query_min": 1,
+    "relevant_per_query_max": 3,
+    "synthetic_note": "Author-written (Claude) labels \u2014 SYNTHETIC-but-representative, directional evidence, NOT ground-truth production data.",
+    "metric_defs": {
+      "recall@k": "avg over queries of |relevant in top-k| / |relevant|",
+      "success@k": "avg over queries of 1[any relevant in top-k] (hit-rate)",
+      "MRR": "mean reciprocal rank of the first relevant fact",
+      "mean_sep_gap": "avg over queries of max cos(q,relevant) - max cos(q,distractor)"
+    }
+  },
+  "embedders": {
+    "4b_2560d": {
+      "name": "Qwen3-4B mean-pool (DARWIN real path), 2560d, raw symmetric",
+      "dim": 2560,
+      "summary": {
+        "recall@1": 0.2454,
+        "recall@3": 0.463,
+        "recall@5": 0.5556,
+        "success@1": 0.2778,
+        "success@3": 0.5,
+        "success@5": 0.6111,
+        "MRR": 0.4235,
+        "mean_sep_gap": -0.0059
+      },
+      "corpus_anisotropy": {
+        "min": 0.8081,
+        "p05": 0.8775,
+        "mean": 0.9281,
+        "p95": 0.9642,
+        "max": 0.9859,
+        "std": 0.0261
+      },
+      "per_query": [
+        {
+          "id": "q01",
+          "text": "what day is my sister Maya's birthday?",
+          "relevant": [
+            "f001"
+          ],
+          "first_relevant_rank": 36,
+          "top3": [
+            {
+              "id": "f098",
+              "cos": 0.9502,
+              "rel": false
+            },
+            {
+              "id": "f082",
+              "cos": 0.9481,
+              "rel": false
+            },
+            {
+              "id": "f048",
+              "cos": 0.947,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q02",
+          "text": "which airline do I usually fly with?",
+          "relevant": [
+            "f023"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f023",
+              "cos": 0.945,
+              "rel": true
+            },
+            {
+              "id": "f048",
+              "cos": 0.9402,
+              "rel": false
+            },
+            {
+              "id": "f068",
+              "cos": 0.9382,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q03",
+          "text": "where did I hide the spare key to the house?",
+          "relevant": [
+            "f016"
+          ],
+          "first_relevant_rank": 19,
+          "top3": [
+            {
+              "id": "f083",
+              "cos": 0.9519,
+              "rel": false
+            },
+            {
+              "id": "f100",
+              "cos": 0.9458,
+              "rel": false
+            },
+            {
+              "id": "f048",
+              "cos": 0.9445,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q04",
+          "text": "where's the spare key for the car?",
+          "relevant": [
+            "f017"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f017",
+              "cos": 0.9517,
+              "rel": true
+            },
+            {
+              "id": "f083",
+              "cos": 0.9515,
+              "rel": false
+            },
+            {
+              "id": "f097",
+              "cos": 0.9477,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q05",
+          "text": "what processor is in my laptop and how much RAM does it have?",
+          "relevant": [
+            "f039"
+          ],
+          "first_relevant_rank": 8,
+          "top3": [
+            {
+              "id": "f075",
+              "cos": 0.928,
+              "rel": false
+            },
+            {
+              "id": "f040",
+              "cos": 0.922,
+              "rel": false
+            },
+            {
+              "id": "f029",
+              "cos": 0.9179,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q06",
+          "text": "when is my wedding anniversary?",
+          "relevant": [
+            "f009"
+          ],
+          "first_relevant_rank": 2,
+          "top3": [
+            {
+              "id": "f098",
+              "cos": 0.9432,
+              "rel": false
+            },
+            {
+              "id": "f009",
+              "cos": 0.9402,
+              "rel": true
+            },
+            {
+              "id": "f048",
+              "cos": 0.94,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q07",
+          "text": "what is my daughter's name and what grade is she in?",
+          "relevant": [
+            "f005"
+          ],
+          "first_relevant_rank": 3,
+          "top3": [
+            {
+              "id": "f098",
+              "cos": 0.9533,
+              "rel": false
+            },
+            {
+              "id": "f092",
+              "cos": 0.9517,
+              "rel": false
+            },
+            {
+              "id": "f005",
+              "cos": 0.9505,
+              "rel": true
+            }
+          ]
+        },
+        {
+          "id": "q08",
+          "text": "who do I report to at the office?",
+          "relevant": [
+            "f006"
+          ],
+          "first_relevant_rank": 6,
+          "top3": [
+            {
+              "id": "f083",
+              "cos": 0.9534,
+              "rel": false
+            },
+            {
+              "id": "f100",
+              "cos": 0.9529,
+              "rel": false
+            },
+            {
+              "id": "f048",
+              "cos": 0.9519,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q09",
+          "text": "what kind of coffee do I drink?",
+          "relevant": [
+            "f026"
+          ],
+          "first_relevant_rank": 39,
+          "top3": [
+            {
+              "id": "f048",
+              "cos": 0.9413,
+              "rel": false
+            },
+            {
+              "id": "f097",
+              "cos": 0.94,
+              "rel": false
+            },
+            {
+              "id": "f029",
+              "cos": 0.9395,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q10",
+          "text": "what are my dietary restrictions and food allergies?",
+          "relevant": [
+            "f027",
+            "f084"
+          ],
+          "first_relevant_rank": 4,
+          "top3": [
+            {
+              "id": "f081",
+              "cos": 0.9366,
+              "rel": false
+            },
+            {
+              "id": "f049",
+              "cos": 0.9309,
+              "rel": false
+            },
+            {
+              "id": "f048",
+              "cos": 0.9284,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q11",
+          "text": "when does my passport run out?",
+          "relevant": [
+            "f013"
+          ],
+          "first_relevant_rank": 67,
+          "top3": [
+            {
+              "id": "f048",
+              "cos": 0.9403,
+              "rel": false
+            },
+            {
+              "id": "f093",
+              "cos": 0.9395,
+              "rel": false
+            },
+            {
+              "id": "f015",
+              "cos": 0.937,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q12",
+          "text": "what is my home wireless network called?",
+          "relevant": [
+            "f041"
+          ],
+          "first_relevant_rank": 5,
+          "top3": [
+            {
+              "id": "f077",
+              "cos": 0.9437,
+              "rel": false
+            },
+            {
+              "id": "f091",
+              "cos": 0.9418,
+              "rel": false
+            },
+            {
+              "id": "f097",
+              "cos": 0.941,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q13",
+          "text": "where do I keep my important documents?",
+          "relevant": [
+            "f022"
+          ],
+          "first_relevant_rank": 7,
+          "top3": [
+            {
+              "id": "f097",
+              "cos": 0.953,
+              "rel": false
+            },
+            {
+              "id": "f063",
+              "cos": 0.9499,
+              "rel": false
+            },
+            {
+              "id": "f091",
+              "cos": 0.9456,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q14",
+          "text": "what's my favorite trail to hike?",
+          "relevant": [
+            "f062"
+          ],
+          "first_relevant_rank": 14,
+          "top3": [
+            {
+              "id": "f087",
+              "cos": 0.9571,
+              "rel": false
+            },
+            {
+              "id": "f097",
+              "cos": 0.9559,
+              "rel": false
+            },
+            {
+              "id": "f080",
+              "cos": 0.9551,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q15",
+          "text": "tell me what I know about my brother",
+          "relevant": [
+            "f002",
+            "f100"
+          ],
+          "first_relevant_rank": 2,
+          "top3": [
+            {
+              "id": "f097",
+              "cos": 0.9655,
+              "rel": false
+            },
+            {
+              "id": "f100",
+              "cos": 0.9648,
+              "rel": true
+            },
+            {
+              "id": "f038",
+              "cos": 0.961,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q16",
+          "text": "what do I know about Project DARWIN?",
+          "relevant": [
+            "f033",
+            "f034",
+            "f054"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f033",
+              "cos": 0.9649,
+              "rel": true
+            },
+            {
+              "id": "f054",
+              "cos": 0.9564,
+              "rel": true
+            },
+            {
+              "id": "f080",
+              "cos": 0.9451,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q17",
+          "text": "what pets do I have?",
+          "relevant": [
+            "f051",
+            "f052"
+          ],
+          "first_relevant_rank": 49,
+          "top3": [
+            {
+              "id": "f092",
+              "cos": 0.9401,
+              "rel": false
+            },
+            {
+              "id": "f100",
+              "cos": 0.9399,
+              "rel": false
+            },
+            {
+              "id": "f098",
+              "cos": 0.9398,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q18",
+          "text": "when does my flight to Tokyo leave and from which gate?",
+          "relevant": [
+            "f012",
+            "f059"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f012",
+              "cos": 0.9402,
+              "rel": true
+            },
+            {
+              "id": "f083",
+              "cos": 0.9388,
+              "rel": false
+            },
+            {
+              "id": "f059",
+              "cos": 0.9345,
+              "rel": true
+            }
+          ]
+        },
+        {
+          "id": "q19",
+          "text": "what is my morning routine?",
+          "relevant": [
+            "f046",
+            "f049",
+            "f081"
+          ],
+          "first_relevant_rank": 5,
+          "top3": [
+            {
+              "id": "f080",
+              "cos": 0.9459,
+              "rel": false
+            },
+            {
+              "id": "f048",
+              "cos": 0.9457,
+              "rel": false
+            },
+            {
+              "id": "f087",
+              "cos": 0.9443,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q20",
+          "text": "which seat do I like on long flights?",
+          "relevant": [
+            "f024"
+          ],
+          "first_relevant_rank": 2,
+          "top3": [
+            {
+              "id": "f068",
+              "cos": 0.9609,
+              "rel": false
+            },
+            {
+              "id": "f024",
+              "cos": 0.9462,
+              "rel": true
+            },
+            {
+              "id": "f048",
+              "cos": 0.9459,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q21",
+          "text": "how often does my dog need its medicine?",
+          "relevant": [
+            "f052"
+          ],
+          "first_relevant_rank": 7,
+          "top3": [
+            {
+              "id": "f092",
+              "cos": 0.9324,
+              "rel": false
+            },
+            {
+              "id": "f049",
+              "cos": 0.9324,
+              "rel": false
+            },
+            {
+              "id": "f008",
+              "cos": 0.9266,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q22",
+          "text": "who looks after my plants when I'm out of town?",
+          "relevant": [
+            "f008"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f008",
+              "cos": 0.9548,
+              "rel": true
+            },
+            {
+              "id": "f082",
+              "cos": 0.9519,
+              "rel": false
+            },
+            {
+              "id": "f100",
+              "cos": 0.9515,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q23",
+          "text": "what temperature do I set the heating to?",
+          "relevant": [
+            "f029"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f029",
+              "cos": 0.9445,
+              "rel": true
+            },
+            {
+              "id": "f063",
+              "cos": 0.9351,
+              "rel": false
+            },
+            {
+              "id": "f070",
+              "cos": 0.9324,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q24",
+          "text": "what novel am I working on?",
+          "relevant": [
+            "f035",
+            "f071"
+          ],
+          "first_relevant_rank": 13,
+          "top3": [
+            {
+              "id": "f038",
+              "cos": 0.9421,
+              "rel": false
+            },
+            {
+              "id": "f080",
+              "cos": 0.9393,
+              "rel": false
+            },
+            {
+              "id": "f048",
+              "cos": 0.9383,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q25",
+          "text": "what's my dentist's name and where is the office?",
+          "relevant": [
+            "f007"
+          ],
+          "first_relevant_rank": 4,
+          "top3": [
+            {
+              "id": "f086",
+              "cos": 0.9533,
+              "rel": false
+            },
+            {
+              "id": "f097",
+              "cos": 0.9524,
+              "rel": false
+            },
+            {
+              "id": "f098",
+              "cos": 0.9513,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q26",
+          "text": "when is my next dental appointment?",
+          "relevant": [
+            "f010"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f010",
+              "cos": 0.9379,
+              "rel": true
+            },
+            {
+              "id": "f098",
+              "cos": 0.9361,
+              "rel": false
+            },
+            {
+              "id": "f093",
+              "cos": 0.936,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q27",
+          "text": "what city did I grow up in?",
+          "relevant": [
+            "f020"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f020",
+              "cos": 0.9428,
+              "rel": true
+            },
+            {
+              "id": "f048",
+              "cos": 0.9347,
+              "rel": false
+            },
+            {
+              "id": "f009",
+              "cos": 0.9325,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q28",
+          "text": "what car do I drive?",
+          "relevant": [
+            "f076"
+          ],
+          "first_relevant_rank": 26,
+          "top3": [
+            {
+              "id": "f048",
+              "cos": 0.9344,
+              "rel": false
+            },
+            {
+              "id": "f080",
+              "cos": 0.9334,
+              "rel": false
+            },
+            {
+              "id": "f100",
+              "cos": 0.9285,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q29",
+          "text": "who is listed as my emergency contact?",
+          "relevant": [
+            "f086"
+          ],
+          "first_relevant_rank": 2,
+          "top3": [
+            {
+              "id": "f082",
+              "cos": 0.9571,
+              "rel": false
+            },
+            {
+              "id": "f086",
+              "cos": 0.9521,
+              "rel": true
+            },
+            {
+              "id": "f083",
+              "cos": 0.951,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q30",
+          "text": "which musical instrument am I learning?",
+          "relevant": [
+            "f037"
+          ],
+          "first_relevant_rank": 12,
+          "top3": [
+            {
+              "id": "f048",
+              "cos": 0.9346,
+              "rel": false
+            },
+            {
+              "id": "f087",
+              "cos": 0.9344,
+              "rel": false
+            },
+            {
+              "id": "f098",
+              "cos": 0.9341,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q31",
+          "text": "which web browser do I use by default?",
+          "relevant": [
+            "f045"
+          ],
+          "first_relevant_rank": 3,
+          "top3": [
+            {
+              "id": "f028",
+              "cos": 0.9503,
+              "rel": false
+            },
+            {
+              "id": "f044",
+              "cos": 0.946,
+              "rel": false
+            },
+            {
+              "id": "f045",
+              "cos": 0.9449,
+              "rel": true
+            }
+          ]
+        },
+        {
+          "id": "q32",
+          "text": "what is the name of my favorite cafe?",
+          "relevant": [
+            "f019"
+          ],
+          "first_relevant_rank": 40,
+          "top3": [
+            {
+              "id": "f097",
+              "cos": 0.9632,
+              "rel": false
+            },
+            {
+              "id": "f036",
+              "cos": 0.9562,
+              "rel": false
+            },
+            {
+              "id": "f087",
+              "cos": 0.9535,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q33",
+          "text": "when do I go grocery shopping?",
+          "relevant": [
+            "f048"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f048",
+              "cos": 0.9545,
+              "rel": true
+            },
+            {
+              "id": "f098",
+              "cos": 0.9373,
+              "rel": false
+            },
+            {
+              "id": "f080",
+              "cos": 0.9361,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q34",
+          "text": "what am I building in my woodworking project?",
+          "relevant": [
+            "f036",
+            "f070"
+          ],
+          "first_relevant_rank": 3,
+          "top3": [
+            {
+              "id": "f048",
+              "cos": 0.9537,
+              "rel": false
+            },
+            {
+              "id": "f097",
+              "cos": 0.9507,
+              "rel": false
+            },
+            {
+              "id": "f036",
+              "cos": 0.9505,
+              "rel": true
+            }
+          ]
+        },
+        {
+          "id": "q35",
+          "text": "what food is my daughter allergic to?",
+          "relevant": [
+            "f092"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f092",
+              "cos": 0.9551,
+              "rel": true
+            },
+            {
+              "id": "f084",
+              "cos": 0.9506,
+              "rel": false
+            },
+            {
+              "id": "f027",
+              "cos": 0.9498,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q36",
+          "text": "who was my best friend in college?",
+          "relevant": [
+            "f004"
+          ],
+          "first_relevant_rank": 3,
+          "top3": [
+            {
+              "id": "f002",
+              "cos": 0.9487,
+              "rel": false
+            },
+            {
+              "id": "f082",
+              "cos": 0.9477,
+              "rel": false
+            },
+            {
+              "id": "f004",
+              "cos": 0.9467,
+              "rel": true
+            }
+          ]
+        }
+      ]
+    },
+    "bge_384d_plain": {
+      "name": "bge-small Core ML, 384d, raw symmetric",
+      "dim": 384,
+      "summary": {
+        "recall@1": 0.8241,
+        "recall@3": 0.9213,
+        "recall@5": 0.9861,
+        "success@1": 0.9444,
+        "success@3": 0.9722,
+        "success@5": 1.0,
+        "MRR": 0.9606,
+        "mean_sep_gap": 0.1204
+      },
+      "corpus_anisotropy": {
+        "min": 0.2508,
+        "p05": 0.36,
+        "mean": 0.4618,
+        "p95": 0.5723,
+        "max": 0.8115,
+        "std": 0.0653
+      },
+      "per_query": [
+        {
+          "id": "q01",
+          "text": "what day is my sister Maya's birthday?",
+          "relevant": [
+            "f001"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f001",
+              "cos": 0.7794,
+              "rel": true
+            },
+            {
+              "id": "f086",
+              "cos": 0.7099,
+              "rel": false
+            },
+            {
+              "id": "f011",
+              "cos": 0.6294,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q02",
+          "text": "which airline do I usually fly with?",
+          "relevant": [
+            "f023"
+          ],
+          "first_relevant_rank": 3,
+          "top3": [
+            {
+              "id": "f024",
+              "cos": 0.6139,
+              "rel": false
+            },
+            {
+              "id": "f068",
+              "cos": 0.5803,
+              "rel": false
+            },
+            {
+              "id": "f023",
+              "cos": 0.5441,
+              "rel": true
+            }
+          ]
+        },
+        {
+          "id": "q03",
+          "text": "where did I hide the spare key to the house?",
+          "relevant": [
+            "f016"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f016",
+              "cos": 0.7384,
+              "rel": true
+            },
+            {
+              "id": "f017",
+              "cos": 0.6429,
+              "rel": false
+            },
+            {
+              "id": "f044",
+              "cos": 0.5215,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q04",
+          "text": "where's the spare key for the car?",
+          "relevant": [
+            "f017"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f017",
+              "cos": 0.6856,
+              "rel": true
+            },
+            {
+              "id": "f016",
+              "cos": 0.5926,
+              "rel": false
+            },
+            {
+              "id": "f076",
+              "cos": 0.5091,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q05",
+          "text": "what processor is in my laptop and how much RAM does it have?",
+          "relevant": [
+            "f039"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f039",
+              "cos": 0.6874,
+              "rel": true
+            },
+            {
+              "id": "f078",
+              "cos": 0.5208,
+              "rel": false
+            },
+            {
+              "id": "f044",
+              "cos": 0.4318,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q06",
+          "text": "when is my wedding anniversary?",
+          "relevant": [
+            "f009"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f009",
+              "cos": 0.7298,
+              "rel": true
+            },
+            {
+              "id": "f098",
+              "cos": 0.6,
+              "rel": false
+            },
+            {
+              "id": "f013",
+              "cos": 0.5267,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q07",
+          "text": "what is my daughter's name and what grade is she in?",
+          "relevant": [
+            "f005"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f005",
+              "cos": 0.6885,
+              "rel": true
+            },
+            {
+              "id": "f003",
+              "cos": 0.5377,
+              "rel": false
+            },
+            {
+              "id": "f060",
+              "cos": 0.506,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q08",
+          "text": "who do I report to at the office?",
+          "relevant": [
+            "f006"
+          ],
+          "first_relevant_rank": 4,
+          "top3": [
+            {
+              "id": "f080",
+              "cos": 0.5347,
+              "rel": false
+            },
+            {
+              "id": "f042",
+              "cos": 0.5324,
+              "rel": false
+            },
+            {
+              "id": "f061",
+              "cos": 0.5322,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q09",
+          "text": "what kind of coffee do I drink?",
+          "relevant": [
+            "f026"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f026",
+              "cos": 0.5336,
+              "rel": true
+            },
+            {
+              "id": "f088",
+              "cos": 0.5285,
+              "rel": false
+            },
+            {
+              "id": "f019",
+              "cos": 0.5267,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q10",
+          "text": "what are my dietary restrictions and food allergies?",
+          "relevant": [
+            "f027",
+            "f084"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f084",
+              "cos": 0.5706,
+              "rel": true
+            },
+            {
+              "id": "f092",
+              "cos": 0.5395,
+              "rel": false
+            },
+            {
+              "id": "f049",
+              "cos": 0.5205,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q11",
+          "text": "when does my passport run out?",
+          "relevant": [
+            "f013"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f013",
+              "cos": 0.7325,
+              "rel": true
+            },
+            {
+              "id": "f091",
+              "cos": 0.5029,
+              "rel": false
+            },
+            {
+              "id": "f058",
+              "cos": 0.4939,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q12",
+          "text": "what is my home wireless network called?",
+          "relevant": [
+            "f041"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f041",
+              "cos": 0.7425,
+              "rel": true
+            },
+            {
+              "id": "f077",
+              "cos": 0.5643,
+              "rel": false
+            },
+            {
+              "id": "f082",
+              "cos": 0.4998,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q13",
+          "text": "where do I keep my important documents?",
+          "relevant": [
+            "f022"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f022",
+              "cos": 0.6023,
+              "rel": true
+            },
+            {
+              "id": "f091",
+              "cos": 0.5518,
+              "rel": false
+            },
+            {
+              "id": "f043",
+              "cos": 0.5468,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q14",
+          "text": "what's my favorite trail to hike?",
+          "relevant": [
+            "f062"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f062",
+              "cos": 0.7384,
+              "rel": true
+            },
+            {
+              "id": "f087",
+              "cos": 0.4376,
+              "rel": false
+            },
+            {
+              "id": "f019",
+              "cos": 0.4351,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q15",
+          "text": "tell me what I know about my brother",
+          "relevant": [
+            "f002",
+            "f100"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f100",
+              "cos": 0.54,
+              "rel": true
+            },
+            {
+              "id": "f001",
+              "cos": 0.5265,
+              "rel": false
+            },
+            {
+              "id": "f086",
+              "cos": 0.5208,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q16",
+          "text": "what do I know about Project DARWIN?",
+          "relevant": [
+            "f033",
+            "f034",
+            "f054"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f033",
+              "cos": 0.7028,
+              "rel": true
+            },
+            {
+              "id": "f034",
+              "cos": 0.7008,
+              "rel": true
+            },
+            {
+              "id": "f054",
+              "cos": 0.567,
+              "rel": true
+            }
+          ]
+        },
+        {
+          "id": "q17",
+          "text": "what pets do I have?",
+          "relevant": [
+            "f051",
+            "f052"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f051",
+              "cos": 0.4867,
+              "rel": true
+            },
+            {
+              "id": "f052",
+              "cos": 0.4862,
+              "rel": true
+            },
+            {
+              "id": "f076",
+              "cos": 0.3943,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q18",
+          "text": "when does my flight to Tokyo leave and from which gate?",
+          "relevant": [
+            "f012",
+            "f059"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f059",
+              "cos": 0.7549,
+              "rel": true
+            },
+            {
+              "id": "f012",
+              "cos": 0.6,
+              "rel": true
+            },
+            {
+              "id": "f068",
+              "cos": 0.513,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q19",
+          "text": "what is my morning routine?",
+          "relevant": [
+            "f046",
+            "f049",
+            "f081"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f046",
+              "cos": 0.6478,
+              "rel": true
+            },
+            {
+              "id": "f048",
+              "cos": 0.5735,
+              "rel": false
+            },
+            {
+              "id": "f049",
+              "cos": 0.5657,
+              "rel": true
+            }
+          ]
+        },
+        {
+          "id": "q20",
+          "text": "which seat do I like on long flights?",
+          "relevant": [
+            "f024"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f024",
+              "cos": 0.7803,
+              "rel": true
+            },
+            {
+              "id": "f068",
+              "cos": 0.6536,
+              "rel": false
+            },
+            {
+              "id": "f090",
+              "cos": 0.5064,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q21",
+          "text": "how often does my dog need its medicine?",
+          "relevant": [
+            "f052"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f052",
+              "cos": 0.7826,
+              "rel": true
+            },
+            {
+              "id": "f046",
+              "cos": 0.4833,
+              "rel": false
+            },
+            {
+              "id": "f080",
+              "cos": 0.481,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q22",
+          "text": "who looks after my plants when I'm out of town?",
+          "relevant": [
+            "f008"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f008",
+              "cos": 0.6002,
+              "rel": true
+            },
+            {
+              "id": "f050",
+              "cos": 0.4918,
+              "rel": false
+            },
+            {
+              "id": "f016",
+              "cos": 0.483,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q23",
+          "text": "what temperature do I set the heating to?",
+          "relevant": [
+            "f029"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f029",
+              "cos": 0.6659,
+              "rel": true
+            },
+            {
+              "id": "f074",
+              "cos": 0.5502,
+              "rel": false
+            },
+            {
+              "id": "f063",
+              "cos": 0.4703,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q24",
+          "text": "what novel am I working on?",
+          "relevant": [
+            "f035",
+            "f071"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f035",
+              "cos": 0.5448,
+              "rel": true
+            },
+            {
+              "id": "f030",
+              "cos": 0.476,
+              "rel": false
+            },
+            {
+              "id": "f038",
+              "cos": 0.4357,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q25",
+          "text": "what's my dentist's name and where is the office?",
+          "relevant": [
+            "f007"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f007",
+              "cos": 0.6588,
+              "rel": true
+            },
+            {
+              "id": "f010",
+              "cos": 0.6164,
+              "rel": false
+            },
+            {
+              "id": "f061",
+              "cos": 0.549,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q26",
+          "text": "when is my next dental appointment?",
+          "relevant": [
+            "f010"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f010",
+              "cos": 0.7188,
+              "rel": true
+            },
+            {
+              "id": "f056",
+              "cos": 0.6159,
+              "rel": false
+            },
+            {
+              "id": "f007",
+              "cos": 0.5044,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q27",
+          "text": "what city did I grow up in?",
+          "relevant": [
+            "f020"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f020",
+              "cos": 0.5819,
+              "rel": true
+            },
+            {
+              "id": "f083",
+              "cos": 0.4327,
+              "rel": false
+            },
+            {
+              "id": "f002",
+              "cos": 0.4042,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q28",
+          "text": "what car do I drive?",
+          "relevant": [
+            "f076"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f076",
+              "cos": 0.5681,
+              "rel": true
+            },
+            {
+              "id": "f057",
+              "cos": 0.4996,
+              "rel": false
+            },
+            {
+              "id": "f068",
+              "cos": 0.4152,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q29",
+          "text": "who is listed as my emergency contact?",
+          "relevant": [
+            "f086"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f086",
+              "cos": 0.6445,
+              "rel": true
+            },
+            {
+              "id": "f056",
+              "cos": 0.5418,
+              "rel": false
+            },
+            {
+              "id": "f010",
+              "cos": 0.5128,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q30",
+          "text": "which musical instrument am I learning?",
+          "relevant": [
+            "f037"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f037",
+              "cos": 0.6239,
+              "rel": true
+            },
+            {
+              "id": "f031",
+              "cos": 0.5318,
+              "rel": false
+            },
+            {
+              "id": "f060",
+              "cos": 0.4171,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q31",
+          "text": "which web browser do I use by default?",
+          "relevant": [
+            "f045"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f045",
+              "cos": 0.7591,
+              "rel": true
+            },
+            {
+              "id": "f028",
+              "cos": 0.4964,
+              "rel": false
+            },
+            {
+              "id": "f097",
+              "cos": 0.4517,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q32",
+          "text": "what is the name of my favorite cafe?",
+          "relevant": [
+            "f019"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f019",
+              "cos": 0.6286,
+              "rel": true
+            },
+            {
+              "id": "f090",
+              "cos": 0.4866,
+              "rel": false
+            },
+            {
+              "id": "f025",
+              "cos": 0.4856,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q33",
+          "text": "when do I go grocery shopping?",
+          "relevant": [
+            "f048"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f048",
+              "cos": 0.6692,
+              "rel": true
+            },
+            {
+              "id": "f010",
+              "cos": 0.5053,
+              "rel": false
+            },
+            {
+              "id": "f056",
+              "cos": 0.4818,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q34",
+          "text": "what am I building in my woodworking project?",
+          "relevant": [
+            "f036",
+            "f070"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f036",
+              "cos": 0.6468,
+              "rel": true
+            },
+            {
+              "id": "f070",
+              "cos": 0.5938,
+              "rel": true
+            },
+            {
+              "id": "f033",
+              "cos": 0.4951,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q35",
+          "text": "what food is my daughter allergic to?",
+          "relevant": [
+            "f092"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f092",
+              "cos": 0.7149,
+              "rel": true
+            },
+            {
+              "id": "f084",
+              "cos": 0.6342,
+              "rel": false
+            },
+            {
+              "id": "f027",
+              "cos": 0.4556,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q36",
+          "text": "who was my best friend in college?",
+          "relevant": [
+            "f004"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f004",
+              "cos": 0.6213,
+              "rel": true
+            },
+            {
+              "id": "f001",
+              "cos": 0.4635,
+              "rel": false
+            },
+            {
+              "id": "f030",
+              "cos": 0.4555,
+              "rel": false
+            }
+          ]
+        }
+      ]
+    },
+    "bge_384d_instr": {
+      "name": "bge-small Core ML, 384d, +query instruction",
+      "dim": 384,
+      "summary": {
+        "recall@1": 0.8241,
+        "recall@3": 0.9491,
+        "recall@5": 1.0,
+        "success@1": 0.9444,
+        "success@3": 0.9722,
+        "success@5": 1.0,
+        "MRR": 0.9606,
+        "mean_sep_gap": 0.1268
+      },
+      "corpus_anisotropy": {
+        "min": 0.2508,
+        "p05": 0.36,
+        "mean": 0.4618,
+        "p95": 0.5723,
+        "max": 0.8115,
+        "std": 0.0653
+      },
+      "per_query": [
+        {
+          "id": "q01",
+          "text": "what day is my sister Maya's birthday?",
+          "relevant": [
+            "f001"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f001",
+              "cos": 0.7733,
+              "rel": true
+            },
+            {
+              "id": "f086",
+              "cos": 0.6717,
+              "rel": false
+            },
+            {
+              "id": "f099",
+              "cos": 0.6163,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q02",
+          "text": "which airline do I usually fly with?",
+          "relevant": [
+            "f023"
+          ],
+          "first_relevant_rank": 3,
+          "top3": [
+            {
+              "id": "f024",
+              "cos": 0.547,
+              "rel": false
+            },
+            {
+              "id": "f068",
+              "cos": 0.5214,
+              "rel": false
+            },
+            {
+              "id": "f023",
+              "cos": 0.5095,
+              "rel": true
+            }
+          ]
+        },
+        {
+          "id": "q03",
+          "text": "where did I hide the spare key to the house?",
+          "relevant": [
+            "f016"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f016",
+              "cos": 0.7141,
+              "rel": true
+            },
+            {
+              "id": "f017",
+              "cos": 0.6104,
+              "rel": false
+            },
+            {
+              "id": "f044",
+              "cos": 0.4684,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q04",
+          "text": "where's the spare key for the car?",
+          "relevant": [
+            "f017"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f017",
+              "cos": 0.6598,
+              "rel": true
+            },
+            {
+              "id": "f016",
+              "cos": 0.559,
+              "rel": false
+            },
+            {
+              "id": "f076",
+              "cos": 0.492,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q05",
+          "text": "what processor is in my laptop and how much RAM does it have?",
+          "relevant": [
+            "f039"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f039",
+              "cos": 0.6607,
+              "rel": true
+            },
+            {
+              "id": "f078",
+              "cos": 0.4944,
+              "rel": false
+            },
+            {
+              "id": "f044",
+              "cos": 0.4019,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q06",
+          "text": "when is my wedding anniversary?",
+          "relevant": [
+            "f009"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f009",
+              "cos": 0.7085,
+              "rel": true
+            },
+            {
+              "id": "f098",
+              "cos": 0.5866,
+              "rel": false
+            },
+            {
+              "id": "f013",
+              "cos": 0.5106,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q07",
+          "text": "what is my daughter's name and what grade is she in?",
+          "relevant": [
+            "f005"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f005",
+              "cos": 0.6667,
+              "rel": true
+            },
+            {
+              "id": "f003",
+              "cos": 0.5035,
+              "rel": false
+            },
+            {
+              "id": "f060",
+              "cos": 0.4864,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q08",
+          "text": "who do I report to at the office?",
+          "relevant": [
+            "f006"
+          ],
+          "first_relevant_rank": 4,
+          "top3": [
+            {
+              "id": "f080",
+              "cos": 0.506,
+              "rel": false
+            },
+            {
+              "id": "f042",
+              "cos": 0.4939,
+              "rel": false
+            },
+            {
+              "id": "f061",
+              "cos": 0.4899,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q09",
+          "text": "what kind of coffee do I drink?",
+          "relevant": [
+            "f026"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f026",
+              "cos": 0.4954,
+              "rel": true
+            },
+            {
+              "id": "f019",
+              "cos": 0.4951,
+              "rel": false
+            },
+            {
+              "id": "f088",
+              "cos": 0.4943,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q10",
+          "text": "what are my dietary restrictions and food allergies?",
+          "relevant": [
+            "f027",
+            "f084"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f084",
+              "cos": 0.5364,
+              "rel": true
+            },
+            {
+              "id": "f092",
+              "cos": 0.4977,
+              "rel": false
+            },
+            {
+              "id": "f027",
+              "cos": 0.4812,
+              "rel": true
+            }
+          ]
+        },
+        {
+          "id": "q11",
+          "text": "when does my passport run out?",
+          "relevant": [
+            "f013"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f013",
+              "cos": 0.696,
+              "rel": true
+            },
+            {
+              "id": "f012",
+              "cos": 0.4458,
+              "rel": false
+            },
+            {
+              "id": "f091",
+              "cos": 0.4457,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q12",
+          "text": "what is my home wireless network called?",
+          "relevant": [
+            "f041"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f041",
+              "cos": 0.705,
+              "rel": true
+            },
+            {
+              "id": "f077",
+              "cos": 0.5145,
+              "rel": false
+            },
+            {
+              "id": "f082",
+              "cos": 0.4677,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q13",
+          "text": "where do I keep my important documents?",
+          "relevant": [
+            "f022"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f022",
+              "cos": 0.5568,
+              "rel": true
+            },
+            {
+              "id": "f091",
+              "cos": 0.4923,
+              "rel": false
+            },
+            {
+              "id": "f043",
+              "cos": 0.4836,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q14",
+          "text": "what's my favorite trail to hike?",
+          "relevant": [
+            "f062"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f062",
+              "cos": 0.7064,
+              "rel": true
+            },
+            {
+              "id": "f019",
+              "cos": 0.4026,
+              "rel": false
+            },
+            {
+              "id": "f087",
+              "cos": 0.3961,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q15",
+          "text": "tell me what I know about my brother",
+          "relevant": [
+            "f002",
+            "f100"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f100",
+              "cos": 0.5014,
+              "rel": true
+            },
+            {
+              "id": "f001",
+              "cos": 0.4972,
+              "rel": false
+            },
+            {
+              "id": "f002",
+              "cos": 0.4971,
+              "rel": true
+            }
+          ]
+        },
+        {
+          "id": "q16",
+          "text": "what do I know about Project DARWIN?",
+          "relevant": [
+            "f033",
+            "f034",
+            "f054"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f034",
+              "cos": 0.6604,
+              "rel": true
+            },
+            {
+              "id": "f033",
+              "cos": 0.6593,
+              "rel": true
+            },
+            {
+              "id": "f054",
+              "cos": 0.5268,
+              "rel": true
+            }
+          ]
+        },
+        {
+          "id": "q17",
+          "text": "what pets do I have?",
+          "relevant": [
+            "f051",
+            "f052"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f052",
+              "cos": 0.469,
+              "rel": true
+            },
+            {
+              "id": "f051",
+              "cos": 0.4466,
+              "rel": true
+            },
+            {
+              "id": "f076",
+              "cos": 0.3358,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q18",
+          "text": "when does my flight to Tokyo leave and from which gate?",
+          "relevant": [
+            "f012",
+            "f059"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f059",
+              "cos": 0.7229,
+              "rel": true
+            },
+            {
+              "id": "f012",
+              "cos": 0.5639,
+              "rel": true
+            },
+            {
+              "id": "f068",
+              "cos": 0.4573,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q19",
+          "text": "what is my morning routine?",
+          "relevant": [
+            "f046",
+            "f049",
+            "f081"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f046",
+              "cos": 0.6172,
+              "rel": true
+            },
+            {
+              "id": "f048",
+              "cos": 0.5294,
+              "rel": false
+            },
+            {
+              "id": "f049",
+              "cos": 0.5137,
+              "rel": true
+            }
+          ]
+        },
+        {
+          "id": "q20",
+          "text": "which seat do I like on long flights?",
+          "relevant": [
+            "f024"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f024",
+              "cos": 0.7366,
+              "rel": true
+            },
+            {
+              "id": "f068",
+              "cos": 0.6009,
+              "rel": false
+            },
+            {
+              "id": "f023",
+              "cos": 0.4657,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q21",
+          "text": "how often does my dog need its medicine?",
+          "relevant": [
+            "f052"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f052",
+              "cos": 0.7612,
+              "rel": true
+            },
+            {
+              "id": "f080",
+              "cos": 0.4481,
+              "rel": false
+            },
+            {
+              "id": "f015",
+              "cos": 0.4471,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q22",
+          "text": "who looks after my plants when I'm out of town?",
+          "relevant": [
+            "f008"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f008",
+              "cos": 0.5539,
+              "rel": true
+            },
+            {
+              "id": "f016",
+              "cos": 0.4456,
+              "rel": false
+            },
+            {
+              "id": "f089",
+              "cos": 0.4453,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q23",
+          "text": "what temperature do I set the heating to?",
+          "relevant": [
+            "f029"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f029",
+              "cos": 0.6099,
+              "rel": true
+            },
+            {
+              "id": "f074",
+              "cos": 0.5097,
+              "rel": false
+            },
+            {
+              "id": "f063",
+              "cos": 0.4309,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q24",
+          "text": "what novel am I working on?",
+          "relevant": [
+            "f035",
+            "f071"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f035",
+              "cos": 0.5364,
+              "rel": true
+            },
+            {
+              "id": "f030",
+              "cos": 0.4571,
+              "rel": false
+            },
+            {
+              "id": "f038",
+              "cos": 0.4175,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q25",
+          "text": "what's my dentist's name and where is the office?",
+          "relevant": [
+            "f007"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f007",
+              "cos": 0.6495,
+              "rel": true
+            },
+            {
+              "id": "f010",
+              "cos": 0.5758,
+              "rel": false
+            },
+            {
+              "id": "f061",
+              "cos": 0.5097,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q26",
+          "text": "when is my next dental appointment?",
+          "relevant": [
+            "f010"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f010",
+              "cos": 0.7045,
+              "rel": true
+            },
+            {
+              "id": "f056",
+              "cos": 0.5781,
+              "rel": false
+            },
+            {
+              "id": "f007",
+              "cos": 0.4957,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q27",
+          "text": "what city did I grow up in?",
+          "relevant": [
+            "f020"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f020",
+              "cos": 0.5275,
+              "rel": true
+            },
+            {
+              "id": "f083",
+              "cos": 0.393,
+              "rel": false
+            },
+            {
+              "id": "f001",
+              "cos": 0.3721,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q28",
+          "text": "what car do I drive?",
+          "relevant": [
+            "f076"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f076",
+              "cos": 0.5135,
+              "rel": true
+            },
+            {
+              "id": "f057",
+              "cos": 0.4569,
+              "rel": false
+            },
+            {
+              "id": "f066",
+              "cos": 0.3576,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q29",
+          "text": "who is listed as my emergency contact?",
+          "relevant": [
+            "f086"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f086",
+              "cos": 0.6236,
+              "rel": true
+            },
+            {
+              "id": "f056",
+              "cos": 0.4843,
+              "rel": false
+            },
+            {
+              "id": "f010",
+              "cos": 0.471,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q30",
+          "text": "which musical instrument am I learning?",
+          "relevant": [
+            "f037"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f037",
+              "cos": 0.5709,
+              "rel": true
+            },
+            {
+              "id": "f031",
+              "cos": 0.4912,
+              "rel": false
+            },
+            {
+              "id": "f060",
+              "cos": 0.3956,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q31",
+          "text": "which web browser do I use by default?",
+          "relevant": [
+            "f045"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f045",
+              "cos": 0.7329,
+              "rel": true
+            },
+            {
+              "id": "f028",
+              "cos": 0.451,
+              "rel": false
+            },
+            {
+              "id": "f097",
+              "cos": 0.414,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q32",
+          "text": "what is the name of my favorite cafe?",
+          "relevant": [
+            "f019"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f019",
+              "cos": 0.5948,
+              "rel": true
+            },
+            {
+              "id": "f030",
+              "cos": 0.4538,
+              "rel": false
+            },
+            {
+              "id": "f025",
+              "cos": 0.4406,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q33",
+          "text": "when do I go grocery shopping?",
+          "relevant": [
+            "f048"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f048",
+              "cos": 0.6307,
+              "rel": true
+            },
+            {
+              "id": "f010",
+              "cos": 0.4564,
+              "rel": false
+            },
+            {
+              "id": "f093",
+              "cos": 0.4378,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q34",
+          "text": "what am I building in my woodworking project?",
+          "relevant": [
+            "f036",
+            "f070"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f036",
+              "cos": 0.6056,
+              "rel": true
+            },
+            {
+              "id": "f070",
+              "cos": 0.5251,
+              "rel": true
+            },
+            {
+              "id": "f033",
+              "cos": 0.4804,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q35",
+          "text": "what food is my daughter allergic to?",
+          "relevant": [
+            "f092"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f092",
+              "cos": 0.6935,
+              "rel": true
+            },
+            {
+              "id": "f084",
+              "cos": 0.617,
+              "rel": false
+            },
+            {
+              "id": "f005",
+              "cos": 0.436,
+              "rel": false
+            }
+          ]
+        },
+        {
+          "id": "q36",
+          "text": "who was my best friend in college?",
+          "relevant": [
+            "f004"
+          ],
+          "first_relevant_rank": 1,
+          "top3": [
+            {
+              "id": "f004",
+              "cos": 0.5924,
+              "rel": true
+            },
+            {
+              "id": "f030",
+              "cos": 0.4573,
+              "rel": false
+            },
+            {
+              "id": "f001",
+              "cos": 0.4514,
+              "rel": false
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "verdict": {
+    "retrieval_quality_holds_vs_4b": true,
+    "best_bge_variant": "bge_384d_instr",
+    "recall@3_delta_bge_minus_4b": 0.4861,
+    "MRR_delta_bge_minus_4b": 0.5371,
+    "call": "BUILD: bge-384d retrieval quality HOLDS (in fact strongly EXCEEDS) the 4B path AND is ~30x faster -> a dedicated Core ML embedder is a genuine win on BOTH axes; worth building as an opt-in backend with a reindex.",
+    "why_4b_is_weak": "Qwen3-4B is a causal DECODER LLM, not a contrastively-trained sentence embedder. Mean-pooling its raw hidden states yields an ANISOTROPIC ('cone effect') space: see corpus_anisotropy \u2014 all fact pairs sit in a razor-thin cosine band, so ranking is noise-dominated and distractors routinely outrank relevant facts (negative mean_sep_gap). bge-small is purpose-built for retrieval.",
+    "honesty": "SYNTHETIC-but-representative eval (Claude wrote the labels), not ground-truth production data. Directional evidence, strong enough for a build/no-build call, not a production quality guarantee. Raw-cosine ranking here matches DARWIN's live NeuralEmbeddingProvider (recall.rs). DARWIN's BM25 lexical FALLBACK (server-down path) was NOT measured; it may rescue some paraphrase queries the anisotropic 4B neural path misses."
+  }
+}

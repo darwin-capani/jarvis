@@ -2,11 +2,12 @@
 
 Runs WITHOUT loading any model and WITHOUT coremltools / torch / transformers:
 `import coreml_embed` is import-light (stdlib + numpy) and the tested helpers
-take plain Python / numpy inputs, so this exercises the tokenization padding,
-the batch chunking, the vector post-processing (scrub), the empty-input guard,
-and the embedder-id/dim selection + fallback-decision logic directly. The live
-Core ML predict + FP16-vs-torch faithfulness are DEVICE/DEP-gated and exercised
-by the once-run smoke (`.venv/bin/python inference/coreml_embed.py`), NOT here.
+take plain Python / numpy inputs, so this exercises the tokenization padding /
+truncation to SEQ, the vector post-processing (scrub), the empty-input guard,
+the model-derived mean-pool space id, and the embedder-id/dim selection +
+fallback-decision logic directly. The live Core ML predict + FP16-vs-torch
+faithfulness + latency are DEVICE/DEP-gated and exercised by the once-run smoke
+(`.venv/bin/python inference/coreml_embed.py`), NOT here.
 
   Run: .venv/bin/python inference/test_coreml_embed.py   (from the repo root)
 """
@@ -35,9 +36,9 @@ class PadBatchTests(unittest.TestCase):
         self.assertEqual(list(mask[1]), [1, 0, 0, 0, 0, 0])
 
     def test_truncates_to_seq(self):
-        ids, mask = ce.pad_batch([list(range(1, 200))], seq=ce.SEQ)
+        # Input longer than SEQ -> truncated to the FIRST SEQ ids.
+        ids, mask = ce.pad_batch([list(range(1, ce.SEQ + 100))], seq=ce.SEQ)
         self.assertEqual(ids.shape, (1, ce.SEQ))
-        # Truncated to the FIRST SEQ ids; the whole row is real (mask all 1).
         self.assertEqual(list(ids[0]), list(range(1, ce.SEQ + 1)))
         self.assertTrue(all(m == 1 for m in mask[0]))
 
@@ -45,39 +46,6 @@ class PadBatchTests(unittest.TestCase):
         ids, mask = ce.pad_batch([[]], seq=4)
         self.assertEqual(list(ids[0]), [0, 0, 0, 0])
         self.assertEqual(list(mask[0]), [0, 0, 0, 0])
-
-
-class PlanChunksTests(unittest.TestCase):
-    def _check_cover(self, n, batch):
-        plan = ce.plan_coreml_chunks(n, batch)
-        # Contiguous, order-preserving, full cover, each chunk <= batch.
-        flat = []
-        for a, b in plan:
-            self.assertLessEqual(b - a, batch)
-            self.assertLess(a, b)
-            flat.extend(range(a, b))
-        self.assertEqual(flat, list(range(n)))
-        return plan
-
-    def test_exact_multiple(self):
-        self.assertEqual(ce.plan_coreml_chunks(16, 8), [(0, 8), (8, 16)])
-
-    def test_partial_last_chunk(self):
-        self.assertEqual(ce.plan_coreml_chunks(10, 8), [(0, 8), (8, 10)])
-
-    def test_single(self):
-        self.assertEqual(ce.plan_coreml_chunks(1, 8), [(0, 1)])
-
-    def test_empty(self):
-        self.assertEqual(ce.plan_coreml_chunks(0, 8), [])
-
-    def test_various_cover(self):
-        for n in (1, 2, 7, 8, 9, 33, 256):
-            self._check_cover(n, 8)
-
-    def test_bad_batch_raises(self):
-        with self.assertRaises(ValueError):
-            ce.plan_coreml_chunks(4, 0)
 
 
 class ScrubTests(unittest.TestCase):
@@ -119,38 +87,57 @@ class EmbedderSelectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             server.validate_embedder("nope")
 
+    _MP = "llm-meanpool:some/model:int4"  # a model-derived mean-pool space id
+
     def test_plan_coreml_available(self):
         eid, dim, fell_back = server.plan_embedder(
-            server.EMBEDDER_COREML, coreml_available=True
+            server.EMBEDDER_COREML, coreml_available=True, meanpool_id=self._MP
         )
         self.assertEqual(eid, server.EMBEDDER_COREML)
         self.assertEqual(dim, server.COREML_EMBED_DIM)
         self.assertEqual(dim, ce.DIM)  # server label matches the module's real dim
         self.assertFalse(fell_back)
 
-    def test_plan_coreml_unavailable_falls_back(self):
+    def test_plan_coreml_unavailable_falls_back_to_meanpool_id(self):
         eid, dim, fell_back = server.plan_embedder(
-            server.EMBEDDER_COREML, coreml_available=False
+            server.EMBEDDER_COREML, coreml_available=False, meanpool_id=self._MP
         )
-        self.assertEqual(eid, server.EMBEDDER_LLM_MEANPOOL)
-        self.assertIsNone(dim)  # 4B dim known only from a produced vector
+        # The fallback emits the MODEL-DERIVED id (not the fixed config value).
+        self.assertEqual(eid, self._MP)
+        self.assertIsNone(dim)  # mean-pool dim known only from a produced vector
         self.assertTrue(fell_back)
 
-    def test_plan_llm_choice_is_not_a_fallback(self):
+    def test_plan_meanpool_choice_is_not_a_fallback(self):
         eid, dim, fell_back = server.plan_embedder(
-            server.EMBEDDER_LLM_MEANPOOL, coreml_available=True
+            server.EMBEDDER_LLM_MEANPOOL, coreml_available=True, meanpool_id=self._MP
         )
-        self.assertEqual(eid, server.EMBEDDER_LLM_MEANPOOL)
+        self.assertEqual(eid, self._MP)
         self.assertIsNone(dim)
         self.assertFalse(fell_back)
 
-    def test_contract_ids_are_stable_strings(self):
-        # The exact wire ids the Rust docsearch task consumes. Guard against
-        # accidental drift.
+    def test_contract_ids(self):
+        # The fixed Core ML space id + the CONFIG-SELECTOR value. Guard drift.
         self.assertEqual(server.EMBEDDER_COREML, "coreml-bge-small-en-v1.5")
         self.assertEqual(server.EMBEDDER_LLM_MEANPOOL, "llm-qwen3-4b-meanpool")
         self.assertEqual(ce.EMBEDDER_ID, server.EMBEDDER_COREML)
         self.assertEqual(server.DEFAULT_EMBEDDER, server.EMBEDDER_COREML)
+
+    def test_meanpool_space_id_is_model_derived(self):
+        # The EMITTED mean-pool id must reflect the resident model (id + quant),
+        # so an LLM/quant swap changes the vector-space stamp. Construct a real
+        # engine (no model load) and check the format.
+        settings = dict(server.load_config())
+        settings["llm"] = "some/model-a-4bit"
+        settings["quant"] = "int4"
+        eng = server.InferenceEngine(settings, "classify {utterance}", "persona")
+        self.assertEqual(
+            eng._meanpool_space_id(), "llm-meanpool:some/model-a-4bit:int4"
+        )
+        # Swapping the model changes the emitted space id.
+        settings2 = dict(settings)
+        settings2["llm"] = "other/model-b-4bit"
+        eng2 = server.InferenceEngine(settings2, "classify {utterance}", "persona")
+        self.assertNotEqual(eng._meanpool_space_id(), eng2._meanpool_space_id())
 
 
 @unittest.skipUnless(

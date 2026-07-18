@@ -5,42 +5,64 @@ WHAT: a purpose-built contrastive sentence embedder — BAAI/bge-small-en-v1.5
 compute_units=ALL, ANE-ELIGIBLE) and used as the on-device retrieval-embedding
 backend, in place of mean-pooling the resident 4B LLM's hidden states.
 
-WHY: measured on this M1 Pro (see scratch-bench/ane-probe/eval — a synthetic-
-but-representative MNEMOSYNE-style retrieval set of short user facts), the bge
-384-dim embedder is BOTH dramatically higher retrieval quality AND ~30x faster:
+WHY: retrieval QUALITY (recall@k / MRR) measured on a synthetic-but-
+representative MNEMOSYNE-style set of short user facts (the eval harness +
+labeled set + results are committed under inference/benchmarks/coreml_eval/),
+plus LATENCY re-measured on this M1 Pro at the SHIPPED seq=512 / compute_units=
+ALL config (the device-gated smoke in this file, `_smoke`):
 
-    embedder                     recall@1  recall@3  recall@5   MRR    latency
-    bge-small (this module,384d)  0.8241    0.9213    0.9861   0.9606  ~2.5ms single / ~1.7ms/text batched
+    embedder                     recall@1  recall@3  recall@5   MRR    latency (seq=512, ComputeUnit.ALL)
+    bge-small (this module,384d)  0.8241    0.9213    0.9861   0.9606  ~19.6ms/text (single OR K=8, looped)
     Qwen3-4B mean-pool (2560d)    0.2454    0.4630    0.5556   0.4235  ~124ms single / ~56.8ms/text batched
 
-    (recall@k / MRR are SYNTHETIC-BUT-REPRESENTATIVE — measured on the probe's
-    generated fact/query set, not a production corpus. Latency = MEASURED
-    end-to-end median on M1 Pro. The bge model does PLAIN mean-pool of the last
-    hidden state with NO query-instruction prefix, so these are the plain-variant
-    numbers; a query-instruction variant reaches recall@5 = 1.0 but is not what
-    this module computes.)
+    Dramatically higher retrieval quality, and still faster than the 4B path:
+    ~6.3x on single-text (19.6 vs 124 ms) and ~3x per text on the K=8 retrieval
+    batch (19.0 vs 56.8 ms/text). NOTE the seq=512 latency is much higher than
+    the seq=128 probe numbers (~2.5/1.7 ms) — a 4x-longer sequence with O(seq^2)
+    attention — and at 512 a batched Core ML graph is SLOWER per text than
+    looping the (1,512) graph, so this backend loops one text at a time (see the
+    SEQ note). HONESTY on each number:
+    - recall@k / MRR are SYNTHETIC-BUT-REPRESENTATIVE (Claude-authored labels
+      over generated facts/queries, not a production corpus) — directional
+      build-decision evidence, not a production guarantee. The facts are short
+      (they fit in either seq), so these are SEQ-INDEPENDENT: the seq=512 change
+      helps LONG document chunks (the docsearch case the recall set did not
+      cover), not these short-fact scores. The bge model does PLAIN mean-pool
+      with NO query-instruction prefix, so these are the plain-variant numbers
+      (a query-instruction variant reaches recall@5 = 1.0 but is not what this
+      module computes).
+    - latency = MEASURED end-to-end median from `_smoke` at seq=512 under
+      compute_units=ComputeUnit.ALL (the SHIPPED runtime config). The 4B numbers
+      are the committed baseline (inference/benchmarks/baseline_m1_pro.json).
 
 HONESTY — the ANE: compute_units=ComputeUnit.ALL makes the Apple Neural Engine
 (and GPU) ELIGIBLE. Core ML schedules ANE/GPU/CPU at its own discretion and ANE
 residency is unmeasurable without powermetrics. This module therefore claims
-"Core ML, ANE-eligible" and cites only MEASURED end-to-end latency — never that
-any op actually ran on the ANE.
+"Core ML, ANE-eligible" and cites only MEASURED end-to-end latency under
+ComputeUnit.ALL — never that any op actually ran on the ANE.
 
-TRUNCATION: inputs are tokenized to a FIXED sequence length of 128 tokens
-(SEQ). Facts longer than 128 tokens are TRUNCATED to the first 128 — an
-embedding of the lead, surfaced honestly (the caller caps the batch; this caps
-the per-text length). Short user facts (the MNEMOSYNE shape) are well under 128.
+TRUNCATION: inputs are tokenized to a FIXED sequence length of 512 tokens
+(SEQ) — bge-small's native maximum. Inputs longer than 512 tokens are TRUNCATED
+to the first 512, surfaced honestly (the caller caps the batch; this caps the
+per-text length). 512 covers docsearch's ~1200-char (~300-token) chunks and
+every short user fact.
 
-CONVERT-ON-FIRST-USE: the compiled model + tokenizer are cached under the SAME
-model-cache root the rest of the server uses ($HF_HOME, falling back to
-~/.cache/huggingface — see `hf_cache_root`), in a `darwin-coreml/` subtree. On
-first use, if the cache is absent, the model is converted ONCE from the HF bge
-checkpoint using the proven recipe (see `_convert`); subsequent starts load the
-cached compiled model. Conversion needs torch + transformers (heavy, one-time);
-runtime prediction after conversion needs only coremltools + the fast tokenizer.
+CONVERT-ON-FIRST-USE (ATOMIC): the compiled model + tokenizer are cached under
+the SAME model-cache root the rest of the server uses ($HF_HOME, falling back to
+~/.cache/huggingface — see `hf_cache_root`), in a `darwin-coreml/` subtree. If
+the cache is absent OR fails a validate-LOAD (a crash / disk-full / concurrent
+writer can leave a partial .mlpackage that merely EXISTS), the model is
+converted ONCE from the HF bge checkpoint into a private temp dir, validate-
+LOADED there, and only then atomically renamed into place — so a partial cache
+is never trusted and is transparently reconverted (or the caller falls back).
+Prefer EAGER warm at server startup (server.preload) so the first real op=embed
+never pays conversion latency inside the daemon's request timeout. Conversion
+needs torch + transformers (heavy, one-time); runtime prediction after
+conversion needs only coremltools + the fast tokenizer.
 
-The conversion recipe is the one proven in scratch-bench/ane-probe/convert.py
-for the transformers 5.11 / coremltools 9.0 / torch 2.12 combo:
+The conversion recipe is the one proven in the ANE probe (its convert.py, the
+provenance of this recipe) for the transformers 5.11 / coremltools 9.0 / torch
+2.12 combo:
   - position_ids / token_type_ids are baked as CONSTANT buffers at the full
     (batch, seq) shape, so the traced graph emits no tensor-derived Python
     scalar (which trips a coremltools _int-cast bug).
@@ -59,33 +81,45 @@ transformers are imported lazily inside methods, so `import coreml_embed`
 without the deps simply cannot build/load the Core ML model, and the caller
 falls back to the 4B mean-pool path and reports the fallback (never silently).
 """
+import logging
 import math
 import os
+import shutil
+import tempfile
 import threading
 
 import numpy as np
 
+log = logging.getLogger("darwin.coreml_embed")
+
 # Stable HF checkpoint this backend embeds with.
 MODEL_ID = "BAAI/bge-small-en-v1.5"
 # STABLE wire id for this embedder's vector space (op=embed `embedder` field).
-# The daemon/docsearch store this with the index to refuse cross-space
-# comparison. MUST match server.py EMBEDDER_COREML and the Rust docsearch side.
+# The daemon/docsearch store this with the index and compare it by STRING
+# EQUALITY only (opaque space id); a store stamped with a different id is a
+# different space and forces reindex. This backend pins ONE model at ONE seq, so
+# the id is a fixed string. MUST match server.py EMBEDDER_COREML.
 EMBEDDER_ID = "coreml-bge-small-en-v1.5"
 # Output dimension (bge-small hidden size). Fixed by the checkpoint.
 DIM = 384
-# Fixed sequence length: inputs are padded / truncated to this many tokens.
-SEQ = 128
-# Fixed batch size of the primary compiled model. The MNEMOSYNE call shape is a
-# query + K candidate facts (K~=8), so an (8, 128) fixed-shape graph is both the
-# realistic batch and ANE-eligible. A batch is chunked into groups of this many
-# rows; the final partial group is padded up to this size (padded rows are
-# discarded). A separate batch-1 graph serves singleton chunks without paying
-# the full 8-row forward.
-COREML_BATCH = 8
+# Fixed sequence length: inputs are padded / truncated to this many tokens. Set
+# to bge-small's NATIVE max_position_embeddings (512) — NOT a smaller cap —
+# because docsearch chunks are ~1200 chars (~300 WordPiece tokens); a 128 cap
+# silently dropped ~60% of every document chunk from its vector (a real
+# file-search regression the short-memory-fact recall eval never exercised). 512
+# covers those chunks natively and safely. Short facts pad to 512 (padding is
+# masked out, so their vectors are unchanged vs a shorter seq).
+SEQ = 512
+# ONE fixed-shape (1, SEQ) graph, looped per text. MEASURED on this M1 Pro at
+# seq=512 / ComputeUnit.ALL: looping the (1, 512) graph is ~1.57x FASTER per text
+# than a fixed (8, 512) batched graph (~19.7 vs ~31 ms/text for K=8) — the large
+# (8, 512) shape spills off Core ML's efficient path, so batching at this seq is
+# counterproductive. A single graph is therefore both faster for the real
+# workload AND simpler (no pad-to-batch / discard logic). (This inverts the
+# seq=128 finding, where a batched graph won — the seq change moved the tradeoff.)
 
 # Compiled-model / tokenizer artifact names under the per-model cache dir.
-_B1_NAME = "emb_b1.mlpackage"
-_B8_NAME = "emb_b8.mlpackage"
+_MODEL_NAME = "emb_b1.mlpackage"
 _TOK_DIRNAME = "tokenizer"
 
 
@@ -135,19 +169,6 @@ def pad_batch(id_lists, seq=SEQ):
     return ids, mask
 
 
-def plan_coreml_chunks(n, batch=COREML_BATCH):
-    """PURE, ORDER-PRESERVING. Split row index space [0, n) into contiguous
-    [start, end) ranges of at most `batch` rows each (the fixed-shape forward
-    processes one range per predict, padding a short final range up to `batch`).
-    Returns a list of (start, end). Order is untouched so results write straight
-    back to their input slots."""
-    if n <= 0:
-        return []
-    if batch <= 0:
-        raise ValueError("batch must be positive")
-    return [(s, min(s + batch, n)) for s in range(0, n, batch)]
-
-
 def scrub_vector(vec):
     """PURE. Map any non-finite component (NaN / +-Inf) to 0.0 so the JSON
     response stays strict-valid (a degenerate-but-finite vector keeps the whole
@@ -173,65 +194,83 @@ class CoreMLEmbedderUnavailable(RuntimeError):
 
 class CoreMLEmbedder:
     """Loads/caches the Core ML bge model + tokenizer and embeds a batch of
-    strings to 384-dim L2-normalized vectors. Convert-on-first-use; thread-safe
-    (its own lock guards lazy load + predict — it does NOT touch the engine's
-    MLX GPU lock, so embedding runs independently of LLM generation)."""
+    strings to 384-dim L2-normalized vectors (ONE fixed (1, SEQ) graph, looped
+    per text — see the _MODEL_NAME/SEQ note for why a batched graph is not used
+    at seq=512). Convert-on-first-use; thread-safe (its own lock guards lazy load
+    + predict — it does NOT touch the engine's MLX GPU lock, so embedding runs
+    independently of LLM generation)."""
 
-    def __init__(self, root=None, batch=COREML_BATCH):
+    def __init__(self, root=None):
         self._dir = cache_dir(root)
-        self._batch = batch
         self._lock = threading.Lock()
         self._loaded = False
         self._tokenizer = None
-        self._m1 = None  # batch-1 MLModel (singleton chunks)
-        self._m8 = None  # batch-`_batch` MLModel (the batched forward)
+        self._model = None  # the (1, SEQ) MLModel, looped per text
 
-    # -- artifact paths --
-    @property
-    def _tok_dir(self):
-        return os.path.join(self._dir, _TOK_DIRNAME)
+    def _validate_predict(self, model):
+        """Run a tiny (1, SEQ) predict to VALIDATE a compiled graph actually runs
+        at the SHIPPED shape and returns the right output shape. Presence on disk
+        is NOT integrity: a truncated / partial-write .mlpackage (crash /
+        disk-full / concurrent writer) can load-open yet fail to predict, and an
+        OLD cache compiled at a different SEQ fails this shape check — either way
+        this raises so the cache is reconverted."""
+        ids = np.zeros((1, SEQ), dtype=np.int32)
+        ids[:, 0] = 101  # any real token id; content is irrelevant to validation
+        mask = np.zeros((1, SEQ), dtype=np.int32)
+        mask[:, 0] = 1
+        out = np.asarray(model.predict({"input_ids": ids, "attention_mask": mask})["embedding"])
+        if out.shape != (1, DIM):
+            raise ValueError(
+                f"compiled model output shape {out.shape} != expected {(1, DIM)}"
+            )
 
-    @property
-    def _b1_path(self):
-        return os.path.join(self._dir, _B1_NAME)
+    def _load_from(self, d):
+        """VALIDATE-LOAD the tokenizer + the compiled model from directory `d`:
+        load each, then run `_validate_predict` so a partial/corrupt/wrong-SEQ
+        package is rejected (never trusted on mere presence). Returns
+        (tokenizer, model) on success; raises on any problem."""
+        import coremltools as ct
+        from transformers import AutoTokenizer
 
-    @property
-    def _b8_path(self):
-        return os.path.join(self._dir, _B8_NAME)
-
-    def _artifacts_present(self):
-        return (
-            os.path.isdir(self._b1_path)
-            and os.path.isdir(self._b8_path)
-            and os.path.isdir(self._tok_dir)
+        tok = AutoTokenizer.from_pretrained(os.path.join(d, _TOK_DIRNAME))
+        model = ct.models.MLModel(
+            os.path.join(d, _MODEL_NAME), compute_units=ct.ComputeUnit.ALL
         )
+        self._validate_predict(model)
+        return tok, model
 
     def ensure_loaded(self):
-        """Lazily convert-on-first-use (if the cache is absent) then load the
-        compiled models + tokenizer. Idempotent + thread-safe. Raises
-        CoreMLEmbedderUnavailable on any failure so the caller falls back."""
+        """Convert-on-first-use (ATOMIC) then load the compiled model +
+        tokenizer. Idempotent + thread-safe. The cache is trusted only if it
+        VALIDATE-LOADS (see `_load_from`); a missing / partial / corrupt /
+        wrong-SEQ cache is reconverted into a temp dir and atomically published
+        BEFORE it is loaded from. Raises CoreMLEmbedderUnavailable on any failure
+        so the caller falls back."""
         if self._loaded:
             return
         with self._lock:
             if self._loaded:
                 return
-            try:
-                import coremltools as ct
-                from transformers import AutoTokenizer
-            except Exception as e:  # deps absent -> honest unavailable
+            import importlib.util
+
+            missing = [
+                m for m in ("coremltools", "transformers")
+                if importlib.util.find_spec(m) is None
+            ]
+            if missing:  # deps absent -> honest unavailable (caller falls back)
                 raise CoreMLEmbedderUnavailable(
-                    f"Core ML embedder deps unavailable: {e}"
-                ) from e
+                    f"Core ML embedder deps unavailable: {', '.join(missing)} not installed"
+                )
             try:
-                if not self._artifacts_present():
-                    self._convert()  # ONE-TIME, needs torch + transformers
-                self._tokenizer = AutoTokenizer.from_pretrained(self._tok_dir)
-                self._m1 = ct.models.MLModel(
-                    self._b1_path, compute_units=ct.ComputeUnit.ALL
-                )
-                self._m8 = ct.models.MLModel(
-                    self._b8_path, compute_units=ct.ComputeUnit.ALL
-                )
+                loaded = self._try_load_final()
+                if loaded is None:
+                    self._convert_atomic()  # ONE-TIME; validates before publishing
+                    loaded = self._try_load_final()
+                    if loaded is None:
+                        raise CoreMLEmbedderUnavailable(
+                            "Core ML embedder cache failed validate-load after conversion"
+                        )
+                self._tokenizer, self._model = loaded
             except CoreMLEmbedderUnavailable:
                 raise
             except Exception as e:
@@ -240,12 +279,51 @@ class CoreMLEmbedder:
                 ) from e
             self._loaded = True
 
-    def _convert(self):
-        """ONE-TIME conversion of the HF bge checkpoint to two fixed-shape Core
-        ML packages (batch 1 and `_batch`) + the saved tokenizer, using the
-        proven recipe (module docstring). Heavy: needs torch + transformers and
-        downloads the checkpoint (honoring HF_HOME) on the first ever run.
-        Writes atomically into the cache dir. Raises on any failure."""
+    def _try_load_final(self):
+        """Validate-load from the FINAL cache dir; return (tok, model) or None
+        (missing / partial / corrupt / wrong-SEQ) so the caller reconverts."""
+        if not os.path.isdir(self._dir):
+            return None
+        try:
+            return self._load_from(self._dir)
+        except Exception as e:
+            log.warning(
+                "Core ML embedder cache at %s not usable (%s); reconverting",
+                self._dir, e,
+            )
+            return None
+
+    def _convert_atomic(self):
+        """Convert into a PRIVATE temp dir under the cache root, validate-LOAD it
+        there, then atomically rename it into the final path — so a crash /
+        disk-full / concurrent second writer can never leave a partial cache the
+        loader would trust. Raises on any failure (nothing is published)."""
+        parent = os.path.dirname(self._dir)  # <root>/darwin-coreml
+        os.makedirs(parent, exist_ok=True)
+        tmp = tempfile.mkdtemp(prefix=".convert-", dir=parent)
+        try:
+            self._convert_into(tmp)
+            # VALIDATE-LOAD in the temp dir BEFORE publishing: a partial/corrupt
+            # write is caught here and never becomes the trusted cache.
+            self._load_from(tmp)
+            # Publish atomically. A pre-existing final dir only reaches here when
+            # it already FAILED validate-load (so it is stale/corrupt); replace
+            # it. os.replace of a directory is atomic within one filesystem, and
+            # `tmp` is a sibling of `self._dir` so they share one.
+            if os.path.exists(self._dir):
+                shutil.rmtree(self._dir, ignore_errors=True)
+            os.replace(tmp, self._dir)
+            tmp = None
+        finally:
+            if tmp is not None and os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
+
+    def _convert_into(self, target_dir):
+        """ONE-TIME conversion of the HF bge checkpoint to the fixed (1, SEQ)
+        Core ML package + the saved tokenizer, written under `target_dir` (a temp
+        dir; the caller publishes it atomically). Uses the proven recipe (module
+        docstring). Heavy: needs torch + transformers and downloads the
+        checkpoint (honoring HF_HOME) on the first ever run."""
         import types
 
         import coremltools as ct
@@ -325,7 +403,7 @@ class CoreMLEmbedder:
             )
             mlmodel.save(out_path)
 
-        os.makedirs(self._dir, exist_ok=True)
+        os.makedirs(target_dir, exist_ok=True)
         tok = AutoTokenizer.from_pretrained(MODEL_ID)
         enc = AutoModel.from_pretrained(
             MODEL_ID, attn_implementation="eager"
@@ -335,9 +413,13 @@ class CoreMLEmbedder:
             raise CoreMLEmbedderUnavailable(
                 f"{MODEL_ID} hidden size {enc.config.hidden_size} != expected {DIM}"
             )
-        trace_and_convert(enc, 1, self._b1_path)
-        trace_and_convert(enc, self._batch, self._b8_path)
-        tok.save_pretrained(self._tok_dir)
+        if getattr(enc.config, "max_position_embeddings", SEQ) < SEQ:
+            raise CoreMLEmbedderUnavailable(
+                f"{MODEL_ID} max_position_embeddings "
+                f"{enc.config.max_position_embeddings} < seq {SEQ}"
+            )
+        trace_and_convert(enc, 1, os.path.join(target_dir, _MODEL_NAME))
+        tok.save_pretrained(os.path.join(target_dir, _TOK_DIRNAME))
 
     def _encode(self, texts):
         """Tokenize a list of strings to a list of token-id lists, truncated to
@@ -348,38 +430,28 @@ class CoreMLEmbedder:
         )
         return enc["input_ids"]
 
-    def _predict(self, model, ids, mask):
-        """Run one fixed-shape predict; returns a numpy (rows, DIM) array."""
-        out = model.predict({"input_ids": ids, "attention_mask": mask})
+    def _predict(self, ids, mask):
+        """Run one (1, SEQ) predict; returns a numpy (1, DIM) array."""
+        out = self._model.predict({"input_ids": ids, "attention_mask": mask})
         return np.asarray(out["embedding"], dtype=np.float32)
 
     def embed(self, texts):
         """Embed a batch of strings -> list of DIM-dim L2-normalized float
-        vectors, in input order. Empty batch -> []. Vectors are scrubbed so no
-        NaN/Inf reaches the wire. The batch/length caps are enforced by the
-        caller (batch) and tokenization (length). Thread-safe."""
+        vectors, in input order. Empty batch -> []. Each text is one (1, SEQ)
+        predict, looped (measured faster than a batched graph at seq=512 — see
+        the module SEQ note). Vectors are scrubbed so no NaN/Inf reaches the
+        wire. The batch/length caps are enforced by the caller (batch) and
+        tokenization (length). Thread-safe."""
         if not texts:
             return []
         self.ensure_loaded()
         id_lists = self._encode(texts)
-        n = len(id_lists)
-        out = [None] * n
+        out = []
         with self._lock:
-            for start, end in plan_coreml_chunks(n, self._batch):
-                rows = id_lists[start:end]
-                r = len(rows)
-                if r == 1:
-                    ids, mask = pad_batch(rows, SEQ)  # (1, SEQ)
-                    vecs = self._predict(self._m1, ids, mask)
-                else:
-                    # Pad the chunk up to the fixed batch size with a repeat of
-                    # the first row (its output is discarded); real rows are
-                    # unaffected (each row's vector depends only on its tokens).
-                    padded_rows = rows + [rows[0]] * (self._batch - r)
-                    ids, mask = pad_batch(padded_rows, SEQ)  # (_batch, SEQ)
-                    vecs = self._predict(self._m8, ids, mask)[:r]
-                for i, row in zip(range(start, end), vecs):
-                    out[i] = scrub_vector(row.tolist())
+            for ids_row in id_lists:
+                ids, mask = pad_batch([ids_row], SEQ)  # (1, SEQ)
+                vec = self._predict(ids, mask)[0]
+                out.append(scrub_vector(vec.tolist()))
         return out
 
     def reference_vectors(self, texts):
@@ -464,7 +536,7 @@ def _smoke():
         va, vb = emb.embed([a])[0], emb.embed([b])[0]
         print(f"  [{kind:>9}] cosine {_cosine(va, vb):+.4f}")
 
-    # Latency: single-text (batch-1 graph) and the K=8 batched forward.
+    # Latency: single text, and the realistic K=8 retrieval batch (looped).
     batch8 = [
         "What timezone does the user live in?",
         "The user lives in the Pacific timezone.",
@@ -476,7 +548,7 @@ def _smoke():
         "The user usually works late at night.",
     ]
 
-    def med(fn, n=5, warmup=1):
+    def med(fn, n=10, warmup=3):
         for _ in range(warmup):
             fn()
         runs = []
@@ -488,8 +560,12 @@ def _smoke():
 
     single_ms = med(lambda: emb.embed([fixed[0]]))
     batch_ms = med(lambda: emb.embed(batch8))
+    long_chunk = ("word " * 300).strip()  # ~300 tokens: the docsearch chunk case
+    long_ms = med(lambda: emb.embed([long_chunk]))
     print(f"single-text latency: {single_ms:.2f} ms")
-    print(f"batch-8 latency: {batch_ms:.2f} ms  ({batch_ms / 8:.2f} ms/text)")
+    print(f"K=8 batch latency: {batch_ms:.2f} ms  ({batch_ms / 8:.2f} ms/text, looped)")
+    print(f"long chunk (~300 tok) latency: {long_ms:.2f} ms  "
+          f"(dim {len(emb.embed([long_chunk])[0])})")
 
 
 if __name__ == "__main__":

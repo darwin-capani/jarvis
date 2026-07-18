@@ -586,15 +586,16 @@ _EMBED_BATCH = [
 
 def bench_embed(eng, runs, warmup):
     """Embedding throughput for the ACTIVE op=embed backend ([inference].embedder
-    — the Core ML bge sentence embedder by default, else the legacy 4B mean-pool
+    — the Core ML bge sentence embedder by default, else the legacy mean-pool
     path), measured two ways: SINGLE (one embed() call per text) and BATCHED (the
     whole batch in one embed() call, the real MNEMOSYNE call shape). per_text_ms
-    lets the two be compared apples-to-apples; the batched path amortizes the
-    per-forward/per-predict overhead.
+    compares them apples-to-apples. The 4B mean-pool path amortizes per-forward
+    overhead across the batch; the Core ML path loops one (1,SEQ) predict per text
+    (a batched graph is slower at seq=512), so its single ≈ batched per_text_ms.
 
-    Records the ACTIVE embedder's STABLE id + dim (the op=embed wire contract's
-    vector-SPACE identity) + fell_back (true iff the Core ML backend was
-    configured but unavailable, so these are the honest 4B-fallback numbers) so
+    Records the ACTIVE embedder's vector-space id + dim (the op=embed wire
+    contract's SPACE identity) + fell_back (true iff the Core ML backend was
+    configured but unavailable, so these are the honest mean-pool-fallback numbers) so
     the committed baseline never mislabels which embedder it measured."""
     text = ("DARWIN keeps its retrieval embeddings on device via a purpose-built "
             "Core ML sentence embedder (bge-small), falling back to the resident "
