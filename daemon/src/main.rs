@@ -2162,6 +2162,13 @@ async fn main() -> Result<()> {
         cfg.answers.cross_check_model_pass,
         cfg.answers.debate,
     );
+    // TWO-STAGE RETRIEVAL RERANK gate ([inference].reranker, SHIPS ON — the measured
+    // winner): install the config default ONCE as a process-global — mirrors
+    // init_answers, no Config threading through the retrieval call sites — so recall
+    // / doc-search / unified-search decide whether to run the on-device cross-encoder
+    // rerank of their dense top-K. HONEST FALLBACK to the dense order when off /
+    // unavailable; the method label stays Embedding unless the rerank actually ran.
+    anthropic::init_reranker(cfg.inference.reranker);
     // CUSTOMS // EGRESS gate ([boundary].enabled ships ON as a neutral PREVIEW,
     // default_trim ships "none" == the identity): wire it ONCE so the cloud path
     // (complete_with_tools) reads one process-global to decide whether to build +

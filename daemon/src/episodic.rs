@@ -92,6 +92,10 @@ pub enum RecallMethod {
     Lexical,
     /// Neural on-device embedding topical ranking (the embedder answered).
     Embedding,
+    /// Two-stage: neural embedding recall THEN a Core ML cross-encoder rerank of
+    /// the top candidates (the reranker answered). Reported only when the rerank
+    /// actually ran — never when it was off or fell back (that stays `Embedding`).
+    Reranked,
 }
 
 impl RecallMethod {
@@ -106,6 +110,13 @@ impl RecallMethod {
             RecallMethod::Lexical => {
                 "lexical-semantic recall: I ranked your recorded episodes by BM25 \
                  term relevance — keyword-semantic, not a neural embedding model."
+            }
+            RecallMethod::Reranked => {
+                "two-stage neural recall: I ranked your recorded episodes by \
+                 on-device embedding similarity, then re-ranked the top few with an \
+                 on-device cross-encoder that reads each together with your query \
+                 for a sharper order (it falls back to the plain embedding order \
+                 when the reranker is off or unavailable)."
             }
             RecallMethod::Embedding => {
                 "neural (on-device embeddings) recall: I ranked your recorded \
@@ -122,6 +133,7 @@ impl From<RankMethod> for RecallMethod {
         match m {
             RankMethod::Lexical => RecallMethod::Lexical,
             RankMethod::Embedding => RecallMethod::Embedding,
+            RankMethod::Reranked => RecallMethod::Reranked,
         }
     }
 }

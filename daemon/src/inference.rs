@@ -147,6 +147,16 @@ struct Request<'a> {
     /// the daemon treats that as "embedder unavailable" and falls back to BM25.
     #[serde(skip_serializing_if = "Option::is_none")]
     texts: Option<&'a [String]>,
+    /// rerank only (STAGE TWO): the search query the candidate `passages` are
+    /// re-scored against. Carried ONLY on op=rerank; an old server without the
+    /// rerank op rejects it (unknown op) and the daemon keeps the dense order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    query: Option<&'a str>,
+    /// rerank only (STAGE TWO): the dense top-K candidate texts to re-score against
+    /// `query`. One relevance score comes back per passage, in this order. Bounded
+    /// K (the daemon reranks a small shortlist). Carried ONLY on op=rerank.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    passages: Option<&'a [String]>,
     /// speak only: the TTS backend the daemon chose for THIS sentence —
     /// "elevenlabs" for the cloud voice tier, "kokoro" (or absent) for on-device.
     /// An old server that does not know the field simply ignores it and uses
@@ -295,6 +305,8 @@ impl<'a> Request<'a> {
             persona: None,
             local_model: None,
             texts: None,
+            query: None,
+            passages: None,
             backend: None,
             voice_id: None,
             model: None,
@@ -471,6 +483,26 @@ pub struct EmbedOutcome {
     pub fell_back: bool,
 }
 
+/// One op=rerank round trip (STAGE TWO of the two-stage retrieval stack): one
+/// cross-encoder relevance score per candidate passage (INPUT order) PLUS which
+/// reranker produced them and whether the server fell back. `reranker` is `None`
+/// (and `fell_back` true) when the cross-encoder was configured but unavailable,
+/// OR when the server predates the rerank op — either way the caller keeps its
+/// dense order. `scores` is empty on that fallback.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RerankOutcome {
+    /// One cross-encoder relevance score per input passage, in input order.
+    pub scores: Vec<f64>,
+    /// The OPAQUE reranker model id that produced the scores, or `None` on the
+    /// honest fallback (server fell back, or an old server with no rerank op).
+    pub reranker: Option<String>,
+    /// Advisory: the reranker was configured but unavailable, so the scores are
+    /// order-preserving and the caller must keep the dense order. `true` also when
+    /// the server predates the op (no `fell_back` field -> defaulted, but the
+    /// daemon maps a missing `scores` to the unavailable outcome anyway).
+    pub fell_back: bool,
+}
+
 #[derive(Deserialize)]
 #[allow(dead_code)] // id/latency_ms are part of the wire contract even if unused here
 struct Response {
@@ -520,9 +552,23 @@ struct Response {
     /// unavailable, so this response is the honest mean-pool fallback. Not
     /// needed to key the space (`embedder` already does); it lets the daemon/HUD
     /// surface the degraded state. Absent
-    /// on old servers — deserializes as None.
+    /// on old servers — deserializes as None. SHARED with op=rerank, where it means
+    /// the CROSS-ENCODER was configured but unavailable (dense order preserved).
     #[serde(default)]
     fell_back: Option<bool>,
+    /// rerank only (STAGE TWO): one cross-encoder relevance score per input
+    /// passage, in INPUT order (higher = more relevant; the daemon re-orders its
+    /// dense shortlist by these). Absent on old servers (they reject op=rerank as
+    /// an unknown op) — deserializes as None, which the daemon reads as "reranker
+    /// unavailable" and keeps the dense order.
+    #[serde(default)]
+    scores: Option<Vec<f64>>,
+    /// rerank only (STAGE TWO): the OPAQUE reranker model id that produced
+    /// `scores` (e.g. the Core ML cross-encoder id), or "" when the server fell
+    /// back (no model scored). Compared only by equality / carried for telemetry,
+    /// never interpreted. Absent on old servers — deserializes as None.
+    #[serde(default)]
+    reranker: Option<String>,
     /// clone_voice / design_voice only: the ElevenLabs voice id minted for the
     /// uploaded sample (clone) or the text DESCRIPTION (design). Absent on old servers
     /// (they reject those ops as unknown) and on every other op — deserializes as None.
@@ -1371,6 +1417,51 @@ impl InferenceClient {
     /// so it can key the store's vector space.
     pub async fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f64>>> {
         Ok(self.embed_with_meta(texts).await?.vectors)
+    }
+
+    /// STAGE TWO of the two-stage retrieval stack: hand the server a `query` and
+    /// its dense top-K candidate `passages`, and get back one cross-encoder
+    /// relevance score per passage, in the SAME ORDER, plus the OPAQUE id of the
+    /// reranker that produced them. The daemon re-orders its dense shortlist by the
+    /// scores. The backend is the server's `[inference].reranker` (a Core ML
+    /// cross-encoder); when that reranker is disabled or unbuildable the server
+    /// answers `fell_back=true` with order-preserving scores, and when the server
+    /// is down OR predates the rerank op this returns Err (unknown op / socket) —
+    /// either way [`Self::rerank`] surfaces the HONEST-FALLBACK outcome so the
+    /// caller KEEPS the dense order and never mislabels the ranking. Empty
+    /// `passages` -> an empty (non-fallback) result. NOT exercised by any test (the
+    /// call is runtime/MLX-gated); the wire shape is locked by the tests below.
+    pub async fn rerank(&mut self, query: &str, passages: &[String]) -> Result<RerankOutcome> {
+        if passages.is_empty() {
+            return Ok(RerankOutcome {
+                scores: Vec::new(),
+                reranker: None,
+                fell_back: false,
+            });
+        }
+        let mut req = Request::new(self.fresh_id(), "rerank");
+        req.query = Some(query);
+        req.passages = Some(passages);
+        let resp = self.request(&req).await?;
+        // A server that fell back (or somehow omitted scores) is the honest
+        // dense-order outcome: report fell_back so the caller keeps its order.
+        let scores = match resp.scores {
+            Some(s) if !resp.fell_back.unwrap_or(false) && s.len() == passages.len() => s,
+            // Fell back / omitted scores / mismatched count: honest dense-order
+            // outcome — the caller keeps its order.
+            _ => {
+                return Ok(RerankOutcome {
+                    scores: Vec::new(),
+                    reranker: None,
+                    fell_back: true,
+                });
+            }
+        };
+        Ok(RerankOutcome {
+            scores,
+            reranker: resp.reranker.filter(|s| !s.is_empty()),
+            fell_back: false,
+        })
     }
 
     /// ON-DEVICE VISUAL DESCRIPTION (VLM). Hand the server a LOCAL image `path`
@@ -2659,6 +2750,66 @@ mod tests {
         assert_eq!(fallback.embedder.as_deref(), Some("llm-meanpool:qwen3-4b"));
         assert!(fallback.dim.is_none());
         assert_eq!(fallback.fell_back, Some(true));
+    }
+
+    /// Wire contract for op=rerank (STAGE TWO): the request carries op="rerank",
+    /// the "query", and the "passages" shortlist — and nothing else (no texts /
+    /// text / path leak in), so the server parses exactly what the daemon sends.
+    /// A server WITHOUT the rerank op rejects this as an unknown op, which the
+    /// caller reads as "reranker unavailable" and keeps the dense order.
+    #[test]
+    fn rerank_request_serializes_to_the_wire_shape() {
+        let passages = vec![
+            "the user drinks oat-milk cortados".to_string(),
+            "the user always flies Delta".to_string(),
+        ];
+        let mut req = Request::new("r-1".to_string(), "rerank");
+        req.query = Some("what coffee does the user drink?");
+        req.passages = Some(&passages);
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["op"], "rerank");
+        assert_eq!(v["query"], "what coffee does the user drink?");
+        assert_eq!(v["passages"][0], "the user drinks oat-milk cortados");
+        assert_eq!(v["passages"][1], "the user always flies Delta");
+        // Unrelated fields stay omitted so an old server sees a clean shape.
+        assert!(v.get("texts").is_none());
+        assert!(v.get("text").is_none());
+        assert!(v.get("path").is_none());
+    }
+
+    /// The op=rerank response carries "scores" (one per passage, input order) plus
+    /// the "reranker" id and the shared "fell_back" flag; an old server (or a
+    /// non-rerank op) deserializes with every field None.
+    #[test]
+    fn rerank_response_scores_round_trip_and_default() {
+        let with = serde_json::from_str::<Response>(
+            r#"{"id":"r-1","ok":true,"scores":[6.5,-8.1,1.0],
+                "reranker":"coreml-ms-marco-minilm-l6-v2","fell_back":false,
+                "latency_ms":221}"#,
+        )
+        .unwrap();
+        let scores = with.scores.expect("scores present");
+        assert_eq!(scores, vec![6.5, -8.1, 1.0]);
+        assert_eq!(with.reranker.as_deref(), Some("coreml-ms-marco-minilm-l6-v2"));
+        assert_eq!(with.fell_back, Some(false));
+
+        // An old server (no rerank op) carries neither scores nor reranker.
+        let without = serde_json::from_str::<Response>(
+            r#"{"id":"x","ok":true,"text":"hi","latency_ms":3}"#,
+        )
+        .unwrap();
+        assert!(without.scores.is_none());
+        assert!(without.reranker.is_none());
+
+        // The honest fallback shape: fell_back true with an EMPTY reranker id (no
+        // model scored -> the caller keeps its dense order).
+        let fallback = serde_json::from_str::<Response>(
+            r#"{"id":"r-2","ok":true,"scores":[2.0,1.0],"reranker":"",
+                "fell_back":true,"latency_ms":1}"#,
+        )
+        .unwrap();
+        assert_eq!(fallback.fell_back, Some(true));
+        assert_eq!(fallback.reranker.as_deref(), Some(""));
     }
 
     /// describe_image wire contract — the request carries op="describe_image",

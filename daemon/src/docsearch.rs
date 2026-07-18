@@ -2226,7 +2226,7 @@ impl DocIndex {
                             // exists to COUNT such pairs so a corrupted store
                             // is visible in the log, not silently down-ranked.
                             let mut dim_mismatches = 0usize;
-                            let mut scored: Vec<(usize, f64)> = corpus
+                            let scored: Vec<(usize, f64)> = corpus
                                 .meta
                                 .iter()
                                 .enumerate()
@@ -2256,11 +2256,16 @@ impl DocIndex {
                                      (reindex to repair the store)"
                                 );
                             }
-                            return DocSearchResult {
-                                hits: rank_and_cite(&corpus, &mut scored, k),
-                                method: RankMethod::Embedding,
-                                reindex_needed: false,
-                            };
+                            return rank_cite_rerank(
+                                query,
+                                &corpus,
+                                scored,
+                                k,
+                                RankMethod::Embedding,
+                                false,
+                                embedder,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -2278,12 +2283,21 @@ impl DocIndex {
         };
         use crate::recall::EmbeddingProvider;
         let scores = lexical.score(query, &corpus.facts);
-        let mut scored: Vec<(usize, f64)> = scores.into_iter().enumerate().collect();
-        DocSearchResult {
-            hits: rank_and_cite(&corpus, &mut scored, k),
-            method: RankMethod::Lexical,
+        let scored: Vec<(usize, f64)> = scores.into_iter().enumerate().collect();
+        // The cross-encoder can sharpen the BM25 shortlist too (it reads query +
+        // chunk jointly); when the reranker is up but this fell back to lexical
+        // (embedder down OR a stale vector space), reranking still improves the
+        // order. On the embedder-down path rerank is also down -> dense order stands.
+        rank_cite_rerank(
+            query,
+            &corpus,
+            scored,
+            k,
+            RankMethod::Lexical,
             reindex_needed,
-        }
+            embedder,
+        )
+        .await
     }
 }
 
@@ -2292,15 +2306,63 @@ impl DocIndex {
 /// CITED [`DocHit`] for each from the real chunk. No-match -> empty (no
 /// fabrication). The snippet is a bounded, char-boundary-safe preview of the
 /// stored chunk text.
-fn rank_and_cite(corpus: &CachedCorpus, scored: &mut [(usize, f64)], k: usize) -> Vec<DocHit> {
+/// Sort the scored chunks into the dense order, apply the optional STAGE-TWO
+/// cross-encoder RERANK to the top shortlist (config-gated), and build the cited
+/// top-`k` [`DocHit`]s. When the rerank runs, `base_method` is upgraded to
+/// [`RankMethod::Reranked`] and the top [`crate::recall::DEFAULT_RERANK_K`] hits
+/// are re-ordered by the cross-encoder score (the tail below the shortlist keeps
+/// its dense order); on any honest fallback (reranker off / unavailable / server
+/// down) the dense order + `base_method` stand, never mislabeled. `base_method` is
+/// `Embedding` (neural cosine) or `Lexical` (BM25) — the cross-encoder can sharpen
+/// EITHER shortlist. Each [`DocHit::score`] keeps its DENSE retrieval score (cosine
+/// / BM25); the ORDER reflects the rerank when it ran (the `method` says which).
+async fn rank_cite_rerank(
+    query: &str,
+    corpus: &CachedCorpus,
+    mut scored: Vec<(usize, f64)>,
+    k: usize,
+    base_method: RankMethod,
+    reindex_needed: bool,
+    embedder: &dyn Embedder,
+) -> DocSearchResult {
+    // Dense order: score DESC, ties by original index; drop non-positive (no hit).
     scored.sort_by(|a, b| {
         b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.0.cmp(&b.0))
     });
-    scored
-        .iter()
+    let mut ordered: Vec<(usize, f64)> = scored
+        .into_iter()
         .filter(|(_, s)| s.is_finite() && *s > 0.0)
+        .collect();
+
+    // STAGE TWO (config-gated): rerank the top shortlist head, re-order in place.
+    let mut method = base_method;
+    if embedder.rerank_enabled() {
+        let head_n = ordered.len().min(crate::recall::DEFAULT_RERANK_K);
+        if head_n >= 2 {
+            // Rerank the FULL chunk text (`facts[i].value`, the unit that was
+            // embedded/indexed), NOT the bounded display snippet.
+            let passages: Vec<String> = ordered[..head_n]
+                .iter()
+                .filter_map(|(i, _)| corpus.facts.get(*i).map(|f| f.value.clone()))
+                .collect();
+            if passages.len() == head_n {
+                if let Some(perm) =
+                    crate::recall::rerank_permutation(query, &passages, embedder).await
+                {
+                    let mut head: Vec<(usize, f64)> =
+                        perm.iter().map(|&j| ordered[j]).collect();
+                    head.extend_from_slice(&ordered[head_n..]);
+                    ordered = head;
+                    method = RankMethod::Reranked;
+                }
+            }
+        }
+    }
+
+    let hits = ordered
+        .iter()
         .take(k)
         .filter_map(|(i, s)| {
             let m = corpus.meta.get(*i)?;
@@ -2315,7 +2377,12 @@ fn rank_and_cite(corpus: &CachedCorpus, scored: &mut [(usize, f64)], k: usize) -
                 score: *s,
             })
         })
-        .collect()
+        .collect();
+    DocSearchResult {
+        hits,
+        method,
+        reindex_needed,
+    }
 }
 
 /// A bounded, char-boundary-safe snippet of a chunk for display/citation.

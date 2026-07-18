@@ -75,6 +75,12 @@ pub enum RankMethod {
     /// vectors the inference server's `embed` op produces (its configured
     /// `[inference].embedder` backend). Active when the embedder is up.
     Embedding,
+    /// TWO-STAGE retrieval: neural bi-encoder recall (`Embedding`) THEN a Core ML
+    /// cross-encoder RERANK of the top-K candidates (the inference server's
+    /// `rerank` op, `[inference].reranker`). Reported ONLY when the cross-encoder
+    /// actually re-scored the shortlist — never when it was disabled or fell back
+    /// (that stays `Embedding`), so the label never overstates what ran.
+    Reranked,
 }
 
 impl RankMethod {
@@ -86,6 +92,7 @@ impl RankMethod {
         match self {
             RankMethod::Lexical => "lexical-bm25",
             RankMethod::Embedding => "neural-embedding",
+            RankMethod::Reranked => "neural-reranked",
         }
     }
 
@@ -107,6 +114,15 @@ impl RankMethod {
                  vector-semantic recall (it matches on \
                  meaning, not just words); it needs the inference server running, \
                  and falls back to lexical BM25 when that server is down."
+            }
+            RankMethod::Reranked => {
+                "two-stage neural recall: I first retrieve candidates by cosine \
+                 similarity over on-device embedding vectors, then RE-RANK the top \
+                 few with an on-device cross-encoder that reads each candidate \
+                 together with your query (full query-passage attention) for a \
+                 sharper order. Both stages run on the local inference server; if \
+                 the reranker is off or unavailable I keep the plain embedding \
+                 order and say so."
             }
         }
     }
@@ -523,6 +539,31 @@ pub trait Embedder: Send + Sync {
             })
         })
     }
+
+    /// STAGE TWO of the two-stage retrieval stack: whether a Core ML cross-encoder
+    /// RERANK should run after dense retrieval (config-gated by
+    /// `[inference].reranker`). The DEFAULT is `false`, so mock embedders and any
+    /// caller that only embeds keep today's single-stage behavior untouched; the
+    /// LIVE inference-socket embedder overrides this from the daemon's reranker
+    /// gate. Reranking rides the SAME backend (the inference server) as `embed`, so
+    /// it is exposed on this trait rather than threading a second object through
+    /// every recall/RAG call site.
+    fn rerank_enabled(&self) -> bool {
+        false
+    }
+
+    /// STAGE TWO: score `passages` against `query` with the on-device cross-encoder
+    /// (the inference server's `rerank` op) — one relevance score per passage, in
+    /// INPUT order (higher = more relevant; the caller re-orders). A caller passes
+    /// the dense top-K candidate texts. `fell_back=true` (or an `Err`) means the
+    /// reranker was configured but unavailable, so the caller KEEPS the dense order
+    /// (honest fallback, never silent). The provided default returns the
+    /// unavailable outcome; the live socket embedder overrides it. Only ever called
+    /// when [`Self::rerank_enabled`] is true.
+    fn rerank<'a>(&'a self, query: &'a str, passages: &'a [String]) -> RerankFuture<'a> {
+        let _ = (query, passages);
+        Box::pin(async { Ok(RerankOutcome::unavailable()) })
+    }
 }
 
 /// The boxed future [`Embedder::embed`] returns, kept object-safe for `&dyn`.
@@ -533,6 +574,87 @@ pub type EmbedFuture<'a> =
 /// for `&dyn` (same pattern as [`EmbedFuture`]).
 pub type EmbedSpaceFuture<'a> =
     std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<EmbeddedBatch>> + Send + 'a>>;
+
+/// The boxed future [`Embedder::rerank`] returns, kept object-safe for `&dyn`
+/// (same pattern as [`EmbedFuture`]).
+pub type RerankFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<RerankOutcome>> + Send + 'a>>;
+
+/// One op=rerank round trip: one relevance score per passage (INPUT order, higher
+/// = more relevant) plus which cross-encoder produced them + the honest-fallback
+/// flag. Mirrors [`crate::inference::RerankOutcome`] — kept as its own recall-layer
+/// struct so trait mocks build it without touching the socket client. When the
+/// reranker is unavailable (or disabled), [`RerankOutcome::unavailable`] carries
+/// `fell_back=true` so the caller KEEPS the dense order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RerankOutcome {
+    /// One cross-encoder relevance score per passage, in input order.
+    pub scores: Vec<f64>,
+    /// The OPAQUE reranker model id that produced the scores, or `None` when it
+    /// fell back (no model scored). Compared only by equality, never interpreted.
+    pub reranker: Option<String>,
+    /// Advisory: the reranker was configured but unavailable, so the scores are
+    /// order-preserving and the caller must keep the dense order.
+    pub fell_back: bool,
+}
+
+impl RerankOutcome {
+    /// The honest "no rerank happened" outcome: empty scores, no model id,
+    /// `fell_back=true` — so a caller keeps its dense order.
+    pub fn unavailable() -> Self {
+        Self {
+            scores: Vec::new(),
+            reranker: None,
+            fell_back: true,
+        }
+    }
+}
+
+/// The bounded rerank shortlist depth K: after dense retrieval, at most this many
+/// top candidates are handed to the cross-encoder to re-score. MEASURED optimum on
+/// the committed two-stage eval (inference/benchmarks/coreml_rerank_eval/): K=20
+/// reaches the SAME reranked quality as K=50 at ~2.5x LESS latency (dense recall@20
+/// was already 1.0, so a deeper shortlist bought nothing but cost). Bounding K also
+/// caps the per-query rerank cost (one cross-encoder forward per candidate).
+pub const DEFAULT_RERANK_K: usize = 20;
+
+/// STAGE TWO applied to an already-dense-ranked candidate list: if `embedder` has
+/// reranking ENABLED (config-gated) and there are >=2 candidates, re-score the
+/// `passages` (the caller's dense top-K texts, best-first) with the on-device
+/// cross-encoder and return the PERMUTATION of `0..passages.len()` to apply to the
+/// caller's own parallel items (sorted by rerank score DESC, stable by original
+/// dense position on ties). Returns `None` — meaning KEEP the dense order — when
+/// reranking is disabled, the shortlist is trivial, or the reranker is unavailable
+/// / fell back / returned a mismatched count (honest fallback, never silent).
+/// Generic over the caller's item type: recall, docsearch, and unified_search all
+/// pass their dense-ordered passage texts and re-order their own items by the
+/// returned permutation.
+pub async fn rerank_permutation(
+    query: &str,
+    passages: &[String],
+    embedder: &dyn Embedder,
+) -> Option<Vec<usize>> {
+    if passages.len() < 2 || !embedder.rerank_enabled() {
+        return None;
+    }
+    match embedder.rerank(query, passages).await {
+        Ok(out) if !out.fell_back && out.scores.len() == passages.len() => {
+            let scores = out.scores;
+            let mut idx: Vec<usize> = (0..passages.len()).collect();
+            // Sort by score DESC; ties keep the earlier DENSE position (stable,
+            // deterministic — the same tie-break rank() uses).
+            idx.sort_by(|&a, &b| {
+                scores[b]
+                    .partial_cmp(&scores[a])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.cmp(&b))
+            });
+            Some(idx)
+        }
+        // Unavailable / fell back / wrong count / Err: keep the dense order.
+        _ => None,
+    }
+}
 
 /// One space-aware embed batch: the vectors plus the OPAQUE space-id of which
 /// embedder produced them. Mirrors [`crate::inference::EmbedOutcome`] — kept as
@@ -596,6 +718,18 @@ pub async fn rank_runtime_selected(
         return lexical_result(Vec::new());
     }
 
+    // TWO-STAGE retrieval: when a cross-encoder rerank is enabled (config-gated),
+    // stage ONE retrieves a DEEPER shortlist (top max(k, DEFAULT_RERANK_K)) so
+    // stage TWO has candidates to re-order; the head is then reranked and the
+    // result truncated back to `k`. When reranking is off, retrieve exactly `k`
+    // (today's single-stage path, byte-for-byte).
+    let rerank_on = embedder.rerank_enabled();
+    let retrieve_k = if rerank_on {
+        k.max(DEFAULT_RERANK_K)
+    } else {
+        k
+    };
+
     // Try neural first: one batched embed call, query at index 0, then facts.
     let mut batch: Vec<String> = Vec::with_capacity(facts.len() + 1);
     batch.push(query.to_string());
@@ -603,7 +737,7 @@ pub async fn rank_runtime_selected(
         batch.push(f.searchable());
     }
 
-    match embedder.embed(&batch).await {
+    let dense = match embedder.embed(&batch).await {
         Ok(vectors) if vectors.len() == batch.len() => {
             let mut iter = vectors.into_iter();
             let query_vec = iter.next().unwrap_or_default();
@@ -613,7 +747,7 @@ pub async fn rank_runtime_selected(
                 return lexical_result(rank(query, facts, k, &lexical));
             }
             let provider = NeuralEmbeddingProvider::new(query_vec, fact_vectors);
-            let hits = rank(query, facts, k, &provider);
+            let hits = rank(query, facts, retrieve_k, &provider);
             RankedRecall {
                 hits,
                 method: provider.method(),
@@ -621,8 +755,53 @@ pub async fn rank_runtime_selected(
             }
         }
         // Wrong vector count OR an error: fall back to lexical BM25, honestly.
-        _ => lexical_result(rank(query, facts, k, &lexical)),
+        // (The reranker rides the same server, so when embed is down rerank is too
+        // and the fallback below keeps this lexical order.)
+        _ => lexical_result(rank(query, facts, retrieve_k, &lexical)),
+    };
+
+    // STAGE TWO (config-gated): rerank the shortlist head, re-order, truncate to k.
+    finish_with_optional_rerank(query, dense, k, rerank_on, embedder).await
+}
+
+/// Apply the optional cross-encoder RERANK to a dense-ranked [`RankedRecall`] and
+/// truncate to `k`. When `rerank_on` and the reranker re-scores the top
+/// [`DEFAULT_RERANK_K`] hits, the head is re-ordered by the cross-encoder score
+/// (the tail below K keeps its dense order) and the method is upgraded to
+/// [`RankMethod::Reranked`]. On any honest fallback (reranking off, unavailable,
+/// or fell back) the dense order stands and the method is unchanged — the label
+/// never overstates what ran. The dense result may carry a DEEPER shortlist than
+/// `k` (see `retrieve_k`), so this always truncates to `k` last.
+async fn finish_with_optional_rerank(
+    query: &str,
+    dense: RankedRecall,
+    k: usize,
+    rerank_on: bool,
+    embedder: &dyn Embedder,
+) -> RankedRecall {
+    if rerank_on && dense.hits.len() >= 2 {
+        let head_n = dense.hits.len().min(DEFAULT_RERANK_K);
+        // Rerank the SAME text stage one embedded (key + value), so the two stages
+        // score the identical unit.
+        let passages: Vec<String> = dense.hits[..head_n]
+            .iter()
+            .map(|h| h.fact.searchable())
+            .collect();
+        if let Some(perm) = rerank_permutation(query, &passages, embedder).await {
+            let mut reordered: Vec<Hit> = perm.iter().map(|&i| dense.hits[i].clone()).collect();
+            reordered.extend_from_slice(&dense.hits[head_n..]);
+            reordered.truncate(k);
+            return RankedRecall {
+                hits: reordered,
+                method: RankMethod::Reranked,
+                method_status: RankMethod::Reranked.description().to_string(),
+            };
+        }
     }
+    // No rerank: keep the dense order + method, just truncate the shortlist to k.
+    let mut hits = dense.hits;
+    hits.truncate(k);
+    RankedRecall { hits, ..dense }
 }
 
 /// OPTIONAL read-only proactive-surface helper: given the current conversation
@@ -1064,20 +1243,49 @@ mod tests {
 
     /// A mock embedder driven by a canned outcome — NEVER touches a socket or
     /// MLX (the real call is runtime-gated and untested by contract).
+    /// How the mock's STAGE-TWO rerank behaves (None on the plain mock = rerank
+    /// disabled, the trait default). Lets a test drive a KNOWN reorder or an honest
+    /// fallback without a socket.
+    #[derive(Clone)]
+    enum MockRerank {
+        /// Enabled; each passage scores +1.0 iff it contains `boost`, else 0.0 —
+        /// so a test forces a deterministic reorder (the boosted passage floats up).
+        Boost(&'static str),
+        /// Enabled but the reranker FELL BACK (configured-but-unavailable): the
+        /// caller must keep the dense order (method stays Embedding/Lexical).
+        FellBack,
+    }
+
     struct MockEmbedder {
         /// `Ok(vectors)` to simulate the embed op answering; `Err` to simulate
         /// the inference server being down / lacking the op.
         outcome: anyhow::Result<Vec<Vec<f64>>>,
+        /// STAGE-TWO rerank behavior; `None` = reranking disabled (trait default).
+        rerank: Option<MockRerank>,
     }
 
     impl MockEmbedder {
         fn answering(vectors: Vec<Vec<f64>>) -> Self {
-            Self { outcome: Ok(vectors) }
+            Self {
+                outcome: Ok(vectors),
+                rerank: None,
+            }
         }
         fn down() -> Self {
             Self {
                 outcome: Err(anyhow::anyhow!("inference socket unavailable (simulated)")),
+                rerank: None,
             }
+        }
+        /// Enable stage-two rerank that boosts any passage containing `kw`.
+        fn with_rerank_boost(mut self, kw: &'static str) -> Self {
+            self.rerank = Some(MockRerank::Boost(kw));
+            self
+        }
+        /// Enable stage-two rerank that HONESTLY falls back (dense order kept).
+        fn with_rerank_fellback(mut self) -> Self {
+            self.rerank = Some(MockRerank::FellBack);
+            self
         }
     }
 
@@ -1094,6 +1302,29 @@ mod tests {
                 // batch shape so the mock mirrors the real wire contract.
                 assert!(n >= 1, "embed batch must include at least the query");
                 outcome
+            })
+        }
+
+        fn rerank_enabled(&self) -> bool {
+            self.rerank.is_some()
+        }
+
+        fn rerank<'a>(&'a self, _query: &'a str, passages: &'a [String]) -> RerankFuture<'a> {
+            let beh = self.rerank.clone();
+            let passages = passages.to_vec();
+            Box::pin(async move {
+                match beh {
+                    Some(MockRerank::Boost(kw)) => Ok(RerankOutcome {
+                        scores: passages
+                            .iter()
+                            .map(|p| if p.contains(kw) { 1.0 } else { 0.0 })
+                            .collect(),
+                        reranker: Some("mock-reranker".to_string()),
+                        fell_back: false,
+                    }),
+                    // Fell back / disabled -> the honest "keep dense order" outcome.
+                    _ => Ok(RerankOutcome::unavailable()),
+                }
             })
         }
     }
@@ -1166,6 +1397,127 @@ mod tests {
         // Recall still WORKS lexically: the car fact is found.
         assert!(!out.hits.is_empty(), "lexical fallback still ranks");
         assert_eq!(out.hits[0].fact.key, "user.car");
+    }
+
+    // ---- STAGE TWO: cross-encoder rerank (config-gated, honest fallback) -----
+
+    #[tokio::test]
+    async fn rerank_reorders_the_dense_head_and_upgrades_the_method() {
+        // Dense (cosine) order is [car, pet]; the reranker BOOSTS "corgi" (the pet),
+        // so the final order is [pet, car] and the method upgrades to Reranked.
+        let facts = vec![
+            Fact::new("user.car", "blue Subaru Outback"),
+            Fact::new("user.pet", "a corgi named Watson"),
+        ];
+        let vectors = vec![
+            vec![1.0, 1.0], // query: equidistant -> dense ties break by index
+            vec![1.0, 0.0], // car: index 0 -> dense first
+            vec![0.0, 1.0], // pet: index 1 -> dense second
+        ];
+        let embedder = MockEmbedder::answering(vectors).with_rerank_boost("corgi");
+        let out = rank_runtime_selected("about my things", &facts, 3, &embedder).await;
+        assert_eq!(
+            out.method,
+            RankMethod::Reranked,
+            "the cross-encoder re-scored the shortlist -> Reranked"
+        );
+        assert!(
+            out.method_status.to_lowercase().contains("re-rank")
+                || out.method_status.to_lowercase().contains("rerank"),
+            "status names the rerank: {}",
+            out.method_status
+        );
+        assert_eq!(out.hits.len(), 2);
+        assert_eq!(
+            out.hits[0].fact.key, "user.pet",
+            "the boosted (corgi) fact is promoted to the top"
+        );
+        assert_eq!(out.hits[1].fact.key, "user.car");
+    }
+
+    #[tokio::test]
+    async fn rerank_fellback_keeps_dense_order_and_method() {
+        // The reranker is ENABLED but falls back (unavailable): the dense neural
+        // order stands and the method stays Embedding — never mislabeled Reranked.
+        let facts = vec![
+            Fact::new("user.car", "blue Subaru Outback"),
+            Fact::new("user.pet", "a corgi named Watson"),
+        ];
+        let vectors = vec![
+            vec![1.0, 0.0], // query parallel to the car
+            vec![1.0, 0.0], // car: cosine 1 -> dense first
+            vec![0.6, 0.8], // pet: cosine 0.6 -> dense second (still positive)
+        ];
+        let embedder = MockEmbedder::answering(vectors).with_rerank_fellback();
+        let out = rank_runtime_selected("about my things", &facts, 3, &embedder).await;
+        assert_eq!(
+            out.method,
+            RankMethod::Embedding,
+            "a fell-back reranker keeps the dense order + Embedding label"
+        );
+        assert_eq!(out.hits[0].fact.key, "user.car", "dense order preserved");
+    }
+
+    #[tokio::test]
+    async fn rerank_disabled_is_byte_for_byte_the_dense_path() {
+        // A mock with rerank DISABLED (trait default) must behave exactly like the
+        // single-stage neural path (method Embedding, dense order).
+        let facts = vec![
+            Fact::new("user.car", "blue Subaru Outback"),
+            Fact::new("user.pet", "a corgi named Watson"),
+        ];
+        let vectors = vec![vec![1.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
+        let embedder = MockEmbedder::answering(vectors); // no .with_rerank_*
+        let out = rank_runtime_selected("about my car", &facts, 3, &embedder).await;
+        assert_eq!(out.method, RankMethod::Embedding);
+        assert_eq!(out.hits[0].fact.key, "user.car");
+    }
+
+    #[tokio::test]
+    async fn rerank_permutation_sorts_by_score_desc_stable() {
+        // The pure permutation helper: boost the middle passage; it must float to
+        // the front, the rest keep their dense order (stable tie-break).
+        let passages = vec![
+            "the user drives a car".to_string(),
+            "the user has a corgi".to_string(),
+            "the user drinks coffee".to_string(),
+        ];
+        let embedder = MockEmbedder::answering(vec![]).with_rerank_boost("corgi");
+        let perm = rerank_permutation("pets", &passages, &embedder)
+            .await
+            .expect("reranker answered -> Some(permutation)");
+        assert_eq!(perm[0], 1, "the boosted (corgi) passage is ranked first");
+        // The two 0-scored passages keep their dense order (stable): 0 before 2.
+        assert_eq!(&perm[1..], &[0, 2]);
+    }
+
+    #[tokio::test]
+    async fn rerank_permutation_is_none_when_disabled_or_trivial() {
+        let passages = vec!["a".to_string(), "b".to_string()];
+        // Disabled reranker -> None (keep dense).
+        assert!(
+            rerank_permutation("q", &passages, &MockEmbedder::answering(vec![]))
+                .await
+                .is_none()
+        );
+        // Trivial shortlist (<2) -> None even when enabled.
+        let one = vec!["only".to_string()];
+        assert!(
+            rerank_permutation("q", &one, &MockEmbedder::answering(vec![]).with_rerank_boost("x"))
+                .await
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn reranked_method_token_and_description_are_honest() {
+        assert_eq!(RankMethod::Reranked.as_str(), "neural-reranked");
+        let d = RankMethod::Reranked.description();
+        assert!(d.contains("cross-encoder"), "names the cross-encoder: {d}");
+        assert!(
+            d.contains("keep the plain embedding order") || d.contains("unavailable"),
+            "states the honest fallback: {d}"
+        );
     }
 
     #[tokio::test]

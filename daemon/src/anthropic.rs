@@ -400,6 +400,34 @@ pub fn debate_gate() -> bool {
     ANSWERS_GATE.get().copied().unwrap_or(ANSWERS_GATE_OFF).5
 }
 
+/// STAGE-TWO retrieval RERANK gate (`[inference].reranker`), captured once at
+/// daemon startup so the recall / doc-search / unified-search paths can decide
+/// whether to run the on-device cross-encoder rerank WITHOUT threading a `&Config`
+/// through every retrieval call site — mirrors [`FORGE_GATE`] / [`ANSWERS_GATE`].
+/// The live [`InferenceEmbedder`] reads it in `rerank_enabled`; when it is on, a
+/// dense top-K is re-scored by the inference server's `rerank` op (a Core ML
+/// cross-encoder) and the order is upgraded to [`crate::recall::RankMethod::Reranked`].
+///
+/// Falls back to `false` when init was never called — any test, or a path that
+/// bypasses startup — so the retrieval paths keep TODAY's single-stage (dense-only)
+/// order when the gate is unset (fail safe to today's behavior). The config DEFAULT
+/// is ON (the measured winner), applied by `init_reranker` at startup.
+static RERANKER_GATE: OnceLock<bool> = OnceLock::new();
+
+/// Wire the stage-two rerank gate from the loaded config. Called once from
+/// `main()` alongside `init_answers`. Idempotent (a lost `set` means the same
+/// value was already installed). Logs nothing sensitive (just the bool).
+pub fn init_reranker(enabled: bool) {
+    let _ = RERANKER_GATE.set(enabled);
+}
+
+/// Whether the stage-two cross-encoder rerank is enabled. Falls back to `false`
+/// (dense-only, today's behavior) when init was never called, so the retrieval
+/// paths fail safe.
+pub fn reranker_enabled() -> bool {
+    RERANKER_GATE.get().copied().unwrap_or(false)
+}
+
 /// Derive the bare agent id (e.g. `darwin`, `friday`) the MCP per-server allowlist
 /// keys on, from the active agent's memory namespace (`agent.<name>`). The cloud
 /// path carries the namespace, not the bare id; MCP's `agent_may_use` wants the
@@ -9185,6 +9213,34 @@ impl crate::recall::Embedder for InferenceEmbedder {
             })
         })
     }
+
+    /// STAGE TWO gate: the daemon's [`RERANKER_GATE`] (`[inference].reranker`,
+    /// ships ON — the measured winner). When on, the retrieval paths re-score their
+    /// dense top-K via [`Self::rerank`]; when off/unset they keep the dense order.
+    fn rerank_enabled(&self) -> bool {
+        reranker_enabled()
+    }
+
+    /// The LIVE stage-two rerank: the inference server's op=rerank (a Core ML
+    /// cross-encoder). Err (server down / no rerank op) or a `fell_back` outcome
+    /// makes the caller KEEP the dense order — honest, never silent. Runtime/MLX-
+    /// gated (not exercised by tests, which inject a mock that uses the trait
+    /// default of "no rerank").
+    fn rerank<'a>(
+        &'a self,
+        query: &'a str,
+        passages: &'a [String],
+    ) -> crate::recall::RerankFuture<'a> {
+        Box::pin(async move {
+            let mut client = crate::inference::InferenceClient::new(self.socket_path.clone());
+            let out = client.rerank(query, passages).await?;
+            Ok(crate::recall::RerankOutcome {
+                scores: out.scores,
+                reranker: out.reranker,
+                fell_back: out.fell_back,
+            })
+        })
+    }
 }
 
 /// The LIVE on-device embedder, boxed for callers outside this module (the
@@ -10795,7 +10851,16 @@ async fn unified_search_tool(
         calendar: Some(calendar_input),
         slack: Some(slack_input),
     };
-    let result = fold(&inputs, k);
+    let mut result = fold(&inputs, k);
+
+    // STAGE TWO (config-gated): re-rank the fused top-K with the on-device cross-
+    // encoder (op=rerank) — the two-stage stack applied across sources. Honest
+    // fallback: reranker off / unavailable -> the blended order stands
+    // (`reranked=false`). Runtime/MLX-gated via the live embedder; the pure `fold`
+    // core is untouched.
+    let (reranked_hits, reranked) =
+        crate::unified_search::rerank_hits(query, result.hits, embedder).await;
+    result.hits = reranked_hits;
 
     // Surface the cited, attributed result + the honest coverage line to the
     // HUD's read-only unified-results panel. Carries only what the persona shows:
@@ -10808,6 +10873,9 @@ async fn unified_search_tool(
         "unified.searched",
         json!({
             "query": query,
+            // Whether the on-device cross-encoder re-ranked the fused top-K (honest:
+            // false when the reranker is off / unavailable and the blended order stood).
+            "reranked": reranked,
             "coverage": {
                 "searched": coverage.searched.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                 "skipped": coverage.skipped.iter().map(|s| json!({

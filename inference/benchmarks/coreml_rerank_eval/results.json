@@ -1,0 +1,92 @@
+{
+  "eval_meta": {
+    "about": "Two-stage retrieval measure-first probe: bge dense (A) vs bge retrieve top-K + Core ML cross-encoder rerank (B). SYNTHETIC-but-representative (Claude-authored labels), directional build/no-build evidence, NOT ground-truth production data.",
+    "corpus_facts": 100,
+    "queries": 36,
+    "relevant_per_query_min": 1,
+    "relevant_per_query_max": 3,
+    "stage_a_embedder": "coreml-bge-small-en-v1.5",
+    "stage_a_model": "BAAI/bge-small-en-v1.5",
+    "stage_b_reranker": "coreml-ms-marco-minilm-l6-v2",
+    "stage_b_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "stage_b_seq": 512,
+    "rerank_depths_K": [
+      20,
+      50
+    ],
+    "compute_units": "ComputeUnit.ALL (ANE-eligible; latency is measured end-to-end, never a claim any op ran on the ANE)",
+    "metric_defs": {
+      "recall@k": "avg over queries of |relevant in top-k| / |relevant|",
+      "success@k": "avg over queries of 1[any relevant in top-k]",
+      "MRR": "mean reciprocal rank of the first relevant fact",
+      "nDCG@10": "avg over queries of DCG@10 / ideal-DCG@10 (binary gain)",
+      "dense_recall@K": "avg over queries of |relevant in dense top-K| / |relevant| \u2014 the ceiling a rerank of depth K can recover to (rerank reorders, never retrieves)"
+    }
+  },
+  "A_dense": {
+    "name": "bge dense cosine over all facts (shipped behavior)",
+    "summary": {
+      "recall@1": 0.8241,
+      "recall@3": 0.9213,
+      "recall@5": 0.9861,
+      "success@1": 0.9444,
+      "success@3": 0.9722,
+      "success@5": 1.0,
+      "MRR": 0.9606,
+      "nDCG@10": 0.9552
+    }
+  },
+  "B_reranked": {
+    "20": {
+      "name": "bge top-20 + cross-encoder rerank",
+      "dense_recall@K": 1.0,
+      "rerank_latency": {
+        "median_ms": 220.65,
+        "p90_ms": 222.68,
+        "per_pair_ms": 11.03
+      },
+      "summary": {
+        "recall@1": 0.8657,
+        "recall@3": 0.9815,
+        "recall@5": 0.9907,
+        "success@1": 0.9722,
+        "success@3": 1.0,
+        "success@5": 1.0,
+        "MRR": 0.9861,
+        "nDCG@10": 0.9841
+      }
+    },
+    "50": {
+      "name": "bge top-50 + cross-encoder rerank",
+      "dense_recall@K": 1.0,
+      "rerank_latency": {
+        "median_ms": 550.07,
+        "p90_ms": 553.91,
+        "per_pair_ms": 11.0
+      },
+      "summary": {
+        "recall@1": 0.8657,
+        "recall@3": 0.9815,
+        "recall@5": 0.9907,
+        "success@1": 0.9722,
+        "success@3": 1.0,
+        "success@5": 1.0,
+        "MRR": 0.9861,
+        "nDCG@10": 0.9841
+      }
+    }
+  },
+  "verdict": {
+    "go": true,
+    "best_K": 20,
+    "deltas_best_minus_A": {
+      "nDCG@10": 0.0289,
+      "recall@1": 0.0416,
+      "recall@3": 0.0602,
+      "recall@5": 0.0046,
+      "MRR": 0.0255
+    },
+    "call": "GO: the cross-encoder rerank MEASURABLY improves ranking (best at K=20); ship it config-gated on top of the bge bi-encoder as the standard two-stage stack.",
+    "honesty": "SYNTHETIC-but-representative eval, directional evidence not a production guarantee. recall@k (k<=K) after rerank is bounded by dense_recall@K. Latency is measured end-to-end under ComputeUnit.ALL; ANE-eligible, never claimed to run on the ANE."
+  }
+}

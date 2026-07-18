@@ -534,6 +534,48 @@ pub fn fold(inputs: &FanoutInputs, k: usize) -> UnifiedResult {
     UnifiedResult { hits, coverage }
 }
 
+/// STAGE TWO for unified search: after [`fold`] has blended + ranked the
+/// cross-source hits, re-score the top shortlist with the on-device cross-encoder
+/// (config-gated) and re-order by it — the two-stage stack applied to the FUSED
+/// candidate set. Returns `(hits, reranked)`; `reranked=false` (the blended order
+/// is kept unchanged) when the reranker is off / unavailable / the shortlist is
+/// trivial, so the caller reports the ranking honestly. Each hit is reranked on
+/// its display text (`title` + `snippet` — the best text a heterogeneous hit
+/// carries; a cloud summary or fact has no fuller body here). The tail below the
+/// bounded shortlist keeps its fused order. Runtime-gated only by the injected
+/// `embedder` (mocks keep the trait default of no rerank), so the pure `fold` core
+/// and its tests are untouched.
+pub async fn rerank_hits(
+    query: &str,
+    mut hits: Vec<UnifiedHit>,
+    embedder: &dyn crate::recall::Embedder,
+) -> (Vec<UnifiedHit>, bool) {
+    if hits.len() < 2 || !embedder.rerank_enabled() {
+        return (hits, false);
+    }
+    let head_n = hits.len().min(crate::recall::DEFAULT_RERANK_K);
+    let passages: Vec<String> = hits[..head_n]
+        .iter()
+        .map(|h| {
+            if h.snippet.trim().is_empty() {
+                h.title.clone()
+            } else {
+                format!("{}\n{}", h.title, h.snippet)
+            }
+        })
+        .collect();
+    match crate::recall::rerank_permutation(query, &passages, embedder).await {
+        Some(perm) => {
+            let tail = hits.split_off(head_n); // `hits` is now the head [0, head_n)
+            let mut reordered: Vec<UnifiedHit> =
+                perm.iter().map(|&i| hits[i].clone()).collect();
+            reordered.extend(tail);
+            (reordered, true)
+        }
+        None => (hits, false),
+    }
+}
+
 /// Blend + rank candidates from all sources into the final hit list. PURE +
 /// deterministic. Per-source relevance is normalized to [0,1] (max-normalization
 /// within each source), recency is normalized across the whole candidate set,

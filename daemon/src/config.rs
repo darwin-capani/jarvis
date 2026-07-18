@@ -523,7 +523,13 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // reported on the wire — the daemon compares that id only by equality).
     // Server-side only (the python server reads it), listed here so a typo under
     // [inference] is still diagnosed and the config-lockstep test stays green.
-    ("inference", &["preload", "speculative", "draft_model", "quant", "embedder"]),
+    // TWO-STAGE RETRIEVAL RERANK: `reranker` ships TRUE (the measured winner) — after
+    // dense bge recall, a Core ML cross-encoder re-scores the top-K (op=rerank) and
+    // recall/doc-search/unified-search re-order by it (RankMethod::Reranked). READ by
+    // BOTH sides: the daemon gates whether to CALL op=rerank (RERANKER_GATE) and the
+    // server gates whether to WARM the cross-encoder at preload. HONEST FALLBACK to
+    // the dense order when the reranker is off / unbuildable (fell_back on the wire).
+    ("inference", &["preload", "speculative", "draft_model", "quant", "embedder", "reranker"]),
     ("self_heal", &["enabled", "mode"]),
     // [forge] — Self-Forge (forge.rs). Same shape and contract as [self_heal]:
     // "mode" is "propose"|"auto" and is listed so it never reads as a typo. Note
@@ -1854,6 +1860,17 @@ pub struct InferenceConfig {
     /// device-gated; the server reports the quant that ACTUALLY loaded.
     #[allow(dead_code)] // shared contract; read by the inference server
     pub quant: String,
+    /// TWO-STAGE RETRIEVAL RERANK master gate. SHIPS ON (`true`) — the MEASURED
+    /// winner on the committed retrieval eval (nDCG@10 0.955->0.984, recall@3
+    /// 0.92->0.98). When on, recall / doc-search / unified-search re-score their
+    /// dense top-K with a Core ML cross-encoder (the inference server's `rerank`
+    /// op) and re-order by it (`RankMethod::Reranked`). READ by BOTH sides: the
+    /// daemon (via `anthropic::init_reranker` -> the `RERANKER_GATE`) decides
+    /// whether to CALL op=rerank, and the inference server decides whether to WARM
+    /// the cross-encoder at preload. HONEST FALLBACK: when off, unbuildable, or the
+    /// server is down, the dense order stands and the method stays `Embedding`
+    /// (never mislabeled). `false` disables the second stage (dense-only retrieval).
+    pub reranker: bool,
 }
 
 impl InferenceConfig {
@@ -1887,6 +1904,10 @@ impl Default for InferenceConfig {
             // "auto" == today's behavior (load the model as configured); an
             // explicit quant is opt-in and device-gated.
             quant: "auto".to_string(),
+            // SHIPS ON: the two-stage rerank is the measured winner. The Core ML
+            // cross-encoder is an HONEST FALLBACK away when ON but unbuildable
+            // (dense order stands). Set false to disable the second stage.
+            reranker: true,
         }
     }
 }
@@ -4996,6 +5017,11 @@ mod tests {
             cfg.inference.quant, "auto",
             "quant MUST ship \"auto\" (== today's behavior, load as configured)"
         );
+        assert!(
+            cfg.inference.reranker,
+            "reranker SHIPS ON (the measured two-stage-rerank winner; honest fallback \
+             to dense order when unavailable)"
+        );
     }
 
     /// #37 + #39: the new [inference] keys are KNOWN (no unknown-key diagnostic)
@@ -5017,6 +5043,22 @@ mod tests {
         assert!(cfg.inference.speculative);
         assert_eq!(cfg.inference.draft_model, "mlx-community/Qwen3-0.6B-4bit");
         assert_eq!(cfg.inference.quant, "int4");
+    }
+
+    /// TWO-STAGE RERANK: `[inference].reranker` is a KNOWN key (no unknown-key
+    /// diagnostic) and round-trips; setting it false disables the second stage.
+    #[test]
+    fn inference_reranker_key_is_known_and_parses() {
+        let raw = r#"
+            [inference]
+            reranker = false
+        "#;
+        let (cfg, issues) = Config::parse(raw);
+        assert!(
+            !issues.iter().any(|i| i.contains("inference")),
+            "[inference].reranker must be KNOWN (no diagnostic): {issues:?}"
+        );
+        assert!(!cfg.inference.reranker, "reranker = false disables the second stage");
     }
 
     /// #39: every allowed quant value validates; an unknown value is REJECTED by

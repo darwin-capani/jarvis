@@ -225,6 +225,15 @@ METHODOLOGY = {
                         "is measured END-TO-END latency, never an ANE-residency "
                         "claim; else the resident-LLM mean-pool forward). The "
                         "results carry the embedder id + dim it measured.",
+    "rerank_latency_ms": "wall-clock milliseconds to rerank one query's dense "
+                         "top-K candidates via op=rerank's Core ML cross-encoder "
+                         "(cross-encoder/ms-marco-MiniLM-L-6-v2, ANE-ELIGIBLE: "
+                         "measured END-TO-END, never an ANE-residency claim), "
+                         "median over the eval queries at K=20 and K=50; the "
+                         "nDCG@10 / recall / MRR are the two-stage A-vs-B ranking "
+                         "quality re-measured over the committed synthetic-but-"
+                         "representative eval (inference/benchmarks/coreml_rerank_"
+                         "eval/) — directional, NOT a production guarantee.",
     "speculative": "decode tok/s with the draft model ON vs OFF on the uncached "
                    "path; the persona-cached path is reported unreachable when "
                    "mlx_lm rejects draft_model together with a prompt_cache.",
@@ -668,6 +677,72 @@ def server_embedder_coreml_id():
     return server.EMBEDDER_COREML
 
 
+def bench_rerank(eng, runs, warmup):
+    """STAGE TWO of the two-stage retrieval stack: op=rerank's Core ML cross-encoder.
+    Records the reranker id + the MEASURED nDCG@10 / recall / MRR (stage A dense vs
+    stage B rerank) AND rerank latency at K=20/50, by RE-RUNNING the committed
+    two-stage probe (inference/benchmarks/coreml_rerank_eval/eval_rerank.py) over the
+    same synthetic-but-representative eval — so the baseline never carries a stale
+    copy of those numbers. HONEST: if the cross-encoder can't build/load, this is
+    available=false (op=rerank would report fell_back and the daemon keep dense
+    order). ANE-ELIGIBLE: latency is measured end-to-end, never an ANE-residency
+    claim. `runs`/`warmup` are unused (the probe measures per-query over the eval);
+    kept for the uniform section signature."""
+    del runs, warmup
+    sys.path.insert(0, str(HERE))  # inference/ on path for coreml_rerank / eval_rerank
+
+    if not eng.reranker_enabled:
+        # The second stage is config-disabled — honest, not a failure.
+        return {"available": False, "enabled": False,
+                "reason": "[inference].reranker is false (dense-only retrieval)"}
+
+    from coreml_rerank import CoreMLRerankerUnavailable
+
+    try:
+        emb = eng._ensure_coreml_embedder()   # stage A (shipped bge bi-encoder)
+        rr = eng._ensure_coreml_reranker()    # stage B (Core ML cross-encoder)
+    except Exception as exc:  # CoreMLEmbedderUnavailable / CoreMLRerankerUnavailable
+        kind = ("reranker" if isinstance(exc, CoreMLRerankerUnavailable)
+                else "embedder")
+        return {"available": False, "enabled": True,
+                "reason": f"Core ML {kind} unavailable: {exc}",
+                "fell_back": True}
+
+    probe_dir = str(HERE / "benchmarks" / "coreml_rerank_eval")
+    sys.path.insert(0, probe_dir)
+    import eval_rerank
+
+    results = eval_rerank.probe(emb, rr)
+    ks = results["eval_meta"]["rerank_depths_K"]
+    return {
+        "available": True,
+        "enabled": True,
+        "fell_back": False,
+        "reranker": results["eval_meta"]["stage_b_reranker"],
+        "model": results["eval_meta"]["stage_b_model"],
+        "seq": results["eval_meta"]["stage_b_seq"],
+        "eval": {
+            "path": "inference/benchmarks/coreml_rerank_eval/",
+            "corpus_facts": results["eval_meta"]["corpus_facts"],
+            "queries": results["eval_meta"]["queries"],
+            "synthetic_note": ("SYNTHETIC-but-representative (Claude-authored labels)"
+                               " — directional, NOT a production guarantee"),
+        },
+        # Ranking QUALITY: stage A (dense) vs stage B (rerank) at each K.
+        "quality": {
+            "A_dense": results["A_dense"]["summary"],
+            "B_reranked": {str(k): results["B_reranked"][str(k)]["summary"]
+                           for k in ks},
+            "dense_recall_ceiling": {str(k): results["B_reranked"][str(k)]["dense_recall@K"]
+                                     for k in ks},
+        },
+        # LATENCY: median over the eval queries at each rerank depth K.
+        "rerank_latency_ms": {str(k): results["B_reranked"][str(k)]["rerank_latency"]
+                              for k in ks},
+        "verdict": results["verdict"],
+    }
+
+
 def _mx():
     import mlx.core as mx
     return mx
@@ -713,6 +788,7 @@ def run_all(args):
         "stt": lambda: bench_stt(eng, args.runs, args.warmup),
         "tts": lambda: bench_tts(eng, args.runs, args.warmup),
         "embed": lambda: bench_embed(eng, args.runs, args.warmup),
+        "rerank": lambda: bench_rerank(eng, args.runs, args.warmup),
     }
     for name, fn in sections.items():
         if name in skip:
@@ -745,7 +821,7 @@ def main(argv=None):
                    help="decode length for the representative + speculative runs")
     p.add_argument("--long-max-tokens", dest="long_max_tokens", type=int, default=64,
                    help="decode length for the long-context run")
-    p.add_argument("--skip", default="", help="comma list: llm,speculative,stt,tts,embed")
+    p.add_argument("--skip", default="", help="comma list: llm,speculative,stt,tts,embed,rerank")
     p.add_argument("--json", action="store_true", help="print the result JSON to stdout")
     p.add_argument("--out", default=None, help="write the result JSON to this path")
     args = p.parse_args(argv)

@@ -6,7 +6,7 @@ state/ipc/inference.sock per the shared contract:
 
   Request:  {"id": str,
              "op": "transcribe"|"classify"|"generate"|"extract_facts"|"speak"
-                   |"converse"|"consolidate"|"embed"|"clone_voice"
+                   |"converse"|"consolidate"|"embed"|"rerank"|"clone_voice"
                    |"describe_image"|"generate_image",
              "path"?: str, "text"?: str, "max_tokens"?: int, "voice"?: str,
              op=speak may also carry the OPTIONAL ElevenLabs cloud voice tier:
@@ -80,6 +80,14 @@ state/ipc/inference.sock per the shared contract:
              SPACE and refuse cross-space comparison; fell_back is true iff the
              Core ML backend was configured but unavailable, so this is the honest
              mean-pool fallback),
+             "scores"?: [float] + "reranker"?: str + "fell_back"?: bool (op=rerank
+             WIRE CONTRACT — STAGE TWO of the two-stage retrieval stack: one
+             cross-encoder relevance score per passage in INPUT order (higher = more
+             relevant; the daemon re-orders its dense top-K by these), the reranker
+             model id "coreml-ms-marco-minilm-l6-v2" that produced them (or "" when
+             fell_back — no model scored), and fell_back true iff the reranker was
+             configured but unavailable, so the scores are order-preserving and the
+             daemon keeps its dense order),
              "model"?: str (op=describe_image: the VLM id used; op=generate_image:
              the image model id used),
              "size"?: int, "steps"?: int, "seed"?: int (op=generate_image: the
@@ -1521,6 +1529,38 @@ DEFAULT_EMBEDDER = EMBEDDER_COREML
 # coreml_embed.DIM; kept here so the pure selection logic needs no heavy import.
 COREML_EMBED_DIM = 384
 
+# ---- op=rerank BACKEND ([inference].reranker) -------------------------------
+# STAGE TWO of the two-stage retrieval stack: the daemon recalls the top-K
+# candidates by dense bge cosine (op=embed, above), then op=rerank RE-SCORES those
+# K with a Core ML cross-encoder (cross-encoder/ms-marco-MiniLM-L-6-v2 — full
+# query x passage attention, ONE relevance logit per pair; see
+# inference/coreml_rerank.py) and the daemon re-orders by that score. This is the
+# standard SOTA RAG stack (cheap recall -> precise rerank).
+#
+# MEASURE-FIRST: it ships ON because the two rankings were MEASURED head to head on
+# the committed synthetic-but-representative retrieval eval and the rerank WON on
+# every metric (nDCG@10 0.955->0.984, recall@1 0.82->0.87, recall@3 0.92->0.98,
+# MRR 0.96->0.99; probe + results under inference/benchmarks/coreml_rerank_eval/).
+# Same discipline that DROPPED speculative decoding + quantized-KV when they
+# measured as losses — a rerank that did not win would be a NO-GO.
+#
+# HONEST FALLBACK: if the cross-encoder cannot be built/loaded, op=rerank reports
+# fell_back=True (and an EMPTY reranker id — no model produced the order) and the
+# daemon keeps the dense retrieval order, surfaced + logged, never silently.
+# `[inference].reranker` (bool, ships True) gates it: the DAEMON reads it (config.rs
+# InferenceConfig) to decide whether to CALL op=rerank at all, and the server reads
+# it (below) to decide whether to WARM the cross-encoder at preload.
+RERANKER_COREML = "coreml-ms-marco-minilm-l6-v2"
+# Ships ON — the measured winner. False disables the second stage (dense order
+# only). The Core ML cross-encoder is still an HONEST FALLBACK away when ON but
+# unbuildable.
+DEFAULT_RERANKER_ENABLED = True
+# Hard cap on how many candidate passages one op=rerank request may carry. The
+# daemon reranks a bounded top-K (K is small: 20/50), so this only guards a
+# pathological caller from enqueueing an unbounded number of forwards. Mirrors
+# coreml_rerank.MAX_PASSAGES; surfaced as an error (never a silent clamp).
+RERANK_MAX_PASSAGES = 256
+
 
 def validate_embedder(value):
     """PURE. Return `value` if it is a known [inference].embedder CONFIG value,
@@ -2281,6 +2321,12 @@ def load_config():
         # DEFAULT_EMBEDDER + warn). The Python server is the sole VALUE validator;
         # the daemon only lists the key in config.rs KNOWN_KEYS (typo detection).
         "embedder": DEFAULT_EMBEDDER,
+        # op=rerank second stage (SHIPS ON — the measured winner). Gates whether the
+        # server WARMS the Core ML cross-encoder at preload; the daemon reads the
+        # same [inference].reranker key to decide whether to CALL op=rerank. HONEST
+        # FALLBACK to dense order if the model can't build/load (fell_back on the
+        # wire). A non-boolean value keeps the default (parsed below like preload).
+        "reranker": DEFAULT_RERANKER_ENABLED,
     }
     try:
         import tomllib  # stdlib on 3.11+
@@ -2311,6 +2357,8 @@ def load_config():
         # #37 SPECULATIVE DECODING (OFF/neutral): the master gate + the draft id.
         ("speculative", inference, "speculative", bool),
         ("draft_model", inference, "draft_model", str),
+        # RERANK second stage (SHIPS ON): warm/gate the Core ML cross-encoder.
+        ("reranker", inference, "reranker", bool),
         # [image].model — the operator's on-device diffusion id. Empty/unset is
         # coerced to DEFAULT_IMAGE_MODEL after the loop; the op still reports
         # image_model_unavailable when the package/weights are absent.
@@ -2761,6 +2809,19 @@ class InferenceEngine:
         # (expensive) conversion on every embed call — we serve the 4B fallback.
         self._coreml_embed_unavailable = False
         self._embed_lifecycle_lock = threading.Lock()
+        # op=rerank second stage (SHIPS ON — the measured winner). Warms the Core ML
+        # cross-encoder at preload when enabled; op=rerank lazy-builds it otherwise
+        # (convert-on-first-use, cached under the HF cache root, same discipline as
+        # the embedder). If it cannot be built/loaded, op=rerank reports fell_back
+        # and the daemon keeps the dense order — never silent. Its lifecycle lock is
+        # separate from the MLX GPU lock, so reranking runs independently of
+        # generation.
+        self.reranker_enabled = bool(settings.get("reranker", DEFAULT_RERANKER_ENABLED))
+        self._coreml_reranker = None
+        # Set once a build/load attempt hard-fails, so we don't retry the
+        # (expensive) conversion on every rerank call — we report fell_back.
+        self._coreml_rerank_unavailable = False
+        self._rerank_lifecycle_lock = threading.Lock()
         engine = (settings.get("engine") or DEFAULT_TTS_ENGINE).strip().lower()
         if engine not in TTS_ENGINE_DEFAULTS:
             log.warning(
@@ -3231,6 +3292,36 @@ class InferenceEngine:
                 log.exception(
                     "preload: Core ML embedder warm failed; op=embed will fall "
                     "back to the mean-pool path",
+                )
+        # op=rerank Core ML cross-encoder: convert-on-first-use is HEAVY (a one-time
+        # torch->Core ML conversion), same as the embedder — so warm it EAGERLY here
+        # when reranking is enabled, so the first real op=rerank never pays conversion
+        # inside the daemon's request timeout (which would blow the timeout and make
+        # the daemon fall back to dense order for that window). Its lifecycle lock is
+        # independent of the MLX GPU lock, so this runs OUTSIDE self._lock. A failure
+        # is the honest fallback state: log + mark unavailable so op=rerank reports
+        # fell_back and the daemon keeps dense order (never a broken hang).
+        if self.reranker_enabled and not self._coreml_rerank_unavailable:
+            try:
+                from coreml_rerank import CoreMLRerankerUnavailable
+
+                t0 = time.perf_counter()
+                self._ensure_coreml_reranker()  # convert-on-first-use / validate-load
+                log.info(
+                    "preload: Core ML reranker %s ready (%.1fs)",
+                    RERANKER_COREML, time.perf_counter() - t0,
+                )
+            except CoreMLRerankerUnavailable as e:
+                self._coreml_rerank_unavailable = True
+                log.warning(
+                    "preload: Core ML reranker unavailable (%s); op=rerank will "
+                    "report fell_back and the daemon will keep dense order", e,
+                )
+            except Exception:
+                self._coreml_rerank_unavailable = True
+                log.exception(
+                    "preload: Core ML reranker warm failed; op=rerank will report "
+                    "fell_back and the daemon will keep dense order",
                 )
         try:
             t0 = time.perf_counter()
@@ -4060,6 +4151,85 @@ class InferenceEngine:
         need the vector-space identity use [`embed_with_meta`]; op=embed on the
         wire carries the embedder id + dim from there."""
         return self.embed_with_meta(texts)[0]
+
+    def _ensure_coreml_reranker(self):
+        """Lazy-construct + return the Core ML cross-encoder reranker (convert-on-
+        first-use, cached under the HF cache root). Raises
+        coreml_rerank.CoreMLRerankerUnavailable if the deps/model cannot be built or
+        loaded — the caller catches it, marks the backend unavailable (no retry
+        storm), and reports the honest fallback. Guarded by
+        _rerank_lifecycle_lock so two threads never convert at once."""
+        from coreml_rerank import CoreMLReranker
+
+        with self._rerank_lifecycle_lock:
+            if self._coreml_reranker is None:
+                self._coreml_reranker = CoreMLReranker()
+            rr = self._coreml_reranker
+        rr.ensure_loaded()  # convert-on-first-use / load (own lock); may raise
+        return rr
+
+    def rerank_with_meta(self, query, passages):
+        """STAGE TWO of the two-stage retrieval stack. Return
+        (scores, reranker_id, fell_back) for op=rerank: one cross-encoder relevance
+        logit per passage (higher = more relevant; the CALLER re-orders), scored
+        against `query` with full query x passage attention by the Core ML
+        cross-encoder (RERANKER_COREML). The daemon calls this on the dense top-K it
+        just retrieved and re-orders that shortlist by the returned scores.
+
+        HONEST FALLBACK: if the cross-encoder cannot be built/loaded, this reports
+        fell_back=True with an EMPTY reranker id (no model produced an order) and
+        scores that PRESERVE the input order (descending), so a caller that sorts
+        gets the dense order back unchanged and the daemon keeps dense order — never
+        silently. Once a build/load hard-fails it is not retried (no conversion storm).
+
+        `query` is a string; `passages` a list of strings, capped at
+        RERANK_MAX_PASSAGES and each pair length-capped at coreml_rerank.SEQ tokens
+        (the passage is truncated first, surfaced via a throttled server-side warn).
+        Empty passage list -> ([], RERANKER_COREML, False). Scores are finite
+        (NaN/Inf scrubbed)."""
+        if not isinstance(query, str):
+            raise ValueError("'query' must be a string for op=rerank")
+        if not isinstance(passages, list):
+            raise ValueError("'passages' must be a list of strings for op=rerank")
+        if len(passages) > RERANK_MAX_PASSAGES:
+            raise ValueError(
+                f"op=rerank batch of {len(passages)} passages exceeds the "
+                f"{RERANK_MAX_PASSAGES} cap"
+            )
+        for p in passages:
+            if not isinstance(p, str):
+                raise ValueError("'passages' entries must be strings for op=rerank")
+        if not passages:
+            # Nothing to score; a real (non-fallback) empty result.
+            return ([], RERANKER_COREML, False)
+
+        if not self._coreml_rerank_unavailable:
+            from coreml_rerank import CoreMLRerankerUnavailable
+
+            try:
+                rr = self._ensure_coreml_reranker()
+                scores = rr.rerank(query, passages)  # already scrubbed finite
+                return (scores, RERANKER_COREML, False)
+            except CoreMLRerankerUnavailable as e:
+                self._coreml_rerank_unavailable = True
+                log.warning(
+                    "Core ML reranker unavailable (%s); op=rerank falling back to "
+                    "dense order (fell_back)", e,
+                )
+
+        # HONEST FALLBACK: order-preserving descending scores + empty reranker id.
+        # The daemon keys on fell_back and keeps its dense order regardless; these
+        # scores make a naive re-sort a no-op too.
+        n = len(passages)
+        scores = [float(n - i) for i in range(n)]
+        return (scores, "", True)
+
+    def rerank(self, query, passages):
+        """Back-compat wrapper: return just the list of relevance SCORES for
+        (`query`, `passages`). Callers that also need the reranker identity + the
+        honest-fallback flag use [`rerank_with_meta`]; op=rerank on the wire carries
+        the reranker id + fell_back from there."""
+        return self.rerank_with_meta(query, passages)[0]
 
     # -- on-device vision-language model (op=describe_image) ------------
     # _ensure_vlm must be called with self._lock held.
@@ -6347,6 +6517,49 @@ class InferenceServer:
                     "vectors": vectors,
                     "embedder": embedder_id,
                     "dim": dim,
+                    "fell_back": fell_back,
+                    "latency_ms": latency_ms(),
+                }
+
+            if op == "rerank":
+                # STAGE TWO of the two-stage retrieval stack: re-score the daemon's
+                # dense top-K candidates with the Core ML cross-encoder and return one
+                # relevance logit per passage (the daemon re-orders by these). READ-
+                # ONLY / benign — no actuation, no writes.
+                query = req.get("query")
+                if query is None:
+                    raise ValueError("'query' is required for op=rerank")
+                if not isinstance(query, str):
+                    raise ValueError("'query' must be a string for op=rerank")
+                passages = req.get("passages")
+                if passages is None:
+                    raise ValueError("'passages' is required for op=rerank")
+                if not isinstance(passages, list):
+                    raise ValueError("'passages' must be a list of strings for op=rerank")
+                scores, reranker_id, fell_back = await asyncio.to_thread(
+                    self.engine.rerank_with_meta, query, passages
+                )
+                # ==== op=rerank WIRE CONTRACT (consumed by daemon retrieval) ====
+                #   "scores": one relevance score per passage, in INPUT order (higher
+                #       = more relevant). The daemon re-orders its dense shortlist by
+                #       these. On the honest fallback the scores are order-PRESERVING
+                #       (descending), so a re-sort is a no-op.
+                #   "reranker": the cross-encoder model id that produced the scores
+                #       ("coreml-ms-marco-minilm-l6-v2"), or "" when fell_back (no
+                #       model scored — the daemon keeps its dense order). Opaque
+                #       downstream (carried verbatim for the HUD / which-order-ran
+                #       telemetry).
+                #   "fell_back": advisory bool — true iff the reranker was CONFIGURED
+                #       but unavailable, so this response is the honest dense-order
+                #       fallback. The daemon keeps its dense order and labels the
+                #       ranking as un-reranked.
+                # BACKWARD-SAFE: additive fields on an ok response; an old daemon that
+                # never sends op=rerank never sees this path.
+                return {
+                    "id": rid,
+                    "ok": True,
+                    "scores": scores,
+                    "reranker": reranker_id,
                     "fell_back": fell_back,
                     "latency_ms": latency_ms(),
                 }
