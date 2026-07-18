@@ -450,22 +450,24 @@ pub struct ConsolidateOutcome {
 /// One op=embed round trip: the vectors PLUS the vector-space metadata the
 /// server reports alongside them (see the "op=embed WIRE CONTRACT" comment in
 /// inference/server.py). `embedder`/`dim` are `None` on an old server that
-/// predates the metadata — such a server embeds via the only backend that ever
-/// existed (the legacy 4B mean-pool path), which is exactly how docsearch keys
-/// a metadata-less batch.
+/// predates the metadata; a persisting caller (docsearch) keys such a
+/// metadata-less batch to its own opaque placeholder — it does NOT assume the
+/// batch is any particular backend, since ids are opaque + model-derived.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmbedOutcome {
     /// One L2-normalized vector per input text, in input order.
     pub vectors: Vec<Vec<f64>>,
-    /// The stable id of the backend that ACTUALLY produced `vectors` — exactly
-    /// "coreml-bge-small-en-v1.5" or "llm-qwen3-4b-meanpool"; `None` on an old
-    /// server (necessarily the legacy mean-pool space).
+    /// The OPAQUE, model-accurate space-id string the ACTIVE backend reports
+    /// (e.g. the Core ML bge id, or a model-derived mean-pool id — a model swap
+    /// changes it). Consumers compare it ONLY by equality, never interpreting a
+    /// value. `None` on an old server that predates the metadata.
     pub embedder: Option<String>,
-    /// The vector dimension (384 or 2560); `None` on an old server, and null on
-    /// the wire only for an empty batch of the legacy path.
+    /// The vector dimension the active backend produces; `None` on an old
+    /// server, and null on the wire only for an empty batch of the mean-pool
+    /// path.
     pub dim: Option<u64>,
     /// Advisory: the Core ML backend was configured but unavailable, so this is
-    /// the server's honest 4B fallback. `false` when absent (old servers).
+    /// the server's honest mean-pool fallback. `false` when absent (old servers).
     pub fell_back: bool,
 }
 
@@ -499,25 +501,25 @@ struct Response {
     /// Absent on old servers (they reject op=embed before producing this).
     #[serde(default)]
     vectors: Option<Vec<Vec<f64>>>,
-    /// embed only: the STABLE id of the backend that ACTUALLY produced
-    /// `vectors` — exactly "coreml-bge-small-en-v1.5" (the Core ML bge
-    /// sentence-embedder path, 384-dim) or "llm-qwen3-4b-meanpool" (the legacy
-    /// 4B mean-pool path, 2560-dim). This is the VECTOR-SPACE key: vectors from
+    /// embed only: the OPAQUE, model-accurate space-id string the ACTIVE
+    /// backend reports (e.g. the Core ML bge id, or a model-derived mean-pool
+    /// id — a model swap changes it). This is the VECTOR-SPACE key: vectors from
     /// different backends live in different spaces and must never be
-    /// cosine-compared, so docsearch stamps this id on its persisted index.
-    /// Absent on old servers (they predate the metadata and embed via the only
-    /// backend that ever existed, the 4B mean-pool) — deserializes as None.
+    /// cosine-compared, so docsearch stamps this id on its persisted index and
+    /// compares it ONLY by equality, never interpreting a value. Absent on old
+    /// servers (they predate the metadata) — deserializes as None.
     #[serde(default)]
     embedder: Option<String>,
-    /// embed only: the integer vector dimension (384 or 2560). Per the server's
-    /// wire contract it is null ONLY on an empty batch of the legacy path
-    /// (nothing to index); also absent on old servers — deserializes as None.
+    /// embed only: the integer vector dimension the active backend produces. Per
+    /// the server's wire contract it is null ONLY on an empty batch of the
+    /// mean-pool path (nothing to index); also absent on old servers —
+    /// deserializes as None.
     #[serde(default)]
     dim: Option<u64>,
     /// embed only, ADVISORY: true iff the Core ML embedder was CONFIGURED but
-    /// unavailable, so this response is the honest 4B fallback (`embedder` is
-    /// then "llm-qwen3-4b-meanpool"). Not needed to key the space (`embedder`
-    /// already does); it lets the daemon/HUD surface the degraded state. Absent
+    /// unavailable, so this response is the honest mean-pool fallback. Not
+    /// needed to key the space (`embedder` already does); it lets the daemon/HUD
+    /// surface the degraded state. Absent
     /// on old servers — deserializes as None.
     #[serde(default)]
     fell_back: Option<bool>,
@@ -1326,13 +1328,14 @@ impl InferenceClient {
 
     /// On-device retrieval embeddings WITH the vector-space metadata: hand the
     /// server a batch of strings and get back one L2-normalized vector per
-    /// input, in the SAME ORDER, plus WHICH backend produced them. The backend
-    /// is the server's `[inference].embedder` selection — the Core ML bge
-    /// sentence embedder by default (384-dim), or the legacy 4B mean-pool path
-    /// (2560-dim) by choice or on the server's honest fallback — and the
-    /// response names whichever ACTUALLY ran, so a caller that PERSISTS vectors
-    /// (docsearch) can stamp its store's vector space and refuse a meaningless
-    /// cross-space cosine. When the inference server is down OR predates the
+    /// input, in the SAME ORDER, plus the OPAQUE space-id of WHICH backend
+    /// produced them. The backend is the server's `[inference].embedder`
+    /// selection — the Core ML bge sentence embedder by default, or a mean-pool
+    /// path by choice or on the server's honest fallback — and the response
+    /// names whichever ACTUALLY ran with its opaque, model-accurate id, so a
+    /// caller that PERSISTS vectors (docsearch) can stamp its store's vector
+    /// space and refuse a meaningless cross-space cosine. When the inference
+    /// server is down OR predates the
     /// embed op, this returns Err (unknown op / socket unavailable) and the
     /// caller falls back to lexical BM25. NOT exercised by any test (the call
     /// is runtime/MLX-gated); the ranking LOGIC is unit-tested with injected
@@ -2632,8 +2635,8 @@ mod tests {
 
         // A non-embed response (or an old server) carries no vectors field —
         // and no space metadata: an OLD server predates the metadata entirely,
-        // so every field deserializes as None (the daemon then keys the batch
-        // as the legacy mean-pool space, the only backend such a server has).
+        // so every field deserializes as None (a persisting caller then keys
+        // the batch to its own opaque placeholder, never assuming a backend).
         let without = serde_json::from_str::<Response>(
             r#"{"id":"req-1","ok":true,"text":"hi","latency_ms":3}"#,
         )
@@ -2643,15 +2646,17 @@ mod tests {
         assert!(without.dim.is_none());
         assert!(without.fell_back.is_none());
 
-        // The legacy path's honest-fallback shape: mean-pool id + fell_back
-        // true, dim null on an empty batch — all representable.
+        // The mean-pool honest-fallback shape: an OPAQUE model-derived id +
+        // fell_back true, dim null on an empty batch — all representable. The id
+        // is treated as an opaque equality token, so the exact string is not
+        // load-bearing here beyond round-tripping intact.
         let fallback = serde_json::from_str::<Response>(
             r#"{"id":"req-2","ok":true,"vectors":[],
-                "embedder":"llm-qwen3-4b-meanpool","dim":null,"fell_back":true,
+                "embedder":"llm-meanpool:qwen3-4b","dim":null,"fell_back":true,
                 "latency_ms":2}"#,
         )
         .unwrap();
-        assert_eq!(fallback.embedder.as_deref(), Some("llm-qwen3-4b-meanpool"));
+        assert_eq!(fallback.embedder.as_deref(), Some("llm-meanpool:qwen3-4b"));
         assert!(fallback.dim.is_none());
         assert_eq!(fallback.fell_back, Some(true));
     }

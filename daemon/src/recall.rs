@@ -502,13 +502,14 @@ pub struct RankedRecall {
 pub trait Embedder: Send + Sync {
     fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a>;
 
-    /// SPACE-AWARE embed: the vectors PLUS which embedder (vector space)
+    /// SPACE-AWARE embed: the vectors PLUS the OPAQUE space-id of which embedder
     /// produced them, so a caller that PERSISTS vectors (docsearch) can stamp
     /// its store's space and refuse a meaningless cross-space cosine. The
     /// provided default delegates to [`Self::embed`] and reports NO metadata
-    /// (`embedder: None`) — exactly what an old inference server sends, which
-    /// docsearch keys as the legacy 4B mean-pool space (the only backend that
-    /// predates the metadata). The live inference-socket embedder
+    /// (`embedder: None`) — exactly what an old inference server sends. A
+    /// persisting caller keys such a metadata-less batch to its OWN opaque
+    /// placeholder; it does NOT assume the batch is any particular backend
+    /// (ids are opaque + model-derived). The live inference-socket embedder
     /// (anthropic.rs) overrides this with the real op=embed metadata; mocks
     /// and callers that only need `embed` keep compiling and behave as before.
     fn embed_with_space<'a>(&'a self, texts: &'a [String]) -> EmbedSpaceFuture<'a> {
@@ -533,25 +534,24 @@ pub type EmbedFuture<'a> =
 pub type EmbedSpaceFuture<'a> =
     std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<EmbeddedBatch>> + Send + 'a>>;
 
-/// One space-aware embed batch: the vectors plus WHICH embedder (vector space)
-/// produced them. Mirrors [`crate::inference::EmbedOutcome`] — kept as its own
-/// struct so trait mocks build it directly without touching the socket client.
-/// `embedder`/`dim` are `None` when the response predates the op=embed space
-/// metadata; such a response is necessarily the legacy 4B mean-pool backend
-/// (the only embedder that existed before the metadata shipped), and docsearch
-/// keys it as exactly that.
+/// One space-aware embed batch: the vectors plus the OPAQUE space-id of which
+/// embedder produced them. Mirrors [`crate::inference::EmbedOutcome`] — kept as
+/// its own struct so trait mocks build it directly without touching the socket
+/// client. `embedder`/`dim` are `None` when the response predates the op=embed
+/// space metadata; a persisting caller keys such a batch to its own opaque
+/// placeholder rather than assuming a backend (ids are opaque + model-derived).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmbeddedBatch {
     /// One L2-normalized vector per input text, in input order.
     pub vectors: Vec<Vec<f64>>,
-    /// The stable id of the backend that produced `vectors` (exactly
-    /// "coreml-bge-small-en-v1.5" or "llm-qwen3-4b-meanpool"), or `None` on a
-    /// metadata-less old server.
+    /// The OPAQUE, model-accurate space-id string the backend reports (e.g. the
+    /// Core ML bge id, or a model-derived mean-pool id), or `None` on a
+    /// metadata-less old server. Compared only by equality, never interpreted.
     pub embedder: Option<String>,
-    /// The vector dimension (384 or 2560); `None` on an old server or an empty
-    /// legacy batch.
+    /// The vector dimension the backend produces; `None` on an old server or an
+    /// empty batch.
     pub dim: Option<u64>,
-    /// Advisory: the server fell back to the legacy backend although the Core
+    /// Advisory: the server fell back to the mean-pool backend although the Core
     /// ML one was configured. `false` when absent.
     pub fell_back: bool,
 }

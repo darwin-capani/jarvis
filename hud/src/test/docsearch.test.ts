@@ -212,8 +212,8 @@ describe("parseDocSearchEmbedder (defensive, claims nothing when absent)", () =>
     expect(parseDocSearchEmbedder({ embedder: "coreml-bge-small-en-v1.5" })).toBe(
       "coreml-bge-small-en-v1.5",
     );
-    expect(parseDocSearchEmbedder({ embedder: "llm-qwen3-4b-meanpool" })).toBe(
-      "llm-qwen3-4b-meanpool",
+    expect(parseDocSearchEmbedder({ embedder: "llm-meanpool:qwen3-4b" })).toBe(
+      "llm-meanpool:qwen3-4b",
     );
   });
 
@@ -262,13 +262,13 @@ describe("docsearch reducer", () => {
         {
           pdfjail_available: true,
           spotlight_available: false,
-          embedder: "llm-qwen3-4b-meanpool",
+          embedder: "llm-meanpool:qwen3-4b",
           reindex_needed: true,
         },
         "system",
       ),
     );
-    expect(s.docSearchEmbedder).toBe("llm-qwen3-4b-meanpool");
+    expect(s.docSearchEmbedder).toBe("llm-meanpool:qwen3-4b");
     expect(s.docSearchReindexNeeded).toBe(true);
     // A reindex under the active embedder clears the mismatch on the next
     // frame — never a sticky stale warning.
@@ -427,13 +427,13 @@ describe("DocSearchPanel (cited, honest, review-only)", () => {
       null,
       null,
       true,
-      "llm-qwen3-4b-meanpool",
+      "llm-meanpool:qwen3-4b",
     );
     expect(html).toContain("INDEX: OLD EMBEDDER");
     expect(html).toContain("docsearch-pill stale-space");
     // The tooltip + note name the stamp, the honest degradation (BM25, never a
     // cross-space cosine), and the exact spoken recovery command.
-    expect(html).toContain("llm-qwen3-4b-meanpool");
+    expect(html).toContain("llm-meanpool:qwen3-4b");
     expect(html).toMatch(/keyword \(BM25\) ranking/);
     expect(html).toContain("index my documents");
   });
@@ -442,6 +442,24 @@ describe("DocSearchPanel (cited, honest, review-only)", () => {
     const html = render(parseDocIndexStatus(indexedNeural), null, null, null, true, null);
     expect(html).toContain("INDEX: OLD EMBEDDER");
     expect(html).not.toContain("(null)");
+  });
+
+  it("shows the OLD-EMBEDDER pill for a PRE-STAMP index (unknown-space sentinel stamp)", () => {
+    // A pre-stamp index of unverifiable origin: the daemon stamps it with the
+    // reserved sentinel and reports reindex_needed. The panel treats the stamp
+    // as an opaque string — the pill fires and the sentinel shows verbatim, and
+    // the copy honestly says "different or unverifiable" embedder.
+    const html = render(
+      parseDocIndexStatus(indexedNeural),
+      null,
+      null,
+      null,
+      true,
+      "unknown-pre-tag",
+    );
+    expect(html).toContain("INDEX: OLD EMBEDDER");
+    expect(html).toContain("unknown-pre-tag");
+    expect(html).toMatch(/different or unverifiable on-device embedder/);
   });
 
   it("raises no OLD-EMBEDDER warning when the daemon reports none (older daemons / matching space)", () => {

@@ -40,8 +40,9 @@ import Frame from "./Frame";
  * `pdfJail` / `spotlight` / `reindexNeeded` from a STRICT `docsearch.status`
  * parse (only a
  * literal `true` claims the jail is armed / the READ-ONLY Spotlight candidate
- * bridge is answering / the index was built by a different embedder than the
- * active one), so this component can trust the fields it is handed.
+ * bridge is answering / the index needs a reindex because its vectors are
+ * unusable under the active embedder — a different OR unverifiable one), so
+ * this component can trust the fields it is handed.
  */
 export default function DocSearchPanel({
   index,
@@ -191,17 +192,19 @@ function IndexStatusRow({
         {/* The VECTOR-SPACE guard (docsearch.status reindex_needed, same
             precedent as the pdfjail pill: a degraded state is never silent).
             Rendered ONLY on a literal daemon-reported `true`: the daemon's most
-            recent space comparison found the stored index vectors were produced
-            by a DIFFERENT embedder than the active one, so searches degrade to
-            keyword BM25 — the daemon never computes cosine across embedding
-            spaces (it would be meaningless) — until a reindex rebuilds and
-            re-stamps the store. No pill covers: an older daemon (one embedder —
-            no mismatch possible), no space comparison yet, and a matching
-            space. */}
+            recent space comparison found the stored index vectors UNUSABLE for
+            neural ranking under the active embedder — EITHER the index was built
+            by a DIFFERENT embedder, OR it is a pre-stamp index of unverifiable
+            origin (keyed to a reserved unknown-space sentinel that never matches
+            a live embedder). Either way searches degrade to keyword BM25 — the
+            daemon never computes cosine across embedding spaces (it would be
+            meaningless) — until a reindex rebuilds and re-stamps the store. No
+            pill covers: an older daemon (no space guard at all), no space
+            comparison yet, and a matching space. */}
         {reindexNeeded && (
           <span
             className="docsearch-pill stale-space"
-            title={`the index's stored vectors were produced by a different on-device embedder${
+            title={`the index's stored vectors were produced by a different or unverifiable on-device embedder${
               storeEmbedder !== null ? ` (${storeEmbedder})` : ""
             } than the one now active — cosine between different embedders' vector spaces is meaningless, so searches fall back to keyword (BM25) ranking; say "index my documents" to rebuild the index under the active embedder and restore neural search`}
           >
@@ -223,9 +226,9 @@ function IndexStatusRow({
       )}
       {reindexNeeded && (
         <div className="docsearch-note dim-note">
-          This index was built by a different on-device embedder than the one now
-          active, so searches use keyword (BM25) ranking — vectors from different
-          embedders are never compared. Say{" "}
+          This index was built by a different or unverifiable on-device embedder
+          than the one now active, so searches use keyword (BM25) ranking —
+          vectors from different embedders are never compared. Say{" "}
           <b>&ldquo;index my documents&rdquo;</b> to rebuild it under the active
           embedder and restore neural search.
         </div>

@@ -518,8 +518,9 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // QUANTIZATION (#39): `quant` ships "auto" (== today's behavior; validated against
     // InferenceConfig::ALLOWED_QUANT, an unknown value falls back to "auto"). op=embed
     // BACKEND: `embedder` ships "coreml-bge-small-en-v1.5" (the Core ML bge sentence
-    // embedder — faster + higher retrieval quality; honest fallback to
-    // "llm-qwen3-4b-meanpool" when it cannot build/load, reported on the wire).
+    // embedder — faster + higher retrieval quality; honest fallback to a mean-pool
+    // path when it cannot build/load, with the OPAQUE active/fallback space-id
+    // reported on the wire — the daemon compares that id only by equality).
     // Server-side only (the python server reads it), listed here so a typo under
     // [inference] is still diagnosed and the config-lockstep test stays green.
     ("inference", &["preload", "speculative", "draft_model", "quant", "embedder"]),

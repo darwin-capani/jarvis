@@ -6344,10 +6344,13 @@ export function parseSpotlightAvailable(data: Record<string, unknown>): boolean 
   return bool(data, "spotlight_available") === true;
 }
 
-/** Parse a `docsearch.status` payload's index vector-space stamp: the STABLE id
- *  of the embedder that produced the store's persisted vectors
- *  ("coreml-bge-small-en-v1.5" or "llm-qwen3-4b-meanpool"), as of the daemon's
- *  MOST RECENT space observation. Null honestly covers: an OLDER daemon (the
+/** Parse a `docsearch.status` payload's index vector-space stamp: the OPAQUE,
+ *  model-accurate space-id string of the embedder that produced the store's
+ *  persisted vectors, as of the daemon's MOST RECENT space observation. It is
+ *  displayed verbatim and compared for NOTHING here — the daemon owns the
+ *  equality check; the string may be a real backend id OR the daemon's reserved
+ *  pre-stamp sentinel ("unknown-pre-tag") for an index built before stamping
+ *  existed (an unverifiable origin). Null honestly covers: an OLDER daemon (the
  *  field never sent), a malformed/empty value, no space-observing docsearch
  *  operation yet in this daemon process, and a store with no vectors (which
  *  lives in no space) — the panel then claims nothing about the space. NEVER
@@ -6358,16 +6361,19 @@ export function parseDocSearchEmbedder(data: Record<string, unknown>): string | 
 }
 
 /** Parse a `docsearch.status` payload's reindex_needed leg: whether the
- *  daemon's MOST RECENT vector-space comparison found the index built by a
- *  DIFFERENT embedder than the active one — searches then degrade to lexical
- *  BM25 (never a cross-space cosine, which would be meaningless) until a
- *  reindex rebuilds + re-stamps the store. STRICT, the same rule as the
- *  pdfjail/spotlight parses: only a literal JSON `true` raises the warning.
- *  Absent (an OLDER daemon — which predates the second embedder entirely, so a
- *  mismatch is impossible and `false` is CORRECT, not merely conservative),
- *  malformed, and truthy-but-not-boolean values all coerce to `false`: the
- *  panel never fabricates a degradation warning the daemon did not send. NEVER
- *  throws. */
+ *  daemon's MOST RECENT vector-space comparison found the store's vectors
+ *  UNUSABLE for neural ranking under the active embedder — which covers BOTH
+ *  (a) the index was built by a DIFFERENT embedder than the active one, and
+ *  (b) the index is a pre-stamp store whose true embedder is UNVERIFIABLE (the
+ *  daemon stamps it with a reserved unknown-space sentinel that never matches a
+ *  live embedder). In either case searches degrade to lexical BM25 (never a
+ *  cross-space cosine, which would be meaningless) until a reindex rebuilds +
+ *  re-stamps the store. STRICT, the same rule as the pdfjail/spotlight parses:
+ *  only a literal JSON `true` raises the warning. Absent (an OLDER daemon —
+ *  which predates the whole space guard, so `false` is CORRECT, not merely
+ *  conservative), malformed, and truthy-but-not-boolean values all coerce to
+ *  `false`: the panel never fabricates a degradation warning the daemon did not
+ *  send. NEVER throws. */
 export function parseDocSearchReindexNeeded(data: Record<string, unknown>): boolean {
   return bool(data, "reindex_needed") === true;
 }

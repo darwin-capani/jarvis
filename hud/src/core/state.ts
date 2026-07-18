@@ -857,21 +857,26 @@ export interface HudState {
    *  DocSearchPanel pill never overclaims. Null until the first status frame
    *  (an older daemon), in which case claim nothing. */
   spotlightAvailable: boolean | null;
-  /** The index's VECTOR-SPACE stamp (docsearch.status `embedder`): the stable
-   *  id of the embedder that produced the store's persisted vectors, as of the
-   *  daemon's most recent space observation. Null until a status frame carries
-   *  one — an older daemon never sends the field, and the daemon itself sends
-   *  null before any space observation and for a vector-less store — in which
-   *  case the panel claims nothing about the space. */
+  /** The index's VECTOR-SPACE stamp (docsearch.status `embedder`): the OPAQUE,
+   *  model-accurate space-id string of the embedder that produced the store's
+   *  persisted vectors, as of the daemon's most recent space observation. Shown
+   *  verbatim; may be a real backend id OR the daemon's reserved pre-stamp
+   *  sentinel ("unknown-pre-tag") for an index of unverifiable origin. Null
+   *  until a status frame carries one — an older daemon never sends the field,
+   *  and the daemon itself sends null before any space observation and for a
+   *  vector-less store — in which case the panel claims nothing about the
+   *  space. */
   docSearchEmbedder: string | null;
-  /** Whether the daemon's MOST RECENT vector-space comparison found the index
-   *  built by a DIFFERENT embedder than the active one (docsearch.status
-   *  `reindex_needed`): searches then degrade to lexical BM25 (never a
-   *  cross-space cosine) until "index my documents" rebuilds + re-stamps the
-   *  store — the DocSearchPanel shows the amber OLD-EMBEDDER pill so the
-   *  degradation is never silent. STRICT literal-true parse; `false` honestly
-   *  covers an older daemon (single embedder — a mismatch is impossible), no
-   *  comparison yet, and a matching space (no pill in all three). */
+  /** Whether the daemon's MOST RECENT vector-space comparison found the store's
+   *  vectors UNUSABLE for neural ranking under the active embedder
+   *  (docsearch.status `reindex_needed`) — covering BOTH an index built by a
+   *  DIFFERENT embedder AND a pre-stamp index of unverifiable origin (stamped
+   *  with a reserved sentinel that never matches a live embedder). Either way
+   *  searches degrade to lexical BM25 (never a cross-space cosine) until "index
+   *  my documents" rebuilds + re-stamps the store — the DocSearchPanel shows the
+   *  amber OLD-EMBEDDER pill so the degradation is never silent. STRICT
+   *  literal-true parse; `false` honestly covers an older daemon (no space guard
+   *  at all), no comparison yet, and a matching space (no pill in all three). */
   docSearchReindexNeeded: boolean;
   /** The self-distillation pipeline's honest state (distill.status): armed/
    *  inert, examples ready, last run — and that adapters are NEVER auto-

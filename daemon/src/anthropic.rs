@@ -9134,7 +9134,7 @@ const MNEMOSYNE_MAX_K: usize = 20;
 /// Production embedder for MNEMOSYNE's neural recall: owns the path to the
 /// daemon's `inference.sock` and fetches on-device embeddings via the typed
 /// `embed` op (the server's `[inference].embedder` backend — the Core ML bge
-/// sentence embedder by default, or the legacy 4B mean-pool path — never the
+/// sentence embedder by default, or a mean-pool path — never the
 /// cloud). Mirrors [`OnDeviceTranslator`]: it wires
 /// only the LIVE on-device model; NOT exercised by any test (the recall tests
 /// inject a mock [`crate::recall::Embedder`]). When the server is down or
