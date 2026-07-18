@@ -2821,7 +2821,7 @@
     "best_bge_variant": "bge_384d_instr",
     "recall@3_delta_bge_minus_4b": 0.4861,
     "MRR_delta_bge_minus_4b": 0.5371,
-    "call": "BUILD: bge-384d retrieval quality HOLDS (in fact strongly EXCEEDS) the 4B path AND is ~30x faster -> a dedicated Core ML embedder is a genuine win on BOTH axes; worth building as an opt-in backend with a reindex.",
+    "call": "BUILD: bge-384d retrieval quality HOLDS (in fact strongly EXCEEDS) the 4B path AND is faster at the shipped seq=512 (~6.3x single, ~3x per-text batched, measured — see coreml_embed.py) -> a dedicated Core ML embedder is a genuine win on BOTH axes; worth building as an opt-in backend with a reindex.",
     "why_4b_is_weak": "Qwen3-4B is a causal DECODER LLM, not a contrastively-trained sentence embedder. Mean-pooling its raw hidden states yields an ANISOTROPIC ('cone effect') space: see corpus_anisotropy \u2014 all fact pairs sit in a razor-thin cosine band, so ranking is noise-dominated and distractors routinely outrank relevant facts (negative mean_sep_gap). bge-small is purpose-built for retrieval.",
     "honesty": "SYNTHETIC-but-representative eval (Claude wrote the labels), not ground-truth production data. Directional evidence, strong enough for a build/no-build call, not a production quality guarantee. Raw-cosine ranking here matches DARWIN's live NeuralEmbeddingProvider (recall.rs). DARWIN's BM25 lexical FALLBACK (server-down path) was NOT measured; it may rescue some paraphrase queries the anisotropic 4B neural path misses."
   }

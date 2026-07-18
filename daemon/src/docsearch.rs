@@ -1504,9 +1504,23 @@ impl DocIndex {
             n
         };
         // VACUUM runs OUTSIDE the transaction (SQLite forbids VACUUM inside one);
-        // the atomic clear has already committed, so this only reclaims space.
+        // the atomic clear has ALREADY COMMITTED, so VACUUM only reclaims space.
+        // A VACUUM failure (SQLITE_BUSY from a concurrent writer past the 250ms
+        // busy_timeout, disk-full — it transiently needs ~2x the DB size) must
+        // therefore NOT fail the forget: the data IS forgotten on disk, and
+        // returning Err here would falsely tell the user the index "could not be
+        // cleared" and skip the zero-count telemetry (review-caught). Log and
+        // continue — space reclamation is best-effort, honesty about the clear
+        // is not.
         if deleted > 0 {
-            st.conn.execute_batch("VACUUM")?;
+            if let Err(e) = st.conn.execute_batch("VACUUM") {
+                tracing::warn!(
+                    target: "docsearch",
+                    error = %e,
+                    "post-forget VACUUM failed; the clear itself is committed — \
+                     space reclamation deferred to the next VACUUM"
+                );
+            }
         }
         // Invalidate the cache in the SAME critical section as the delete, so no
         // search can serve a citation that FORGET just removed (the forgettable

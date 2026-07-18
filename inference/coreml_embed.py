@@ -311,6 +311,7 @@ class CoreMLEmbedder:
         parent = os.path.dirname(self._dir)  # <root>/darwin-coreml
         os.makedirs(parent, exist_ok=True)
         tmp = tempfile.mkdtemp(prefix=".convert-", dir=parent)
+        trash = None  # bound BEFORE the try: the finally below references it
         try:
             self._convert_into(tmp)
             # VALIDATE-LOAD in the temp dir BEFORE publishing: a partial/corrupt
@@ -325,9 +326,15 @@ class CoreMLEmbedder:
             # with a valid dir whoever wins the last rename; a loser whose
             # replace fails just loads the winner's already-published valid cache
             # (see ensure_loaded) instead of crashing to the mean-pool fallback.
-            trash = None
             if os.path.exists(self._dir):
-                trash = f"{self._dir}.stale-{os.getpid()}"
+                # UNIQUE vacate target (review-caught: a PID-derived name is
+                # reused across PID recycling, so a crash-leaked .stale-<pid>
+                # dir could make a later vacate hit ENOTEMPTY and resurface the
+                # fallback degradation this path exists to prevent). mkdtemp
+                # gives a fresh empty dir; rmdir it so os.replace renames onto a
+                # NON-EXISTENT name (a pure atomic rename).
+                trash = tempfile.mkdtemp(prefix=".stale-", dir=parent)
+                os.rmdir(trash)
                 try:
                     os.replace(self._dir, trash)  # atomic vacate
                 except OSError:
@@ -341,11 +348,36 @@ class CoreMLEmbedder:
                 # keep it and drop ours; otherwise re-raise so we don't trust it.
                 if self._try_load_final() is None:
                     raise
-            if trash is not None:
-                shutil.rmtree(trash, ignore_errors=True)
         finally:
             if tmp is not None and os.path.isdir(tmp):
                 shutil.rmtree(tmp, ignore_errors=True)
+            # The vacated old dir is trash whether we published or raised (its
+            # contents already failed validate-load or were superseded) — clean
+            # it in the FINALLY so no exit path leaks it (review-caught: it was
+            # cleaned only on the success path, and a crash-leaked stray could
+            # cascade into the exact fallback degradation this path prevents).
+            # Crash-leaked .stale-* strays from EARLIER runs are also swept.
+            # Deliberately NOT swept: .convert-* dirs — one may be a CONCURRENT
+            # process's live in-flight conversion; its own finally cleans it.
+            if trash is not None and os.path.isdir(trash):
+                shutil.rmtree(trash, ignore_errors=True)
+            try:
+                for entry in os.listdir(parent):
+                    if entry.startswith(".stale-"):
+                        stray = os.path.join(parent, entry)
+                        # Only sweep NON-EMPTY strays: a leaked vacated dir has
+                        # contents, while an EMPTY .stale-* may be a CONCURRENT
+                        # process's just-created mkdtemp artifact (deleting it
+                        # would break that process's vacate rmdir). An empty
+                        # leak is harmless — mkdtemp always mints fresh names.
+                        if (
+                            stray != trash
+                            and os.path.isdir(stray)
+                            and os.listdir(stray)
+                        ):
+                            shutil.rmtree(stray, ignore_errors=True)
+            except OSError:
+                pass  # sweeping strays is best-effort housekeeping only
 
     def _convert_into(self, target_dir):
         """ONE-TIME conversion of the HF bge checkpoint to the fixed (1, SEQ)

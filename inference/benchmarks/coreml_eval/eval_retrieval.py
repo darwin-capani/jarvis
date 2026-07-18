@@ -4,8 +4,10 @@ Retrieval-QUALITY eval: does the small Core ML bge-384d embedder retrieve
 DARWIN/MNEMOSYNE memory facts as well as DARWIN's real 4B-2560d mean-pool path?
 
 This is the ADOPTION gate the latency probe cannot answer: bge lives in a
-different, smaller vector space, so a ~30x latency win is only worth building if
-retrieval quality HOLDS. Same discipline that killed speculative decoding: never
+different, smaller vector space, so its latency win (measured at the SHIPPED
+seq=512 config: ~6.3x single / ~3x per-text vs the 4B path — see
+inference/coreml_embed.py's measured table) is only worth building if retrieval
+quality HOLDS. Same discipline that killed speculative decoding: never
 recommend adoption on the latency win alone.
 
 Over the SAME corpus + labeled queries (eval_set.json), for each embedder:
@@ -222,8 +224,9 @@ def main():
         "recall@3_delta_bge_minus_4b": round(best["recall@3"] - base["recall@3"], 4),
         "MRR_delta_bge_minus_4b": round(best["MRR"] - base["MRR"], 4),
         "call": ("BUILD: bge-384d retrieval quality HOLDS (in fact strongly EXCEEDS) the "
-                 "4B path AND is ~30x faster -> a dedicated Core ML embedder is a genuine "
-                 "win on BOTH axes; worth building as an opt-in backend with a reindex."
+                 "4B path AND is faster at the shipped seq=512 (~6.3x single, ~3x per-text "
+                 "batched, measured — see coreml_embed.py) -> a dedicated Core ML embedder "
+                 "is a genuine win on BOTH axes; worth building as an opt-in backend with a reindex."
                  if holds else
                  "DO-NOT-ADOPT: bge-384d retrieval is materially worse than the 4B path; "
                  "the latency win is not worth the quality loss."),
