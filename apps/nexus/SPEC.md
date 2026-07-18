@@ -12,7 +12,7 @@ Low-latency audio routing matrix and studio control surface for the Shure SM7dB 
 
 ## 1. Routing matrix
 
-- **Aggregate devices.** Nexus creates/destroys CoreAudio aggregate devices via `AudioHardwareCreateAggregateDevice` to bind physical interfaces (SM7dB front-end, Mini speakers/headphone amp, virtual loopbacks) into one clocked device. Drift correction enabled for sub-devices not sharing the master clock.
+- **Aggregate devices.** Nexus creates/destroys CoreAudio aggregate devices via `AudioHardwareCreateAggregateDevice` to bind physical interfaces (SM7dB front-end, the Mac's built-in speakers/headphone amp, virtual loopbacks) into one clocked device. Drift correction enabled for sub-devices not sharing the master clock.
 - **Matrix model.** An N-input × M-output gain grid (float per crosspoint, -inf to +12 dB). Routes are crosspoints above -inf. Persisted as named presets (TOML) in `apps/nexus/presets/`.
 - **State machine.** One authoritative `MatrixState` (inputs, outputs, crosspoints, mutes, monitor assignment); every mutation goes through it; the IPC layer and the audio core both read snapshots — no shared mutable state across the realtime boundary (SPSC ring of state snapshots).
 

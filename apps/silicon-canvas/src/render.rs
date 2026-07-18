@@ -4,7 +4,8 @@
 //! This file COMPILES headlessly with `cargo check --features gpu` on the M1 dev
 //! box, and its CPU-side math (view transform, LOD culling, flag writes, buffer
 //! packing) is unit-tested. It has NOT been run against a live Metal device here.
-//! The 60 fps (M4) / 30 fps (M1 Pro) render targets and any draw-call /
+//! The render targets (60 fps on ProMotion-class Apple Silicon; >= 30 fps on the
+//! M1 Pro dev machine) and any draw-call /
 //! throughput / culled-percentage figure are DEVICE-GATED — they can only be
 //! VERIFIED on-device (a real Apple Silicon Mac with the `gpu` grant). Nothing in this file
 //! should be read as a measured fps/throughput claim; [`RenderMs`] is populated

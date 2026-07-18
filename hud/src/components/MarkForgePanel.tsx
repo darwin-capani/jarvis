@@ -10,7 +10,7 @@
  *
  * HONESTY — the live 60fps render is DEVICE-GATED (SPEC §8): the HUD's headless
  * preview SUSPENDS the R3F render loop (frameloop="demand" + a guard), so the
- * on-screen motion / 60fps is verified only on the real Tauri app / M4 Mini.
+ * on-screen motion / 60fps is verified only on the real Tauri app on the device.
  * This panel renders TELEMETRY-DRIVEN transforms (the engine's positions +
  * orientations per frame), NOT a claimed-measured framerate. The numbers in the
  * stats strip are the simulation's (frame counter, contact count, penetration
@@ -102,7 +102,7 @@ function Bodies({ frameRef }: { frameRef: FrameRef }) {
   // The headless preview suspends the loop (frameloop="demand"); on a real
   // device we keep invalidating so the sim animates. We never CLAIM the device
   // path ran — we only request a frame; whether it renders at 60fps is verified
-  // on the M4 Mini, not here.
+  // on the real device, not here.
   useEffect(() => {
     onDevice.current = true;
     return () => {

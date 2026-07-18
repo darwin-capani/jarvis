@@ -3,7 +3,7 @@
 This document assesses the "Canonical Behavioral & Task Matrix" and "Autonomous
 Self-Healing Core" specification against (a) what DARWIN already is, and (b)
 what is physically and computationally possible on Apple Silicon (M1 or later;
-developed on an M4 Mac Mini). It then defines Phase 1 of building toward that spec.
+developed on an Apple M1 Pro — MacBookPro18,1, 16 GiB). It then defines Phase 1 of building toward that spec.
 
 **Verdict: doable as a capability framework, not as a literal transcription.**
 Three claims are cinematic and are reframed to their real engineering

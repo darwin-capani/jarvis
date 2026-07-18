@@ -12,7 +12,7 @@ path in a fresh terminal is the #1 "file not found" gotcha.
 
 ## 0. Prerequisites (one-time)
 
-- macOS on Apple Silicon (M1 or later; this build was brought up on an M4 Mac Mini).
+- macOS on Apple Silicon (M1 or later; this build was brought up on an Apple M1 Pro — MacBookPro18,1, 16 GiB).
 - Homebrew **Python 3.11** at `/opt/homebrew/bin/python3.11` (MLX has no 3.14 wheels).
 - Rust toolchain (`brew install rustup && rustup-init`).
 - Node 20+ (`node`, `npm` on PATH) — only for the HUD.
@@ -171,7 +171,7 @@ needs a graphical login to reach the window server.
 > daemon but not the heavy Tauri app, and refuses to load a `com.darwin.hud` agent that
 > would just crash-loop with no app to launch.
 
-**Auto-login is still a guided manual step.** For the Mini to reach the Aqua session at
+**Auto-login is still a guided manual step.** For the machine to reach the Aqua session at
 power-on (so launchd starts the gui-domain agents, HUD included), enable *System Settings →
 Users & Groups → Automatically log in as this user*. This is a security/credential setting
 and is **intentionally not automated** by any installer.

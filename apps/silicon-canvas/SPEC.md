@@ -20,7 +20,7 @@ GPU schematic/PCB renderer: KiCad import, net highlighting and interactive traci
 
 ## 2. Renderer (wgpu/Metal)
 
-Render-scale target: **10k components / 100k+ pads / 200k track segments at 60 fps sustained pan/zoom** (M4; same scene ≥ 30 fps on M1 Pro dev).
+Render-scale target: **10k components / 100k+ pads / 200k track segments at 60 fps sustained pan/zoom** (target on ProMotion-class Apple Silicon; the same scene runs ≥ 30 fps on the M1 Pro dev machine — the measured floor).
 
 The technique that makes this trivial rather than heroic: **everything is GPU-resident and instanced; pan/zoom is a uniform, not a rebuild.**
 

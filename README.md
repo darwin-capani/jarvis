@@ -167,11 +167,11 @@ Two voice engines back this, consistent with the rest of the system — **armed 
 
 ### Hardware reality (read before contributing)
 
-DARWIN was developed on an M4 Mac Mini, but the whole stack (arm64 + Metal/MLX + Core ML/ANE + macOS) is present on **every** Apple Silicon chip — local performance simply scales with the chip and unified memory.
+DARWIN targets **every** Apple Silicon chip (M1 or later): the whole stack (arm64 + Metal/MLX + Core ML/ANE + macOS) is present on all of them. It was developed and benchmarked on an Apple M1 Pro (MacBookPro18,1, 16 GiB), and the committed performance baseline is honest, measured M1 Pro data. LLM decode is memory-bandwidth-bound, so throughput scales with a chip's unified-memory bandwidth, NOT its generation: a higher-bandwidth chip (an M1/M2/M3 Max or Ultra, say) runs faster than the baseline, while a lower-bandwidth base-tier chip — including newer ones like a base M2/M3/M4, whose ~100–120 GB/s is below the M1 Pro's ~200 GB/s — runs proportionally slower. A machine also needs enough unified memory to hold the resident model set (≥16 GiB comfortably); 8 GiB configs will page and degrade.
 
 - **macOS is the host, not Linux.** MLX (the Apple-GPU Metal backend) and Core ML/ANE access exist **only** on macOS. Asahi Linux is a non-starter on M4-generation silicon, and even where Asahi boots, MLX/Core ML need macOS — so macOS is the host regardless of chip.
 - **MLX runs on the Apple GPU via Metal, not the Neural Engine.** LLM decode is memory-bandwidth-bound and the GPU sees full unified-memory bandwidth, so the model stays on the GPU. The ANE — reachable only through Core ML — is reserved for Phase-3 auxiliary models (wake-word, VAD, embeddings).
-- **"Zero latency" is marketing, not physics.** Honest targets on M4-class silicon (M1/M2/M3 proportionally slower): local intent classification < 300 ms, STT < 1 s/utterance, first token < 500 ms. These are design targets, not measured claims on your device.
+- **"Zero latency" is marketing, not physics.** Honest targets, which hold across all Apple Silicon (higher-bandwidth chips at the fast end, base-tier chips proportionally slower): local intent classification < 300 ms, STT < 1 s/utterance, first token < 500 ms. These are design targets, not measured claims on your device.
 - **Kiosk takeover is Phase-2 BUILT but DEVICE-GATED.** The `enter_takeover`/`exit_takeover` wiring, state machine, exit-safety, and `TakeoverStage` layout are implemented and tested; the *actual* fullscreen render + Dock/menu-bar hide need a live Tauri app on a real display and were never observed headlessly. It ships OFF and is never auto-entered. See `docs/ROADMAP.md`.
 
 ---

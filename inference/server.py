@@ -1394,7 +1394,8 @@ DEFAULT_OPENERS = [
 # Both candidates are LLM-class TTS — in real use they would also share the
 # GPU with the resident Qwen3-4B converse decode and add ~1.7-1.9GB each on a
 # 16GB machine, so the idle-GPU numbers above flatter them. Kokoro stays the
-# default; this registry is the dispatch/config hook for an M4 re-run.
+# default; this registry is the dispatch/config hook for a re-run on newer,
+# higher-bandwidth Apple Silicon.
 TTS_ENGINE_DEFAULTS = {
     "kokoro": {"model": DEFAULT_TTS, "voice": DEFAULT_VOICE},
     # Sesame CSM 1B (8-bit MLX). Voice = repo speaker prompt; conversational_b

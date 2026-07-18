@@ -2,8 +2,8 @@
 # install_boot.sh — boot-to-DARWIN LaunchAgent installer.
 #
 # Renders the plist templates in boot/ with the real project root, installs
-# them into ~/Library/LaunchAgents, and (re)starts all three agents so the M4
-# Mini powers on directly into the DARWIN environment: the inference server, the
+# them into ~/Library/LaunchAgents, and (re)starts all three agents so the
+# machine powers on directly into the DARWIN environment: the inference server, the
 # darwind daemon, AND the DARWIN HUD (the visible Tauri app) — so login renders
 # the actual DARWIN face, not just the headless backend.
 #
@@ -75,13 +75,13 @@ post_install_checklist() {
 
 Post-install checklist (boot-to-DARWIN):
   1. Enable auto-login: System Settings > Users & Groups > Automatically log in as
-     this user. Without it the Mini stops at the login window and launchd never
+     this user. Without it the machine stops at the login window and launchd never
      starts the gui domain agents (including the HUD, which needs the Aqua/GUI
      session). This is a GUIDED MANUAL step — it is a security/credential setting
      and is intentionally NOT automated by this installer.
   2. Cloud fallback key: put 'export ANTHROPIC_API_KEY=...' in
      $DARWIN_ROOT/state/env.sh and chmod 600 it (state/ is gitignored).
-  3. The DARWIN HUD now autostarts (com.darwin.hud) — after auto-login the Mini
+  3. The DARWIN HUD now autostarts (com.darwin.hud) — after auto-login the machine
      powers on directly into the visible DARWIN app, not just the backend. It
      opens as a normal window; the fullscreen "kiosk takeover" stays an EXPLICIT
      in-HUD action (never auto-entered) and its exit is always reachable.

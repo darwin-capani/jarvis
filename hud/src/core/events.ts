@@ -2741,7 +2741,7 @@ export function parseNexusSpectrum(data: Record<string, unknown>): NexusSpectrum
  * offline). The ENGINE is fully verifiable headlessly (cargo build + test);   *
  * what is DEVICE-GATED is the live R3F render of the sandbox at 60fps — the    *
  * HUD's headless preview SUSPENDS the R3F render loop, so on-screen motion is  *
- * verified only on the real Tauri app / M4 Mini. This panel renders           *
+ * verified only on the real Tauri app on the device. This panel renders        *
  * TELEMETRY-DRIVEN body transforms (pos + orientation per frame), NOT a        *
  * claimed-measured framerate: the numbers below are the simulation's, the      *
  * motion you see is the engine's, and the frame RATE is never asserted here.   *

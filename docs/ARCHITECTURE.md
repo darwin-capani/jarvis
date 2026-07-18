@@ -10,7 +10,7 @@ These are engineering facts, not opinions. The project plan is built on them.
 
 2. **MLX does not run on Linux for Apple GPUs, and does not use the Neural Engine.** MLX's only non-Mac backend is CUDA; there is no Linux backend for Apple GPUs. MLX executes on the **Apple GPU via Metal** — the same Metal path on every Apple Silicon chip (M1 or later). The Neural Engine (ANE) is reachable only through Core ML. DARWIN reserves the ANE for Phase-3 auxiliary models — wake-word, VAD, and embeddings exported to Core ML, which Core ML may schedule onto the ANE (scheduling is Core ML's decision, not ours).
 
-3. **"Zero-latency" is marketing, not physics.** The real, measurable targets (M4-class; M1/M2/M3 proportionally slower, since LLM decode is memory-bandwidth-bound) are:
+3. **"Zero-latency" is marketing, not physics.** The real, measurable targets — which hold across all Apple Silicon (M1 or later), with higher-bandwidth chips at the fast end and M1/M2 proportionally slower, since LLM decode is memory-bandwidth-bound — are:
    - local intent classification: **< 300 ms**
    - STT: **< 1 s** per utterance
    - first generated token: **< 500 ms**
@@ -21,7 +21,7 @@ Power button to DARWIN with zero interaction:
 
 ```
 power button
- └─▶ Apple iBoot (proprietary; non-replaceable on M4 — see correction 1)
+ └─▶ Apple iBoot (proprietary; non-replaceable on Apple Silicon — see correction 1)
       └─▶ macOS, as the invisible host kernel
            └─▶ auto-login (DARWIN user)
                 └─▶ launchd LaunchAgents (KeepAlive — relaunched if they exit)
@@ -36,7 +36,7 @@ Installed by `scripts/install_boot.sh` (dry-run by default; `--install` applies,
 
 The HUD now autostarts too (`com.darwin.hud`): after auto-login the Mac powers on directly into the **visible DARWIN app**, not just the headless backend. `boot/run_hud.sh` locates the built `DARWIN.app` and execs it (windowed). The fullscreen kiosk "takeover" that replaces the macOS shell remains an **explicit, always-exitable in-HUD action** — it is never auto-entered at boot (`tauri.conf.json` ships `fullscreen: false`; see `hud/src-tauri/src/takeover.rs`). Auto-login itself is a guided manual step (a security/credential setting), never automated by the installer.
 
-This is the maximum achievable boot integration on M4-generation silicon today. iBoot cannot be replaced and macOS cannot be removed (see Constraint corrections, items 1–2); everything after login **can** be owned, and this owns all of it.
+This is the maximum achievable boot integration on Apple Silicon today. iBoot cannot be replaced and macOS cannot be removed (see Constraint corrections, items 1–2); everything after login **can** be owned, and this owns all of it.
 
 ## Component diagram
 
@@ -311,7 +311,7 @@ Measured 2026-06-12 on the M1 Pro 16 GB dev machine (mlx-audio 0.4.4, warm, GPU 
 | `csm` (`mlx-community/csm-1b-8bit`) / `conversational_b` | 0.894–0.931 | FAIL (loads clean, trim OK, but slower than the 0.5 gate) |
 | `orpheus` (`mlx-community/orpheus-3b-0.1-ft-4bit`) / `leo` | 1.28 | FAIL (slower than realtime) |
 
-Both candidates are LLM-class TTS: in real use they would also share the GPU with the resident Qwen3-4B converse decode and add ~1.7–1.9 GB each on a 16 GB machine, so the idle-GPU numbers above flatter them. Kokoro remains the default; the dispatch and config hooks stay in place for a re-run on the M4 target. CSM's `conversational_b` speaker prompt is fetched from the ungated `mlx-community/csm-1b` mirror (the upstream `sesame/csm-1b` prompts are HF-auth-gated).
+Both candidates are LLM-class TTS: in real use they would also share the GPU with the resident Qwen3-4B converse decode and add ~1.7–1.9 GB each on a 16 GB machine, so the idle-GPU numbers above flatter them. Kokoro remains the default; the dispatch and config hooks stay in place for a re-run on newer, higher-bandwidth Apple Silicon. CSM's `conversational_b` speaker prompt is fetched from the ungated `mlx-community/csm-1b` mirror (the upstream `sesame/csm-1b` prompts are HF-auth-gated).
 
 ### Latency levers
 
