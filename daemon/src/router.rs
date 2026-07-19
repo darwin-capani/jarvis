@@ -5294,11 +5294,16 @@ fn ui_actuate_input(req: &crate::ui_automation::ActuationRequest) -> serde_json:
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DescribeRequest {
     /// "describe my screen" / "what am I looking at" — capture + describe a
-    /// screen frame (reuses the Vision app's screen capture).
-    Screen,
+    /// screen frame (reuses the Vision app's screen capture). `question` carries a
+    /// SPECIFIC visual question for the VLM to answer ("what's the error on my
+    /// screen?", "ask my screen which button rebuilds") — VQA; `None` = a generic
+    /// description (the op applies its default describe prompt).
+    Screen { question: Option<String> },
     /// "describe this image <path>" / "what's in <path>" — describe a specific
-    /// image file (RAW candidate path; confined before the op).
-    Image(String),
+    /// image file (RAW candidate path; confined before the op). `question` = a
+    /// specific question about the file ("in cat.png, is the cat asleep?");
+    /// `None` = a generic description.
+    Image { path: String, question: Option<String> },
 }
 
 /// Map a spoken utterance to a [`DescribeRequest`], or None when it is not a
@@ -5334,25 +5339,143 @@ pub fn describe_command(text: &str) -> Option<DescribeRequest> {
         || lower.contains("what is this");
     if names_describe {
         if let Some(path) = extract_image_path(text) {
-            return Some(DescribeRequest::Image(path));
+            let question = vqa_question(text, Some(&path));
+            return Some(DescribeRequest::Image { path, question });
         }
+    }
+
+    // An EXPLICIT screen-VQA trigger ("ask my screen <question>", "ask about my
+    // screen <question>"). A dedicated, unambiguous form so a SPECIFIC visual
+    // question ("ask my screen which button rebuilds") reaches the VLM even
+    // without a "describe" verb. Begins with "ask <the screen>", so it cannot
+    // collide with an OCR read ("read"/"what's on") or a Lumen control read, and
+    // "ask <a person> ..." never matches (the object must be the screen/display).
+    if let Some(q) = explicit_screen_vqa(&lower, text) {
+        return Some(DescribeRequest::Screen { question: q });
     }
 
     // A SCREEN describe ("describe my screen", "what am I looking at",
     // "describe what's on my screen", "what do you make of my screen"). MUST be
     // a describe verb (NOT an OCR "read"/"what's on" verb): the VLM describes the
     // scene, the OCR path reads the text. "what am I looking at" with no image
-    // file is a screen describe (the most natural hands-free phrasing).
+    // file is a screen describe (the most natural hands-free phrasing). When the
+    // utterance asks something SPECIFIC beyond the generic describe scaffolding
+    // (e.g. "describe my screen — is there an error?"), that question is threaded
+    // to the VLM (VQA); a bare "describe my screen" stays a generic caption.
     let mentions_screen =
         lower.contains("screen") || lower.contains("display") || lower.contains("looking at");
     let describe_screen = (lower.contains("describe") && mentions_screen)
         || lower.contains("what am i looking at")
         || (lower.contains("what do you make of") && mentions_screen);
     if describe_screen {
-        return Some(DescribeRequest::Screen);
+        let question = vqa_question(text, None);
+        return Some(DescribeRequest::Screen { question });
     }
 
     None
+}
+
+/// The explicit screen-VQA trigger: an utterance that begins with "ask" whose
+/// OBJECT is the screen/display ("ask my screen …", "ask about the display …").
+/// Returns `Some(question)` when it matches — the `question` is the user's words
+/// with the trigger prefix stripped (or `None` when nothing substantive follows,
+/// which routes to a generic screen describe). Returns `None` (does not match)
+/// otherwise. PURE. The prefix set is exhaustive on purpose: "ask <a person>
+/// about the screen" never matches (it does not START with one of these), so a
+/// message-a-contact intent is never poached.
+fn explicit_screen_vqa(lower: &str, original: &str) -> Option<Option<String>> {
+    const PREFIXES: &[&str] = &[
+        "ask about my screen",
+        "ask about the screen",
+        "ask about my display",
+        "ask about the display",
+        "ask my screen",
+        "ask the screen",
+        "ask my display",
+        "ask the display",
+    ];
+    let prefix = PREFIXES.iter().find(|p| lower.starts_with(**p))?;
+    // Strip the matched prefix from the ORIGINAL-case text, then trim leading
+    // filler/punctuation ("about", ":", ",", "-"). What remains is the question.
+    let rest = original[prefix.len()..]
+        .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ':' | ',' | '-' | '?' | '.'))
+        .trim();
+    if rest.is_empty() {
+        // "ask my screen" with no question — a generic look at the screen.
+        Some(None)
+    } else {
+        Some(Some(rest.to_string()))
+    }
+}
+
+/// Extract the SPECIFIC visual question a describe utterance carries, or `None`
+/// for a generic description. `path`, when present, is the recognized image-file
+/// token — it is removed first so a file path never leaks into the VLM prompt.
+///
+/// Rule: after removing the path, tokenize the remainder; if EVERY token is
+/// generic describe/scaffolding vocabulary ("describe", "my", "screen", "what",
+/// "looking", …) the user only asked for a plain description -> `None` (the op
+/// then uses its default prompt). If ANY token is substantive ("error", "button",
+/// "dog", "asleep", …) the user asked something specific -> `Some(utterance)`,
+/// passed verbatim so the VLM answers THAT. PURE + unit-tested without a model.
+fn vqa_question(text: &str, path: Option<&str>) -> Option<String> {
+    // Remove the path token (first occurrence, case-insensitive) from a working
+    // copy; the returned question is built from the ORIGINAL text minus the path.
+    // Remove the image-path token WITHOUT byte-offset math on the original: an
+    // offset from `text.to_lowercase()` desyncs on any char whose lowercase form
+    // has a different byte length (e.g. `İ`), which would panic replace_range on a
+    // char boundary. Instead drop the whitespace token whose punctuation-trimmed
+    // form equals the path (extract_image_path built the path exactly that way),
+    // which is boundary-safe by construction. Also removes any punctuation
+    // attached to the path token — fine for a VLM prompt.
+    let stripped: String = match path {
+        Some(p) if !p.is_empty() => {
+            let pl = p.to_lowercase();
+            text.split_whitespace()
+                .filter(|tok| {
+                    let trimmed = tok.trim_matches(|c: char| {
+                        !c.is_alphanumeric()
+                            && c != '.'
+                            && c != '/'
+                            && c != '_'
+                            && c != '-'
+                            && c != '~'
+                    });
+                    trimmed.to_lowercase() != pl
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+        _ => text.to_string(),
+    };
+    let rest = stripped.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    // Generic describe / scaffolding vocabulary. A remnant made ONLY of these is a
+    // plain "just describe it" request (generic caption). Anything else is a
+    // specific question the VLM should answer.
+    const SCAFFOLD: &[&str] = &[
+        "please", "can", "could", "would", "will", "you", "tell", "give", "show",
+        "let", "me", "us", "for", "a", "an", "the", "to", "and", "so", "just",
+        "describe", "description", "what", "whats", "s", "is", "are", "in", "of",
+        "on", "at", "am", "i", "looking", "look", "do", "does", "make", "makes",
+        "see", "seeing", "this", "that", "these", "those", "it", "here", "there",
+        "my", "your", "screen", "display", "monitor", "image", "picture", "photo",
+        "pic", "photograph", "snapshot", "now", "right", "currently",
+    ];
+    let has_substantive = rest
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_lowercase())
+        .any(|t| !SCAFFOLD.contains(&t.as_str()));
+    if has_substantive {
+        // Collapse whitespace runs (a stripped path leaves a gap) so the VLM
+        // prompt is clean — and, by construction, carries no file path.
+        Some(rest.split_whitespace().collect::<Vec<_>>().join(" "))
+    } else {
+        None
+    }
 }
 
 /// Extract an image file path/name from a describe phrase. Returns the token
@@ -5449,8 +5572,17 @@ async fn handle_describe(
         None
     };
 
+    // Whether the user asked a SPECIFIC question (VQA) vs a generic describe. Only
+    // the boolean is emitted below — never the question text (it can name what is
+    // on the most-sensitive surface, the screen).
+    let is_vqa = matches!(
+        &req,
+        DescribeRequest::Screen { question: Some(_) }
+            | DescribeRequest::Image { question: Some(_), .. }
+    );
+
     let (source, available, data) = match req {
-        DescribeRequest::Screen => {
+        DescribeRequest::Screen { question } => {
             if let Some(reason) = gate_reason {
                 // Honest fall back to OCR: forward the read.screen op so the user
                 // still gets the on-screen TEXT (best-effort; an op error is itself
@@ -5469,13 +5601,14 @@ async fn handle_describe(
             } else {
                 // The VLM is configured + on. Capture a screen frame by forwarding
                 // the Vision app's capture op (reusing its ScreenCaptureKit path),
-                // then describe it. The captured frame is the Vision app's to
-                // produce on-device; the daemon never holds the pixels. The frame
-                // path is the app's confined capture output under the project root.
+                // then describe it (answering the user's specific `question` when
+                // one was asked — VQA — else a generic caption). The captured frame
+                // is the Vision app's to produce on-device; the daemon never holds
+                // the pixels. The frame path is the app's confined capture output.
                 match capture_screen_frame(app_registry, allowed_root).await {
                     Ok(frame) => describe_confined_path(
                         &frame,
-                        None,
+                        question.as_deref(),
                         infer,
                         allowed_root,
                         "screen",
@@ -5501,13 +5634,13 @@ async fn handle_describe(
                 }
             }
         }
-        DescribeRequest::Image(raw_path) => {
+        DescribeRequest::Image { path: raw_path, question } => {
             if let Some(reason) = gate_reason {
                 ("image", false, describe_image_fallback_copy(reason))
             } else {
                 match describe_confined_path(
                     Path::new(&raw_path),
-                    None,
+                    question.as_deref(),
                     infer,
                     allowed_root,
                     "image",
@@ -5527,7 +5660,7 @@ async fn handle_describe(
     telemetry::emit(
         "local",
         "vision.describe",
-        json!({"source": source, "available": available, "vlm": cfg.vision.enabled}),
+        json!({"source": source, "available": available, "vlm": cfg.vision.enabled, "vqa": is_vqa}),
     );
 
     HandlerOutput {
@@ -6779,6 +6912,7 @@ mod tests {
         local_model_for_turn, local_sub_for_turn,
         extract_app_name, extract_content_words, extract_image_path, extract_web_query,
         extract_image_prompt, generate_image_command, handle_describe, handle_generate_image,
+        vqa_question,
         handle_identify_sound, identify_sound_clip_or_request,
         interrupt_roll_call, is_describe_request, is_generate_image_request,
         is_identify_sound_request, is_screen_read,
@@ -8013,7 +8147,8 @@ mod tests {
 
     /// "describe my screen" / "what am I looking at" route to a VLM SCREEN
     /// describe — DISTINCT from the OCR read.screen path. The describe verb maps
-    /// to DescribeRequest::Screen, never to a read.screen op.
+    /// to DescribeRequest::Screen, never to a read.screen op. A BARE describe
+    /// (no specific question) carries `question: None` (a generic caption).
     #[test]
     fn describe_screen_phrases_map_to_a_screen_describe() {
         for text in [
@@ -8025,32 +8160,118 @@ mod tests {
         ] {
             assert_eq!(
                 describe_command(text),
-                Some(DescribeRequest::Screen),
-                "{text:?} must be a VLM screen describe"
+                Some(DescribeRequest::Screen { question: None }),
+                "{text:?} must be a generic VLM screen describe (no specific question)"
             );
         }
     }
 
+    /// VQA (task #2, build 2/2): a SPECIFIC visual question about the screen is
+    /// threaded to the VLM as `question`, so the model answers THAT rather than
+    /// emitting a generic caption. Two routes: the explicit "ask my screen …"
+    /// trigger, and a describe verb carrying a substantive question.
+    #[test]
+    fn screen_vqa_threads_the_specific_question() {
+        // Explicit "ask (about) my/the screen <q>" — the prefix is stripped.
+        assert_eq!(
+            describe_command("ask my screen which button rebuilds"),
+            Some(DescribeRequest::Screen { question: Some("which button rebuilds".to_string()) })
+        );
+        assert_eq!(
+            describe_command("ask about my screen: what is the error?"),
+            Some(DescribeRequest::Screen { question: Some("what is the error?".to_string()) })
+        );
+        // A describe verb PLUS a substantive question -> the whole utterance is the
+        // VQA prompt (the VLM reads the intent from the user's own words).
+        assert_eq!(
+            describe_command("describe my screen, is there a build error?"),
+            Some(DescribeRequest::Screen {
+                question: Some("describe my screen, is there a build error?".to_string())
+            })
+        );
+        // "ask <a person> about the screen" is NOT a screen VQA (it does not begin
+        // with an "ask <the screen>" prefix) — a message-a-contact intent is never
+        // poached into the VLM.
+        assert_eq!(describe_command("ask sarah about the screen resolution"), None);
+    }
+
     /// "describe this image <path>" / "what's in <path>" route to a VLM IMAGE
     /// describe carrying the RAW candidate path (confined later by the handler).
+    /// A bare describe carries `question: None`; a specific question is threaded.
     #[test]
     fn describe_image_phrases_carry_the_named_path() {
         assert_eq!(
             describe_command("describe this image /Users/me/pics/cat.png"),
-            Some(DescribeRequest::Image("/Users/me/pics/cat.png".to_string()))
+            Some(DescribeRequest::Image {
+                path: "/Users/me/pics/cat.png".to_string(),
+                question: None
+            })
         );
         assert_eq!(
             describe_command("what's in photo.jpg"),
-            Some(DescribeRequest::Image("photo.jpg".to_string()))
+            Some(DescribeRequest::Image { path: "photo.jpg".to_string(), question: None })
         );
         // Case of the path survives (file systems are case-sensitive).
         assert_eq!(
             describe_command("describe the picture MyPhoto.JPEG"),
-            Some(DescribeRequest::Image("MyPhoto.JPEG".to_string()))
+            Some(DescribeRequest::Image { path: "MyPhoto.JPEG".to_string(), question: None })
+        );
+        // A specific question about the file -> threaded as VQA, with the path
+        // token stripped out of the prompt (a file path never leaks to the VLM).
+        assert_eq!(
+            describe_command("describe cat.png — is the dog asleep?"),
+            Some(DescribeRequest::Image {
+                path: "cat.png".to_string(),
+                question: Some("describe — is the dog asleep?".to_string())
+            })
         );
         // The extractor finds an image extension token, nothing else.
         assert_eq!(extract_image_path("describe /tmp/a.png now"), Some("/tmp/a.png".to_string()));
         assert_eq!(extract_image_path("describe this image"), None);
+    }
+
+    /// vqa_question is PURE: a remnant made only of describe/scaffolding vocab is a
+    /// generic caption (None); any substantive token makes it a specific question.
+    #[test]
+    fn vqa_question_distinguishes_generic_from_specific() {
+        // Generic describe scaffolding -> None (the op uses its default prompt).
+        for generic in ["describe my screen", "what am i looking at", "describe it", "describe the display"] {
+            assert_eq!(vqa_question(generic, None), None, "{generic:?} is a generic caption");
+        }
+        // Substantive question -> Some(verbatim).
+        assert_eq!(
+            vqa_question("what's the error on my screen", None),
+            Some("what's the error on my screen".to_string())
+        );
+        // Path is stripped before the generic/specific decision AND out of the
+        // returned prompt (a file path never leaks to the VLM).
+        assert_eq!(vqa_question("describe this image cat.png", Some("cat.png")), None);
+        assert_eq!(
+            vqa_question("what breed is the dog in cat.png", Some("cat.png")),
+            Some("what breed is the dog in".to_string())
+        );
+    }
+
+    /// PANIC PIN (no-regression): vqa_question / describe_command must NEVER panic
+    /// on an offset-shifting-lowercase utterance — a char like `İ` whose lowercase
+    /// is a different byte length — that also names an image path. The path-strip
+    /// must not index a byte offset derived from a lowercased copy onto the
+    /// original text (that lands mid-char and panics replace_range). Mirrors the
+    /// extract_image_prompt offset-shift panic pin.
+    #[test]
+    fn vqa_and_describe_never_panic_on_offset_shifting_lowercase() {
+        for text in [
+            "İ describe a.png",
+            "describe İcafé.png what İis on it",
+            "İİİ what is in /tmp/İ.png please",
+            "ẞ describe photo.PNG İ",
+            "what İs in \u{0130}\u{0130}.jpeg",
+            "ask my screen İ what İs the error",
+            "ask about my display \u{0130}",
+        ] {
+            let _ = describe_command(text);
+            let _ = vqa_question(text, extract_image_path(text).as_deref());
+        }
     }
 
     /// CONTRACT PIN (no-regression): the OCR read.screen path is NOT poached by
@@ -8080,7 +8301,12 @@ mod tests {
     /// utterance + acknowledgment out of lifelong memory / optimizer traces.
     #[test]
     fn describe_requests_are_flagged_transient() {
-        for text in ["describe my screen", "what am I looking at", "describe this image cat.png"] {
+        for text in [
+            "describe my screen",
+            "what am I looking at",
+            "describe this image cat.png",
+            "ask my screen what is the error",
+        ] {
             assert!(is_describe_request(text), "{text:?} must be flagged transient");
         }
         // Unrelated turns are not describe requests (they learn normally).
@@ -8105,7 +8331,7 @@ mod tests {
         // must NOT reach it (proving no op is called when off).
         let mut infer = InferenceClient::new(std::path::PathBuf::from("/nonexistent/inference.sock"));
         let out = handle_describe(
-            DescribeRequest::Image("anything.png".to_string()),
+            DescribeRequest::Image { path: "anything.png".to_string(), question: None },
             &cfg,
             &mut infer,
             &registry,

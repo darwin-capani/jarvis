@@ -1,0 +1,19 @@
+{
+  "model": "mlx-community/Qwen2-VL-2B-Instruct-4bit",
+  "resolution": [
+    1512,
+    982
+  ],
+  "machine": "arm64",
+  "mlx_vlm_version": "0.6.5",
+  "cold_load_s": 17.29,
+  "first_answer": "The error shown on the screen is \"error[E0499]: cannot borrow `x` as mutable more than once.\" This error occurs when trying to borrow a mutable variable (`x`) more than once, which is not allowed in Rust.\n\nTo rebuild the project, you would click on the \"Rebuild\" button.",
+  "available": true,
+  "runs_s": [
+    9.69,
+    8.13,
+    8.17
+  ],
+  "warm_median_s": 8.17,
+  "peak_gpu_gib": 2.44
+}

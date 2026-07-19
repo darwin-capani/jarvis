@@ -62,18 +62,27 @@ num2words==0.5.14
 phonemizer-fork==3.3.2
 spacy==3.8.14
 
-# OPTIONAL on-device VISION-LANGUAGE MODEL (op=describe_image). IMPORT-GUARDED:
-# server.py works (and py_compile passes) WITHOUT this installed — absent =>
-# op=describe_image honestly reports "vision-language model not available" and
-# the daemon falls back to OCR/classification. NOT a hard dep: do NOT let its
-# absence break the build. It pulls a multi-GB Qwen2-VL-class model download
-# gated on enough RAM, which is why the vision-describe feature ships OFF/opt-in.
+# OPTIONAL on-device VISION-LANGUAGE MODEL (op=describe_image + the "ask about my
+# screen" VQA path). IMPORT-GUARDED: server.py works (and py_compile passes)
+# WITHOUT this installed — absent => op=describe_image honestly reports "vision-
+# language model not available" and the daemon falls back to OCR/classification.
+# NOT a hard dep: do NOT let its absence break the build. It pulls a multi-GB
+# Qwen2-VL checkpoint download gated on enough RAM, which is why the feature ships
+# ON-but-INERT (opt-in on the deps).
 # Install ONLY when enabling that feature:
-#   .venv/bin/pip install 'mlx-vlm>=0.1'
-# HONESTY: the VLM runs ON-DEVICE via MLX — the image pixels never leave the
-# device. Description quality is device/runtime-gated and is never claimed
-# measured here.
-# mlx-vlm>=0.1   # (intentionally commented out: optional, import-guarded extra)
+#   .venv/bin/pip install 'mlx-vlm==0.6.5'
+# SUPPLY-CHAIN CAVEAT: mlx-vlm 0.6.5 upgrades mlx (0.31.2 -> 0.32.0) and
+# transformers, and pulls transitive deps (opencv, datasets, pandas, pyarrow).
+# That perturbs the EXACT base pins above, so install it either as a deliberate,
+# accepted upgrade or into a DEDICATED venv. The rest of the stack (op=generate,
+# embed, rerank, VAD, STT, TTS) was RE-VERIFIED working under mlx 0.32.0 when the
+# extra is present.
+# MEASURED (this repo, inference/benchmarks/vlm_eval/, M1 Pro): Qwen2-VL-2B-4bit
+# cold load ~17s, warm ~8s/query at 1512x982, 2.44 GiB peak GPU — usable for an
+# ON-DEMAND screen question, NOT a continuous loop. Description/answer QUALITY is
+# device/runtime-gated and is not formally scored here.
+# HONESTY: the VLM runs ON-DEVICE via MLX — the image pixels never leave the box.
+# mlx-vlm==0.6.5   # (intentionally commented out: optional, import-guarded extra)
 
 # OPTIONAL on-device TEXT->IMAGE GENERATOR (op=generate_image). IMPORT-GUARDED:
 # server.py works (and py_compile passes) WITHOUT this installed — absent =>
