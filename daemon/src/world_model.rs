@@ -77,7 +77,7 @@ pub const MAX_QUERY_RELATIONS: usize = 48;
 /// The bounded set of entity KINDS the world model recognizes. A free-form type
 /// is rejected so the keyspace stays parseable and the model stays a coherent
 /// schema rather than a junk drawer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EntityType {
     Project,
     Person,

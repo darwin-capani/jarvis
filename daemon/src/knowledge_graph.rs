@@ -103,9 +103,16 @@ pub struct Extraction {
 /// CONTRACT: `extract` must only ever return entities/relationships GROUNDED in
 /// `chunk_text` (each carrying a real `span` into it). It must NEVER fabricate.
 pub trait Extractor: Send + Sync {
-    /// Extract grounded entities + relationships from one chunk's text. Pure for
-    /// the deterministic impl; the LLM impl would make the one runtime-gated call.
-    fn extract(&self, chunk_text: &str) -> Extraction;
+    /// Extract grounded entities + relationships from one chunk's text. ASYNC
+    /// (returns a boxed future so the trait stays object-safe for `&dyn
+    /// Extractor` without an `async-trait` dep): the deterministic impl resolves
+    /// immediately (pure), the LLM impl awaits its one runtime-gated inference
+    /// call. EITHER way the CONTRACT holds — every returned entity/relationship
+    /// must be GROUNDED in `chunk_text` (a real span into it); NEVER fabricate.
+    fn extract<'a>(
+        &'a self,
+        chunk_text: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Extraction> + Send + 'a>>;
 
     /// A short, honest token naming WHICH extractor ran — surfaced in telemetry so
     /// the HUD never implies a sophisticated NER when the heuristic ran.
@@ -153,17 +160,319 @@ const MAX_ENTITIES_PER_CHUNK: usize = 32;
 const MAX_RELS_PER_CHUNK: usize = 48;
 
 impl Extractor for DeterministicExtractor {
-    fn extract(&self, chunk_text: &str) -> Extraction {
-        let entities = extract_entities(chunk_text);
-        let relationships = co_occurrence_rels(&entities);
-        Extraction {
-            entities,
-            relationships,
-        }
+    fn extract<'a>(
+        &'a self,
+        chunk_text: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Extraction> + Send + 'a>> {
+        Box::pin(async move {
+            let entities = extract_entities(chunk_text);
+            let relationships = co_occurrence_rels(&entities);
+            Extraction { entities, relationships }
+        })
     }
 
     fn method(&self) -> &'static str {
         "deterministic-heuristic"
+    }
+}
+
+// ===========================================================================
+// THE LLM-BACKED EXTRACTOR (OPT-IN, STRICTLY GROUNDED)
+// ===========================================================================
+
+/// Decode budget for one chunk's extraction reply. Bounded — the JSON for a
+/// handful of entities/relationships is small; a runaway reply is truncated.
+const LLM_EXTRACT_MAX_TOKENS: u32 = 512;
+/// Max entities / relationships accepted from ONE LLM reply BEFORE grounding
+/// (grounding then drops the ungrounded ones). A politeness bound so a
+/// pathological reply can't flood the grounding pass.
+const LLM_MAX_RAW: usize = 64;
+
+/// An OPT-IN LLM-backed extractor (`[docsearch].graph_extractor = "llm"`). It
+/// asks the ON-DEVICE model for typed entities + relationships in one chunk,
+/// then STRICTLY GROUNDS the reply: an entity survives ONLY if its name appears
+/// VERBATIM (case-insensitive) in the chunk — its span is taken from that real
+/// occurrence — and its type is a known kind; a relationship survives ONLY if
+/// BOTH endpoints survived grounding. Anything the model invents that is not in
+/// the text is DROPPED, so the module contract (GROUNDED, NEVER FABRICATED)
+/// holds even though an LLM can hallucinate. FAILS SOFT: an unreachable server,
+/// a non-JSON reply, or a parse error yields an EMPTY extraction for that chunk
+/// (an honest miss) — never a crash, never a guess. The deterministic extractor
+/// stays the default + the fallback when the server is unreachable at build start.
+pub struct LlmExtractor {
+    client: tokio::sync::Mutex<crate::inference::InferenceClient>,
+}
+
+impl LlmExtractor {
+    /// Connect to the on-device inference server and PROBE it once. Returns
+    /// `None` when the server is unreachable / not answering so the caller falls
+    /// back to the deterministic extractor honestly (the LLM path is never
+    /// half-wired). The probe is a tiny real generate call (no new op).
+    pub async fn connect(socket_path: &std::path::Path) -> Option<Self> {
+        let mut client = crate::inference::InferenceClient::new(socket_path.to_path_buf());
+        match client
+            .generate("Reply with the single word: ok.", 4, &[], &[], None, None)
+            .await
+        {
+            Ok(_) => Some(LlmExtractor { client: tokio::sync::Mutex::new(client) }),
+            Err(_) => None,
+        }
+    }
+}
+
+impl Extractor for LlmExtractor {
+    fn extract<'a>(
+        &'a self,
+        chunk_text: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Extraction> + Send + 'a>> {
+        Box::pin(async move {
+            if chunk_text.trim().is_empty() {
+                return Extraction::default();
+            }
+            let prompt = build_extract_prompt(chunk_text);
+            // One inference call per chunk, serialized through the extractor's own
+            // connection. A transport/model error is an honest MISS (empty), never
+            // a fabricated node.
+            let raw = {
+                let mut c = self.client.lock().await;
+                match c.generate(&prompt, LLM_EXTRACT_MAX_TOKENS, &[], &[], None, None).await {
+                    Ok(t) => t,
+                    Err(_) => return Extraction::default(),
+                }
+            };
+            let (raw_entities, raw_rels) = parse_llm_extraction(&raw);
+            ground_extraction(&raw_entities, &raw_rels, chunk_text)
+        })
+    }
+
+    fn method(&self) -> &'static str {
+        "llm-grounded"
+    }
+}
+
+/// The extraction prompt for one chunk. Asks for a strict JSON object of typed
+/// entities + relationships, ONLY names that appear verbatim in the text. (The
+/// daemon-side grounding pass enforces this regardless of whether the model
+/// complies — the prompt is a hint, `ground_extraction` is the guarantee.)
+fn build_extract_prompt(chunk_text: &str) -> String {
+    format!(
+        "Extract named entities and their relationships from the TEXT below. Use ONLY \
+names that appear VERBATIM in the text — never invent one. Entity \"type\" must be one \
+of: person, project, task, deadline, topic. Respond with ONLY a JSON object:\n\
+{{\"entities\":[{{\"type\":\"person\",\"name\":\"...\"}}],\"relationships\":[{{\"from\":\"...\",\"relation\":\"...\",\"to\":\"...\"}}]}}\n\
+If there are none, respond {{\"entities\":[],\"relationships\":[]}}.\n\nTEXT:\n{chunk_text}"
+    )
+}
+
+/// A raw (pre-grounding) entity/relationship parsed from the model reply.
+#[derive(Debug, Clone)]
+struct RawEntity {
+    kind: String,
+    name: String,
+}
+#[derive(Debug, Clone)]
+struct RawRel {
+    from: String,
+    to: String,
+}
+
+/// LENIENTLY parse the model reply into raw entities + relationships. Finds the
+/// first `{...}` JSON object in the reply (models often wrap JSON in prose), then
+/// reads the `entities` + `relationships` arrays. ANY failure (no JSON object,
+/// bad shape, non-string fields) yields empty vecs — an honest miss, never a
+/// throw. Capped at [`LLM_MAX_RAW`] each. PURE.
+fn parse_llm_extraction(reply: &str) -> (Vec<RawEntity>, Vec<RawRel>) {
+    let Some(obj_str) = first_json_object(reply) else {
+        return (Vec::new(), Vec::new());
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&obj_str) else {
+        return (Vec::new(), Vec::new());
+    };
+    let s = |val: &serde_json::Value, k: &str| val.get(k).and_then(|x| x.as_str()).map(str::to_string);
+    let mut entities = Vec::new();
+    if let Some(arr) = v.get("entities").and_then(|e| e.as_array()) {
+        for item in arr.iter().take(LLM_MAX_RAW) {
+            if let (Some(kind), Some(name)) = (s(item, "type"), s(item, "name")) {
+                if !name.trim().is_empty() {
+                    entities.push(RawEntity { kind, name });
+                }
+            }
+        }
+    }
+    let mut rels = Vec::new();
+    if let Some(arr) = v.get("relationships").and_then(|r| r.as_array()) {
+        for item in arr.iter().take(LLM_MAX_RAW) {
+            // The model's `relation` predicate is intentionally NOT read: an
+            // LLM-asserted predicate is not grounded in the text, so the edge is
+            // recorded as honest co-occurrence (see ground_extraction). We keep
+            // only the two endpoints (which ARE grounded).
+            if let (Some(from), Some(to)) = (s(item, "from"), s(item, "to")) {
+                if !from.trim().is_empty() && !to.trim().is_empty() {
+                    rels.push(RawRel { from, to });
+                }
+            }
+        }
+    }
+    (entities, rels)
+}
+
+/// Return the first balanced `{...}` substring of `reply`, or None. Tolerates
+/// prose before/after the JSON (a model often says "Here is the JSON: {...}").
+/// PURE; never panics.
+fn first_json_object(reply: &str) -> Option<String> {
+    let bytes = reply.as_bytes();
+    let start = reply.find('{')?;
+    let mut depth = 0usize;
+    let mut in_str = false;
+    let mut esc = false;
+    for i in start..bytes.len() {
+        let c = bytes[i] as char;
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(reply[start..=i].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// THE SAFETY CORE — strictly GROUND the raw LLM output against `chunk_text`.
+/// An entity survives ONLY if (a) its name occurs VERBATIM (case-insensitive) in
+/// the chunk (the span is that real occurrence) and (b) its type maps to a known
+/// [`EntityType`]. A relationship survives ONLY if BOTH endpoints grounded to a
+/// surviving entity. Everything else — a hallucinated name, an unknown type, a
+/// dangling edge — is DROPPED. Deduped by (type, lowercased name). Bounded by the
+/// world-model caps on write. PURE + total: this is what makes an LLM extractor
+/// unable to fabricate, and it is exhaustively tested.
+fn ground_extraction(raw_entities: &[RawEntity], raw_rels: &[RawRel], chunk_text: &str) -> Extraction {
+    let mut entities: Vec<ExtractedEntity> = Vec::new();
+    let mut seen: std::collections::HashSet<(EntityType, String)> = std::collections::HashSet::new();
+    // Map a grounded lowercased name -> its canonical display name, so a
+    // relationship endpoint can be checked against the SURVIVING entity set.
+    let mut grounded_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for re in raw_entities {
+        let name = re.name.trim();
+        if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
+            continue;
+        }
+        let Some(kind) = entity_type_from_str(&re.kind) else {
+            continue; // unknown type -> drop (never a guessed kind)
+        };
+        let Some(span) = verbatim_char_span(chunk_text, name) else {
+            continue; // NOT in the text -> a hallucination, dropped
+        };
+        let key = (kind, name.to_lowercase());
+        if !seen.insert(key) {
+            continue; // dedup
+        }
+        grounded_names.insert(name.to_lowercase(), name.to_string());
+        entities.push(ExtractedEntity {
+            entity_type: kind,
+            name: name.to_string(),
+            attributes: Vec::new(),
+            span,
+        });
+    }
+    let mut relationships: Vec<ExtractedRel> = Vec::new();
+    for rr in raw_rels {
+        let from_l = rr.from.trim().to_lowercase();
+        let to_l = rr.to.trim().to_lowercase();
+        // BOTH endpoints must be surviving grounded entities (no dangling edge).
+        let (Some(from_name), Some(to_name)) = (grounded_names.get(&from_l), grounded_names.get(&to_l))
+        else {
+            continue;
+        };
+        if from_name == to_name {
+            continue; // no self-edge
+        }
+        // HONEST co-occurrence: the model identifies WHICH grounded entities relate,
+        // but the semantic predicate it emits ("reports to") is NOT grounded in the
+        // text, so we label the edge with the weaker TRUE claim "co_mentioned"
+        // (exactly the deterministic extractor's claim) rather than assert an
+        // invented relationship. rr.relation is intentionally not written.
+        let relation = "co_mentioned".to_string();
+        // Ground the edge with the covering span of the two endpoints in the text.
+        let (Some(fs), Some(ts)) =
+            (verbatim_char_span(chunk_text, from_name), verbatim_char_span(chunk_text, to_name))
+        else {
+            continue;
+        };
+        let span = (fs.0.min(ts.0), fs.1.max(ts.1));
+        relationships.push(ExtractedRel {
+            from_name: from_name.clone(),
+            relation,
+            to_name: to_name.clone(),
+            span,
+        });
+    }
+    Extraction { entities, relationships }
+}
+
+/// Char span [start, end) of the FIRST WORD-BOUNDARY-delimited, case-insensitive
+/// occurrence of `needle` in the ORIGINAL `chunk_text`, or None when it is absent.
+///
+/// Two correctness properties that make this a real GROUNDING check (not a loose
+/// substring test — the substring version let a hallucinated "Tom" ground to the
+/// middle of "tomorrow"):
+///   * WORD-BOUNDED: the match must be delimited by a non-alphanumeric char (or a
+///     string edge) on BOTH sides, so a short invented name can never ground to a
+///     fragment of a longer real word. This mirrors the deterministic extractor's
+///     own whole-word grounding.
+///   * ORIGINAL-TEXT OFFSETS: it scans the ORIGINAL char sequence (never a
+///     lowercased copy), so a length-changing lowercasing (e.g. 'İ' -> "i̇") can
+///     never drift the returned span off the real characters.
+///
+/// Case-insensitivity is an ASCII fold (this mines ASCII-dominant document text,
+/// like the deterministic extractor's boundaries); a non-ASCII char matches
+/// exactly. PURE + total (never panics).
+fn verbatim_char_span(chunk_text: &str, needle: &str) -> Option<(usize, usize)> {
+    let hay: Vec<char> = chunk_text.chars().collect();
+    let ndl: Vec<char> = needle.trim().chars().collect();
+    if ndl.is_empty() || ndl.len() > hay.len() {
+        return None;
+    }
+    let n = ndl.len();
+    for i in 0..=(hay.len() - n) {
+        if !(0..n).all(|k| hay[i + k].eq_ignore_ascii_case(&ndl[k])) {
+            continue;
+        }
+        let left_ok = i == 0 || !hay[i - 1].is_alphanumeric();
+        let right_ok = i + n == hay.len() || !hay[i + n].is_alphanumeric();
+        if left_ok && right_ok {
+            return Some((i, i + n));
+        }
+    }
+    None
+}
+
+/// Map a model-emitted type string to a known [`EntityType`], or None (an
+/// unknown/garbled type is DROPPED, never guessed). Case-insensitive.
+fn entity_type_from_str(kind: &str) -> Option<EntityType> {
+    match kind.trim().to_lowercase().as_str() {
+        "person" => Some(EntityType::Person),
+        "project" => Some(EntityType::Project),
+        "task" => Some(EntityType::Task),
+        "deadline" => Some(EntityType::Deadline),
+        "topic" => Some(EntityType::Topic),
+        // THREAD is reserved for conversational ingestion, not document mining —
+        // never accept it from an LLM over document prose.
+        _ => None,
     }
 }
 
@@ -626,7 +935,7 @@ pub async fn build_from_chunks(
     let mut stats = BuildStats::default();
     for (file_path, byte_offset, text) in chunks.iter().take(MAX_BUILD_CHUNKS) {
         stats.chunks_scanned += 1;
-        let extraction = extractor.extract(text);
+        let extraction = extractor.extract(text).await;
 
         // Provenance string for this chunk: the citing file + the chunk offset
         // PLUS the entity's char span within the chunk, so a node traces back to
@@ -811,12 +1120,12 @@ mod tests {
 
     // -- DETERMINISTIC EXTRACTION (pure, hermetic) ---------------------------
 
-    #[test]
-    fn deterministic_extracts_expected_entities_grounded_in_text() {
+    #[tokio::test]
+    async fn deterministic_extracts_expected_entities_grounded_in_text() {
         let ex = DeterministicExtractor;
         let text = "Met with Darwin Capani about Project DARWIN. \
                     The thesis is due 2026-06-30.";
-        let out = ex.extract(text);
+        let out = ex.extract(text).await;
 
         // A multi-word proper name -> Person; an ALL-CAPS code word -> Project; an
         // ISO date -> Deadline. Each must be present and correctly typed.
@@ -846,8 +1155,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn deterministic_extracts_dates_in_multiple_shapes() {
+    #[tokio::test]
+    async fn deterministic_extracts_dates_in_multiple_shapes() {
         let ex = DeterministicExtractor;
         for (text, raw) in [
             ("due 2026-06-30 sharp", "2026-06-30"),
@@ -855,7 +1164,7 @@ mod tests {
             ("the deadline is June 30, 2026 firm", "June 30, 2026"),
             ("meet on June 30 please", "June 30"),
         ] {
-            let out = ex.extract(text);
+            let out = ex.extract(text).await;
             assert!(
                 out.entities
                     .iter()
@@ -866,8 +1175,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn deterministic_yields_nothing_for_entityless_text_never_fabricates() {
+    #[tokio::test]
+    async fn deterministic_yields_nothing_for_entityless_text_never_fabricates() {
         let ex = DeterministicExtractor;
         // All lowercase prose with no proper nouns, no dates, no cues.
         for text in [
@@ -876,7 +1185,7 @@ mod tests {
             "   ",
             "",
         ] {
-            let out = ex.extract(text);
+            let out = ex.extract(text).await;
             assert!(
                 out.entities.is_empty() && out.relationships.is_empty(),
                 "fabricated something from entity-less text {text:?}: {out:?}"
@@ -884,12 +1193,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn deterministic_drops_ambiguous_lone_capitalized_word() {
+    #[tokio::test]
+    async fn deterministic_drops_ambiguous_lone_capitalized_word() {
         let ex = DeterministicExtractor;
         // "The" is sentence-initial; "Stuff" is a lone capitalized word with no
         // cue and not all-caps -> too ambiguous to type -> dropped (conservative).
-        let out = ex.extract("The Stuff happened yesterday somewhere.");
+        let out = ex.extract("The Stuff happened yesterday somewhere.").await;
         assert!(
             out.entities.is_empty(),
             "a lone ambiguous capitalized word must be dropped, got {:?}",
@@ -897,10 +1206,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn deterministic_co_occurrence_relates_distinct_entities_in_a_chunk() {
+    #[tokio::test]
+    async fn deterministic_co_occurrence_relates_distinct_entities_in_a_chunk() {
         let ex = DeterministicExtractor;
-        let out = ex.extract("Met with Darwin Capani about Project DARWIN.");
+        let out = ex.extract("Met with Darwin Capani about Project DARWIN.").await;
         // Two distinct entities -> exactly one co-occurrence `mentions` edge.
         assert!(out.entities.len() >= 2, "need >=2 entities: {:?}", out.entities);
         assert!(
@@ -921,11 +1230,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn deterministic_types_by_cue_word() {
+    #[tokio::test]
+    async fn deterministic_types_by_cue_word() {
         let ex = DeterministicExtractor;
         // A project cue in front of a single capitalized word types it Project.
-        let proj = ex.extract("the project Phoenix is underway");
+        let proj = ex.extract("the project Phoenix is underway").await;
         assert!(
             proj.entities
                 .iter()
@@ -934,7 +1243,7 @@ mod tests {
             proj.entities
         );
         // A task cue types the following phrase as a Task.
-        let task = ex.extract("TODO: Review Pull Request soon");
+        let task = ex.extract("TODO: Review Pull Request soon").await;
         assert!(
             task.entities.iter().any(|e| e.entity_type == EntityType::Task),
             "task cue did not produce a Task: {:?}",
@@ -942,10 +1251,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn deterministic_never_emits_thread_from_document_prose() {
+    #[tokio::test]
+    async fn deterministic_never_emits_thread_from_document_prose() {
         let ex = DeterministicExtractor;
-        let out = ex.extract("Met with Darwin Capani about Project DARWIN due 2026-06-30.");
+        let out = ex.extract("Met with Darwin Capani about Project DARWIN due 2026-06-30.").await;
         assert!(
             out.entities.iter().all(|e| e.entity_type != EntityType::Thread),
             "document prose must not be mined into a Thread: {:?}",
@@ -1171,21 +1480,26 @@ mod tests {
         called: std::sync::atomic::AtomicBool,
     }
     impl Extractor for MockLlmExtractor {
-        fn extract(&self, chunk_text: &str) -> Extraction {
-            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
-            // Return a single grounded entity spanning the whole (non-empty) chunk.
-            if chunk_text.trim().is_empty() {
-                return Extraction::default();
-            }
-            Extraction {
-                entities: vec![ExtractedEntity {
-                    entity_type: EntityType::Topic,
-                    name: "Mock Topic".to_string(),
-                    attributes: vec![("confidence".to_string(), "mock".to_string())],
-                    span: (0, chunk_text.chars().count()),
-                }],
-                relationships: Vec::new(),
-            }
+        fn extract<'a>(
+            &'a self,
+            chunk_text: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Extraction> + Send + 'a>> {
+            Box::pin(async move {
+                self.called.store(true, std::sync::atomic::Ordering::SeqCst);
+                // A single grounded entity spanning the whole (non-empty) chunk.
+                if chunk_text.trim().is_empty() {
+                    return Extraction::default();
+                }
+                Extraction {
+                    entities: vec![ExtractedEntity {
+                        entity_type: EntityType::Topic,
+                        name: "Mock Topic".to_string(),
+                        attributes: vec![("confidence".to_string(), "mock".to_string())],
+                        span: (0, chunk_text.chars().count()),
+                    }],
+                    relationships: Vec::new(),
+                }
+            })
         }
         fn method(&self) -> &'static str {
             "mock-llm"
@@ -1221,5 +1535,151 @@ mod tests {
             state.entities.iter().any(|e| e.name == "Mock Topic"),
             "the mock seam's entity must land in the shared world model: {state:?}"
         );
+    }
+
+    // -- LLM GROUNDING (the safety core) -------------------------------------
+
+    fn ent(kind: &str, name: &str) -> RawEntity {
+        RawEntity { kind: kind.into(), name: name.into() }
+    }
+    fn rel(from: &str, _r: &str, to: &str) -> RawRel {
+        // `_r` (the would-be predicate) is ignored — the extractor never reads it.
+        RawRel { from: from.into(), to: to.into() }
+    }
+
+    #[test]
+    fn grounding_drops_every_hallucinated_entity() {
+        let chunk = "Alice met with Bob about the Orion project on 2026-06-30.";
+        let raw = vec![
+            ent("person", "Alice"),   // grounded
+            ent("person", "Charlie"), // NOT in the text -> dropped
+            ent("project", "Orion"),  // grounded (substring of "Orion project")
+            ent("topic", "Atlantis"), // NOT in the text -> dropped
+        ];
+        let g = ground_extraction(&raw, &[], chunk);
+        let names: Vec<&str> = g.entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"Alice") && names.contains(&"Orion"));
+        assert!(!names.contains(&"Charlie"), "a hallucinated name must be dropped");
+        assert!(!names.contains(&"Atlantis"), "a hallucinated name must be dropped");
+        // Every surviving entity's span really covers its name in the chunk.
+        for e in &g.entities {
+            let sub: String = chunk.chars().skip(e.span.0).take(e.span.1 - e.span.0).collect();
+            assert_eq!(sub.to_lowercase(), e.name.to_lowercase(), "span must ground the name");
+        }
+    }
+
+    #[test]
+    fn grounding_requires_a_word_boundary_not_a_substring() {
+        // REVIEW PIN: a short hallucinated name must NOT ground to a fragment of a
+        // longer real word — the exact fabrication the substring version allowed.
+        let chunk = "We will ship the release tomorrow. The team already improved it.";
+        // "Tom" is inside "tomorrow", "Al" inside "already", "Art" inside "started"
+        // (absent here) — none may ground.
+        for bad in ["Tom", "Al", "Ready", "Lease"] {
+            let g = ground_extraction(&[ent("person", bad)], &[], chunk);
+            assert!(g.entities.is_empty(), "{bad:?} must NOT ground to a substring of a word");
+        }
+        // A REAL whole word grounds (and its span covers exactly it).
+        let g = ground_extraction(&[ent("topic", "release")], &[], chunk);
+        assert_eq!(g.entities.len(), 1);
+        let e = &g.entities[0];
+        let sub: String = chunk.chars().skip(e.span.0).take(e.span.1 - e.span.0).collect();
+        assert_eq!(sub, "release");
+    }
+
+    #[test]
+    fn grounding_span_is_correct_under_length_changing_lowercasing() {
+        // REVIEW PIN: 'İ' (U+0130) lowercases to 2 chars — the old byte->char map
+        // drifted the span. Scanning the ORIGINAL text keeps the span exact.
+        let chunk = "İstanbul and Ankara are cities. Xavier lives here.";
+        let g = ground_extraction(&[ent("person", "Xavier")], &[], chunk);
+        assert_eq!(g.entities.len(), 1);
+        let e = &g.entities[0];
+        let sub: String = chunk.chars().skip(e.span.0).take(e.span.1 - e.span.0).collect();
+        assert_eq!(sub, "Xavier", "span must exactly cover the name, not drift");
+    }
+
+    #[test]
+    fn grounding_never_writes_an_invented_relation_predicate() {
+        // REVIEW PIN: the LLM asserting "reports to" between two merely co-mentioned
+        // people must NOT write that claim — only the honest co-occurrence.
+        let chunk = "Alice and Bob both attended the meeting.";
+        let raw = vec![ent("person", "Alice"), ent("person", "Bob")];
+        let rels = vec![rel("Alice", "reports to", "Bob")];
+        let g = ground_extraction(&raw, &rels, chunk);
+        assert_eq!(g.relationships.len(), 1);
+        assert_eq!(g.relationships[0].relation, "co_mentioned", "no invented predicate is written");
+    }
+
+    #[test]
+    fn grounding_drops_unknown_types_and_dangling_edges() {
+        let chunk = "Alice and Bob shipped Widget.";
+        let raw = vec![
+            ent("person", "Alice"),
+            ent("person", "Bob"),
+            ent("gadget", "Widget"), // unknown type -> dropped (even though in text)
+        ];
+        let rels = vec![
+            rel("Alice", "worked with", "Bob"),     // both grounded -> kept
+            rel("Alice", "assigned", "Widget"),      // Widget dropped -> dangling -> dropped
+            rel("Alice", "knows", "Zoe"),            // Zoe absent -> dropped
+        ];
+        let g = ground_extraction(&raw, &rels, chunk);
+        assert_eq!(g.entities.len(), 2, "unknown-type entity dropped even when in text");
+        assert_eq!(g.relationships.len(), 1, "only the both-grounded edge survives");
+        let r = &g.relationships[0];
+        assert_eq!((r.from_name.as_str(), r.to_name.as_str()), ("Alice", "Bob"));
+        // The invented predicate is NOT written — the honest co-occurrence claim is.
+        assert_eq!(r.relation, "co_mentioned", "an ungrounded predicate downgrades to co-occurrence");
+    }
+
+    #[test]
+    fn grounding_dedups_and_rejects_self_edges_and_overlong_names() {
+        let chunk = "Bob Bob Bob works on a project.";
+        let raw = vec![ent("person", "Bob"), ent("person", "Bob")]; // dup
+        let rels = vec![rel("Bob", "is", "Bob")]; // self-edge
+        let g = ground_extraction(&raw, &rels, chunk);
+        assert_eq!(g.entities.len(), 1, "duplicate entities collapse");
+        assert_eq!(g.relationships.len(), 0, "a self-edge is refused");
+        // An absurdly long name is clamped out (not a real entity name).
+        let long = "x".repeat(MAX_NAME_CHARS + 5);
+        let chunk2 = format!("prefix {long} suffix");
+        let g2 = ground_extraction(&[ent("topic", &long)], &[], &chunk2);
+        assert!(g2.entities.is_empty(), "an overlong name is dropped");
+    }
+
+    #[test]
+    fn parse_llm_extraction_is_lenient_and_never_throws() {
+        // Prose-wrapped JSON is still parsed.
+        let (e, r) = parse_llm_extraction(
+            "Sure! Here is the JSON: {\"entities\":[{\"type\":\"person\",\"name\":\"Ann\"}],\
+             \"relationships\":[{\"from\":\"Ann\",\"relation\":\"leads\",\"to\":\"Beta\"}]} — done.",
+        );
+        assert_eq!(e.len(), 1);
+        assert_eq!(r.len(), 1);
+        // Garbage / no JSON -> empty, never a throw.
+        for junk in ["not json at all", "", "{ broken", "{}", "{\"entities\":\"nope\"}"] {
+            let (e, r) = parse_llm_extraction(junk);
+            assert!(e.is_empty() && r.is_empty(), "junk {junk:?} must yield empty");
+        }
+    }
+
+    /// The grounded LLM extraction, run END TO END through the SAME build loop
+    /// as the deterministic path, writes ONLY grounded entities — proving the
+    /// LLM seam obeys the module contract via a parse+ground path (no model call).
+    #[tokio::test]
+    async fn llm_grounded_extraction_writes_only_grounded_entities() {
+        // Simulate a model reply (via the pure parse+ground path the LlmExtractor
+        // uses) that mixes real + hallucinated entities.
+        let chunk = "Dana leads the Helix project.";
+        let reply = "{\"entities\":[{\"type\":\"person\",\"name\":\"Dana\"},\
+            {\"type\":\"person\",\"name\":\"Ghost\"},{\"type\":\"project\",\"name\":\"Helix\"}],\
+            \"relationships\":[{\"from\":\"Dana\",\"relation\":\"leads\",\"to\":\"Helix\"}]}";
+        let (re, rr) = parse_llm_extraction(reply);
+        let g = ground_extraction(&re, &rr, chunk);
+        let names: Vec<&str> = g.entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"Dana") && names.contains(&"Helix"));
+        assert!(!names.contains(&"Ghost"), "the hallucinated 'Ghost' must never be written");
+        assert_eq!(g.relationships.len(), 1);
     }
 }

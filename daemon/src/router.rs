@@ -4241,16 +4241,34 @@ async fn handle_build_knowledge_graph(memory: &Memory) -> String {
                 folders first, then I can build the knowledge graph from them."
             .to_string();
     }
-    // The shipped extractor is the conservative deterministic heuristic. (A richer
-    // LLM-backed extractor implements the same seam and is runtime-gated; the
-    // deterministic one is always the honest fallback.) `map_documents` re-checks
-    // the gate (defense-in-depth) and only then builds.
-    let extractor = DeterministicExtractor;
+    // Pick the extractor: the conservative deterministic heuristic (default) OR
+    // the OPT-IN LLM-grounded extractor when [docsearch].graph_extractor = "llm".
+    // The LLM path connects to the on-device inference server; if it is
+    // unreachable at build start we FALL BACK to the deterministic extractor
+    // honestly (never a half-wired LLM build). Either way `map_documents`
+    // re-checks the gate (defense-in-depth) and the grounding contract holds.
+    let det = DeterministicExtractor;
+    let llm = if cfg.docsearch.graph_extractor.trim() == "llm" {
+        let sock = root.join("state").join("ipc").join("inference.sock");
+        match knowledge_graph::LlmExtractor::connect(&sock).await {
+            Some(e) => Some(e),
+            None => {
+                warn!("knowledge_graph: LLM extractor requested but inference server unreachable; using the deterministic extractor");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let extractor: &dyn Extractor = match &llm {
+        Some(e) => e,
+        None => &det,
+    };
     match knowledge_graph::map_documents(
         cfg.docsearch.enabled,
         cfg.docsearch.build_graph,
         memory,
-        &extractor,
+        extractor,
         &chunks,
     )
     .await
@@ -4290,12 +4308,19 @@ async fn handle_build_knowledge_graph(memory: &Memory) -> String {
             } else {
                 String::new()
             };
+            let method_note = if extractor.method() == "llm-grounded" {
+                "with the on-device LLM extractor, then STRICTLY filtered to only names \
+                 that appear verbatim in your documents (anything the model invented was \
+                 dropped, and relationships are recorded as honest co-occurrence)"
+            } else {
+                "with a conservative heuristic (it errs toward missing rather than inventing)"
+            };
             format!(
                 "Mapped your documents into the shared world model: {} entit(ies) and {} \
                  relationship(s) from {} indexed chunk(s){}. These were extracted from YOUR \
-                 documents with a conservative heuristic (it errs toward missing rather than \
-                 inventing) and each is tagged with its source file — nothing was fabricated.",
-                stats.entities_written, stats.relationships_written, stats.chunks_scanned, cap_note
+                 documents {} and each is tagged with its source file — nothing ungrounded \
+                 was written.",
+                stats.entities_written, stats.relationships_written, stats.chunks_scanned, cap_note, method_note
             )
         }
         // Unreachable in practice (the gate was checked above), but the gated entry
