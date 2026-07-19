@@ -101,6 +101,10 @@ pub enum RecallMethod {
     /// Two-stage over a LEXICAL stage one: BM25 retrieval then the cross-encoder
     /// rerank of that keyword shortlist. Stage one was NOT neural embedding.
     LexicalReranked,
+    /// HYBRID: neural embedding cosine + BM25 fused by reciprocal rank fusion.
+    Hybrid,
+    /// HYBRID fused recall THEN the cross-encoder rerank of the fused shortlist.
+    HybridReranked,
 }
 
 impl RecallMethod {
@@ -136,6 +140,18 @@ impl RecallMethod {
                  on-device cross-encoder for a sharper order. Stage one was \
                  keyword-semantic, NOT neural embedding."
             }
+            RecallMethod::Hybrid => {
+                "hybrid recall: I ranked your recorded episodes by FUSING \
+                 on-device embedding cosine with BM25 keyword relevance \
+                 (reciprocal rank fusion) — so a match on meaning and a match on \
+                 an exact word both surface."
+            }
+            RecallMethod::HybridReranked => {
+                "hybrid two-stage recall: I fused on-device embedding cosine with \
+                 BM25 keyword relevance for recall, then re-ranked the top few \
+                 with an on-device cross-encoder for a sharper order — the \
+                 strongest recall I have."
+            }
         }
     }
 }
@@ -147,6 +163,8 @@ impl From<RankMethod> for RecallMethod {
             RankMethod::Embedding => RecallMethod::Embedding,
             RankMethod::Reranked => RecallMethod::Reranked,
             RankMethod::LexicalReranked => RecallMethod::LexicalReranked,
+            RankMethod::Hybrid => RecallMethod::Hybrid,
+            RankMethod::HybridReranked => RecallMethod::HybridReranked,
         }
     }
 }

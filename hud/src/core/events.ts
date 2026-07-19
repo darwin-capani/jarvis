@@ -341,7 +341,7 @@ export function parseForgeProposed(
  *  RankMethod over the code index, as_str): on-device neural cosine, or the
  *  lexical BM25 fallback when the on-device embedder was down. A future/unknown
  *  string is tolerated (rendered verbatim) so the panel never breaks. */
-export type CodeMethod = "neural-embedding" | "lexical-bm25" | string;
+export type CodeMethod = "neural-embedding" | "lexical-bm25" | "hybrid" | "hybrid-reranked" | string;
 
 /** One CITED code chunk an explanation was grounded in (code.explained `hits[]`,
  *  daemon docsearch DocHit). The citation anchor is `filePath` + `byteOffset`;
@@ -6298,7 +6298,7 @@ export function parseOptimizerProposal(
  *  true on-device cosine over embedding vectors; "lexical-bm25" is the keyword
  *  fallback used when the on-device embedder was unavailable. Tolerant of any
  *  other string (rendered verbatim) so a future method never breaks the panel. */
-export type DocSearchMethod = "neural-embedding" | "lexical-bm25" | string;
+export type DocSearchMethod = "neural-embedding" | "lexical-bm25" | "neural-reranked" | "lexical-reranked" | "hybrid" | "hybrid-reranked" | string;
 
 /** The on-device file index status (docsearch.indexed / DocIndex::status). COUNTS
  *  ONLY — never a path or chunk text. `embeddedChunks` < `chunks` means some

@@ -2256,12 +2256,31 @@ impl DocIndex {
                                      (reindex to repair the store)"
                                 );
                             }
+                            // HYBRID RECALL (config-gated): fuse the dense cosine
+                            // ranking with lexical BM25 over the SAME corpus by
+                            // reciprocal rank fusion, so a chunk BM25 nails but
+                            // cosine buries (below the reranker's cutoff) — or
+                            // vice-versa — reaches the shortlist the cross-encoder
+                            // re-scores. Improves RECALL into stage two; the
+                            // reranker (if on) still decides the final order.
+                            let (candidates, base_method) = if embedder.hybrid_enabled() {
+                                let lexical = LexicalProvider { params: Bm25Params::default() };
+                                use crate::recall::EmbeddingProvider;
+                                let bm25 = lexical
+                                    .score(query, &corpus.facts)
+                                    .into_iter()
+                                    .enumerate()
+                                    .collect::<Vec<_>>();
+                                (rrf_fuse(&scored, &bm25, RRF_K), RankMethod::Hybrid)
+                            } else {
+                                (scored, RankMethod::Embedding)
+                            };
                             return rank_cite_rerank(
                                 query,
                                 &corpus,
-                                scored,
+                                candidates,
                                 k,
-                                RankMethod::Embedding,
+                                base_method,
                                 false,
                                 embedder,
                             )
@@ -2318,6 +2337,52 @@ impl DocIndex {
 /// `base_method` is `Embedding` (neural cosine) or `Lexical` (BM25) — the
 /// cross-encoder can sharpen EITHER shortlist. Each [`DocHit::score`] keeps its
 /// DENSE retrieval score (cosine / BM25); the ORDER reflects the rerank when it ran.
+/// Reciprocal Rank Fusion constant (Cormack et al. 2009). Dampens the tail so no
+/// single ranker's low positions dominate the fusion; 60 is the standard value.
+const RRF_K: f64 = 60.0;
+
+/// RECIPROCAL RANK FUSION of two rankings (dense cosine + lexical BM25) into one
+/// fused score per chunk index. Standard RRF: `fused(d) = Σ_r 1/(RRF_K + rank_r(d))`
+/// over each ranker `r` in which `d` appears with a POSITIVE score (rank 1-based,
+/// by score DESC then index ASC). Higher fused = better.
+///
+/// Why RRF specifically: it is RANK-based, so the incomparable scales of cosine
+/// (0..1) and BM25 (unbounded) never need normalizing — only each ranker's
+/// ORDER matters. That is exactly what makes hybrid retrieval robust: a chunk an
+/// exact-keyword query nails in BM25 but paraphrase-distance buries in dense (or
+/// vice-versa) is lifted by the OTHER ranker into the candidate shortlist the
+/// cross-encoder then re-scores. PURE + deterministic; returns fused (index,
+/// score) for every index positive in EITHER ranker, sorted best-first.
+fn rrf_fuse(dense: &[(usize, f64)], lexical: &[(usize, f64)], k_const: f64) -> Vec<(usize, f64)> {
+    use std::collections::HashMap;
+    // 1-based rank of each POSITIVE-scored item within one ranker.
+    let ranks = |scored: &[(usize, f64)]| -> HashMap<usize, usize> {
+        let mut v: Vec<&(usize, f64)> = scored
+            .iter()
+            .filter(|(_, s)| s.is_finite() && *s > 0.0)
+            .collect();
+        v.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+        v.iter().enumerate().map(|(rank, (idx, _))| (*idx, rank + 1)).collect()
+    };
+    let dr = ranks(dense);
+    let lr = ranks(lexical);
+    let mut fused: HashMap<usize, f64> = HashMap::new();
+    for (idx, rank) in dr.iter().chain(lr.iter()) {
+        *fused.entry(*idx).or_insert(0.0) += 1.0 / (k_const + *rank as f64);
+    }
+    let mut out: Vec<(usize, f64)> = fused.into_iter().collect();
+    out.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+    out
+}
+
 async fn rank_cite_rerank(
     query: &str,
     corpus: &CachedCorpus,
@@ -2366,6 +2431,7 @@ async fn rank_cite_rerank(
                     method = match base_method {
                         RankMethod::Embedding => RankMethod::Reranked,
                         RankMethod::Lexical => RankMethod::LexicalReranked,
+                        RankMethod::Hybrid => RankMethod::HybridReranked,
                         other => other,
                     };
                 }
@@ -2458,6 +2524,82 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    // -- HYBRID RRF (reciprocal rank fusion) ---------------------------------
+
+    #[test]
+    fn rrf_is_rank_based_not_score_scale() {
+        // BM25 scores (unbounded, e.g. 8.0) and cosine (0..1) must fuse purely by
+        // ORDER — RRF never normalizes scales. Same order, wildly different
+        // magnitudes -> identical fusion.
+        let dense_small = vec![(0usize, 0.9), (1, 0.8), (2, 0.1)];
+        let dense_big = vec![(0usize, 90.0), (1, 80.0), (2, 10.0)];
+        let lex = vec![(2usize, 5.0), (1, 3.0), (0, 1.0)];
+        let a = rrf_fuse(&dense_small, &lex, RRF_K);
+        let b = rrf_fuse(&dense_big, &lex, RRF_K);
+        assert_eq!(a, b, "RRF depends only on rank order, never score scale");
+    }
+
+    #[test]
+    fn rrf_is_deterministic_and_covers_the_union() {
+        let dense = vec![(0usize, 0.9), (1, 0.5)];
+        let lex = vec![(2usize, 4.0), (1, 2.0)];
+        let f1 = rrf_fuse(&dense, &lex, RRF_K);
+        let f2 = rrf_fuse(&dense, &lex, RRF_K);
+        assert_eq!(f1, f2, "deterministic");
+        // Every index positive in EITHER ranker appears (0 dense-only, 2 lex-only,
+        // 1 in both).
+        let idxs: std::collections::HashSet<usize> = f1.iter().map(|(i, _)| *i).collect();
+        assert_eq!(idxs, [0usize, 1, 2].into_iter().collect());
+        // The item in BOTH rankers (1) outranks the singletons (its score sums two
+        // reciprocal-rank terms).
+        assert_eq!(f1[0].0, 1, "an item ranked by both fuses highest");
+        // Non-positive scores contribute nothing.
+        let with_zero = rrf_fuse(&[(9usize, 0.0)], &lex, RRF_K);
+        assert!(!with_zero.iter().any(|(i, _)| *i == 9), "a 0-score item is unranked");
+    }
+
+    /// MECHANISM EVAL (measure-first, honest): construct a corpus where the
+    /// relevant chunk for a query is findable by BM25 (an exact rare keyword) but
+    /// BURIED by dense cosine (paraphrase distance), below the reranker's
+    /// candidate cutoff. Prove that hybrid RRF LIFTS it into the top-K candidate
+    /// shortlist the cross-encoder would then re-score — the exact recall the
+    /// dense-only path drops. This is a mechanism demonstration over a
+    /// synthetic-but-representative case, NOT a real-corpus quality claim.
+    #[test]
+    fn hybrid_recalls_a_bm25_hit_that_dense_only_buries() {
+        // 25 chunks. The relevant one is index 0. Dense ranks it LAST (score 0.01
+        // — paraphrase-distant), so with a candidate cutoff of 20 the dense-only
+        // shortlist (top-20 by cosine) would NOT include it. BM25 ranks it FIRST
+        // (exact keyword). Hybrid RRF must pull it into the top-20.
+        let n = 25usize;
+        let cutoff = crate::recall::DEFAULT_RERANK_K; // 20
+        // Dense: index 0 is worst; 1..n descend from high to low, all above 0's 0.01.
+        let mut dense: Vec<(usize, f64)> = (1..n).map(|i| (i, 1.0 - (i as f64) * 0.01)).collect();
+        dense.push((0, 0.01));
+        // BM25: only index 0 matches the rare keyword (a couple of weak others).
+        let lexical = vec![(0usize, 9.0), (5, 0.5), (12, 0.3)];
+
+        // Dense-only top-cutoff candidate set: does it include 0? (No.)
+        let mut dense_sorted = dense.clone();
+        dense_sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
+        let dense_shortlist: std::collections::HashSet<usize> =
+            dense_sorted.iter().take(cutoff).map(|(i, _)| *i).collect();
+        assert!(!dense_shortlist.contains(&0), "dense-only buries the relevant chunk below the cutoff");
+
+        // Hybrid top-cutoff candidate set: it MUST include 0 (BM25 lifted it).
+        let fused = rrf_fuse(&dense, &lexical, RRF_K);
+        let hybrid_shortlist: std::collections::HashSet<usize> =
+            fused.iter().take(cutoff).map(|(i, _)| *i).collect();
+        assert!(
+            hybrid_shortlist.contains(&0),
+            "hybrid RRF recalls the BM25 hit dense-only dropped — the candidate-set improvement"
+        );
+        // Recall@cutoff for the single relevant chunk: dense-only 0, hybrid 1.
+        let dense_recall = usize::from(dense_shortlist.contains(&0));
+        let hybrid_recall = usize::from(hybrid_shortlist.contains(&0));
+        assert!(hybrid_recall > dense_recall, "measured: hybrid recall > dense-only recall on this case");
+    }
+
     /// A unique temp dir tree per test, cleaned on drop. All file I/O in these
     /// tests stays inside this dir — never the user's real home.
     struct TempTree(PathBuf);
@@ -2543,6 +2685,20 @@ mod tests {
         fn embed<'a>(&'a self, texts: &'a [String]) -> crate::recall::EmbedFuture<'a> {
             let vecs = keyword_vectors(texts);
             Box::pin(async move { Ok(vecs) })
+        }
+    }
+
+    /// The KeywordEmbedder with HYBRID retrieval ON — same embeddings, but the
+    /// search path fuses dense cosine with BM25 by RRF (so the wire method is
+    /// Hybrid, not Embedding).
+    struct HybridKeywordEmbedder;
+    impl Embedder for HybridKeywordEmbedder {
+        fn embed<'a>(&'a self, texts: &'a [String]) -> crate::recall::EmbedFuture<'a> {
+            let vecs = keyword_vectors(texts);
+            Box::pin(async move { Ok(vecs) })
+        }
+        fn hybrid_enabled(&self) -> bool {
+            true
         }
     }
 
@@ -3232,6 +3388,33 @@ mod tests {
             "an irrelevant file must not be cited: {:?}",
             result.hits
         );
+    }
+
+    #[tokio::test]
+    async fn search_hybrid_reports_hybrid_and_still_cites_the_right_file() {
+        // WIRE INTEGRATION: with hybrid ON (all chunks embedded, same space), the
+        // neural path fuses dense cosine with BM25 by RRF — the honest method is
+        // HYBRID (rerank is off in this mock), and the fused recall still cites the
+        // right file. Contrast search_neural_ranks_* which is dense-only Embedding.
+        let t = TempTree::new("search-hybrid");
+        let car = t.write("docs/car.md", "I drive a blue Subaru Outback wagon");
+        t.write("docs/pet.md", "a corgi named Watson is my dog");
+
+        let idx = DocIndex::open(&t.db_path()).unwrap();
+        let bounds = IndexBounds::default();
+        idx.reindex(&roots_of(&t, "docs"), &bounds, &HybridKeywordEmbedder)
+            .await
+            .unwrap();
+
+        let car_real = fs::canonicalize(&car).unwrap().display().to_string();
+        let result = idx.search("Subaru", 5, &HybridKeywordEmbedder).await;
+        assert_eq!(result.method, RankMethod::Hybrid, "hybrid recall -> HYBRID method, not Embedding");
+        assert_eq!(result.method.as_str(), "hybrid");
+        assert!(!result.hits.is_empty(), "the car chunk must be retrieved");
+        assert_eq!(result.hits[0].file_path, car_real, "hybrid still cites the real file");
+        assert!(result.hits[0].snippet.contains("Subaru"));
+        // Hybrid never fabricates the irrelevant file.
+        assert!(result.hits.iter().all(|h| !h.file_path.contains("pet.md")));
     }
 
     #[tokio::test]
