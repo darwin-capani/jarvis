@@ -6836,6 +6836,8 @@ svg.tri circle {
   border: 1px solid currentColor;
   font-variant-numeric: tabular-nums;
 }
+.infperf-pill.decode-tps { color: var(--good, #7CE7C4); border-color: color-mix(in srgb, var(--good, #7CE7C4) 40%, transparent); }
+
 .infperf-pill.spec-on { color: var(--learn-green); }
 .infperf-pill.spec-off { color: var(--cyan-dim); }
 .infperf-pill.throttle-none { color: var(--cyan-dim); }

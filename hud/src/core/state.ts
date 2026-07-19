@@ -99,6 +99,7 @@ import {
   applyLocalSub,
   applyLocalWarm,
   applyInferencePerf,
+  applyInferenceDecode,
   applyModelSwap,
   applyModelTier,
   applySttTier,
@@ -3465,6 +3466,12 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
         localWarm: applyLocalSub(s.localWarm, env.data),
         inferencePerf: applyInferencePerf(s.inferencePerf, env.data),
       };
+    case "inference.decode":
+      // Post-turn mlx_lm-measured decode telemetry (tok/s + peak GPU mem + the
+      // speculative/quant path that ran), folded into the inference-perf surface
+      // WITHOUT touching the throttle (model.tier owns that). Was measured then
+      // dropped at the daemon converse parser (Wave A activation).
+      return { ...s, inferencePerf: applyInferenceDecode(s.inferencePerf, env.data) };
     case "model.swap":
       return { ...s, modelTier: applyModelSwap(s.modelTier, env.data) };
 

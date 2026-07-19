@@ -733,6 +733,36 @@ pub struct SentenceEvent {
 pub struct ConverseDone {
     /// Full reply text (may extend past the sentences that were synthesized).
     pub text: String,
+    /// The turn's mlx_lm-measured decode telemetry (tps + peak mem), if the
+    /// server measured it — else all-None. Forwarded to the HUD's inference-perf
+    /// surface so the measurement is no longer dropped at the converse parser.
+    pub metrics: DecodeMetrics,
+    /// Whether speculative decoding actually drove this turn (server-reported).
+    pub speculative: Option<bool>,
+    /// The quant that actually loaded for this turn (server-reported).
+    pub quant: Option<String>,
+}
+
+/// mlx_lm-MEASURED decode telemetry for one on-device turn (never estimated or
+/// fabricated — `None` fields when the server could not measure, e.g. the
+/// speculative/uncached single-shot paths or an immediate cancel). Carried on
+/// the converse `done` event and forwarded to the HUD so the already-measured
+/// throughput/memory is no longer silently dropped.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DecodeMetrics {
+    /// Decode throughput (tokens/sec) mlx_lm measured for this stream.
+    #[serde(default)]
+    pub generation_tps: Option<f64>,
+    /// Running peak GPU memory (GB) for this turn (mx.get_peak_memory).
+    #[serde(default)]
+    pub peak_memory_gb: Option<f64>,
+}
+
+impl DecodeMetrics {
+    /// Whether any field carries a real measurement (else nothing to report).
+    pub fn is_measured(&self) -> bool {
+        self.generation_tps.is_some() || self.peak_memory_gb.is_some()
+    }
 }
 
 /// One line of a converse stream: a sentence event or the done event. The
@@ -753,6 +783,14 @@ struct ConverseLine {
     ok: Option<bool>,
     #[serde(default)]
     error: Option<String>,
+    // Decode telemetry (done event only): the path that actually ran + its
+    // mlx_lm-measured throughput/memory. Absent on sentence events + old servers.
+    #[serde(default)]
+    metrics: Option<DecodeMetrics>,
+    #[serde(default)]
+    speculative: Option<bool>,
+    #[serde(default)]
+    quant: Option<String>,
 }
 
 /// How one converse round trip ended, seen from the transport layer.
@@ -1788,6 +1826,9 @@ impl InferenceClient {
                     return if msg.ok == Some(true) {
                         Ok(ConverseOutcome::Done(ConverseDone {
                             text: msg.text.unwrap_or_default(),
+                            metrics: msg.metrics.unwrap_or_default(),
+                            speculative: msg.speculative,
+                            quant: msg.quant,
                         }))
                     } else {
                         Ok(ConverseOutcome::ServerFail(

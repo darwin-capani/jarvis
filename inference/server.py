@@ -6464,6 +6464,13 @@ class InferenceServer:
                     # only), and mismatched/failed adapters serve base + None. The
                     # daemon/HUD never see a personalization that didn't run.
                     "adapter": gen_meta.get("adapter"),
+                    # Additive honest decode telemetry (mlx_lm-measured tok/s +
+                    # peak GPU memory) from the cached generate path — the SAME
+                    # metrics dict op=converse and op=classify already forward.
+                    # None on the speculative/uncached single-shot paths (no
+                    # per-token stream to measure) and on an immediate cancel;
+                    # never estimated or fabricated. Was measured then DROPPED.
+                    "metrics": gen_meta.get("metrics"),
                     "latency_ms": latency_ms(),
                 }
 

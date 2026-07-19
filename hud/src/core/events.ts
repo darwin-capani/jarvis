@@ -5304,13 +5304,20 @@ export interface InferencePerfStatus {
   /** The active throttle plan, or null when the last turn carried no throttle
    *  (OFF/neutral default — honest, never a phantom indicator). */
   throttle: ThrottlePlan | null;
+  /** Decode throughput (tokens/sec) mlx_lm MEASURED on the last on-device turn
+   *  that reported it; null before any measured turn. Never estimated — the
+   *  speculative/uncached single-shot paths report nothing and leave this null. */
+  tps: number | null;
+  /** Peak GPU memory (GiB) for the last measured on-device turn; null before any.
+   *  The server's mx.get_peak_memory reading, never fabricated. */
+  peakMemGib: number | null;
 }
 
 /** The resting inference-perf status before any answered turn: nothing reported
  *  yet (awaiting), no throttle (the OFF/neutral default). Used as the reducer seed
  *  so the panel renders the honest resting state. */
 export function inferencePerfInitial(): InferencePerfStatus {
-  return { speculative: null, quant: null, throttle: null };
+  return { speculative: null, quant: null, throttle: null, tps: null, peakMemGib: null };
 }
 
 /** Narrow an untrusted string to a known ThrottleReason, or null. */
@@ -5370,7 +5377,26 @@ export function applyInferencePerf(
   // The throttle is a LIVE per-turn plan: replace it every turn so a stale
   // throttle never lingers. Absent => null (the OFF/neutral default).
   const throttle = parseThrottle(data);
-  return { speculative, quant, throttle };
+  return { ...prev, speculative, quant, throttle };
+}
+
+/** Fold an `inference.decode` payload (emitted after a measured on-device turn)
+ *  into the surface: the mlx_lm-measured throughput + peak memory, plus the
+ *  speculative/quant path that actually ran. Keep-prior when a field is absent
+ *  (never blanks a known value from a turn that didn't measure); a present
+ *  finite number/bool/string is taken verbatim. PRESERVES the throttle (that is
+ *  the model.tier surface's to own). Never throws. */
+export function applyInferenceDecode(
+  prev: InferencePerfStatus,
+  data: Record<string, unknown>,
+): InferencePerfStatus {
+  const tpsRaw = data["generation_tps"];
+  const memRaw = data["peak_memory_gb"];
+  const tps = typeof tpsRaw === "number" && Number.isFinite(tpsRaw) ? tpsRaw : prev.tps;
+  const peakMemGib = typeof memRaw === "number" && Number.isFinite(memRaw) ? memRaw : prev.peakMemGib;
+  const speculative = bool(data, "speculative") ?? prev.speculative;
+  const quant = str(data, "quant") ?? prev.quant;
+  return { ...prev, speculative, quant, tps, peakMemGib };
 }
 
 /** Short uppercase label for the speculative-decoding state: ON (it actually ran

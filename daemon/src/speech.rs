@@ -822,6 +822,26 @@ pub async fn converse_speak(
         }
     };
     let done_at = Instant::now();
+    // INFERENCE DECODE telemetry (Wave A): forward the server's mlx_lm-measured
+    // decode throughput + peak GPU memory + the path that actually ran, so the
+    // already-measured numbers reach the HUD's inference-perf surface instead of
+    // being dropped at the converse parser. HONEST: emitted ONLY when the server
+    // measured something — the speculative/uncached single-shot paths report
+    // None (no per-token stream) and emit nothing, never a fabricated figure.
+    if let Ok(d) = &done {
+        if d.metrics.is_measured() || d.speculative.is_some() {
+            crate::telemetry::emit(
+                "system",
+                "inference.decode",
+                serde_json::json!({
+                    "generation_tps": d.metrics.generation_tps,
+                    "peak_memory_gb": d.metrics.peak_memory_gb,
+                    "speculative": d.speculative,
+                    "quant": d.quant,
+                }),
+            );
+        }
+    }
     // Sentences that landed in the channel while the done line was read.
     while let Ok(ev) = rx.try_recv() {
         if barge_in_requested() {

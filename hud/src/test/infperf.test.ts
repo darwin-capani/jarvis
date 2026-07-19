@@ -5,6 +5,7 @@ import InferencePerfPanel from "../components/InferencePerfPanel";
 import {
   applyInferencePerf,
   inferencePerfInitial,
+  applyInferenceDecode,
   quantHonest,
   quantIsKnown,
   quantLabel,
@@ -57,6 +58,8 @@ describe("inference-perf folding (events.ts)", () => {
       speculative: null,
       quant: null,
       throttle: null,
+      tps: null,
+      peakMemGib: null,
     });
   });
 
@@ -292,8 +295,43 @@ describe("reducer model.tier inference-perf folding", () => {
 
   it("the perf surface starts at the honest resting state on a fresh connect", () => {
     const s = connected();
-    expect(s.inferencePerf).toEqual({ speculative: null, quant: null, throttle: null });
+    expect(s.inferencePerf).toEqual({ speculative: null, quant: null, throttle: null, tps: null, peakMemGib: null });
   });
+
+  /* ---------------------------------------------- Wave A: decode metrics */
+
+  it("folds mlx_lm-measured decode metrics (tok/s + peak mem) without touching throttle", () => {
+    // A throttle set by model.tier must survive a following inference.decode.
+    const throttled = applyInferencePerf(inferencePerfInitial(), {
+      throttle: { reason: "thermal", tier_pref: "fast", defer_heavy: true },
+    });
+    const after = applyInferenceDecode(throttled, {
+      generation_tps: 61.3,
+      peak_memory_gb: 2.44,
+      speculative: false,
+      quant: "int4",
+    });
+    expect(after.tps).toBe(61.3);
+    expect(after.peakMemGib).toBe(2.44);
+    expect(after.speculative).toBe(false);
+    expect(after.quant).toBe("int4");
+    expect(after.throttle).toEqual({ reason: "thermal", tierPref: "fast", deferHeavy: true });
+  });
+
+  it("keeps prior decode numbers when a turn reports none (never blanks a known value)", () => {
+    const first = applyInferenceDecode(inferencePerfInitial(), { generation_tps: 60, peak_memory_gb: 2.4 });
+    const second = applyInferenceDecode(first, { speculative: true }); // no numbers this turn
+    expect(second.tps).toBe(60);
+    expect(second.peakMemGib).toBe(2.4);
+    expect(second.speculative).toBe(true);
+  });
+
+  it("ignores a non-finite / non-number decode figure (honest: never a fabricated readout)", () => {
+    const p1 = applyInferenceDecode(inferencePerfInitial(), { generation_tps: "fast", peak_memory_gb: Infinity });
+    expect(p1.tps).toBeNull();
+    expect(p1.peakMemGib).toBeNull();
+  });
+
 });
 
 /* ------------------------------------------------------------- the panel */
@@ -301,6 +339,19 @@ describe("reducer model.tier inference-perf folding", () => {
 describe("InferencePerfPanel", () => {
   it("renders nothing at the awaiting/no-readout resting state", () => {
     expect(renderPanel(inferencePerfInitial())).toBe("");
+  });
+
+  it("renders the DECODE row with the mlx_lm-measured tok/s + peak memory", () => {
+    const perf = applyInferenceDecode(inferencePerfInitial(), {
+      generation_tps: 60.9,
+      peak_memory_gb: 2.44,
+    });
+    const html = renderPanel(perf);
+    expect(html).toContain("DECODE");
+    expect(html).toContain("60.9 tok/s");
+    expect(html).toContain("2.44 GiB peak");
+    // The measured number is honestly labelled, not a device-gated estimate.
+    expect(html).toMatch(/Measured by mlx_lm/i);
   });
 
   it("renders the three rows once a turn reports a readout", () => {
@@ -334,7 +385,7 @@ describe("InferencePerfPanel", () => {
     expect(html).not.toContain("LOW BATTERY");
     expect(html).not.toContain("THERMAL");
     // Honest device-gated copy is present.
-    expect(html).toMatch(/never a (measured )?perf number|device\/model-gated/i);
+    expect(html).toMatch(/not measured here|device-gated/i);
   });
 
   it("shows an unknown loaded quant verbatim (never hides the real path)", () => {
