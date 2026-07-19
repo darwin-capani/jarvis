@@ -1145,6 +1145,9 @@ pub struct AppInfo {
     /// register (deliberate: visible in the deck, build-state independent) but
     /// are honestly labeled not-runnable instead of failing at spawn time.
     pub entry_present: bool,
+    /// The app's first EXPOSED tool name (`[[tools.exposes]]`), or "" when it
+    /// declares none. Manifest metadata only — SECRET-FREE. Drives the App Deck.
+    pub tool: String,
 }
 
 impl AppRegistry {
@@ -1265,6 +1268,7 @@ impl AppRegistry {
                 // honestly without a restart.
                 entry_present: abs(&self.project_root, Path::new(&e.manifest.app.entry))
                     .is_file(),
+                tool: e.manifest.tools.exposes.first().map(|t| t.name.clone()).unwrap_or_default(),
             })
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1427,31 +1431,6 @@ impl AppRegistry {
         apps.iter()
             .map(|(name, e)| (name.clone(), e.profile_path.clone(), e.running))
             .collect()
-    }
-
-    /// Read-only CATALOG snapshot for the HUD App Deck: one entry per registered
-    /// app carrying its manifest name, description, and its first exposed tool
-    /// name (empty when it declares none). SECRET-FREE (manifest metadata only —
-    /// never a path, token, or socket) and sorted by name for a stable readout.
-    /// This is what makes the deck LIVE: the HUD renders the apps the daemon
-    /// ACTUALLY discovered, so a new app auto-appears with no hand-edited list.
-    pub async fn catalog_snapshot(&self) -> Vec<(String, String, String)> {
-        let apps = self.apps.lock().await;
-        let mut cat: Vec<(String, String, String)> = apps
-            .iter()
-            .map(|(name, e)| {
-                let tool = e
-                    .manifest
-                    .tools
-                    .exposes
-                    .first()
-                    .map(|t| t.name.clone())
-                    .unwrap_or_default();
-                (name.clone(), e.manifest.app.description.clone(), tool)
-            })
-            .collect();
-        cat.sort_by(|a, b| a.0.cmp(&b.0));
-        cat
     }
 
     /// Read-only DECLARED-capability inventory: one `(name, capability_summary)`

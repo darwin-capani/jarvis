@@ -176,6 +176,17 @@ describe("App Deck — live registry", () => {
     expect(parseAppRegistry({ apps: "nope" })).toEqual([]);
   });
 
+  it("reads `tool` from the daemon's REAL enriched payload (running/runnable ignored)", () => {
+    // The single daemon emit carries {name, description, running, runnable, tool};
+    // parseAppRegistry must pick up `tool` and ignore the extra fields (this is
+    // the exact frame the deck now consumes — the review found the earlier
+    // duplicate emit clobbered it and dropped `tool`).
+    const r = parseAppRegistry({
+      apps: [{ name: "widget", description: "d", running: false, runnable: true, tool: "widget.go" }],
+    });
+    expect(r).toEqual([{ id: "widget", description: "d", tool: "widget.go" }]);
+  });
+
   it("renders from the LIVE registry when present — a NEW app auto-appears in OTHER", () => {
     const registry: AppRegistryEntry[] = [
       { id: "numbase", description: "curated one", tool: "numbase.convert" }, // known -> curated card
