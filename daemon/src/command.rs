@@ -159,6 +159,13 @@ pub enum Command {
     /// (NEVER promoting it). Operator-triggered only; off unless
     /// [distill].enabled. Read-mostly + confined to state/lora/.
     Distill,
+    /// SELF-DISTILLATION promotion: measure the last trained adapter against base
+    /// on the held-out split and make it the live generation model ONLY on a
+    /// measured win. Operator-triggered; off unless [distill].enabled. Reversible.
+    DistillPromote,
+    /// SELF-DISTILLATION rollback: revert to the base model (clear the live
+    /// adapter). Operator-triggered; always safe + idempotent.
+    DistillRollback,
     /// FEDERATED SYNC (F18): seal the user's facts to the outbox + merge any
     /// paired-device bundle from the inbox (conflict-aware, never clobbers).
     /// Operator-triggered; off unless [sync].enabled + a Keychain shared key.
@@ -321,6 +328,8 @@ fn decide(raw: &str) -> Decision {
         "roster" => Command::Roster,
         "state" => Command::State,
         "distill" => Command::Distill,
+        "distill_promote" => Command::DistillPromote,
+        "distill_rollback" => Command::DistillRollback,
         "sync" => Command::Sync,
         "handoff" => Command::Handoff,
         "resume" => Command::Resume,
@@ -534,6 +543,12 @@ pub trait CommandPipeline: Send + Sync {
     /// a redacted dataset + run the device-gated training, NEVER promoting the
     /// staged adapter. Off unless [distill].enabled. Returns a spoken-style ack.
     fn distill(&self) -> impl std::future::Future<Output = String> + Send;
+    /// SELF-DISTILLATION promotion: measure the last trained adapter vs base on
+    /// the held-out split; make it the live model ONLY on a measured win. Off
+    /// unless [distill].enabled. Reversible. Returns a spoken-style result.
+    fn distill_promote(&self) -> impl std::future::Future<Output = String> + Send;
+    /// SELF-DISTILLATION rollback: clear the live adapter, revert to base.
+    fn distill_rollback(&self) -> impl std::future::Future<Output = String> + Send;
     /// FEDERATED SYNC (F18): run one operator-triggered sync — seal the facts +
     /// merge a paired-device bundle, NEVER exporting anything in the clear and
     /// NEVER silently clobbering. Off unless [sync].enabled + a shared key.
@@ -858,6 +873,14 @@ where
             telemetry::emit("system", "command.routed", json!({"cmd": "distill"}));
             json!({"ok": true, "reply": pipeline.distill().await})
         }
+        Command::DistillPromote => {
+            telemetry::emit("system", "command.routed", json!({"cmd": "distill_promote"}));
+            json!({"ok": true, "reply": pipeline.distill_promote().await})
+        }
+        Command::DistillRollback => {
+            telemetry::emit("system", "command.routed", json!({"cmd": "distill_rollback"}));
+            json!({"ok": true, "reply": pipeline.distill_rollback().await})
+        }
         Command::Sync => {
             telemetry::emit("system", "command.routed", json!({"cmd": "sync"}));
             json!({"ok": true, "reply": pipeline.sync().await})
@@ -1126,6 +1149,18 @@ pub struct LivePipeline {
 }
 
 impl LivePipeline {
+    /// Best-effort: tell the inference server to reload its resident LLM so a
+    /// freshly promoted / rolled-back personal LoRA adapter applies WITHOUT a
+    /// restart. A server that's down (or on an old build) simply picks up the
+    /// on-disk state/lora/promoted/ pointer on its next start — so an error here
+    /// is logged, never surfaced as a promotion failure.
+    async fn reload_inference_lora(&self) {
+        let mut infer = crate::inference::InferenceClient::new(self.inference_sock.clone());
+        if let Err(e) = infer.reload_lora().await {
+            tracing::warn!(error = %e, "inference reload_lora failed; adapter applies on next server start");
+        }
+    }
+
     /// Resolve the requested agent (or the orchestrator when none/unknown). The
     /// returned agent's `tools` is the allowlist `complete_with_tools` enforces.
     fn resolve_agent<'a>(&'a self, agent: Option<&str>) -> &'a crate::agents::Agent {
@@ -1279,16 +1314,63 @@ impl CommandPipeline for LivePipeline {
 
     async fn distill(&self) -> String {
         // Operator-triggered on-device distillation: real training when armed,
-        // via the hardened real runner (never spawned in any test). Staged only,
-        // never promoted. Off/thin/failed all return an honest spoken line.
-        crate::distill::distill_now(
+        // via the hardened real runner (never spawned in any test). Staged only.
+        // Off/thin/failed all return an honest spoken line.
+        let trained = crate::distill::distill_now(
             &self.cfg,
             self.memory.as_ref(),
             &self.root,
             chrono::Utc::now().to_rfc3339(),
             crate::distill::run_real_training,
         )
-        .await
+        .await;
+        // AUTO-PROMOTE (opt-in, [distill].auto_promote): chain the measured
+        // promotion eval so a successful train that BEATS base goes live. Only
+        // attempt it when training reported a staged/live adapter ("STAGED") —
+        // otherwise (off/thin/failed) there is nothing to promote. Promotion is
+        // still gated on a measured win inside promote_last; this only decides
+        // whether to run the eval, never whether to promote.
+        if self.cfg.distill.enabled && self.cfg.distill.auto_promote && trained.contains("STAGED") {
+            let promoted = crate::distill::promote_last(
+                &self.cfg,
+                &self.root,
+                crate::distill::run_real_eval,
+            )
+            .await;
+            if promoted.contains("Promoted") {
+                self.reload_inference_lora().await;
+            }
+            format!("{trained}\n\n{promoted}")
+        } else {
+            trained
+        }
+    }
+
+    async fn distill_promote(&self) -> String {
+        // Measure the last trained adapter vs base on its held-out split and
+        // promote ONLY on a measured win (>= [distill].min_improvement). The real
+        // eval runner is never spawned in a test. Reversible via distill_rollback.
+        let reply =
+            crate::distill::promote_last(&self.cfg, &self.root, crate::distill::run_real_eval).await;
+        // An adapter went live -> ask the server to reload so it applies THIS
+        // session (best-effort; the on-disk pointer applies on restart anyway).
+        if reply.contains("Promoted") {
+            self.reload_inference_lora().await;
+        }
+        reply
+    }
+
+    async fn distill_rollback(&self) -> String {
+        // Clear the live adapter; the next generation load serves base. Idempotent.
+        match crate::distill::clear_promotion(&self.root) {
+            Ok(()) => {
+                // Reverting to base takes effect this session on the server reload.
+                self.reload_inference_lora().await;
+                "Rolled back to the base model, sir — the personal adapter is no longer live."
+                    .to_string()
+            }
+            Err(e) => format!("I couldn't roll back the adapter, sir — {e}."),
+        }
     }
 
     async fn sync(&self) -> String {
@@ -1818,6 +1900,8 @@ mod tests {
         async fn roster(&self) -> String { "roster".into() }
         async fn state(&self) -> String { "state".into() }
         async fn distill(&self) -> String { "distill".into() }
+        async fn distill_promote(&self) -> String { "distill_promote".into() }
+        async fn distill_rollback(&self) -> String { "distill_rollback".into() }
         async fn sync(&self) -> String { "sync".into() }
         async fn handoff(&self) -> String { "handoff".into() }
         async fn resume(&self) -> String { "resume".into() }
@@ -2530,6 +2614,8 @@ mod tests {
             async fn roster(&self) -> String { unreachable!() }
             async fn state(&self) -> String { unreachable!() }
             async fn distill(&self) -> String { unreachable!() }
+            async fn distill_promote(&self) -> String { unreachable!() }
+            async fn distill_rollback(&self) -> String { unreachable!() }
             async fn sync(&self) -> String { unreachable!() }
             async fn handoff(&self) -> String { unreachable!() }
             async fn resume(&self) -> String { unreachable!() }

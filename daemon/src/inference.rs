@@ -1486,6 +1486,19 @@ impl InferenceClient {
     /// description). NOT exercised against a real model by any test — the op
     /// dispatch + the unavailable path are proven with a stub; the description
     /// QUALITY is device-gated and never claimed measured.
+    /// SELF-DISTILLATION (distill.rs): tell the inference server to DROP its
+    /// resident LLM so the NEXT generate reloads with the current
+    /// state/lora/promoted/ pointer — fusing a freshly-promoted personal adapter,
+    /// or serving base after a rollback. BEST-EFFORT: the on-disk pointer is the
+    /// source of truth, so a server that's down or on an old build simply picks
+    /// up the change on its next (re)start; the caller treats an error as
+    /// "applies on restart", never a failure of the promotion itself.
+    pub async fn reload_lora(&mut self) -> Result<()> {
+        let req = Request::new(self.fresh_id(), "reload_lora");
+        let _ = self.request_raw(&req, "reload_lora", REQUEST_TIMEOUT).await?;
+        Ok(())
+    }
+
     pub async fn describe_image(
         &mut self,
         path: &Path,

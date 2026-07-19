@@ -1032,7 +1032,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // Keychain path (a self-check SKIP, never a fabricated enclave claim). Listed
     // here so the key never reads as a typo.
     ("enclave", &["enabled"]),
-    ("distill", &["enabled", "python", "base_model", "iters"]),
+    ("distill", &["enabled", "python", "base_model", "iters", "auto_promote", "min_improvement"]),
     ("sync", &["enabled", "peer_endpoint"]),
     ("fleet", &["enabled"]),
     // [handoff] — CONTINUITY HANDOFF (handoff.rs). SHIPS OFF: rides [sync] (also
@@ -4157,6 +4157,16 @@ pub struct DistillConfig {
     pub base_model: String,
     /// Bounded training-step count for a run.
     pub iters: u32,
+    /// Whether a successful `distill` run also runs the promotion EVAL and
+    /// promotes the adapter ON A MEASURED WIN. SHIPS OFF: promotion swaps the live
+    /// generation model, so it is opt-in. With it off, training stages the adapter
+    /// and the operator promotes deliberately; with it on, `distill` chains
+    /// train -> measure -> promote-only-if-it-beats-base.
+    pub auto_promote: bool,
+    /// The minimum held-out loss reduction (base - adapter, nats/token) required
+    /// to promote. A positive floor so a tie or a regression never promotes, and
+    /// noise on a tiny personal split doesn't flip the live model. Must be >= 0.
+    pub min_improvement: f64,
 }
 
 impl Default for DistillConfig {
@@ -4167,6 +4177,10 @@ impl Default for DistillConfig {
             python: "python3".to_string(),
             base_model: "mlx-community/Qwen3-4B-Instruct-2507-4bit".to_string(),
             iters: 200,
+            // Promotion swaps the live model — opt-in, and only ever on a measured
+            // win over the configured margin (0.05 nats/token by default).
+            auto_promote: false,
+            min_improvement: 0.05,
         }
     }
 }
@@ -5990,6 +6004,9 @@ mod tests {
         assert_eq!(cfg.distill.python, "python3");
         assert!(cfg.distill.base_model.contains("Qwen3-4B"));
         assert_eq!(cfg.distill.iters, 200);
+        // Promotion is opt-in (swaps the live model) with a positive win margin.
+        assert!(!cfg.distill.auto_promote, "promotion must ship OFF (opt-in)");
+        assert!(cfg.distill.min_improvement > 0.0, "a positive win margin");
 
         let raw = r#"
             [distill]
@@ -5997,12 +6014,16 @@ mod tests {
             python = "/opt/venv/bin/python"
             base_model = "mlx-community/Custom-8B"
             iters = 400
+            auto_promote = true
+            min_improvement = 0.1
         "#;
         let (cfg, issues) = Config::parse(raw);
         assert!(issues.is_empty(), "distill keys must be known: {issues:?}");
         assert!(cfg.distill.enabled);
         assert_eq!(cfg.distill.python, "/opt/venv/bin/python");
         assert_eq!(cfg.distill.iters, 400);
+        assert!(cfg.distill.auto_promote);
+        assert!((cfg.distill.min_improvement - 0.1).abs() < 1e-9);
 
         // A typo'd distill key is reported, not silently swallowed.
         let (_cfg, issues) = Config::parse("[distill]\nenabledd = true\n");

@@ -1,0 +1,11 @@
+{
+  "available": true,
+  "model": "mlx-community/Qwen3-0.6B-4bit",
+  "machine": "arm64",
+  "min_improvement": 0.05,
+  "held_out_base_loss": 6.409,
+  "held_out_adapter_loss": 0.686,
+  "improvement": 5.723,
+  "gate_decision": "promote",
+  "note": "MECHANISM smoke (train->measure->gate) on a learnable style; not a quality claim on user data."
+}

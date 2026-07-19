@@ -145,8 +145,9 @@ impl RunStatus {
 }
 
 /// The manifest written beside a staged adapter. SECRET-FREE by construction:
-/// counts + the base-model id + coarse status, never an example's text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// counts + the base-model id + coarse status + the MEASURED held-out losses,
+/// never an example's text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     /// RFC3339 stamp of the run.
     pub created: String,
@@ -157,9 +158,18 @@ pub struct Manifest {
     pub status: RunStatus,
     /// The staging path (under `state/`); the adapter is NOT live.
     pub staging_dir: String,
-    /// Always false here — training never promotes. A future, separate,
-    /// deliberate promotion step would flip this; this module never does.
+    /// Whether this adapter is LIVE. Flips true ONLY after a deliberate,
+    /// MEASURED promotion (adapter beat base on the held-out split by the
+    /// configured margin). Training alone never sets it.
     pub promoted: bool,
+    /// The BASE model's held-out (valid split) loss, when the promotion eval ran.
+    /// None until an eval happens. The honest denominator of the win.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_out_base_loss: Option<f64>,
+    /// The trained ADAPTER's held-out loss over the SAME split. None until eval.
+    /// promotion requires this to beat `held_out_base_loss` by the margin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_out_adapter_loss: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +248,306 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// MEASURED PROMOTION — the honest gate: a trained adapter goes LIVE only after
+// it beats the base model on the user's held-out turns. No measured win, no
+// promotion. This is what makes rule #2 (never auto-promote) a MEASURED,
+// reversible, opt-in act instead of a permanent refusal.
+// ---------------------------------------------------------------------------
+
+/// Build the HELD-OUT EVAL command: `mlx_lm.lora --model <base> --data <dir>
+/// --test --adapter-path <adapter-or-empty>`. mlx-lm computes + prints the test
+/// loss over the run dir's `test.jsonl` (the held-out split, never in
+/// `train.jsonl`). The `--adapter-path` is ALWAYS passed: an EMPTY string for the
+/// BASE (mlx_lm's documented "test without LoRA layers" path — omitting it makes
+/// mlx_lm default to the literal dir "adapters" and fail), the staged run dir for
+/// the ADAPTER. The two losses are then directly comparable. Reuses the argv
+/// container (program + args, never a shell string). PURE + tested, never run here.
+pub fn eval_command(
+    python: &str,
+    base_model: &str,
+    data_dir: &str,
+    adapter_dir: Option<&str>,
+) -> TrainCommand {
+    TrainCommand {
+        program: python.to_string(),
+        args: vec![
+            "-m".into(),
+            "mlx_lm.lora".into(),
+            "--model".into(),
+            base_model.into(),
+            "--data".into(),
+            data_dir.into(),
+            "--test".into(),
+            // Empty => test the BASE (no LoRA layers); a dir => test that adapter.
+            "--adapter-path".into(),
+            adapter_dir.unwrap_or("").into(),
+            "--batch-size".into(),
+            "1".into(),
+        ],
+    }
+}
+
+/// Parse the `Test loss <f>` line mlx_lm.lora prints at the end of a `--test`
+/// run (e.g. "Test loss 2.345, Test ppl 10.434"). Returns the loss, or None when
+/// the line is absent/unparseable — an UNMEASURABLE result NEVER counts as a win
+/// (the gate rejects on None). PURE + tested. Case-insensitive on the label;
+/// tolerant of the trailing ppl and surrounding whitespace. Parses from a
+/// lowercased copy so a multibyte glyph earlier in the line can't desync the
+/// byte offset (the number itself is ASCII, unaffected by lowercasing).
+pub fn parse_test_loss(stdout: &str) -> Option<f64> {
+    for line in stdout.lines() {
+        let lower = line.to_lowercase();
+        if let Some(idx) = lower.find("test loss") {
+            let after = &lower[idx + "test loss".len()..];
+            let tok = after
+                .trim_start_matches(|c: char| c == ':' || c == '=' || c.is_whitespace())
+                .split(|c: char| c == ',' || c.is_whitespace())
+                .next()?;
+            if let Ok(v) = tok.trim().parse::<f64>() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// The MEASURED promotion decision. `min_improvement` is the minimum held-out
+/// loss reduction (`base - adapter`, in nats/token) required to go live.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PromotionDecision {
+    /// The adapter beat base by at least the margin — eligible to go live.
+    Promote { base_loss: f64, adapter_loss: f64, improvement: f64 },
+    /// NOT promoted, with the honest reason + whatever was measured.
+    Reject {
+        base_loss: Option<f64>,
+        adapter_loss: Option<f64>,
+        improvement: Option<f64>,
+        reason: &'static str,
+    },
+}
+
+/// Decide promotion PURELY from the two measured held-out losses. Promote ONLY
+/// when BOTH are finite AND `(base - adapter) >= min_improvement`. A missing or
+/// non-finite measurement REJECTS — the gate never promotes on an unmeasurable
+/// result, and (with a non-negative margin) never on a tie or a regression. This
+/// is the honesty core of self-personalization. PURE + exhaustively tested.
+pub fn promotion_decision(
+    base_loss: Option<f64>,
+    adapter_loss: Option<f64>,
+    min_improvement: f64,
+) -> PromotionDecision {
+    match (base_loss, adapter_loss) {
+        (Some(b), Some(a)) if b.is_finite() && a.is_finite() => {
+            let improvement = b - a;
+            if improvement >= min_improvement && min_improvement >= 0.0 {
+                PromotionDecision::Promote { base_loss: b, adapter_loss: a, improvement }
+            } else {
+                PromotionDecision::Reject {
+                    base_loss: Some(b),
+                    adapter_loss: Some(a),
+                    improvement: Some(improvement),
+                    reason: "the adapter did not beat the base model on your held-out turns",
+                }
+            }
+        }
+        _ => PromotionDecision::Reject {
+            base_loss,
+            adapter_loss,
+            improvement: None,
+            reason: "the held-out loss was not measurable",
+        },
+    }
+}
+
+/// An eval subprocess's captured STDOUT (to parse the loss from), or a
+/// secret-free failure reason. NEVER fabricates a loss.
+pub type EvalResult = Result<String, String>;
+
+/// Run BOTH held-out evals (base, then adapter) through an injected runner that
+/// returns each subprocess's captured stdout, and parse the two losses. The
+/// runner seam (like the training runner) makes the fold hermetically testable;
+/// the live wiring passes [`run_real_eval`]. Returns `(base_loss, adapter_loss)`
+/// — either is None when its eval failed or printed no parseable loss (the gate
+/// then rejects). `data_dir` holds `test.jsonl`; `adapter_dir` holds the trained
+/// `adapters.safetensors`.
+pub async fn evaluate_adapter<F, Fut>(
+    cfg: &crate::config::Config,
+    data_dir: &str,
+    adapter_dir: &str,
+    mut run: F,
+) -> (Option<f64>, Option<f64>)
+where
+    F: FnMut(String, Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = EvalResult>,
+{
+    let base_cmd = eval_command(&cfg.distill.python, &cfg.distill.base_model, data_dir, None);
+    let adapter_cmd =
+        eval_command(&cfg.distill.python, &cfg.distill.base_model, data_dir, Some(adapter_dir));
+    let base_loss = match run(base_cmd.program, base_cmd.args).await {
+        Ok(out) => parse_test_loss(&out),
+        Err(_) => None,
+    };
+    let adapter_loss = match run(adapter_cmd.program, adapter_cmd.args).await {
+        Ok(out) => parse_test_loss(&out),
+        Err(_) => None,
+    };
+    (base_loss, adapter_loss)
+}
+
+/// The REAL eval runner — spawns `mlx_lm.lora --test` on-device and CAPTURES its
+/// output (the "Test loss" line). Reached ONLY behind the gate, NEVER in a test.
+/// Same hardening as the training runner (fixed argv, kill_on_drop, bounded
+/// timeout). Captures stdout AND stderr (mlx-lm builds differ on which carries
+/// the summary line) and returns the concatenation on a clean exit.
+pub async fn run_real_eval(program: String, args: Vec<String>) -> EvalResult {
+    let mut cmd = tokio::process::Command::new(&program);
+    cmd.args(&args)
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    match tokio::time::timeout(TRAIN_TIMEOUT, cmd.output()).await {
+        Ok(Ok(out)) if out.status.success() => {
+            let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+            s.push('\n');
+            s.push_str(&String::from_utf8_lossy(&out.stderr));
+            Ok(s)
+        }
+        Ok(Ok(out)) => Err(format!("eval exited with code {}", out.status.code().unwrap_or(-1))),
+        Ok(Err(e)) => Err(format!("eval spawn failed ({e})")),
+        Err(_) => Err("eval timed out".into()),
+    }
+}
+
+/// The LIVE-adapter pointer the inference server reads: `state/lora/promoted/`.
+/// When it holds `adapters.safetensors` + a `manifest.json` whose `base_model`
+/// matches the server's resident LLM, the server loads generation WITH the
+/// adapter (honest fallback + report when it can't). Absent = base model.
+pub fn promoted_dir(root: &std::path::Path) -> std::path::PathBuf {
+    staging_root(root).join("promoted")
+}
+
+/// Read the live promotion manifest, or None when no adapter is promoted.
+pub fn read_promoted_manifest(root: &std::path::Path) -> Option<Manifest> {
+    let bytes = std::fs::read(promoted_dir(root).join("manifest.json")).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Install the trained adapter as the LIVE `promoted/` pointer. ATOMIC-ish:
+/// stage into a sibling temp dir, then rename over `promoted/`, so the server
+/// never reads a half-copied adapter. Called ONLY after [`promotion_decision`]
+/// returned Promote — it does not re-decide.
+fn install_promotion(
+    root: &std::path::Path,
+    run_dir: &std::path::Path,
+    manifest: &Manifest,
+) -> std::io::Result<()> {
+    let promoted = promoted_dir(root);
+    let staging = staging_root(root);
+    std::fs::create_dir_all(&staging)?;
+    let tmp = staging.join(format!("promoting-{}", manifest.created.replace([':', '.'], "-")));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp)?;
+    // Copy the adapter file(s) mlx_lm writes: the weights + its adapter_config.
+    let mut copied_weights = false;
+    for name in ["adapters.safetensors", "adapter_config.json"] {
+        let src = run_dir.join(name);
+        if src.exists() {
+            std::fs::copy(&src, tmp.join(name))?;
+            if name == "adapters.safetensors" {
+                copied_weights = true;
+            }
+        }
+    }
+    if !copied_weights {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no adapter weights to promote",
+        ));
+    }
+    std::fs::write(
+        tmp.join("manifest.json"),
+        serde_json::to_vec_pretty(manifest).unwrap_or_default(),
+    )?;
+    let _ = std::fs::remove_dir_all(&promoted);
+    std::fs::rename(&tmp, &promoted)?;
+    Ok(())
+}
+
+/// Clear the live adapter — roll back to the base model. Removes the `promoted/`
+/// pointer so the next server model-load serves base. Idempotent (absent = ok).
+pub fn clear_promotion(root: &std::path::Path) -> std::io::Result<()> {
+    let promoted = promoted_dir(root);
+    if promoted.exists() {
+        std::fs::remove_dir_all(&promoted)?;
+    }
+    Ok(())
+}
+
+/// EVALUATE the last TRAINED run against base on its held-out split and promote
+/// the adapter ONLY on a MEASURED win (>= `[distill].min_improvement`). Reversible
+/// ([`clear_promotion`]). HONEST at every step: no trained run -> says so; an
+/// unmeasurable or losing eval -> base stays live, adapter stays staged, and the
+/// measured (non-)result is recorded in the manifest. `run_eval` is injected so
+/// the whole orchestration is hermetically tested; the live wiring passes
+/// [`run_real_eval`]. NEVER promotes without a measured win.
+pub async fn promote_last<F, Fut>(
+    cfg: &crate::config::Config,
+    root: &std::path::Path,
+    run_eval: F,
+) -> String
+where
+    F: FnMut(String, Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = EvalResult>,
+{
+    if !cfg.distill.enabled {
+        return "Self-distillation is off, sir — nothing to promote.".to_string();
+    }
+    let Some(mut manifest) = read_last_manifest(root) else {
+        return "There's no trained adapter to promote yet, sir.".to_string();
+    };
+    if manifest.status != RunStatus::Trained {
+        return "The last run didn't produce a trained adapter, sir — nothing to promote."
+            .to_string();
+    }
+    let run_dir = std::path::PathBuf::from(&manifest.staging_dir);
+    if !run_dir.join("adapters.safetensors").exists() {
+        return "The staged adapter file is missing, sir — I won't promote a phantom.".to_string();
+    }
+    // MEASURE: base vs adapter held-out loss over the run's test.jsonl split.
+    let (base_loss, adapter_loss) =
+        evaluate_adapter(cfg, &manifest.staging_dir, &manifest.staging_dir, run_eval).await;
+    manifest.held_out_base_loss = base_loss;
+    manifest.held_out_adapter_loss = adapter_loss;
+    match promotion_decision(base_loss, adapter_loss, cfg.distill.min_improvement) {
+        PromotionDecision::Promote { base_loss, adapter_loss, improvement } => {
+            manifest.promoted = true;
+            if let Err(e) = install_promotion(root, &run_dir, &manifest) {
+                manifest.promoted = false;
+                write_manifest(root, &run_dir, &manifest);
+                return format!(
+                    "The adapter beat base ({adapter_loss:.3} vs {base_loss:.3}) but I couldn't install it, sir — {e}. Base stays live."
+                );
+            }
+            write_manifest(root, &run_dir, &manifest);
+            format!(
+                "Promoted your personal adapter, sir — it beat the base model on your held-out turns ({adapter_loss:.3} vs {base_loss:.3}, a {improvement:.3} nats/token improvement). It's live now; say \"roll back my adapter\" to revert to base."
+            )
+        }
+        PromotionDecision::Reject { base_loss, adapter_loss, improvement, reason } => {
+            write_manifest(root, &run_dir, &manifest);
+            let measured = match (base_loss, adapter_loss, improvement) {
+                (Some(b), Some(a), Some(d)) => format!(" (adapter {a:.3} vs base {b:.3}, Δ{d:.3})"),
+                _ => String::new(),
+            };
+            format!(
+                "I did NOT promote the adapter, sir — {reason}{measured}. The base model stays live; the adapter is kept staged."
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The honest status surface (capability-map sibling; its own event too)
 // ---------------------------------------------------------------------------
 
@@ -253,12 +563,24 @@ where
 ///   ready_to_train   — enabled AND examples_ready >= min_examples (the dataset
 ///                      is ready; the DEVICE gate is still separate + unverified)
 ///   last_run         — the most recent manifest summary, or null
-///   never_promotes   — always true: this pipeline never makes an adapter live
+///   promoted         — the LIVE adapter summary (base id + measured held-out
+///                      losses), or null when the base model is live
+///   gated_promotion  — always true: an adapter goes live ONLY on a measured win
 pub fn status_payload(
     enabled: bool,
     examples_ready: usize,
     last_run: Option<&Manifest>,
+    promoted: Option<&Manifest>,
 ) -> Value {
+    let summary = |m: &Manifest| json!({
+        "created": m.created,
+        "base_model": m.base_model,
+        "example_count": m.example_count,
+        "status": m.status.wire(),
+        "promoted": m.promoted,
+        "held_out_base_loss": m.held_out_base_loss,
+        "held_out_adapter_loss": m.held_out_adapter_loss,
+    });
     json!({
         "enabled": enabled,
         "dep_verified": false,
@@ -266,14 +588,12 @@ pub fn status_payload(
         "examples_ready": examples_ready,
         "min_examples": MIN_EXAMPLES,
         "ready_to_train": enabled && examples_ready >= MIN_EXAMPLES,
-        "never_promotes": true,
-        "last_run": last_run.map(|m| json!({
-            "created": m.created,
-            "base_model": m.base_model,
-            "example_count": m.example_count,
-            "status": m.status.wire(),
-            "promoted": m.promoted,
-        })),
+        // Promotion is GATED on a measured held-out win — never automatic on a
+        // trained adapter (it stays staged until it beats base).
+        "gated_promotion": true,
+        "adapter_live": promoted.is_some(),
+        "last_run": last_run.map(&summary),
+        "promoted": promoted.map(&summary),
     })
 }
 
@@ -326,10 +646,11 @@ pub async fn emit_status(cfg: &crate::config::Config, memory: &crate::memory::Me
         0
     };
     let last = read_last_manifest(root);
+    let promoted = read_promoted_manifest(root);
     crate::telemetry::emit(
         "system",
         "distill.status",
-        status_payload(cfg.distill.enabled, examples_ready, last.as_ref()),
+        status_payload(cfg.distill.enabled, examples_ready, last.as_ref(), promoted.as_ref()),
     );
 }
 
@@ -396,12 +717,16 @@ where
     if let Err(e) = std::fs::create_dir_all(&run_dir) {
         return format!("I couldn't create the staging directory, sir — {e}.");
     }
-    // mlx_lm.lora reads train.jsonl (+ an optional valid.jsonl) from --data.
-    let (valid, train) = examples.split_at(examples.len() / 10);
+    // mlx_lm.lora reads train.jsonl (+ valid.jsonl) from --data for --train, and
+    // test.jsonl for --test. The held-out split feeds BOTH valid.jsonl (training
+    // log) and test.jsonl (the promotion eval) — those examples are NOT in
+    // train.jsonl, so the eval loss is a genuine held-out measurement.
+    let (held_out, train) = examples.split_at(examples.len() / 10);
     if let Err(e) = std::fs::write(run_dir.join("train.jsonl"), render_jsonl(train)) {
         return format!("I couldn't write the training data, sir — {e}.");
     }
-    let _ = std::fs::write(run_dir.join("valid.jsonl"), render_jsonl(valid));
+    let _ = std::fs::write(run_dir.join("valid.jsonl"), render_jsonl(held_out));
+    let _ = std::fs::write(run_dir.join("test.jsonl"), render_jsonl(held_out));
 
     let mut manifest = Manifest {
         created: now_rfc3339,
@@ -409,7 +734,9 @@ where
         example_count: examples.len(),
         status: RunStatus::Prepared,
         staging_dir: run_dir.to_string_lossy().to_string(),
-        promoted: false, // NEVER promotes.
+        promoted: false, // training NEVER promotes; promote_last does, on a measured win.
+        held_out_base_loss: None,
+        held_out_adapter_loss: None,
     };
     write_manifest(root, &run_dir, &manifest);
 
@@ -569,24 +896,27 @@ mod tests {
     }
 
     #[test]
-    fn status_is_honest_about_off_readiness_and_never_promoting() {
-        // Off: not ready, zero examples reported, dep unverified.
-        let off = status_payload(false, 100, None);
+    fn status_is_honest_about_off_readiness_and_gated_promotion() {
+        // Off: not ready, zero examples reported, dep unverified, no live adapter.
+        let off = status_payload(false, 100, None, None);
         assert_eq!(off["enabled"], false);
         assert_eq!(off["ready_to_train"], false);
         assert_eq!(off["dep_verified"], false, "the daemon never fabricates device readiness");
-        assert_eq!(off["never_promotes"], true);
+        assert_eq!(off["gated_promotion"], true, "promotion is always gated on a measured win");
+        assert_eq!(off["adapter_live"], false);
         assert!(off["last_run"].is_null());
+        assert!(off["promoted"].is_null());
 
         // On + enough examples: dataset ready (device gate still separate).
-        let ready = status_payload(true, MIN_EXAMPLES, None);
+        let ready = status_payload(true, MIN_EXAMPLES, None, None);
         assert_eq!(ready["ready_to_train"], true);
         // On but thin: not ready.
-        let thin = status_payload(true, MIN_EXAMPLES - 1, None);
+        let thin = status_payload(true, MIN_EXAMPLES - 1, None, None);
         assert_eq!(thin["ready_to_train"], false);
         assert_eq!(thin["min_examples"], MIN_EXAMPLES);
 
-        // A last run surfaces its secret-free summary; promoted stays false.
+        // A last run surfaces its secret-free summary; a TRAINED-but-unpromoted
+        // adapter reports promoted=false and no live adapter.
         let m = Manifest {
             created: "2026-07-13T10:00:00Z".into(),
             base_model: "mlx-community/Qwen3-4B".into(),
@@ -594,13 +924,29 @@ mod tests {
             status: RunStatus::Trained,
             staging_dir: "state/lora/run-1".into(),
             promoted: false,
+            held_out_base_loss: None,
+            held_out_adapter_loss: None,
         };
-        let with_run = status_payload(true, 200, Some(&m));
+        let with_run = status_payload(true, 200, Some(&m), None);
         assert_eq!(with_run["last_run"]["status"], "trained");
         assert_eq!(with_run["last_run"]["example_count"], 120);
         assert_eq!(with_run["last_run"]["promoted"], false);
+        assert_eq!(with_run["adapter_live"], false);
         // The staging path (a location, not a secret) is not leaked to the wire.
         assert!(!with_run.to_string().contains("state/lora/run-1"));
+
+        // A PROMOTED adapter surfaces the live summary WITH its measured losses.
+        let live = Manifest {
+            promoted: true,
+            held_out_base_loss: Some(2.5),
+            held_out_adapter_loss: Some(2.2),
+            ..m.clone()
+        };
+        let with_live = status_payload(true, 200, Some(&m), Some(&live));
+        assert_eq!(with_live["adapter_live"], true);
+        assert_eq!(with_live["promoted"]["promoted"], true);
+        assert_eq!(with_live["promoted"]["held_out_adapter_loss"], 2.2);
+        assert_eq!(with_live["promoted"]["held_out_base_loss"], 2.5);
     }
 
     // -- the orchestrator, hermetic: canned runner + temp dirs, no DB, no spawn.
@@ -714,11 +1060,164 @@ mod tests {
             status: RunStatus::Prepared,
             staging_dir: "state/lora/x".into(),
             promoted: false,
+            held_out_base_loss: None,
+            held_out_adapter_loss: None,
         };
         let s = serde_json::to_string(&m).unwrap();
         assert!(s.contains("\"status\":\"prepared\""));
         assert!(s.contains("\"promoted\":false"));
+        // The eval fields are omitted until measured (skip_serializing_if None).
+        assert!(!s.contains("held_out_base_loss"), "unmeasured loss is omitted, not null: {s}");
         let back: Manifest = serde_json::from_str(&s).unwrap();
         assert_eq!(back, m);
+        // With measured losses they round-trip.
+        let measured = Manifest { held_out_base_loss: Some(2.4), held_out_adapter_loss: Some(2.1), ..m };
+        let s2 = serde_json::to_string(&measured).unwrap();
+        assert!(s2.contains("held_out_adapter_loss"));
+        assert_eq!(serde_json::from_str::<Manifest>(&s2).unwrap(), measured);
+    }
+
+    // -- MEASURED PROMOTION: the eval command, loss parse, the gate, and the
+    // hermetic promote_last orchestration (injected eval runner; no spawn).
+
+    #[test]
+    fn eval_command_is_the_exact_mlx_test_argv_base_and_adapter() {
+        // BASE: --adapter-path is EMPTY (mlx_lm's "test without LoRA layers"; an
+        // omitted flag would default to the dir "adapters" and fail).
+        let base = eval_command("python3", "mlx-community/Qwen3-4B", "/run", None);
+        assert_eq!(
+            base.args,
+            ["-m", "mlx_lm.lora", "--model", "mlx-community/Qwen3-4B", "--data", "/run",
+             "--test", "--adapter-path", "", "--batch-size", "1"]
+        );
+        // ADAPTER: --adapter-path is the staged run dir (same base + data + test).
+        let adapter = eval_command("python3", "mlx-community/Qwen3-4B", "/run", Some("/run"));
+        assert!(adapter.args.windows(2).any(|w| w[0] == "--adapter-path" && w[1] == "/run"));
+        assert!(adapter.args.contains(&"--test".to_string()));
+    }
+
+    #[test]
+    fn parse_test_loss_reads_the_summary_and_rejects_noise() {
+        assert_eq!(parse_test_loss("Test loss 2.345, Test ppl 10.434"), Some(2.345));
+        assert_eq!(parse_test_loss("...\nIter 100\nTest loss: 1.5\n"), Some(1.5));
+        assert_eq!(parse_test_loss("test loss = 0.9"), Some(0.9)); // case + '='
+        // No summary line -> None (unmeasurable never counts as a win).
+        assert_eq!(parse_test_loss("Iter 200: Val loss 3.1"), None);
+        assert_eq!(parse_test_loss(""), None);
+        assert_eq!(parse_test_loss("Test loss banana"), None);
+    }
+
+    #[test]
+    fn promotion_gate_promotes_only_on_a_measured_margin_win() {
+        use PromotionDecision::*;
+        // Clear win >= margin -> Promote.
+        assert!(matches!(
+            promotion_decision(Some(2.5), Some(2.2), 0.05),
+            Promote { improvement, .. } if (improvement - 0.3).abs() < 1e-9
+        ));
+        // Win below the margin -> Reject (noise doesn't flip the live model).
+        assert!(matches!(promotion_decision(Some(2.5), Some(2.49), 0.05), Reject { .. }));
+        // Exactly the margin -> Promote (>=). Exactly-representable floats so the
+        // boundary is the gate's `>=`, not float rounding: 3.0 - 2.0 == 1.0.
+        assert!(matches!(promotion_decision(Some(3.0), Some(2.0), 1.0), Promote { .. }));
+        // A regression (adapter worse) -> Reject.
+        assert!(matches!(promotion_decision(Some(2.0), Some(2.4), 0.05), Reject { .. }));
+        // An unmeasurable side -> Reject, never promote.
+        assert!(matches!(promotion_decision(None, Some(2.0), 0.05), Reject { improvement: None, .. }));
+        assert!(matches!(promotion_decision(Some(2.0), None, 0.05), Reject { improvement: None, .. }));
+        // NaN -> Reject (non-finite never wins).
+        assert!(matches!(promotion_decision(Some(f64::NAN), Some(1.0), 0.05), Reject { .. }));
+    }
+
+    #[tokio::test]
+    async fn promote_last_promotes_on_a_measured_win_and_is_reversible() {
+        let root = tempdir("promote-win");
+        let mut cfg = crate::config::Config::default();
+        cfg.distill.enabled = true;
+        cfg.distill.min_improvement = 0.05;
+        // Stage a "trained" run with an adapter file + a Trained last.json.
+        let run_dir = staging_root(&root.0).join("run-x");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(run_dir.join("adapters.safetensors"), b"weights").unwrap();
+        std::fs::write(run_dir.join("test.jsonl"), "{}\n").unwrap();
+        let manifest = Manifest {
+            created: "2026-07-13T10-00-00Z".into(),
+            base_model: cfg.distill.base_model.clone(),
+            example_count: 80,
+            status: RunStatus::Trained,
+            staging_dir: run_dir.to_string_lossy().to_string(),
+            promoted: false,
+            held_out_base_loss: None,
+            held_out_adapter_loss: None,
+        };
+        write_manifest(&root.0, &run_dir, &manifest);
+
+        // Injected eval runner: base loss 2.5, adapter loss 2.2 (a 0.3 win).
+        let reply = promote_last(&cfg, &root.0, |_p, args| {
+            let is_adapter = args.windows(2).any(|w| w[0] == "--adapter-path" && !w[1].is_empty());
+            async move {
+                Ok(if is_adapter { "Test loss 2.200".to_string() } else { "Test loss 2.500".to_string() })
+            }
+        })
+        .await;
+        assert!(reply.contains("Promoted"), "a measured win promotes: {reply}");
+        // The live pointer exists with the measured losses; adapter_live true.
+        let live = read_promoted_manifest(&root.0).expect("promoted manifest");
+        assert!(live.promoted);
+        assert_eq!(live.held_out_base_loss, Some(2.5));
+        assert_eq!(live.held_out_adapter_loss, Some(2.2));
+        assert!(promoted_dir(&root.0).join("adapters.safetensors").exists(), "adapter copied live");
+        // Reversible: rollback removes the live pointer.
+        clear_promotion(&root.0).unwrap();
+        assert!(read_promoted_manifest(&root.0).is_none(), "rollback reverts to base");
+    }
+
+    #[tokio::test]
+    async fn promote_last_refuses_without_a_measured_win_and_keeps_base_live() {
+        let root = tempdir("promote-nogo");
+        let mut cfg = crate::config::Config::default();
+        cfg.distill.enabled = true;
+        let run_dir = staging_root(&root.0).join("run-y");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(run_dir.join("adapters.safetensors"), b"weights").unwrap();
+        let manifest = Manifest {
+            created: "2026-07-13T10-00-00Z".into(),
+            base_model: cfg.distill.base_model.clone(),
+            example_count: 80,
+            status: RunStatus::Trained,
+            staging_dir: run_dir.to_string_lossy().to_string(),
+            promoted: false,
+            held_out_base_loss: None,
+            held_out_adapter_loss: None,
+        };
+        write_manifest(&root.0, &run_dir, &manifest);
+        // Adapter is WORSE (2.6 vs base 2.5) -> NO promotion, base stays live.
+        let reply = promote_last(&cfg, &root.0, move |_p, args| {
+            let is_adapter = args.windows(2).any(|w| w[0] == "--adapter-path" && !w[1].is_empty());
+            async move {
+                Ok(if is_adapter { "Test loss 2.600".to_string() } else { "Test loss 2.500".to_string() })
+            }
+        })
+        .await;
+        assert!(reply.contains("did NOT promote"), "a non-win is refused honestly: {reply}");
+        assert!(read_promoted_manifest(&root.0).is_none(), "no adapter goes live without a win");
+        // The measured (non-)result is still recorded in the run manifest.
+        let last = read_last_manifest(&root.0).unwrap();
+        assert_eq!(last.held_out_base_loss, Some(2.5));
+        assert_eq!(last.held_out_adapter_loss, Some(2.6));
+        assert!(!last.promoted);
+    }
+
+    #[tokio::test]
+    async fn promote_last_is_off_by_default_and_needs_a_trained_run() {
+        let root = tempdir("promote-guards");
+        let cfg_off = crate::config::Config::default(); // distill OFF
+        let r = promote_last(&cfg_off, &root.0, |_p, _a| async { Ok(String::new()) }).await;
+        assert!(r.contains("off"), "{r}");
+        // On, but no trained run staged -> honest "nothing to promote".
+        let mut cfg = crate::config::Config::default();
+        cfg.distill.enabled = true;
+        let r2 = promote_last(&cfg, &root.0, |_p, _a| async { Ok(String::new()) }).await;
+        assert!(r2.contains("no trained adapter") || r2.contains("nothing to promote"), "{r2}");
     }
 }

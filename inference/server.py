@@ -2862,6 +2862,15 @@ class InferenceEngine:
         self.persona = persona
         self._model = None
         self._tokenizer = None
+        # SELF-DISTILLATION (distill.rs) — the LIVE personal LoRA adapter, if the
+        # daemon has PROMOTED one (state/lora/promoted/). The resident LLM loads
+        # WITH the adapter when its manifest base_model matches self.llm_id; else
+        # base. HONEST: `_active_adapter` is the loaded adapter's stamp (or None =
+        # base), `_adapter_note` records why an adapter present on disk was NOT
+        # loaded (base mismatch / load failure) so op=generate never claims an
+        # adapter it didn't apply. Both are set in _ensure_llm at load time.
+        self._active_adapter = None
+        self._adapter_note = None
         # Multi-resident LOCAL model manager (task #17). The base [models].llm is
         # ALWAYS warm + the single-resident fallback; the manager additionally
         # keeps the configured extra warm-set resident WHEN the RAM budget allows
@@ -2995,21 +3004,51 @@ class InferenceEngine:
             # when the base loaded instead. The real RAM/speed tradeoff is
             # device-gated; this seam only governs WHICH id is requested.
             load_id, loaded_quant = self._resolve_quant_load(self.llm_id, self.quant)
-            log.info("loading LLM %s (resident after first use)...", load_id)
+            # SELF-DISTILLATION: a PROMOTED personal adapter, loaded ONLY when its
+            # base_model matches the id we're loading (an adapter is invalid for a
+            # different base). A present-but-mismatched or unloadable adapter is
+            # recorded in _adapter_note and generation serves BASE — never a
+            # silently-wrong or falsely-claimed adapter.
+            adapter_path, adapter_stamp, self._adapter_note = self._promoted_adapter(load_id)
+            log.info(
+                "loading LLM %s (resident after first use)%s...",
+                load_id,
+                f" with adapter {adapter_stamp}" if adapter_path else "",
+            )
             t0 = time.perf_counter()
+            self._active_adapter = None
             try:
-                self._model, self._tokenizer = load(load_id)
+                if adapter_path:
+                    try:
+                        self._model, self._tokenizer = load(load_id, adapter_path=adapter_path)
+                        self._active_adapter = adapter_stamp
+                    except Exception as e:
+                        # Adapter failed to fuse — fall back to base HONESTLY.
+                        log.warning("promoted adapter %s failed to load (%s); serving base", adapter_stamp, e)
+                        self._adapter_note = f"adapter load failed: {e}"
+                        self._model, self._tokenizer = load(load_id)
+                else:
+                    self._model, self._tokenizer = load(load_id)
             except Exception:
                 if load_id != self.llm_id:
                     # The requested quant variant is absent/unloadable: fall back
                     # to the configured base id and report the truth (auto = the
-                    # on-disk variant the loader picked).
+                    # on-disk variant the loader picked). Retry the adapter on base.
                     log.warning(
                         "quant variant %r unavailable; falling back to %s and reporting the loaded quant honestly",
                         load_id,
                         self.llm_id,
                     )
-                    self._model, self._tokenizer = load(self.llm_id)
+                    a2, s2, self._adapter_note = self._promoted_adapter(self.llm_id)
+                    if a2:
+                        try:
+                            self._model, self._tokenizer = load(self.llm_id, adapter_path=a2)
+                            self._active_adapter = s2
+                        except Exception as e:
+                            self._adapter_note = f"adapter load failed: {e}"
+                            self._model, self._tokenizer = load(self.llm_id)
+                    else:
+                        self._model, self._tokenizer = load(self.llm_id)
                     loaded_quant = "auto"
                 else:
                     raise
@@ -3031,6 +3070,48 @@ class InferenceEngine:
         if quant == "auto":
             return (base_id, "auto")
         return (quant_variant_id(base_id, quant), quant)
+
+    def _promoted_adapter(self, base_id):
+        """Return (adapter_path, stamp, note) for the daemon-PROMOTED personal
+        LoRA adapter, or (None, None, note). Loads ONLY when state/lora/promoted/
+        holds an adapters.safetensors AND a manifest.json whose base_model equals
+        `base_id` — an adapter is invalid for a different base, and applying it to
+        a mismatched model would silently corrupt output. HONEST: a mismatch, an
+        unreadable manifest, or absence returns (None, None, <human note>); it
+        never fabricates an adapter. No MLX/load here — _ensure_llm does the load
+        + reports self._active_adapter from the returned stamp."""
+        promoted = PROJECT_ROOT / "state" / "lora" / "promoted"
+        weights = promoted / "adapters.safetensors"
+        if not weights.is_file():
+            return (None, None, None)
+        try:
+            with open(promoted / "manifest.json") as f:
+                m = json.load(f)
+        except Exception:
+            return (None, None, "a promoted adapter is staged but its manifest is unreadable; serving base")
+        base_model = m.get("base_model")
+        if base_model != base_id:
+            return (
+                None,
+                None,
+                f"the promoted adapter is for {base_model!r}, not the resident {base_id!r}; serving base",
+            )
+        stamp = "lora:" + str(m.get("created") or "promoted")
+        return (str(promoted), stamp, None)
+
+    def reload_lora(self):
+        """Drop the resident LLM so the NEXT generate reloads with the CURRENT
+        state/lora/promoted/ pointer — fusing a freshly-promoted personal adapter,
+        or serving base after a rollback. Held under the GPU lock so it never
+        races an in-flight decode; the reload itself is lazy (next _ensure_llm),
+        so this call is cheap. The daemon calls it right after a promote/rollback."""
+        with self._lock:
+            self._model = None
+            self._tokenizer = None
+            self._active_adapter = None
+            self._adapter_note = None
+            self._gen_cache = None
+            self._gen_cache_len = 0
 
     def _ensure_draft(self):
         """#37: lazy-load the DRAFT model for speculative decoding, behind the
@@ -6322,6 +6403,32 @@ class InferenceServer:
                     "text": out,
                     "speculative": gen_meta.get("speculative", False),
                     "quant": gen_meta.get("quant", "auto"),
+                    # SELF-DISTILLATION: the LIVE personal adapter stamp (or None =
+                    # base model). HONEST — set only when an adapter actually fused
+                    # into the resident model (mismatched/failed adapters serve
+                    # base and report None), so the daemon/HUD never claim a
+                    # personalization that isn't running.
+                    "adapter": self.engine._active_adapter,
+                    "latency_ms": latency_ms(),
+                }
+
+            if op == "reload_lora":
+                # SELF-DISTILLATION: the daemon promoted or rolled back a personal
+                # adapter — drop the resident LLM so the NEXT generate reloads with
+                # the current state/lora/promoted/ pointer. Under the GPU lock (via
+                # a thread) so it never races an in-flight decode.
+                await asyncio.to_thread(self.engine.reload_lora)
+                return {"id": rid, "ok": True, "reloaded": True, "latency_ms": latency_ms()}
+
+            if op == "lora_status":
+                # Read-only: which personal adapter (if any) is LIVE, plus the
+                # honest note when one staged on disk was NOT loaded (base mismatch
+                # / load failure). Never claims an adapter that isn't running.
+                return {
+                    "id": rid,
+                    "ok": True,
+                    "adapter": self.engine._active_adapter,
+                    "note": self.engine._adapter_note,
                     "latency_ms": latency_ms(),
                 }
 
