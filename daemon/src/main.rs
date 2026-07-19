@@ -3017,6 +3017,9 @@ async fn main() -> Result<()> {
                         // HONEST LABEL: false for spec-only / unbuilt entries so
                         // the deck never offers a Start that can only fail.
                         "runnable": a.entry_present,
+                        // The app's exposed tool name (drives the App Deck card
+                        // for apps not in the HUD's curated catalog).
+                        "tool": a.tool,
                     }))
                     .collect::<Vec<_>>(),
             }),

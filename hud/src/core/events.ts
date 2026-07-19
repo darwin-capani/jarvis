@@ -1420,6 +1420,45 @@ export function appManifestIssueLine(data: Record<string, unknown>): string | nu
   return `${name}: ${error !== null && error.length > 0 ? error : "invalid manifest"}`;
 }
 
+/** One entry of the LIVE app catalog (system / app.registry), emitted once at
+ *  daemon startup: the manifest name, description, and first exposed tool of an
+ *  app the daemon ACTUALLY discovered. Drives the App Deck so a new app in
+ *  apps/ auto-appears (no hand-maintained list). SECRET-FREE manifest metadata. */
+export interface AppRegistryEntry {
+  id: string;
+  description: string;
+  tool: string;
+}
+
+/** Max apps parsed from one app.registry frame — well above the real fleet, a
+ *  guard against a malformed/huge frame. */
+export const APP_REGISTRY_CAP = 128;
+
+/** Parse a system / app.registry payload (`{apps: [{name, description, tool}]}`)
+ *  into the live catalog. Drops entries with no usable name; coerces missing
+ *  strings to "". Bounded, deduped by id (first wins), sorted by id for a stable
+ *  render. Never throws — a malformed frame degrades to []. */
+export function parseAppRegistry(data: Record<string, unknown>): AppRegistryEntry[] {
+  const raw = data["apps"];
+  if (!Array.isArray(raw)) return [];
+  const out: AppRegistryEntry[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (out.length >= APP_REGISTRY_CAP) break;
+    if (!isPlainObject(item)) continue;
+    const id = str(item, "name");
+    if (id === null || id.length === 0 || seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      description: str(item, "description") ?? "",
+      tool: str(item, "tool") ?? "",
+    });
+  }
+  out.sort((a, b) => a.id.localeCompare(b.id));
+  return out;
+}
+
 /** system / app.op_forwarded — router.rs (handle_silicon_canvas), emitted when a
  *  voice command is translated into a structured op and forwarded to a running
  *  micro-app over its per-app socket (e.g. "show me the 3V3 net" -> Silicon

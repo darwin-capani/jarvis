@@ -2,7 +2,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import AppDeckPanel from "../components/AppDeckPanel";
-import { appManifestIssueLine, APP_MANIFEST_ISSUE_CAP, type TelemetryEnvelope } from "../core/events";
+import {
+  appManifestIssueLine,
+  APP_MANIFEST_ISSUE_CAP,
+  parseAppRegistry,
+  type AppRegistryEntry,
+  type TelemetryEnvelope,
+} from "../core/events";
 import { initialState, reduce, type AppFeed, type HudState } from "../core/state";
 
 /* helpers ------------------------------------------------------------------ */
@@ -10,9 +16,10 @@ const render = (
   runningApps: ReadonlySet<string>,
   appFeeds: Record<string, AppFeed> = {},
   manifestIssues: string[] = [],
+  appRegistry: AppRegistryEntry[] = [],
 ) =>
   renderToStaticMarkup(
-    createElement(AppDeckPanel, { runningApps, appFeeds, manifestIssues }),
+    createElement(AppDeckPanel, { runningApps, appFeeds, manifestIssues, appRegistry }),
   );
 
 let counter = 0;
@@ -150,5 +157,66 @@ describe("app.manifest_invalid reducer", () => {
     const s = tel(connected(), env("app.manifest_invalid", { name: "bad-app", error: "x" }));
     expect(s.runningApps.has("bad-app")).toBe(false);
     expect("bad-app" in s.appFeeds).toBe(false);
+  });
+});
+
+describe("App Deck — live registry", () => {
+  it("parseAppRegistry parses, dedups, sorts, and degrades a malformed frame to []", () => {
+    const r = parseAppRegistry({
+      apps: [
+        { name: "zeta", description: "Z app", tool: "zeta.run" },
+        { name: "alpha", description: "A app", tool: "alpha.run" },
+        { name: "alpha", description: "dup", tool: "alpha.dup" }, // dedup (first wins)
+        { name: "", description: "no name", tool: "x" }, // dropped
+      ],
+    });
+    expect(r.map((e) => e.id)).toEqual(["alpha", "zeta"]); // sorted, deduped
+    expect(r[0].tool).toBe("alpha.run"); // first wins
+    expect(parseAppRegistry({})).toEqual([]);
+    expect(parseAppRegistry({ apps: "nope" })).toEqual([]);
+  });
+
+  it("reads `tool` from the daemon's REAL enriched payload (running/runnable ignored)", () => {
+    // The single daemon emit carries {name, description, running, runnable, tool};
+    // parseAppRegistry must pick up `tool` and ignore the extra fields (this is
+    // the exact frame the deck now consumes — the review found the earlier
+    // duplicate emit clobbered it and dropped `tool`).
+    const r = parseAppRegistry({
+      apps: [{ name: "widget", description: "d", running: false, runnable: true, tool: "widget.go" }],
+    });
+    expect(r).toEqual([{ id: "widget", description: "d", tool: "widget.go" }]);
+  });
+
+  it("renders from the LIVE registry when present — a NEW app auto-appears in OTHER", () => {
+    const registry: AppRegistryEntry[] = [
+      { id: "numbase", description: "curated one", tool: "numbase.convert" }, // known -> curated card
+      { id: "brand-new-app", description: "A brand new on-device widget that does things", tool: "brandnew.go" },
+    ];
+    const html = render(new Set(), {}, [], registry);
+    // The NEW app appears with a title-cased name, its tool, and the OTHER group.
+    expect(html).toContain("Brand New App");
+    expect(html).toContain("brandnew.go");
+    expect(html).toContain(">OTHER<");
+    // The known app keeps its curated display name.
+    expect(html).toContain("Numbase");
+    // The deck total reflects the LIVE registry (2), not the 31-app fallback.
+    expect(html).toContain(">2<");
+    expect(html).not.toContain(">31<");
+  });
+
+  it("falls back to the curated fleet when the registry is empty (old daemon / pre-frame)", () => {
+    const html = render(new Set(), {}, [], []);
+    expect(html).toContain(">31<"); // the curated fallback still renders
+  });
+
+  it("app.registry reducer folds the live catalog into state", () => {
+    let s = reduce(initialState(), { type: "ws.connected", at: 0 });
+    expect(s.appRegistry).toEqual([]);
+    s = reduce(s, {
+      type: "telemetry",
+      envelope: env("app.registry", { apps: [{ name: "foo", description: "d", tool: "foo.run" }] }),
+      at: 1,
+    });
+    expect(s.appRegistry.map((e) => e.id)).toEqual(["foo"]);
   });
 });

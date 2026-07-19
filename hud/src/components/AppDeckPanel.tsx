@@ -1,4 +1,5 @@
 import type { AppFeed } from "../core/state";
+import type { AppRegistryEntry } from "../core/events";
 import Frame from "./Frame";
 
 /**
@@ -28,8 +29,10 @@ type DeckApp = {
   cat: string;
 };
 
-// Categories in display order (AI leads — the on-device-LLM apps).
-const CATEGORIES = ["AI", "DEV", "DATA", "SECURITY", "NETWORK", "ENGINEERING", "TEXT", "TIME", "DESIGN"] as const;
+// Categories in display order (AI leads — the on-device-LLM apps). OTHER is the
+// bucket for any app the daemon discovers that this curated catalog doesn't know
+// yet — so a NEW app auto-appears rather than being invisible until hand-listed.
+const CATEGORIES = ["AI", "DEV", "DATA", "SECURITY", "NETWORK", "ENGINEERING", "TEXT", "TIME", "DESIGN", "OTHER"] as const;
 
 // The curated micro-app fleet (each a real, validated capability module in apps/).
 const FLEET: DeckApp[] = [
@@ -69,10 +72,54 @@ const FLEET: DeckApp[] = [
   { id: "freqwave", name: "Freqwave", desc: "Wavelength·LC·RC resonance solver", tool: "wave.solve", cat: "ENGINEERING" },
 ];
 
+/** The curated catalog indexed by app id — the source of the nice display name +
+ *  category + copy for KNOWN apps. An app the daemon discovers that isn't here
+ *  still renders (in OTHER) from its live manifest metadata. */
+const CATALOG_BY_ID = new Map(FLEET.map((a) => [a.id, a]));
+
+/** Title-case an unknown app id for its display name ("share-guard" -> "Share Guard"). */
+function titleCase(id: string): string {
+  return id
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/** Trim a manifest description to a card-sized blurb (the manifest one can be a
+ *  long honest sentence). Cuts on a word boundary near the cap. */
+function blurb(desc: string): string {
+  const d = desc.trim();
+  if (d.length <= 64) return d;
+  const cut = d.slice(0, 64);
+  const sp = cut.lastIndexOf(" ");
+  return `${(sp > 40 ? cut.slice(0, sp) : cut).trimEnd()}…`;
+}
+
+/** The apps to RENDER: the LIVE registry when the daemon has reported it (a new
+ *  app auto-appears), else the curated FLEET (fallback for an old daemon / before
+ *  the first frame). A live app keeps its curated card when known, else shows its
+ *  real manifest metadata in OTHER. */
+function renderApps(registry: AppRegistryEntry[]): DeckApp[] {
+  if (registry.length === 0) return FLEET;
+  return registry.map((r) => {
+    const known = CATALOG_BY_ID.get(r.id);
+    if (known) return known;
+    return {
+      id: r.id,
+      name: titleCase(r.id),
+      desc: r.description.length > 0 ? blurb(r.description) : "on-device micro-app",
+      tool: r.tool,
+      cat: "OTHER",
+    };
+  });
+}
+
 export default function AppDeckPanel({
   runningApps,
   appFeeds,
   manifestIssues = [],
+  appRegistry = [],
 }: {
   runningApps: ReadonlySet<string>;
   appFeeds: Record<string, AppFeed>;
@@ -80,9 +127,13 @@ export default function AppDeckPanel({
    *  discovery because their manifest.toml failed to parse/validate. Rendered
    *  as install errors so a broken manifest is visible, not a silent absence. */
   manifestIssues?: string[];
+  /** The live app catalog (app.registry). When present the deck renders from it
+   *  (new apps auto-appear); empty -> the curated FLEET fallback. */
+  appRegistry?: AppRegistryEntry[];
 }) {
+  const FLEET_LIVE = renderApps(appRegistry);
   const isLive = (id: string) => runningApps.has(id) || appFeeds[id]?.running === true;
-  const liveCount = FLEET.filter((a) => isLive(a.id)).length;
+  const liveCount = FLEET_LIVE.filter((a) => isLive(a.id)).length;
 
   return (
     <div className="deck-panel">
@@ -92,13 +143,13 @@ export default function AppDeckPanel({
             <span className="deck-count">
               <span className="deck-live-n">{liveCount}</span>
               <span className="deck-slash"> / </span>
-              <span className="deck-total-n">{FLEET.length}</span>
+              <span className="deck-total-n">{FLEET_LIVE.length}</span>
             </span>
             <span className="deck-count-label">LIVE</span>
           </div>
 
           {CATEGORIES.map((cat) => {
-            const apps = FLEET.filter((a) => a.cat === cat);
+            const apps = FLEET_LIVE.filter((a) => a.cat === cat);
             if (apps.length === 0) return null;
             const catLive = apps.filter((a) => isLive(a.id)).length;
             return (

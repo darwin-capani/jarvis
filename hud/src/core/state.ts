@@ -192,6 +192,8 @@ import {
   parsePostureSnapshot,
   mergeIntrospectAlert,
   appManifestIssueLine,
+  parseAppRegistry,
+  type AppRegistryEntry,
   APP_MANIFEST_ISSUE_CAP,
   parseAttributionHealth,
   parseMcpStatus,
@@ -1203,6 +1205,10 @@ export interface HudState {
    *  newest-first, capped. Rendered on the App Deck so a broken manifest is a
    *  visible install error instead of an app that silently never appears. */
   appManifestIssues: string[];
+  /** The LIVE app catalog (app.registry): the apps the daemon actually
+   *  discovered, with their manifest description + exposed tool. Empty until the
+   *  first frame — the App Deck falls back to its curated list until then. */
+  appRegistry: AppRegistryEntry[];
 
   /** The last ON-DEVICE VLM describe outcome (vision.describe, channel "local").
    *  METADATA ONLY — source kind + whether the on-device VLM actually produced a
@@ -1598,6 +1604,7 @@ export function initialState(): HudState {
     runningApps: new Set<string>(),
     appFeeds: {},
     appManifestIssues: [],
+    appRegistry: [],
     visionDescribe: null,
     audioSoundMonitor: null,
     screenContext: screenContextInitial(),
@@ -3603,6 +3610,11 @@ function applyEnvelope(state: HudState, env: TelemetryEnvelope, at: number): Hud
       };
     }
 
+    case "app.registry":
+      // The live catalog of discovered apps — replaces the prior snapshot each
+      // time the daemon (re)emits it (startup). The App Deck renders from this
+      // when present so a new app auto-appears.
+      return { ...s, appRegistry: parseAppRegistry(env.data) };
     case "app.manifest_invalid": {
       // AppRegistry::discover SKIPPED an apps/<dir>/ whose manifest.toml failed
       // to parse/validate — the app never registered and can't launch, so

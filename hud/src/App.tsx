@@ -669,6 +669,7 @@ export default function App() {
             runningApps={state.runningApps}
             appFeeds={state.appFeeds}
             manifestIssues={state.appManifestIssues}
+            appRegistry={state.appRegistry}
           />
           <AttributionHealthPanel health={state.attributionHealth} />
           <TccSentinelPanel sentinel={state.tccSentinel} anomalies={state.tccAnomalies} />
