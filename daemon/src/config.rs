@@ -843,6 +843,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "chunk_chars",
             "chunk_overlap",
             "build_graph",
+            "graph_extractor",
             "spotlight",
             "spotlight_max_candidates",
         ],
@@ -2730,6 +2731,15 @@ pub struct DocSearchConfig {
     /// shared world tier; it never re-walks the disk and never writes an agent's
     /// private namespace. Inert until docsearch has roots + an index.
     pub build_graph: bool,
+    /// Which extractor the knowledge-graph build runs. `"deterministic"` (the
+    /// default) = the conservative, pure heuristic. `"llm"` = the OPT-IN
+    /// LLM-grounded extractor: it asks the on-device model per chunk, then
+    /// STRICTLY drops anything not verbatim in the chunk (it can never
+    /// fabricate). An unreachable server OR an unknown value falls back to
+    /// `"deterministic"` honestly. PERF: the LLM path makes ONE inference call
+    /// per indexed chunk, so a large build is slow — it is an explicit,
+    /// user-triggered "build my knowledge graph" action.
+    pub graph_extractor: String,
     /// SPOTLIGHT BRIDGE (spotlight.rs): when true, a file search ALSO asks macOS
     /// Spotlight (READ-ONLY `mdfind`, always `-onlyin` per allowlisted root —
     /// never an unrestricted query) for candidate files, absorbed through the
@@ -2774,6 +2784,7 @@ impl Default for DocSearchConfig {
             // user.world.* tier (provenance-tagged, deduped, bounded). Inert until
             // docsearch has roots + an index.
             build_graph: true,
+            graph_extractor: "deterministic".to_string(),
             // SHIPS ON (full-power default) — INERT WITHOUT ROOTS: the Spotlight
             // bridge is READ-ONLY (mdfind/mdls only) and root-confined; with no
             // allowlisted root it never issues a query at all.

@@ -4241,16 +4241,34 @@ async fn handle_build_knowledge_graph(memory: &Memory) -> String {
                 folders first, then I can build the knowledge graph from them."
             .to_string();
     }
-    // The shipped extractor is the conservative deterministic heuristic. (A richer
-    // LLM-backed extractor implements the same seam and is runtime-gated; the
-    // deterministic one is always the honest fallback.) `map_documents` re-checks
-    // the gate (defense-in-depth) and only then builds.
-    let extractor = DeterministicExtractor;
+    // Pick the extractor: the conservative deterministic heuristic (default) OR
+    // the OPT-IN LLM-grounded extractor when [docsearch].graph_extractor = "llm".
+    // The LLM path connects to the on-device inference server; if it is
+    // unreachable at build start we FALL BACK to the deterministic extractor
+    // honestly (never a half-wired LLM build). Either way `map_documents`
+    // re-checks the gate (defense-in-depth) and the grounding contract holds.
+    let det = DeterministicExtractor;
+    let llm = if cfg.docsearch.graph_extractor.trim() == "llm" {
+        let sock = root.join("state").join("ipc").join("inference.sock");
+        match knowledge_graph::LlmExtractor::connect(&sock).await {
+            Some(e) => Some(e),
+            None => {
+                warn!("knowledge_graph: LLM extractor requested but inference server unreachable; using the deterministic extractor");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let extractor: &dyn Extractor = match &llm {
+        Some(e) => e,
+        None => &det,
+    };
     match knowledge_graph::map_documents(
         cfg.docsearch.enabled,
         cfg.docsearch.build_graph,
         memory,
-        &extractor,
+        extractor,
         &chunks,
     )
     .await
