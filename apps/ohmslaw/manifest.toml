@@ -1,0 +1,25 @@
+[app]
+name        = "ohmslaw"
+version     = "0.1.0"
+description = "Ohm's law + power solver: give any two of voltage/current/resistance/power (as numbers or SI-unit strings) and get the other two. Pure, offline."
+entry       = "apps/ohmslaw/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/ohmslaw"]
+fs_write  = ["state/apps/ohmslaw"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["ohmslaw.status"]
+
+[intents]
+provides = ["ohm.solve"]
+
+[[tools.exposes]]
+name          = "ohm.solve"
+scopes        = ["fs_read"]
+consequential = false

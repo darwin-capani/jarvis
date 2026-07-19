@@ -1,0 +1,25 @@
+[app]
+name        = "subnetcalc"
+version     = "0.1.0"
+description = "IPv4/IPv6 CIDR subnet calculator — address plan, equal splits, VLSM. Pure, offline."
+entry       = "apps/subnetcalc/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/subnetcalc"]
+fs_write  = ["state/apps/subnetcalc"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["subnetcalc.status"]
+
+[intents]
+provides = ["subnet.plan"]
+
+[[tools.exposes]]
+name          = "subnet.plan"
+scopes        = ["fs_read"]
+consequential = false

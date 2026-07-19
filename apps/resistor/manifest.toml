@@ -1,0 +1,25 @@
+[app]
+name        = "resistor"
+version     = "0.1.0"
+description = "Resistor color-band decoder (3/4/5/6-band) and E24/E96 series resolver. Pure, offline."
+entry       = "apps/resistor/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/resistor"]
+fs_write  = ["state/apps/resistor"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["resistor.status"]
+
+[intents]
+provides = ["resistor.decode"]
+
+[[tools.exposes]]
+name          = "resistor.decode"
+scopes        = ["fs_read"]
+consequential = false

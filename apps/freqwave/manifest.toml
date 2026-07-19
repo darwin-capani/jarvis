@@ -1,0 +1,25 @@
+[app]
+name        = "freqwave"
+version     = "0.1.0"
+description = "Wave / RF / resonance solver (EM, LC, RC) with SI-prefix parsing. Pure, offline."
+entry       = "apps/freqwave/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/freqwave"]
+fs_write  = ["state/apps/freqwave"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["freqwave.status"]
+
+[intents]
+provides = ["wave.solve"]
+
+[[tools.exposes]]
+name          = "wave.solve"
+scopes        = ["fs_read"]
+consequential = false

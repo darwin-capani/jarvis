@@ -1,0 +1,25 @@
+[app]
+name        = "cidrtool"
+version     = "0.1.0"
+description = "Read-only CIDR aggregation and overlap analysis: collapses a mixed IPv4/IPv6 CIDR list to the minimal covering prefix set and reports subnet/supernet relations. Uses only the Python stdlib ipaddress. Pure, offline."
+entry       = "apps/cidrtool/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/cidrtool"]
+fs_write  = ["state/apps/cidrtool"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["cidrtool.status"]
+
+[intents]
+provides = ["cidr.aggregate"]
+
+[[tools.exposes]]
+name          = "cidr.aggregate"
+scopes        = ["fs_read"]
+consequential = false

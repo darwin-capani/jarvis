@@ -1,0 +1,25 @@
+[app]
+name        = "urlparse"
+version     = "0.1.0"
+description = "RFC-3986 URL/URI dissector via stdlib urllib.parse — never fetches. Pure, offline."
+entry       = "apps/urlparse/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/urlparse"]
+fs_write  = ["state/apps/urlparse"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["urlparse.status"]
+
+[intents]
+provides = ["url.dissect"]
+
+[[tools.exposes]]
+name          = "url.dissect"
+scopes        = ["fs_read"]
+consequential = false

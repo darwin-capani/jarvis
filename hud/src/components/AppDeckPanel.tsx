@@ -29,7 +29,7 @@ type DeckApp = {
 };
 
 // Categories in display order (AI leads — the on-device-LLM apps).
-const CATEGORIES = ["AI", "DEV", "DATA", "SECURITY", "TEXT", "TIME", "DESIGN"] as const;
+const CATEGORIES = ["AI", "DEV", "DATA", "SECURITY", "NETWORK", "ENGINEERING", "TEXT", "TIME", "DESIGN"] as const;
 
 // The curated micro-app fleet (each a real, validated capability module in apps/).
 const FLEET: DeckApp[] = [
@@ -57,6 +57,16 @@ const FLEET: DeckApp[] = [
   { id: "cronwise", name: "Cronwise", desc: "Cron expression, explained", tool: "cronwise.explain", cat: "TIME" },
   { id: "timewarp", name: "Timewarp", desc: "Unix epoch → UTC calendar time", tool: "timewarp.convert", cat: "TIME" },
   { id: "colorlab", name: "Colorlab", desc: "Color science + WCAG contrast", tool: "colorlab.analyze", cat: "DESIGN" },
+  // Network toolkit (pure/offline analyzers — no app opens a socket; net_hosts=[] in every manifest).
+  { id: "subnetcalc", name: "Subnetcalc", desc: "IPv4/IPv6 CIDR planner + VLSM split", tool: "subnet.plan", cat: "NETWORK" },
+  { id: "cidrtool", name: "CIDRTool", desc: "Aggregate CIDRs + overlap analysis", tool: "cidr.aggregate", cat: "NETWORK" },
+  { id: "urlparse", name: "URLParse", desc: "Dissect a URL — parts, IDN, warnings", tool: "url.dissect", cat: "NETWORK" },
+  { id: "portref", name: "Portref", desc: "Well-known port & service reference", tool: "port.lookup", cat: "NETWORK" },
+  // Engineering bench (pure calculators — exact formulas, honest errors).
+  { id: "ohmslaw", name: "OhmsLaw", desc: "V·I·R·P solver with SI-unit parsing", tool: "ohm.solve", cat: "ENGINEERING" },
+  { id: "resistor", name: "Resistor", desc: "Color-band decoder + E24/E96 series", tool: "resistor.decode", cat: "ENGINEERING" },
+  { id: "unitwise", name: "Unitwise", desc: "Unit converter across 10 categories", tool: "unit.convert", cat: "ENGINEERING" },
+  { id: "freqwave", name: "Freqwave", desc: "Wavelength·LC·RC resonance solver", tool: "wave.solve", cat: "ENGINEERING" },
 ];
 
 export default function AppDeckPanel({

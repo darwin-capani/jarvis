@@ -1,0 +1,25 @@
+[app]
+name        = "portref"
+version     = "0.1.0"
+description = "Well-known TCP/UDP port <-> service reference from a curated IANA subset. Pure, offline."
+entry       = "apps/portref/main.py"
+runtime     = "python"
+
+[permissions]
+audio     = false
+gpu       = false
+net_hosts = []
+fs_read   = ["apps/portref"]
+fs_write  = ["state/apps/portref"]
+
+[ui]
+surface          = "panel"
+telemetry_topics = ["portref.status"]
+
+[intents]
+provides = ["port.lookup"]
+
+[[tools.exposes]]
+name          = "port.lookup"
+scopes        = ["fs_read"]
+consequential = false
