@@ -9179,6 +9179,399 @@ fn cassandra_simulate(args: &CassandraSimulateArgs) -> Result<String> {
 const MNEMOSYNE_DEFAULT_K: usize = 5;
 const MNEMOSYNE_MAX_K: usize = 20;
 
+/// Max entries the process-global embed cache holds. The fact/episode stores are
+/// already bounded; this cap is belt-and-braces so the cache can never grow
+/// without limit — evict LEAST-RECENTLY-USED on overflow.
+const EMBED_CACHE_MAX: usize = 8192;
+
+/// A process-global cache of on-device embedding vectors, keyed by the embedded
+/// TEXT (collision-free), all valid for ONE embedder SPACE. It lets a recall
+/// re-embed only the QUERY (always new) instead of the QUERY + every stored fact
+/// on EVERY call: the stable facts are cached after the first recall, turning an
+/// O(store-size) inference cost per recall into O(1) (just the query). A change
+/// of the active embedder space (a model swap) invalidates the whole cache — the
+/// vectors are meaningless cross-space — detected from the op=embed space id.
+///
+/// Eviction is LRU keyed on last USE (not insertion): a recall's query is cached
+/// too but is unique-per-call and never hit again, so under pressure the stale
+/// queries are the eviction victims while the facts — hit on every recall — stay
+/// resident. That keeps the per-recall cost O(1) instead of degrading as unique
+/// queries accumulate and evict actively-queried facts.
+///
+/// HONEST BOUND: the cache is shared by EVERY `embed()` consumer (fact recall,
+/// RAG grounding, episodic, pasteboard — across all agent namespaces), so the
+/// O(1)-per-recall win holds while their COMBINED hot working set fits
+/// [`EMBED_CACHE_MAX`]. Each recall path windows its batch to ~200 texts, so
+/// that is ~20 simultaneously-hot corpora — ample in practice. Beyond it, LRU
+/// evicts cross-consumer and cost degrades GRACEFULLY back toward the
+/// pre-cache baseline (re-embedding what was evicted) — never worse than the
+/// uncached behavior this replaced.
+struct EmbedCache {
+    /// The embedder space id every cached vector belongs to (None until first fill).
+    space: Option<String>,
+    /// text -> (vector, last-used tick). The tick orders eviction (min = LRU).
+    map: std::collections::HashMap<String, (Vec<f64>, u64)>,
+    /// Monotonic logical clock, bumped on every get/put; never wraps in practice.
+    tick: u64,
+}
+
+impl EmbedCache {
+    fn new() -> Self {
+        Self { space: None, map: std::collections::HashMap::new(), tick: 0 }
+    }
+    /// Reset to a new space (drops every cached vector — they were another space).
+    /// The tick stays monotonic across resets (it only orders live entries).
+    fn reset(&mut self, space: Option<String>) {
+        self.space = space;
+        self.map.clear();
+    }
+    fn next_tick(&mut self) -> u64 {
+        self.tick = self.tick.wrapping_add(1);
+        self.tick
+    }
+    /// Read AND mark recently-used (advances the entry's tick). None on miss.
+    fn get_touch(&mut self, text: &str) -> Option<Vec<f64>> {
+        let tick = self.next_tick();
+        match self.map.get_mut(text) {
+            Some(entry) => {
+                entry.1 = tick;
+                Some(entry.0.clone())
+            }
+            None => None,
+        }
+    }
+    /// Peek WITHOUT touching recency (tests / diagnostics only).
+    #[cfg(test)]
+    fn peek(&self, text: &str) -> Option<&Vec<f64>> {
+        self.map.get(text).map(|(v, _)| v)
+    }
+    fn put(&mut self, text: &str, v: Vec<f64>) {
+        let tick = self.next_tick();
+        // Evict the least-recently-used entry before inserting a NEW key at cap.
+        if !self.map.contains_key(text) && self.map.len() >= EMBED_CACHE_MAX {
+            if let Some(victim) = self
+                .map
+                .iter()
+                .min_by_key(|(_, (_, t))| *t)
+                .map(|(k, _)| k.clone())
+            {
+                self.map.remove(&victim);
+            }
+        }
+        self.map.insert(text.to_string(), (v, tick));
+    }
+}
+
+fn embed_cache() -> &'static tokio::sync::Mutex<EmbedCache> {
+    static C: OnceLock<tokio::sync::Mutex<EmbedCache>> = OnceLock::new();
+    C.get_or_init(|| tokio::sync::Mutex::new(EmbedCache::new()))
+}
+
+/// Serve embeddings from the process-global cache, embedding ONLY the misses via
+/// `inner`. `inner(texts) -> (vectors, space_id)` is the space-aware embed
+/// (op=embed with metadata). CORRECTNESS:
+///   * SPACE-KEYED: a miss batch whose returned space differs from the cache's
+///     space invalidates the whole cache (cross-space vectors are meaningless)
+///     and re-embeds EVERYTHING under the new space;
+///   * NO SPACE (a metadata-less server) is NEVER cached (nothing to key safely
+///     on) — it re-embeds every call, exactly today's behavior, and clears any
+///     stale cache so a hit from an old space can never be mixed in;
+///   * COLLISION-FREE + EDIT-SAFE: keyed by the exact text, so an edited fact
+///     (new text) misses and re-embeds, a deleted fact's entry is just never
+///     queried (LRU-evicted later);
+///   * ORDER-PRESERVING: one vector per input text, in input order.
+///
+/// The WIN: the QUERY is always a miss (new text), but the stable facts are hits
+/// after the first recall — so a recall re-embeds ONE text, not the whole store.
+/// PURE over (`cache`, `inner`) — hermetically testable with a fresh cache and a
+/// call-counting mock.
+async fn embed_cached_in<F, Fut>(
+    cache: &tokio::sync::Mutex<EmbedCache>,
+    texts: &[String],
+    inner: F,
+) -> anyhow::Result<Vec<Vec<f64>>>
+where
+    F: Fn(Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<(Vec<Vec<f64>>, Option<String>)>>,
+{
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Serve hits under the currently-known space (touching recency); collect misses.
+    let (known_space, mut result, miss_idx): (Option<String>, Vec<Vec<f64>>, Vec<usize>) = {
+        let mut g = cache.lock().await;
+        let mut result: Vec<Vec<f64>> = vec![Vec::new(); texts.len()];
+        let mut misses = Vec::new();
+        if g.space.is_some() {
+            for (i, t) in texts.iter().enumerate() {
+                match g.get_touch(t) {
+                    Some(v) => result[i] = v,
+                    None => misses.push(i),
+                }
+            }
+        } else {
+            misses = (0..texts.len()).collect();
+        }
+        (g.space.clone(), result, misses)
+    };
+    if miss_idx.is_empty() {
+        return Ok(result); // every text cached -> ZERO embed calls
+    }
+    let all_were_misses = miss_idx.len() == texts.len();
+    let miss_texts: Vec<String> = miss_idx.iter().map(|&i| texts[i].clone()).collect();
+    let (miss_vecs, miss_space) = inner(miss_texts).await?;
+    // Defensive: a short/over batch -> don't trust the partition; re-embed raw.
+    if miss_vecs.len() != miss_idx.len() {
+        let (all, _) = inner(texts.to_vec()).await?;
+        return Ok(all);
+    }
+    match (&miss_space, &known_space) {
+        // No space id: cannot key safely -> never cache.
+        (None, _) => {
+            if all_were_misses {
+                // Nothing was served from cache; the miss batch IS the whole
+                // answer -> assemble it, one inner call, drop any stale cache.
+                for (k, &i) in miss_idx.iter().enumerate() {
+                    result[i] = miss_vecs[k].clone();
+                }
+                cache.lock().await.reset(None);
+                Ok(result)
+            } else {
+                // We served old-space hits but got no space for the misses ->
+                // can't mix spaces; re-embed everything raw and clear the cache.
+                let (all, _) = inner(texts.to_vec()).await?;
+                cache.lock().await.reset(None);
+                Ok(all)
+            }
+        }
+        // Same space, or first fill from an empty cache: fill misses + cache them.
+        (Some(sp), known) if known.as_deref() == Some(sp.as_str()) || known.is_none() => {
+            let mut g = cache.lock().await;
+            if g.space.is_none() {
+                g.reset(Some(sp.clone()));
+            }
+            // Only cache if the live cache space still matches what we embedded
+            // under (guards a concurrent space change in the snapshot->relock gap);
+            // the returned vectors are always correct regardless.
+            let can_cache = g.space.as_deref() == Some(sp.as_str());
+            for (k, &i) in miss_idx.iter().enumerate() {
+                result[i] = miss_vecs[k].clone();
+                if can_cache {
+                    g.put(&texts[i], miss_vecs[k].clone());
+                }
+            }
+            Ok(result)
+        }
+        // Space CHANGED (new != old): cached hits are stale -> re-embed ALL, re-key.
+        // (The guarded arm above already claims same-space and first-fill/None-known,
+        // so this wildcard only fires for a genuine space change.)
+        (Some(_new), _) => {
+            let (all, all_space) = inner(texts.to_vec()).await?;
+            let mut g = cache.lock().await;
+            g.reset(all_space.clone());
+            if all_space.is_some() {
+                for (i, t) in texts.iter().enumerate() {
+                    if let Some(v) = all.get(i) {
+                        g.put(t, v.clone());
+                    }
+                }
+            }
+            Ok(all)
+        }
+    }
+}
+
+/// Production entry: serve embeddings through the process-global [`embed_cache`].
+async fn embed_cached<F, Fut>(texts: &[String], inner: F) -> anyhow::Result<Vec<Vec<f64>>>
+where
+    F: Fn(Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<(Vec<Vec<f64>>, Option<String>)>>,
+{
+    embed_cached_in(embed_cache(), texts, inner).await
+}
+
+#[cfg(test)]
+mod embed_cache_tests {
+    use super::{embed_cached_in, EmbedCache, EMBED_CACHE_MAX};
+    use std::sync::Mutex;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    /// What the mock `inner` embed returns: (one vector per text, space id).
+    type MockOut = anyhow::Result<(Vec<Vec<f64>>, Option<String>)>;
+
+    /// A deterministic vector for a text — distinct per text so we can assert
+    /// which vector was served (from cache vs freshly embedded).
+    fn vec_for(t: &str) -> Vec<f64> {
+        vec![t.len() as f64, t.bytes().map(|b| b as f64).sum::<f64>()]
+    }
+
+    fn s(items: &[&str]) -> Vec<String> {
+        items.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// A call-recording mock `inner`: pushes each batch it's asked to embed into
+    /// `calls`, returns one `vec_for` per text plus the given `space` id.
+    fn mock<'a>(
+        calls: &'a Mutex<Vec<Vec<String>>>,
+        space: Option<&'static str>,
+    ) -> impl Fn(Vec<String>) -> std::future::Ready<MockOut> + 'a {
+        move |batch: Vec<String>| {
+            calls.lock().unwrap().push(batch.clone());
+            let vecs: Vec<Vec<f64>> = batch.iter().map(|t| vec_for(t)).collect();
+            std::future::ready(Ok((vecs, space.map(|x| x.to_string()))))
+        }
+    }
+
+    /// THE core win: a second recall over the same facts re-embeds ONLY the query.
+    #[tokio::test]
+    async fn second_recall_embeds_only_the_query() {
+        let cache = AsyncMutex::new(EmbedCache::new());
+        let calls = Mutex::new(Vec::new());
+
+        let r1 = embed_cached_in(&cache, &s(&["q1", "factA", "factB", "factC"]), mock(&calls, Some("space-v1")))
+            .await
+            .unwrap();
+        assert_eq!(r1.len(), 4);
+
+        let r2 = embed_cached_in(&cache, &s(&["q2", "factA", "factB", "factC"]), mock(&calls, Some("space-v1")))
+            .await
+            .unwrap();
+        assert_eq!(r2.len(), 4);
+
+        let calls = calls.into_inner().unwrap();
+        assert_eq!(calls.len(), 2, "one inner batch per recall");
+        assert_eq!(calls[0], s(&["q1", "factA", "factB", "factC"]), "first recall embeds all four");
+        assert_eq!(
+            calls[1],
+            s(&["q2"]),
+            "second recall embeds ONLY the new query — the O(N)->O(1) win"
+        );
+        // The fact vectors are identical across recalls (served from cache, same space).
+        assert_eq!(r1[1], r2[1]);
+        assert_eq!(r1[2], r2[2]);
+        assert_eq!(r1[3], r2[3]);
+        // ...and each fact vector is the right one for its text.
+        assert_eq!(r2[1], vec_for("factA"));
+    }
+
+    /// A fully-cached recall (query itself already seen) makes ZERO inner calls.
+    #[tokio::test]
+    async fn all_cached_makes_no_inner_call() {
+        let cache = AsyncMutex::new(EmbedCache::new());
+        let calls = Mutex::new(Vec::new());
+        embed_cached_in(&cache, &s(&["a", "b"]), mock(&calls, Some("sp"))).await.unwrap();
+        let before = calls.lock().unwrap().len();
+        let r = embed_cached_in(&cache, &s(&["a", "b"]), mock(&calls, Some("sp"))).await.unwrap();
+        assert_eq!(calls.lock().unwrap().len(), before, "no inner call when every text is cached");
+        assert_eq!(r[0], vec_for("a"));
+        assert_eq!(r[1], vec_for("b"));
+    }
+
+    /// Output order is preserved when some texts hit and some miss.
+    #[tokio::test]
+    async fn order_preserved_across_partial_hit() {
+        let cache = AsyncMutex::new(EmbedCache::new());
+        let calls = Mutex::new(Vec::new());
+        embed_cached_in(&cache, &s(&["x", "y", "z"]), mock(&calls, Some("sp"))).await.unwrap();
+        // New query "n" up front, then a reordered mix of cached facts.
+        let r = embed_cached_in(&cache, &s(&["n", "z", "x", "y"]), mock(&calls, Some("sp"))).await.unwrap();
+        assert_eq!(r[0], vec_for("n"));
+        assert_eq!(r[1], vec_for("z"));
+        assert_eq!(r[2], vec_for("x"));
+        assert_eq!(r[3], vec_for("y"));
+    }
+
+    /// A metadata-less server (no space id) never caches: every recall re-embeds
+    /// the whole batch, exactly today's behavior — and only ONE inner call each.
+    #[tokio::test]
+    async fn no_space_never_caches() {
+        let cache = AsyncMutex::new(EmbedCache::new());
+        let calls = Mutex::new(Vec::new());
+        embed_cached_in(&cache, &s(&["q1", "factA"]), mock(&calls, None)).await.unwrap();
+        embed_cached_in(&cache, &s(&["q2", "factA"]), mock(&calls, None)).await.unwrap();
+        let calls = calls.into_inner().unwrap();
+        assert_eq!(calls.len(), 2, "one inner call per recall, no redundant re-embed");
+        assert_eq!(calls[0], s(&["q1", "factA"]));
+        assert_eq!(calls[1], s(&["q2", "factA"]), "no space id -> nothing cached -> full re-embed");
+    }
+
+    /// A space change (model swap) invalidates the whole cache: the next recall
+    /// re-embeds everything and re-keys under the new space; caching resumes there.
+    #[tokio::test]
+    async fn space_change_reembeds_all_and_rekeys() {
+        let cache = AsyncMutex::new(EmbedCache::new());
+        let calls = Mutex::new(Vec::new());
+        // Fill under space A.
+        embed_cached_in(&cache, &s(&["q1", "factA", "factB"]), mock(&calls, Some("A"))).await.unwrap();
+        // A recall whose server now reports space B: cached hits are stale.
+        let r = embed_cached_in(&cache, &s(&["q2", "factA", "factB"]), mock(&calls, Some("B"))).await.unwrap();
+        assert_eq!(r.len(), 3);
+        let n_after_swap = calls.lock().unwrap().len();
+        // Now a recall under B should re-use the B-keyed fact cache (query only).
+        let before = { calls.lock().unwrap().len() };
+        embed_cached_in(&cache, &s(&["q3", "factA", "factB"]), mock(&calls, Some("B"))).await.unwrap();
+        let post = calls.lock().unwrap();
+        assert_eq!(post.len(), before + 1, "one inner call for the query miss under the new space");
+        assert_eq!(post[n_after_swap], s(&["q3"]), "caching resumed under the new space B");
+    }
+
+    /// An EDITED fact (changed text) misses the cache and is re-embedded, while
+    /// its unchanged neighbors stay cached.
+    #[tokio::test]
+    async fn edited_fact_is_reembedded() {
+        let cache = AsyncMutex::new(EmbedCache::new());
+        let calls = Mutex::new(Vec::new());
+        embed_cached_in(&cache, &s(&["q1", "old-fact", "stable"]), mock(&calls, Some("sp"))).await.unwrap();
+        embed_cached_in(&cache, &s(&["q2", "new-fact", "stable"]), mock(&calls, Some("sp"))).await.unwrap();
+        let calls = calls.into_inner().unwrap();
+        // Second recall embeds the new query AND the edited fact, but not "stable".
+        assert_eq!(calls[1], s(&["q2", "new-fact"]), "edited fact misses; unchanged fact stays cached");
+    }
+
+    /// Empty input short-circuits with no inner call.
+    #[tokio::test]
+    async fn empty_input_no_call() {
+        let cache = AsyncMutex::new(EmbedCache::new());
+        let calls = Mutex::new(Vec::new());
+        let r = embed_cached_in(&cache, &[], mock(&calls, Some("sp"))).await.unwrap();
+        assert!(r.is_empty());
+        assert_eq!(calls.into_inner().unwrap().len(), 0);
+    }
+
+    /// The cache bound is honored: inserting past the cap evicts, and with no
+    /// intervening reads the least-recently-USED is the oldest insert.
+    #[test]
+    fn cache_bound_evicts_oldest_when_untouched() {
+        let mut c = EmbedCache::new();
+        c.reset(Some("sp".to_string()));
+        for i in 0..(EMBED_CACHE_MAX + 5) {
+            c.put(&format!("t{i}"), vec![i as f64]);
+        }
+        assert_eq!(c.map.len(), EMBED_CACHE_MAX, "never exceeds the cap");
+        assert!(c.peek("t0").is_none(), "oldest untouched entries evicted");
+        assert!(c.peek(&format!("t{}", EMBED_CACHE_MAX + 4)).is_some(), "newest retained");
+    }
+
+    /// LRU: a recently-USED entry survives eviction while never-reused entries
+    /// (a recall's unique queries) are the victims — so hot facts stay resident.
+    #[test]
+    fn lru_keeps_recently_used_evicts_stale() {
+        let mut c = EmbedCache::new();
+        c.reset(Some("sp".to_string()));
+        // A "hot fact" inserted first, then kept warm by repeated use.
+        c.put("hot-fact", vec![1.0]);
+        // Fill to the cap with unique "queries" that are never reused, touching
+        // the hot fact between each so it stays the most-recently-used.
+        for i in 0..(EMBED_CACHE_MAX * 2) {
+            c.put(&format!("query{i}"), vec![i as f64]);
+            let _ = c.get_touch("hot-fact");
+        }
+        assert_eq!(c.map.len(), EMBED_CACHE_MAX);
+        assert!(c.peek("hot-fact").is_some(), "the repeatedly-used fact survives");
+        assert!(c.peek("query0").is_none(), "the oldest never-reused query is evicted");
+    }
+}
+
 /// Production embedder for MNEMOSYNE's neural recall: owns the path to the
 /// daemon's `inference.sock` and fetches on-device embeddings via the typed
 /// `embed` op (the server's `[inference].embedder` backend — the Core ML bge
@@ -9188,6 +9581,8 @@ const MNEMOSYNE_MAX_K: usize = 20;
 /// inject a mock [`crate::recall::Embedder`]). When the server is down or
 /// predates the embed op, `embed` returns Err and the recall layer falls back
 /// to lexical BM25 — so a missing inference server degrades cleanly, never errs.
+/// Recall embeds flow through the process-global [`embed_cache`] so stable facts
+/// are embedded once, not on every recall.
 struct InferenceEmbedder {
     socket_path: std::path::PathBuf,
 }
@@ -9208,10 +9603,25 @@ impl InferenceEmbedder {
 }
 
 impl crate::recall::Embedder for InferenceEmbedder {
+    /// Recall embed, served through the process-global space-keyed [`embed_cache`]:
+    /// the stable facts are cached after the first recall, so a subsequent recall
+    /// re-embeds only the QUERY (always a miss) instead of query + the whole store.
+    /// The closure is the space-aware op=embed (via `embed_with_meta`), so the
+    /// cache learns the embedder space and self-invalidates on a model swap — the
+    /// recall paths persist nothing, but every batch here is same-space by
+    /// construction, and the cache preserves that.
     fn embed<'a>(&'a self, texts: &'a [String]) -> crate::recall::EmbedFuture<'a> {
         Box::pin(async move {
-            let mut client = crate::inference::InferenceClient::new(self.socket_path.clone());
-            client.embed(texts).await
+            let socket = self.socket_path.clone();
+            embed_cached(texts, move |batch: Vec<String>| {
+                let socket = socket.clone();
+                async move {
+                    let mut client = crate::inference::InferenceClient::new(socket);
+                    let out = client.embed_with_meta(&batch).await?;
+                    Ok((out.vectors, out.embedder))
+                }
+            })
+            .await
         })
     }
 

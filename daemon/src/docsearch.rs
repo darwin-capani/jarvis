@@ -12,7 +12,7 @@
 //!
 //! ## The CONTRACT (non-negotiable — this reads the user's OWN files)
 //!   * PRIVACY: file CONTENTS + EMBEDDINGS NEVER LEAVE THE DEVICE. Embedding is the
-//!     on-device MLX embed op ([`crate::inference::InferenceClient::embed`]);
+//!     on-device MLX embed op ([`crate::inference::InferenceClient::embed_with_meta`]);
 //!     nothing is uploaded. Search degrades to lexical BM25 when the embedder is
 //!     down and reports which ran ([`crate::recall::RankMethod`]) — it never claims
 //!     neural on fallback.

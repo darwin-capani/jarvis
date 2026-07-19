@@ -1446,17 +1446,6 @@ impl InferenceClient {
         })
     }
 
-    /// Vectors-only convenience over [`Self::embed_with_meta`] for callers that
-    /// NEVER persist vectors: MNEMOSYNE's recall paths embed the query and the
-    /// candidate facts TOGETHER in one call, so every comparison is same-space
-    /// by construction (one op=embed response = one backend for the whole
-    /// batch) and the space metadata is irrelevant to them. A caller that
-    /// PERSISTS vectors (docsearch) must use [`Self::embed_with_meta`] instead
-    /// so it can key the store's vector space.
-    pub async fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f64>>> {
-        Ok(self.embed_with_meta(texts).await?.vectors)
-    }
-
     /// STAGE TWO of the two-stage retrieval stack: hand the server a `query` and
     /// its dense top-K candidate `passages`, and get back one cross-encoder
     /// relevance score per passage, in the SAME ORDER, plus the OPAQUE id of the
