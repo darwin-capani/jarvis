@@ -1583,6 +1583,17 @@ async fn overnight_task(root: PathBuf, memory: Arc<Memory>) {
         if anthropic::resolve_api_key().await.is_none() {
             continue;
         }
+        // POWER THROTTLE (the defer_heavy hint, now honored): this autonomous
+        // overnight pass is discretionary background work, so under real battery
+        // /thermal pressure we DEFER it and retry next interval rather than heat
+        // the machine while the user is away. PERF-only + fail-safe: a failed
+        // power read degrades to neutral (defer_heavy=false), so the pass still
+        // runs — pressure never fabricates a skip, and the OFF default never reads.
+        if live.power.adaptive
+            && crate::power::current_plan(&live, crate::power::read_power_cached().await).defer_heavy
+        {
+            continue;
+        }
         let cfg = Arc::new(live);
         let ran = overnight::run_pending(cfg.as_ref(), &root, &now.to_rfc3339(), |prompt| {
             let cfg = cfg.clone();

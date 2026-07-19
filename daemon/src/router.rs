@@ -1491,7 +1491,7 @@ pub async fn route(
                 );
                 // Cloud failed -> degrade to the local brain; pick the warm local
                 // model by difficulty (None under single-resident => the base).
-                let local_model = local_model_for_turn(cfg, class);
+                let local_model = local_model_for_turn(cfg, class).await;
                 let response = generate_in_persona(
                     text,
                     CLOUD_DEGRADE_NOTE,
@@ -1540,7 +1540,7 @@ pub async fn route(
         // under a multi-resident warm-set; single-resident omits it (the base
         // answers, no indicator). Does NOT change the tier/model already chosen.
         if matches!(brain, ConversationBrain::Local) {
-            if let Some(sub) = local_sub_for_turn(cfg, class) {
+            if let Some(sub) = local_sub_for_turn(cfg, class).await {
                 tier_payload["local_sub"] = json!(sub);
             }
             // BATTERY/THERMAL THROTTLE (#38) indicator: surface the plan reason +
@@ -1548,7 +1548,7 @@ pub async fn route(
             // the plan is neutral (reason "disabled", throttled=false) so the HUD
             // shows no throttle — honest, never a phantom. Only emitted on local
             // turns (the throttle influences only the on-device sub-choice).
-            let plan = power_throttle_plan(cfg);
+            let plan = power_throttle_plan(cfg).await;
             if plan.is_throttled() {
                 tier_payload["throttle"] = json!({
                     "reason": plan.reason.as_str(),
@@ -1727,7 +1727,7 @@ pub async fn route(
                     // Multi-resident LOCAL sub-choice (task #17): this is an
                     // on-device turn, so pick the warm local model by difficulty
                     // (None under the single-resident default => the base).
-                    let local_model = local_model_for_turn(cfg, class);
+                    let local_model = local_model_for_turn(cfg, class).await;
                     match speech::converse_speak(
                         text,
                         GENERATE_MAX_TOKENS,
@@ -1970,7 +1970,7 @@ pub async fn route(
     // Multi-resident LOCAL sub-choice (task #17): the persona-voicing converse
     // runs on-device, so pick the warm local model by difficulty (None under the
     // single-resident default => the base, exactly today's wire).
-    let local_model = local_model_for_turn(cfg, class);
+    let local_model = local_model_for_turn(cfg, class).await;
     match speech::converse_speak(
         text,
         GENERATE_MAX_TOKENS,
@@ -2175,11 +2175,11 @@ async fn answer_agent_roster(
     // (only under multi-resident; single-resident omits it). Same honest readout
     // as the conversation path; no change to the tier/model chosen.
     if matches!(brain, ConversationBrain::Local) {
-        if let Some(sub) = local_sub_for_turn(cfg, &roster_class) {
+        if let Some(sub) = local_sub_for_turn(cfg, &roster_class).await {
             tier_payload["local_sub"] = json!(sub);
         }
         // #38 throttle indicator (neutral/absent under the OFF default).
-        let plan = power_throttle_plan(cfg);
+        let plan = power_throttle_plan(cfg).await;
         if plan.is_throttled() {
             tier_payload["throttle"] = json!({
                 "reason": plan.reason.as_str(),
@@ -2348,7 +2348,7 @@ fn conversation_brain(
 /// fall back to the base anyway. PURE given `cfg` + the classification — no cloud,
 /// no load. It does NOT change WHICH tier is chosen; it only refines the already-
 /// chosen Local tier, and makes no cloud call.
-fn local_model_for_turn(cfg: &Config, class: &Classification) -> Option<String> {
+async fn local_model_for_turn(cfg: &Config, class: &Classification) -> Option<String> {
     let tel = crate::model_tier::local_warm_telemetry(cfg);
     // Single-resident (the default + low-RAM path): nothing to choose — the base
     // answers every local turn, exactly as today. Send no local_model.
@@ -2363,7 +2363,7 @@ fn local_model_for_turn(cfg: &Config, class: &Classification) -> Option<String> 
     // still collapses to the capable base inside select_local_model (Fast falls
     // back to base when no extra is warm OR when difficulty wants Capable under
     // Auto), so a throttle can never degrade a genuinely hard offline turn.
-    let plan = power_throttle_plan(cfg);
+    let plan = power_throttle_plan(cfg).await;
     let sub = crate::model_tier::throttled_sub_tier(&plan);
     let chosen = crate::model_tier::select_local_model(
         &tel.planned,
@@ -2387,12 +2387,20 @@ fn local_model_for_turn(cfg: &Config, class: &Classification) -> Option<String> 
 /// headless build feeds the neutral reading (the device read is wired but not
 /// exercised here — the mic-loop/vision-capture precedent). PURE given cfg + the
 /// (neutral, in this build) reading.
-fn power_throttle_plan(cfg: &Config) -> crate::model_tier::ThrottlePlan {
-    // The OFF default short-circuits inside current_plan WITHOUT reading power.
-    // The live reader (read_power_live) is device-gated and not called headlessly;
-    // we pass the neutral reading so the plan is exactly today's (neutral) unless
-    // a future on-device wiring supplies a real reading behind the same flag.
-    crate::power::current_plan(cfg, crate::power::PowerReading::neutral())
+async fn power_throttle_plan(cfg: &Config) -> crate::model_tier::ThrottlePlan {
+    // [power].adaptive (ships ON): feed the LIVE (TTL-cached) battery + thermal
+    // reading so a real on-battery / thermally-pressured state can actually
+    // influence the on-device sub-choice (the throttle can now fire). OFF -> the
+    // neutral reading, so routing is byte-for-byte today's. A failed read
+    // degrades to neutral inside read_power_cached; NEVER a fabricated low
+    // battery, and the throttle only ever steers the on-device sub-choice toward
+    // the cheaper warm model — it NEVER loosens a gate or forces a cloud call.
+    let reading = if cfg.power.adaptive {
+        crate::power::read_power_cached().await
+    } else {
+        crate::power::PowerReading::neutral()
+    };
+    crate::power::current_plan(cfg, reading)
 }
 
 /// The ACTIVE local sub-choice label for THIS turn's `model.tier` telemetry — the
@@ -2404,12 +2412,12 @@ fn power_throttle_plan(cfg: &Config) -> crate::model_tier::ThrottlePlan {
 /// sub-choice to report and the HUD indicator stays empty — honest, not stale).
 /// PURE; mirrors `local_model_for_turn`'s decision so the readout matches the model
 /// that actually answered. Does NOT change which tier/model is chosen.
-fn local_sub_for_turn(cfg: &Config, class: &Classification) -> Option<&'static str> {
+async fn local_sub_for_turn(cfg: &Config, class: &Classification) -> Option<&'static str> {
     // Single-resident => no sub-choice; the base answers (no indicator). Only
     // report a sub-choice when multi-resident actually selected among warm models,
     // so the label reflects the model that answered (Fast) or the base it kept
     // (Capable) — never a phantom choice under the single-resident default.
-    match local_model_for_turn(cfg, class) {
+    match local_model_for_turn(cfg, class).await {
         Some(_) => Some(crate::model_tier::LocalSubTier::Fast.as_str()),
         None if crate::model_tier::local_warm_telemetry(cfg).multi_resident => {
             Some(crate::model_tier::LocalSubTier::Capable.as_str())
@@ -7078,22 +7086,22 @@ mod tests {
     /// wire is identical to today and the base answers every local turn. With a
     /// multi-resident warm-set configured, a trivial turn threads the warm fast
     /// model id while a hard turn keeps the base (None). PURE — no inference call.
-    #[test]
-    fn local_model_for_turn_is_none_under_single_resident_default() {
+    #[tokio::test]
+    async fn local_model_for_turn_is_none_under_single_resident_default() {
         let cfg = Config::default(); // empty warm-set, 0 budget => single-resident
         // Neither difficulty changes anything: single-resident => no local_model.
         assert_eq!(
-            local_model_for_turn(&cfg, &classification("conversation", "light", 0.95)),
+            local_model_for_turn(&cfg, &classification("conversation", "light", 0.95)).await,
             None
         );
         assert_eq!(
-            local_model_for_turn(&cfg, &classification("conversation", "heavy", 0.95)),
+            local_model_for_turn(&cfg, &classification("conversation", "heavy", 0.95)).await,
             None
         );
     }
 
-    #[test]
-    fn local_model_for_turn_threads_fast_model_on_trivial_turn_when_multi_resident() {
+    #[tokio::test]
+    async fn local_model_for_turn_threads_fast_model_on_trivial_turn_when_multi_resident() {
         let mut cfg = Config::default();
         cfg.models.llm = "base-4b-4bit".to_string(); // ~2.4 GiB
         cfg.models.local_warm = vec!["fast-0.6b-4bit".to_string()]; // ~0.36 GiB
@@ -7101,24 +7109,24 @@ mod tests {
 
         // A trivial, confident turn -> the warm fast model is threaded.
         assert_eq!(
-            local_model_for_turn(&cfg, &classification("conversation", "light", 0.95)),
+            local_model_for_turn(&cfg, &classification("conversation", "light", 0.95)).await,
             Some("fast-0.6b-4bit".to_string())
         );
         // A heavy turn keeps the capable base => None (no id on the wire; the
         // server answers on the base). No silent downgrade of a hard turn.
         assert_eq!(
-            local_model_for_turn(&cfg, &classification("conversation", "heavy", 0.95)),
+            local_model_for_turn(&cfg, &classification("conversation", "heavy", 0.95)).await,
             None
         );
         // A low-confidence light turn is treated as hard -> base => None.
         assert_eq!(
-            local_model_for_turn(&cfg, &classification("conversation", "light", 0.3)),
+            local_model_for_turn(&cfg, &classification("conversation", "light", 0.3)).await,
             None
         );
     }
 
-    #[test]
-    fn local_model_for_turn_stays_none_when_budget_too_small() {
+    #[tokio::test]
+    async fn local_model_for_turn_stays_none_when_budget_too_small() {
         // A multi-resident warm-set CONFIGURED but a budget too small to admit the
         // extra (or below the base estimate) stays single-resident => always None.
         let mut cfg = Config::default();
@@ -7126,7 +7134,7 @@ mod tests {
         cfg.models.local_warm = vec!["fast-0.6b-4bit".to_string()];
         cfg.models.local_budget_gib = 1.0; // below the base estimate -> single
         assert_eq!(
-            local_model_for_turn(&cfg, &classification("conversation", "light", 0.95)),
+            local_model_for_turn(&cfg, &classification("conversation", "light", 0.95)).await,
             None
         );
     }
@@ -7136,16 +7144,16 @@ mod tests {
     /// base answers); multi-resident reports the model that ACTUALLY answered —
     /// `fast` for a trivial/confident turn, `capable` when the base handled a
     /// hard/low-confidence turn. PURE — no inference. Matches local_model_for_turn.
-    #[test]
-    fn local_sub_for_turn_reports_the_active_warm_choice() {
+    #[tokio::test]
+    async fn local_sub_for_turn_reports_the_active_warm_choice() {
         // Single-resident default => no sub-choice (HUD indicator stays empty).
         let single = Config::default();
         assert_eq!(
-            local_sub_for_turn(&single, &classification("conversation", "light", 0.95)),
+            local_sub_for_turn(&single, &classification("conversation", "light", 0.95)).await,
             None
         );
         assert_eq!(
-            local_sub_for_turn(&single, &classification("conversation", "heavy", 0.95)),
+            local_sub_for_turn(&single, &classification("conversation", "heavy", 0.95)).await,
             None
         );
 
@@ -7155,17 +7163,17 @@ mod tests {
         multi.models.local_warm = vec!["fast-0.6b-4bit".to_string()];
         multi.models.local_budget_gib = 3.0;
         assert_eq!(
-            local_sub_for_turn(&multi, &classification("conversation", "light", 0.95)),
+            local_sub_for_turn(&multi, &classification("conversation", "light", 0.95)).await,
             Some("fast")
         );
         // A hard turn kept the capable base => CAPABLE (not a phantom fast pick).
         assert_eq!(
-            local_sub_for_turn(&multi, &classification("conversation", "heavy", 0.95)),
+            local_sub_for_turn(&multi, &classification("conversation", "heavy", 0.95)).await,
             Some("capable")
         );
         // A low-confidence light turn is treated as hard => CAPABLE.
         assert_eq!(
-            local_sub_for_turn(&multi, &classification("conversation", "light", 0.3)),
+            local_sub_for_turn(&multi, &classification("conversation", "light", 0.3)).await,
             Some("capable")
         );
     }

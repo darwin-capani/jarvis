@@ -32,15 +32,52 @@
 //! subprocess is NEVER spawned under test, and the pure PARSER is unit-tested
 //! directly on hand-written canned text.
 
-use std::time::Duration;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+use tokio::sync::Mutex;
 
 use crate::config::Config;
 use crate::model_tier::{ThermalState, ThrottlePlan};
 
 /// Hard ceiling on the one power read — same bounded-subprocess discipline as
 /// posture.rs / actions.rs (a fixed program + fixed args, never a shell string).
-#[allow(dead_code)] // used by the device-gated live read (read_power_live)
 const POWER_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// TTL for the cached live power reading. Battery percent and thermal pressure
+/// move on the tens-of-seconds scale, so refreshing at most this often keeps the
+/// throttle decision fresh while avoiding a `pmset` subprocess spawn on every
+/// turn. PERF-only; a stale-but-recent reading never loosens a gate.
+const POWER_CACHE_TTL: Duration = Duration::from_secs(15);
+
+/// Process-global TTL cache for the live reading (the daemon reads power from
+/// several async call sites per turn; this collapses them to one bounded read
+/// per `POWER_CACHE_TTL`). `None` until the first read.
+fn power_cache() -> &'static Mutex<Option<(Instant, PowerReading)>> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, PowerReading)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// The LIVE power reading with a short TTL cache: returns the last reading when
+/// it is younger than [`POWER_CACHE_TTL`], otherwise reads fresh (bounded
+/// `pmset` + the thermal shim) and stores it. The lock is NOT held across the
+/// read, so a rare concurrent refresh double-reads (harmless — last write wins)
+/// but a turn never stalls behind another turn's 3s-bounded read. A failed read
+/// degrades to neutral inside [`read_power_live`] — NEVER a fabricated low
+/// battery. This is the seam the throttle consumes; the OFF default never calls it.
+pub async fn read_power_cached() -> PowerReading {
+    {
+        let guard = power_cache().lock().await;
+        if let Some((at, reading)) = guard.as_ref() {
+            if at.elapsed() < POWER_CACHE_TTL {
+                return *reading;
+            }
+        }
+    }
+    let fresh = read_power_live().await;
+    *power_cache().lock().await = Some((Instant::now(), fresh));
+    fresh
+}
 
 /// One reading of the machine's power state, fed to
 /// [`crate::model_tier::throttle_decision`]. PURE value — no I/O.
@@ -155,7 +192,6 @@ pub fn parse_pmset(out: &str) -> (Option<u8>, bool) {
 /// real binary; here it is a thin async wrapper that spawns the bounded, fixed-
 /// args subprocess exactly like posture.rs::run_real_command. It is NOT exercised
 /// by the hermetic tests.
-#[allow(dead_code)] // wired behind [power].adaptive; the live read is device-gated
 pub async fn read_power_live() -> PowerReading {
     use tokio::process::Command;
     let mut cmd = Command::new("/usr/bin/pmset");
@@ -359,5 +395,27 @@ mod tests {
         let plan = current_plan(&cfg, reading);
         assert!(plan.is_throttled(), "low battery while discharging must throttle");
         assert_eq!(plan.tier_pref, crate::model_tier::LocalSubTier::Fast);
+    }
+
+    // ACTIVATION INVARIANT (Wave A): the neutral reading — what the OFF default
+    // and any failed live read produce — is NEVER throttled and NEVER sets
+    // defer_heavy. This is the guarantee that activating the live read can only
+    // ADD throttling under real pressure, never fabricate one from a bad read.
+    #[test]
+    fn neutral_reading_never_throttles_or_defers() {
+        let mut cfg = Config::default();
+        cfg.power.adaptive = true; // even with adaptive ON, neutral is inert
+        let plan = current_plan(&cfg, PowerReading::neutral());
+        assert!(!plan.is_throttled(), "a neutral reading must never throttle");
+        assert!(!plan.defer_heavy, "a neutral reading must never defer heavy work");
+    }
+
+    // The live-read cache TTL is a real, bounded refresh window (freshness on the
+    // tens-of-seconds scale) — not zero (which would spawn pmset every turn) and
+    // not unbounded (which would go stale). Guards the perf/freshness tradeoff.
+    #[test]
+    fn power_cache_ttl_is_bounded() {
+        assert!(POWER_CACHE_TTL >= Duration::from_secs(5), "TTL too short -> pmset spam");
+        assert!(POWER_CACHE_TTL <= Duration::from_secs(60), "TTL too long -> stale throttle");
     }
 }
