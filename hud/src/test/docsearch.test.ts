@@ -398,6 +398,25 @@ describe("DocSearchPanel (cited, honest, review-only)", () => {
     expect(html).toContain("re-ranked by an on-device cross-encoder");
   });
 
+  it("a hybrid search shows the NEURAL pill (hybrid uses embeddings) + an honest RRF tooltip", () => {
+    const search = parseDocSearchResult({ ...searchedNeural, method: "hybrid" });
+    const html = render(parseDocIndexStatus(indexedNeural), search);
+    // Hybrid is neural-INCLUSIVE (dense cosine + BM25 fused) -> neural pill, never bm25.
+    expect(html).toContain("docsearch-pill neural");
+    expect(html).not.toContain("docsearch-pill bm25");
+    expect(html).not.toContain("embedder was unavailable");
+    // Honest: names the fusion of embedding cosine + BM25.
+    expect(html).toContain("reciprocal rank fusion");
+  });
+
+  it("a hybrid-reranked search shows NEURAL + names both the fusion and the rerank", () => {
+    const search = parseDocSearchResult({ ...searchedNeural, method: "hybrid-reranked" });
+    const html = render(parseDocIndexStatus(indexedNeural), search);
+    expect(html).toContain("docsearch-pill neural");
+    expect(html).toContain("reciprocal rank fusion");
+    expect(html).toContain("re-ranked by an on-device cross-encoder");
+  });
+
   it("a lexical-reranked search shows the bm25 pill and an HONEST 'BM25 then rerank' tooltip", () => {
     const search = parseDocSearchResult({ ...searchedNeural, method: "lexical-reranked" });
     const html = render(parseDocIndexStatus(indexedNeural), search);

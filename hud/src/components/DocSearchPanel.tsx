@@ -268,7 +268,9 @@ function SearchResults({ search }: { search: DocSearchResult | null }) {
   // Stage one is neural iff the method is a "neural-*" family (embedding OR
   // neural-then-reranked). A "lexical-*" method retrieved by BM25 — the pill
   // color reflects the RETRIEVAL stage; the tooltip names any rerank.
-  const neural = search.method.startsWith("neural-");
+  // Hybrid (dense+BM25 fused) is neural-INCLUSIVE — it uses the embeddings — so
+  // it reads as the neural pill, not bm25.
+  const neural = search.method.startsWith("neural-") || search.method.startsWith("hybrid");
   // Render the method honestly. Tolerant of an unknown future method string
   // (shown verbatim) so the panel never breaks on a new backend.
   const methodLabel =
@@ -280,7 +282,11 @@ function SearchResults({ search }: { search: DocSearchResult | null }) {
           ? "LEXICAL (BM25 keyword)"
           : search.method === "lexical-reranked"
             ? "LEXICAL + RERANK"
-            : search.method.toUpperCase();
+            : search.method === "hybrid"
+              ? "HYBRID (embeddings + BM25)"
+              : search.method === "hybrid-reranked"
+                ? "HYBRID + RERANK"
+                : search.method.toUpperCase();
   const methodTitle =
     search.method === "neural-embedding"
       ? "ranked by cosine over on-device embedding vectors"
@@ -290,7 +296,11 @@ function SearchResults({ search }: { search: DocSearchResult | null }) {
           ? "retrieved by BM25 keyword relevance (the embedding vector space was stale/unavailable), then re-ranked by an on-device cross-encoder"
           : search.method === "lexical-bm25"
             ? "ranked by BM25 keyword relevance (the on-device embedder was unavailable)"
-            : `ranking method: ${methodLabel}`;
+            : search.method === "hybrid"
+              ? "retrieved by FUSING on-device embedding cosine with BM25 keyword relevance (reciprocal rank fusion) — meaning AND exact words"
+              : search.method === "hybrid-reranked"
+                ? "retrieved by fusing on-device embedding cosine with BM25 (reciprocal rank fusion), then re-ranked by an on-device cross-encoder (fusion is a tradeoff — it can lift a complementary hit or demote a strong single-ranker one)"
+                : `ranking method: ${methodLabel}`;
 
   return (
     <div className="docsearch-results">

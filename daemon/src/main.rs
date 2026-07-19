@@ -2184,6 +2184,7 @@ async fn main() -> Result<()> {
     // rerank of their dense top-K. HONEST FALLBACK to the dense order when off /
     // unavailable; the method label stays Embedding unless the rerank actually ran.
     anthropic::init_reranker(cfg.inference.reranker);
+    anthropic::init_hybrid(cfg.docsearch.hybrid_retrieval);
     // CUSTOMS // EGRESS gate ([boundary].enabled ships ON as a neutral PREVIEW,
     // default_trim ships "none" == the identity): wire it ONCE so the cloud path
     // (complete_with_tools) reads one process-global to decide whether to build +

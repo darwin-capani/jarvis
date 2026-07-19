@@ -90,6 +90,19 @@ pub enum RankMethod {
     /// embedding recall (review-caught: relabeling a BM25 base as `Reranked`
     /// surfaced a false "cosine over embedding vectors" claim).
     LexicalReranked,
+    /// HYBRID retrieval: neural embedding cosine AND lexical BM25 are BOTH
+    /// computed over the corpus and FUSED by reciprocal rank fusion (RRF) into
+    /// one candidate ranking — so a chunk an exact keyword nails (BM25) but
+    /// paraphrase-distance buries (cosine), or vice-versa, is recalled by the
+    /// other ranker. Reported when the fused recall ran WITHOUT the cross-encoder
+    /// (reranker off/unavailable). Stage one genuinely used the neural embeddings
+    /// (plus BM25) — the label never understates that.
+    Hybrid,
+    /// HYBRID retrieval THEN the cross-encoder rerank of the fused shortlist:
+    /// dense cosine + BM25 fused by RRF for recall, then the on-device
+    /// cross-encoder re-scores the top-K. The strongest configuration — a
+    /// robust candidate set, sharpened by full query-passage attention.
+    HybridReranked,
 }
 
 impl RankMethod {
@@ -103,6 +116,8 @@ impl RankMethod {
             RankMethod::Embedding => "neural-embedding",
             RankMethod::Reranked => "neural-reranked",
             RankMethod::LexicalReranked => "lexical-reranked",
+            RankMethod::Hybrid => "hybrid",
+            RankMethod::HybridReranked => "hybrid-reranked",
         }
     }
 
@@ -142,6 +157,22 @@ impl RankMethod {
                  candidate together with your query for a sharper order. Stage one \
                  was keyword-semantic, NOT neural embedding cosine — the \
                  cross-encoder improved the order, not the initial recall."
+            }
+            RankMethod::Hybrid => {
+                "hybrid recall: I rank your stored facts by BOTH on-device \
+                 embedding cosine AND BM25 keyword relevance, fused by reciprocal \
+                 rank fusion — so a fact I match on meaning and one I match on an \
+                 exact word both surface. It uses the neural embeddings AND \
+                 keywords together; it needs the inference server for the \
+                 embedding half and keeps working on BM25 alone if it is down."
+            }
+            RankMethod::HybridReranked => {
+                "hybrid two-stage recall: I first retrieve candidates by FUSING \
+                 on-device embedding cosine with BM25 keyword relevance \
+                 (reciprocal rank fusion — meaning AND exact words), then RE-RANK \
+                 the top few with an on-device cross-encoder for a sharper order. \
+                 Fusion is a tradeoff (it can lift a complementary hit but also \
+                 demote a strong single-ranker one); both stages run on-device."
             }
         }
     }
@@ -568,6 +599,15 @@ pub trait Embedder: Send + Sync {
     /// it is exposed on this trait rather than threading a second object through
     /// every recall/RAG call site.
     fn rerank_enabled(&self) -> bool {
+        false
+    }
+
+    /// HYBRID RETRIEVAL gate (`[docsearch].hybrid_retrieval`): whether the
+    /// docsearch neural path fuses dense embedding cosine with lexical BM25 by
+    /// reciprocal rank fusion before (optionally) reranking. DEFAULT `false` so
+    /// mocks + any embed-only caller keep today's dense-only recall; the LIVE
+    /// inference-socket embedder overrides this from the daemon's hybrid gate.
+    fn hybrid_enabled(&self) -> bool {
         false
     }
 

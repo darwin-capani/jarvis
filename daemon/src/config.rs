@@ -844,6 +844,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "chunk_overlap",
             "build_graph",
             "graph_extractor",
+            "hybrid_retrieval",
             "spotlight",
             "spotlight_max_candidates",
         ],
@@ -2740,6 +2741,17 @@ pub struct DocSearchConfig {
     /// per indexed chunk, so a large build is slow — it is an explicit,
     /// user-triggered "build my knowledge graph" action.
     pub graph_extractor: String,
+    /// HYBRID RETRIEVAL: when true, docsearch's neural path FUSES dense embedding
+    /// cosine with lexical BM25 by reciprocal rank fusion (RRF) — a chunk an
+    /// exact keyword nails but paraphrase-distance buries (or vice-versa) is
+    /// recalled by the other ranker, then the cross-encoder (if on) re-scores the
+    /// fused shortlist. SHIPS OFF (opt-in): RRF is a TRADEOFF, not a strict win —
+    /// it lifts complementary hits BUT can also DEMOTE a strong single-ranker hit
+    /// (a pure-semantic dense top-1 with no keyword overlap can be pushed below a
+    /// chunk that both rankers rate mid), and there is no committed real-corpus
+    /// measurement that it wins on your data (unlike the reranker, which earned
+    /// its default-on with one). Turn it on to fuse; measure on your own corpus.
+    pub hybrid_retrieval: bool,
     /// SPOTLIGHT BRIDGE (spotlight.rs): when true, a file search ALSO asks macOS
     /// Spotlight (READ-ONLY `mdfind`, always `-onlyin` per allowlisted root —
     /// never an unrestricted query) for candidate files, absorbed through the
@@ -2785,6 +2797,7 @@ impl Default for DocSearchConfig {
             // docsearch has roots + an index.
             build_graph: true,
             graph_extractor: "deterministic".to_string(),
+            hybrid_retrieval: false,
             // SHIPS ON (full-power default) — INERT WITHOUT ROOTS: the Spotlight
             // bridge is READ-ONLY (mdfind/mdls only) and root-confined; with no
             // allowlisted root it never issues a query at all.

@@ -93,7 +93,8 @@ export default function CodeIntelPanel({ code }: { code: CodeIntel | null }) {
 function ExplainSection({ explained }: { explained: CodeExplained }) {
   // Neural iff a "neural-*" method (embedding OR neural-then-reranked); a
   // "lexical-*" method retrieved by BM25. The tooltip names any rerank stage.
-  const neural = explained.method.startsWith("neural-");
+  // Hybrid is neural-inclusive (uses the embeddings) -> neural pill.
+  const neural = explained.method.startsWith("neural-") || explained.method.startsWith("hybrid");
   const explainTitle =
     explained.method === "neural-embedding"
       ? "grounded chunks were retrieved by cosine over on-device embedding vectors"
@@ -103,7 +104,11 @@ function ExplainSection({ explained }: { explained: CodeExplained }) {
           ? "grounded chunks were retrieved by BM25 keyword relevance (the embedding vector space was stale/unavailable), then re-ranked by an on-device cross-encoder"
           : explained.method === "lexical-bm25"
             ? "grounded chunks were retrieved by BM25 keyword relevance (the on-device embedder was unavailable)"
-            : `retrieval method: ${codeMethodLabel(explained.method)}`;
+            : explained.method === "hybrid"
+              ? "grounded chunks were retrieved by FUSING on-device embedding cosine with BM25 keyword relevance (reciprocal rank fusion)"
+              : explained.method === "hybrid-reranked"
+                ? "grounded chunks were retrieved by fusing embedding cosine with BM25 (reciprocal rank fusion), then re-ranked by an on-device cross-encoder"
+                : `retrieval method: ${codeMethodLabel(explained.method)}`;
   return (
     <div className="codeintel-explain">
       <div className="codeintel-head">

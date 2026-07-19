@@ -428,6 +428,26 @@ pub fn reranker_enabled() -> bool {
     RERANKER_GATE.get().copied().unwrap_or(false)
 }
 
+/// The HYBRID-RETRIEVAL gate (`[docsearch].hybrid_retrieval`). When on, the
+/// docsearch neural path FUSES dense embedding cosine with lexical BM25 by
+/// reciprocal rank fusion for a more robust candidate set (then the reranker, if
+/// on, re-scores the fused shortlist). Falls back to `false` (dense-only,
+/// today's behavior) when init was never called — any test or a pre-startup
+/// path — so retrieval fails safe to the single-ranker order.
+static HYBRID_GATE: OnceLock<bool> = OnceLock::new();
+
+/// Wire the hybrid-retrieval gate from the loaded config. Called once from
+/// `main()` alongside `init_reranker`. Idempotent.
+pub fn init_hybrid(enabled: bool) {
+    let _ = HYBRID_GATE.set(enabled);
+}
+
+/// Whether hybrid dense+BM25 RRF recall is enabled. Falls back to `false`
+/// (dense-only) when unset, so the retrieval paths fail safe.
+pub fn hybrid_retrieval_enabled() -> bool {
+    HYBRID_GATE.get().copied().unwrap_or(false)
+}
+
 /// Derive the bare agent id (e.g. `darwin`, `friday`) the MCP per-server allowlist
 /// keys on, from the active agent's memory namespace (`agent.<name>`). The cloud
 /// path carries the namespace, not the bare id; MCP's `agent_may_use` wants the
@@ -9219,6 +9239,12 @@ impl crate::recall::Embedder for InferenceEmbedder {
     /// dense top-K via [`Self::rerank`]; when off/unset they keep the dense order.
     fn rerank_enabled(&self) -> bool {
         reranker_enabled()
+    }
+
+    /// HYBRID gate: the daemon's [`HYBRID_GATE`] (`[docsearch].hybrid_retrieval`).
+    /// When on, docsearch fuses dense cosine + BM25 by RRF for recall.
+    fn hybrid_enabled(&self) -> bool {
+        hybrid_retrieval_enabled()
     }
 
     /// The LIVE stage-two rerank: the inference server's op=rerank (a Core ML
