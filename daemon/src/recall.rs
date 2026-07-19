@@ -737,6 +737,82 @@ pub struct EmbeddedBatch {
     pub fell_back: bool,
 }
 
+/// Max facts handed to the neural ranker on the whole-store path — bounds the
+/// per-recall cost (batch alloc + embed cache lookups + cosine + sort) to
+/// O(NEURAL_RANK_MAX), independent of how large the never-pruned store grows.
+pub const NEURAL_RANK_MAX: usize = 512;
+
+/// Select a BOUNDED candidate set from the WHOLE scoped store (ordered
+/// most-recent-first, `ts DESC`) for neural ranking — the whole-store recall
+/// path's first stage.
+///
+/// The default recall window is the `recency_keep` most-RECENT scoped facts.
+/// Since the `facts` table is NEVER pruned, a store that has grown past that
+/// silently drops relevant-but-OLD facts from the candidate set (a recency
+/// bias). This selects instead: the recency head (the first `recency_keep` — the
+/// caller passes its OWN legacy window here, so the result is a strict SUPERSET
+/// of the windowed candidate set by construction: recall can only GAIN the old
+/// tail, never lose a recent fact) UNION the highest cheap-lexical (BM25) scorers
+/// from the older tail, filled up to `neural_max`. The expensive neural rank +
+/// cross-encoder rerank then run over that bounded set.
+///
+/// LIMITATION (honest): the tail recovery is LEXICAL. An old fact that is
+/// semantically relevant but shares NO keyword with the query scores 0 in BM25
+/// and does NOT enter the shortlist once the store exceeds `neural_max` — this
+/// is standard two-stage recall (cheap lexical first stage over everything, then
+/// neural rank the shortlist), not a guarantee that every relevant old fact is
+/// recovered. The recency head is always fully recovered regardless.
+///
+/// PURE + deterministic (BM25 is a pure function of the slice; ties break by
+/// original recency index), so it is unit-testable without an embedder.
+///
+///   * `whole.len() <= neural_max` -> the whole store (rank everything);
+///   * else -> recency head ∪ lexical-top tail, in recency (index) order.
+pub fn select_recall_candidates(
+    query: &str,
+    whole: &[Fact],
+    neural_max: usize,
+    recency_keep: usize,
+) -> Vec<Fact> {
+    // The strict-superset guarantee (the full recency head is always kept)
+    // requires the head to FIT in the neural budget; a caller passing
+    // recency_keep > neural_max would silently truncate the head and break it.
+    debug_assert!(
+        recency_keep <= neural_max,
+        "recency head ({recency_keep}) must fit the neural budget ({neural_max})"
+    );
+    if whole.len() <= neural_max {
+        return whole.to_vec();
+    }
+    let keep = recency_keep.min(neural_max);
+    // BTreeSet keeps the selection in ascending (recency) order for free.
+    let mut chosen: std::collections::BTreeSet<usize> = (0..keep).collect();
+    let budget = neural_max - keep;
+    if budget > 0 && keep < whole.len() {
+        // Cheap BM25 over the OLDER TAIL only (indices >= keep) — the recency
+        // head is already chosen, so scoring it would be wasted work. BM25 is a
+        // pure function of the slice it is given; scoring the tail as its own
+        // corpus is the correct relative ranking among the tail candidates.
+        let tail_facts = &whole[keep..];
+        let scores = LexicalProvider::default().score(query, tail_facts);
+        let mut tail: Vec<(usize, f64)> = scores
+            .iter()
+            .enumerate()
+            .map(|(j, &s)| (keep + j, s)) // map tail-local index back to absolute
+            .filter(|(_, s)| s.is_finite() && *s > 0.0)
+            .collect();
+        tail.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+        for (i, _) in tail.into_iter().take(budget) {
+            chosen.insert(i);
+        }
+    }
+    chosen.into_iter().map(|i| whole[i].clone()).collect()
+}
+
 /// Rank `facts` against `query`, RUNTIME-SELECTING the backend: try the neural
 /// on-device embedder FIRST, and FALL BACK to lexical BM25 when it is
 /// unavailable. Reports which backend actually ran (honesty: never says neural
@@ -923,6 +999,112 @@ mod tests {
 
     fn lex() -> LexicalProvider {
         LexicalProvider::default()
+    }
+
+    // ---- whole-store candidate selection (the recency-window recovery) -------
+
+    /// A store that has grown past the recency window, ordered most-recent-first,
+    /// where the ONLY query-relevant fact is the OLDEST (last) row — the exact
+    /// shape the recency window silently drops.
+    fn store_with_old_relevant_fact() -> Vec<Fact> {
+        vec![
+            Fact::new("user.recent.a", "alpha note about mornings"),
+            Fact::new("user.recent.b", "beta note about the weekend"),
+            Fact::new("user.mid.c", "gamma note about the garden"),
+            Fact::new("user.mid.d", "delta note about the office"),
+            Fact::new("user.mid.e", "epsilon note about the trip"),
+            Fact::new("user.old.car", "I drive a blue Subaru Outback"),
+        ]
+    }
+
+    #[test]
+    fn select_returns_whole_store_when_under_cap() {
+        let whole = store_with_old_relevant_fact();
+        // cap >= len -> the whole store, unchanged and in order.
+        let got = select_recall_candidates("anything", &whole, 16, 4);
+        assert_eq!(got, whole, "under the cap, rank everything");
+    }
+
+    #[test]
+    fn select_recovers_the_old_relevant_fact_the_window_would_drop() {
+        let whole = store_with_old_relevant_fact();
+        // Tight bounds so the store (6) exceeds the neural cap (4): recency head
+        // keeps the 2 newest, the 2-slot budget is filled by lexical-top of the
+        // OLD tail. The car fact is the oldest (index 5) — outside any recency
+        // window — but shares "drive"/"subaru" with the query, so it is recovered.
+        let got = select_recall_candidates("what car do I drive, the subaru", &whole, 4, 2);
+        assert!(got.len() <= 4, "the neural cap is honored: {}", got.len());
+        // The recency head is always present (strict superset of the window).
+        assert!(got.iter().any(|f| f.key == "user.recent.a"));
+        assert!(got.iter().any(|f| f.key == "user.recent.b"));
+        // The mechanism proof: the OLD relevant fact is now in the candidate set,
+        // even though a pure recency window of size 2 (or even 5) would drop it.
+        assert!(
+            got.iter().any(|f| f.key == "user.old.car"),
+            "whole-store selection must recover the old lexically-relevant fact; got {:?}",
+            got.iter().map(|f| &f.key).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn select_tail_recovery_is_lexical_only_by_design() {
+        // A store past the cap whose OLDEST fact is topically related but shares
+        // NO keyword with the query. BM25 scores it 0, so it is NOT recovered —
+        // the honest documented limitation (a lexical first stage over the tail,
+        // not total recall). The recency head is still fully present.
+        let mut whole: Vec<Fact> = (0..6)
+            .map(|i| Fact::new(format!("user.recent.{i}"), format!("filler note number {i}")))
+            .collect();
+        whole.push(Fact::new("user.old.veh", "Subaru Outback"));
+        let got = select_recall_candidates("automobile", &whole, 4, 2);
+        assert!(
+            !got.iter().any(|f| f.key == "user.old.veh"),
+            "a zero-keyword-overlap old fact is NOT recovered by the lexical prefilter"
+        );
+        // ...but the recency head IS always present (the strict-superset half).
+        assert!(got.iter().any(|f| f.key == "user.recent.0"));
+    }
+
+    #[test]
+    fn select_is_deterministic_and_bounded() {
+        let whole = store_with_old_relevant_fact();
+        let a = select_recall_candidates("subaru drive", &whole, 4, 1);
+        let b = select_recall_candidates("subaru drive", &whole, 4, 1);
+        assert_eq!(a, b, "pure over the slice — same input, same output");
+        assert!(a.len() <= 4);
+    }
+
+    /// END-TO-END: on a store past the recency window, ranking the RECENCY WINDOW
+    /// misses the old relevant fact entirely, while ranking the whole-store
+    /// candidate set surfaces it top-1 — the measurable recall win. Uses the
+    /// lexical (BM25) fallback path (embedder down) so it is deterministic and
+    /// needs no hand-built vectors; the candidate SET is what differs, not the
+    /// ranker.
+    #[tokio::test]
+    async fn whole_store_recall_surfaces_a_fact_the_window_drops() {
+        let whole = store_with_old_relevant_fact();
+        let query = "what car do I drive, the subaru";
+        let down = MockEmbedder::down();
+
+        // WINDOWED: only the 2 most-recent facts are candidates (simulating the
+        // recency LIMIT). The car fact is not among them -> not recalled.
+        let windowed = &whole[..2];
+        let win = rank_runtime_selected(query, windowed, 3, &down).await;
+        assert!(
+            !win.hits.iter().any(|h| h.fact.key == "user.old.car"),
+            "the recency window cannot recall a fact outside it"
+        );
+
+        // WHOLE-STORE: the bounded candidate set recovers the old fact, and the
+        // ranker puts it first (it is the only car/subaru match).
+        let candidates = select_recall_candidates(query, &whole, 4, 2);
+        let all = rank_runtime_selected(query, &candidates, 3, &down).await;
+        assert_eq!(
+            all.hits.first().map(|h| h.fact.key.as_str()),
+            Some("user.old.car"),
+            "whole-store recall surfaces the old relevant fact top-1; got {:?}",
+            all.hits.iter().map(|h| &h.fact.key).collect::<Vec<_>>()
+        );
     }
 
     // ---- the core property: a relevant fact outranks irrelevant ones --------

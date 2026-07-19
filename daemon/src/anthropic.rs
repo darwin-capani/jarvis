@@ -156,9 +156,12 @@ const SPOKEN_MAX_TOKENS: u32 = 1024;
 /// recall_facts tool: most-recent user facts returned.
 const RECALL_FACTS_LIMIT: usize = 20;
 
-/// Proactive RAG (grounded facts) — the WINDOW pulled from the store before
-/// ranking: a generous slice of the active agent's scoped facts so the ranker
-/// reasons over the whole visible memory, not just the most-recent few. Bounded
+/// Proactive RAG (grounded facts) — the recency WINDOW pulled from the store
+/// before ranking: the 200 most-recent scoped facts (`ORDER BY ts DESC`). This
+/// IS the whole visible store for the common case (an upsert-converging store
+/// rarely exceeds it), but on a larger never-pruned store it is a recency
+/// window, not the whole store — an old-but-relevant fact past it is reached
+/// only with `[recall].whole_store` on (see [`load_recall_candidates`]). Bounded
 /// so a pathological store can never blow the embed batch.
 const RAG_FACTS_WINDOW: usize = 200;
 /// Proactive RAG — the HARD CAP on facts injected into the prompt after ranking.
@@ -467,6 +470,27 @@ pub fn init_apps_agent_tools(enabled: bool) {
 /// Whether micro-app tools are offered to (and dispatchable by) the agent loop.
 pub fn apps_agent_tools_enabled() -> bool {
     APPS_AGENT_TOOLS_GATE.get().copied().unwrap_or(false)
+}
+
+/// The WHOLE-STORE fact-recall gate (`[recall].whole_store`). When on, the
+/// MNEMOSYNE fact-recall paths (`mnemosyne_recall`, `grounded_facts`) rank a
+/// BOUNDED candidate set drawn from the WHOLE scoped store instead of only the
+/// 200 most-recent facts, so an old-but-relevant fact past the recency window is
+/// still reachable once the never-pruned store grows past the window. Falls back
+/// to `false` (today's recency window) when init was never called — any test or
+/// a pre-startup path — so recall fails safe to today's behavior.
+static WHOLE_STORE_GATE: OnceLock<bool> = OnceLock::new();
+
+/// Wire the whole-store recall gate from the loaded config. Called once from
+/// `main()` alongside `init_reranker`. Idempotent.
+pub fn init_whole_store(enabled: bool) {
+    let _ = WHOLE_STORE_GATE.set(enabled);
+}
+
+/// Whether whole-store fact recall is enabled. Falls back to `false` (the
+/// recency window, today's behavior) when unset, so recall fails safe.
+pub fn whole_store_recall_enabled() -> bool {
+    WHOLE_STORE_GATE.get().copied().unwrap_or(false)
 }
 
 /// Derive the bare agent id (e.g. `darwin`, `friday`) the MCP per-server allowlist
@@ -9989,12 +10013,14 @@ pub fn inference_embedder() -> Box<dyn crate::recall::Embedder> {
 /// that actually bears on what was just said.
 ///
 /// Pipeline (all reusing the SHIPPED machinery — nothing here is duplicated):
-///   1. read a generous WINDOW of the active agent's scoped facts via
-///      `memory.agent_scoped_facts(namespace, window)` — the SAME isolation-safe
-///      view recall and the live feed use (own `agent.<ns>.*` + shared `user.*`,
-///      with internal `meta.*` and OTHER agents' `agent.<other>.*` excluded by
-///      construction). RAG can therefore NEVER surface another agent's private
-///      facts — the round-B isolation boundary is preserved exactly;
+///   1. read the candidate scoped facts via [`load_recall_candidates`] — the
+///      `window` most-recent by default, or (with `[recall].whole_store` on) a
+///      bounded set drawn from the WHOLE scoped store. Either way it is the SAME
+///      isolation-safe view recall and the live feed use (own `agent.<ns>.*` +
+///      shared `user.*`, with internal `meta.*` and OTHER agents' private
+///      `agent.<other>.*` excluded by construction inside `agent_scoped_facts`).
+///      RAG can therefore NEVER surface another agent's private facts — the
+///      round-B isolation boundary is preserved exactly;
 ///   2. rank them against `utterance` with [`crate::recall::rank_runtime_selected`]
 ///      — NEURAL on-device embeddings when the injected `embedder` answers, else
 ///      lexical BM25 — the identical ranker [`mnemosyne_recall`] uses;
@@ -10035,26 +10061,21 @@ async fn grounded_facts(
     if crate::threshold::is_guest_turn() {
         return Vec::new();
     }
-    // Isolation-safe window: own namespace + shared user.* only (meta.* and other
-    // agents' private namespaces excluded inside agent_scoped_facts). A busy/failed
-    // DB degrades to no facts rather than killing the reply.
-    let stored = match memory.agent_scoped_facts(namespace, window).await {
-        Ok(rows) => rows,
+    // Isolation-safe candidate set: own namespace + shared user.* only (meta.*
+    // and other agents' private namespaces excluded inside agent_scoped_facts).
+    // Default = the `window` most-recent; with [recall].whole_store on = a bounded
+    // set drawn from the WHOLE visible store. A busy/failed DB degrades to no
+    // facts rather than killing the reply.
+    let facts = match load_recall_candidates(memory, namespace, utterance, window).await {
+        Ok(facts) => facts,
         Err(e) => {
             warn!(error = %e, namespace, "grounded_facts could not read memory; prompt carries no facts");
             return Vec::new();
         }
     };
-    if stored.is_empty() {
+    if facts.is_empty() {
         return Vec::new();
     }
-    let facts: Vec<crate::recall::Fact> = stored
-        .iter()
-        .map(|(key, value)| crate::recall::Fact {
-            key: key.clone(),
-            value: value.clone(),
-        })
-        .collect();
     // Rank by relevance to the utterance: neural when the embedder answers, else
     // BM25 — the exact shipped runtime-selected ranker. Zero-score (irrelevant)
     // facts are dropped by rank(), so a no-match query yields no facts (honest).
@@ -10212,6 +10233,48 @@ pub async fn world_query_live(memory: &Memory, about: &str) -> String {
 /// visible store is empty, it says so plainly rather than inventing a memory
 /// (the ranker returns zero hits for a no-match query under either backend, so
 /// this can only ever surface facts actually stored and visible to this agent).
+/// Hard safety cap on the WHOLE scoped-store load (whole-store recall on). The
+/// `facts` table is never pruned, so this bounds the SQL result set + the cheap
+/// lexical prefilter even for a pathologically large store; the neural ranker
+/// then sees at most `NEURAL_RANK_MAX` of these.
+const WHOLE_STORE_HARD_CAP: usize = 5_000;
+
+/// Load the fact candidate set for a recall over `namespace`, honoring the
+/// whole-store gate. Gate OFF: the `window` most-recent scoped facts (today's
+/// path, byte-for-byte). Gate ON: the whole scoped store (up to
+/// [`WHOLE_STORE_HARD_CAP`]) reduced to a BOUNDED neural candidate set — the
+/// recency head UNION the cheap lexical-top of the older tail — via
+/// [`crate::recall::select_recall_candidates`], so per-recall cost stays
+/// O(NEURAL_RANK_MAX) regardless of store size and the set is a strict superset
+/// of the windowed one. Returns the mapped `Fact`s or the store error.
+async fn load_recall_candidates(
+    memory: &Memory,
+    namespace: &str,
+    query: &str,
+    window: usize,
+) -> anyhow::Result<Vec<crate::recall::Fact>> {
+    let whole = whole_store_recall_enabled();
+    let limit = if whole { WHOLE_STORE_HARD_CAP } else { window };
+    let stored = memory.agent_scoped_facts(namespace, limit).await?;
+    let facts: Vec<crate::recall::Fact> = stored
+        .into_iter()
+        .map(|(key, value)| crate::recall::Fact { key, value })
+        .collect();
+    Ok(if whole {
+        // Pass the caller's OWN `window` as the recency head, so the candidate
+        // set is a strict SUPERSET of what the gate-off path (which loads exactly
+        // that window) would rank — no reliance on a separate constant matching.
+        crate::recall::select_recall_candidates(
+            query,
+            &facts,
+            crate::recall::NEURAL_RANK_MAX,
+            window,
+        )
+    } else {
+        facts
+    })
+}
+
 async fn mnemosyne_recall(
     query: &str,
     k: Option<usize>,
@@ -10221,21 +10284,20 @@ async fn mnemosyne_recall(
 ) -> String {
     let k = k.unwrap_or(MNEMOSYNE_DEFAULT_K).clamp(1, MNEMOSYNE_MAX_K);
     // agent_scoped_facts already excludes internal meta.* bookkeeping AND other
-    // agents' private namespaces; pull a generous window so the ranker has the
-    // full visible store to rank over. (A GUEST turn never reaches this function:
-    // mnemosyne_recall is not in the guest allowlist and execute_tool's guest gate
-    // refuses it — a bystander gets NO owner-memory access.)
-    let stored = match memory.agent_scoped_facts(namespace, 200).await {
-        Ok(rows) => rows,
+    // agents' private namespaces. By default the ranker sees the RAG_FACTS_WINDOW
+    // most-recent visible facts; with [recall].whole_store on it sees a bounded
+    // candidate set drawn from the WHOLE visible store (recency head ∪ lexical
+    // tail) so an old-but-relevant fact past the recency window is still reached.
+    // (A GUEST turn never reaches this function: mnemosyne_recall is not in the
+    // guest allowlist and execute_tool's guest gate refuses it — a bystander gets
+    // NO owner-memory access.)
+    let facts = match load_recall_candidates(memory, namespace, query, RAG_FACTS_WINDOW).await {
+        Ok(facts) => facts,
         Err(e) => {
             warn!(error = %e, "mnemosyne_recall could not read memory");
             return "I could not read the memory store just now, sir.".to_string();
         }
     };
-    let facts: Vec<crate::recall::Fact> = stored
-        .into_iter()
-        .map(|(key, value)| crate::recall::Fact { key, value })
-        .collect();
     // Prefer neural on-device embeddings; fall back to lexical BM25 when the
     // injected embedder is unavailable (live arm = the LOCAL inference socket,
     // runtime/MLX-gated; tests inject a mock).
@@ -11486,8 +11548,16 @@ async fn unified_search_tool(
     };
 
     // FACTS: agent-scoped facts (own namespace + shared, meta.* excluded), ranked.
-    let facts_input = match memory.agent_scoped_facts(namespace, 200).await {
-        Ok(rows) => DeviceInput::searched(facts_candidates(&rows, query)),
+    // Honors [recall].whole_store like mnemosyne_recall/grounded_facts, so an
+    // old-but-relevant fact past the recency window is reachable here too (this
+    // is the same relevance-ranked fact-recall surface, and would otherwise
+    // silently drop the old tail while the other two surfaces recovered it).
+    let facts_input = match load_recall_candidates(memory, namespace, query, RAG_FACTS_WINDOW).await {
+        Ok(facts) => {
+            let rows: Vec<(String, String)> =
+                facts.into_iter().map(|f| (f.key, f.value)).collect();
+            DeviceInput::searched(facts_candidates(&rows, query))
+        }
         Err(e) => {
             warn!(error = %e, "unified_search could not read agent-scoped facts");
             // Could not read this source at all -> NoIndex (honest, not "searched").

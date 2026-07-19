@@ -184,6 +184,24 @@ pub struct Config {
     /// grant (no new recording). The pure assembly seam is in captions.rs.
     pub captions: CaptionsConfig,
     pub docsearch: DocSearchConfig,
+    /// [recall] — MNEMOSYNE fact-recall depth (recall.rs). `whole_store` SHIPS OFF
+    /// (opt-in): with it off, fact recall ranks the 200 most-RECENT scoped facts
+    /// (today's behavior). With it on, the fact-recall surfaces (mnemosyne_recall,
+    /// grounded_facts, unified_search) consider the WHOLE scoped store — BOUNDED —
+    /// so an old-but-relevant fact past the recency window is reachable. It is a
+    /// strict SUPERSET of the windowed candidate set (recency head ∪ cheap
+    /// lexical-top of the older tail), so recall can only reach MORE facts;
+    /// per-recall cost stays bounded to NEURAL_RANK_MAX candidates.
+    ///
+    /// HONEST BOUNDS: (1) the tail recovery is LEXICAL — an old fact that shares
+    /// NO keyword with the query is not pulled into the shortlist once the store
+    /// exceeds NEURAL_RANK_MAX (standard two-stage recall, not total recall); (2)
+    /// the whole-store load is itself capped at WHOLE_STORE_HARD_CAP (5000) most-
+    /// recent rows, so a store grown past THAT re-enters a (much larger) recency
+    /// window. OFF by default because there is no committed real-corpus
+    /// measurement that it wins on your data — the mechanism (it recovers the
+    /// dropped lexically-relevant tail) is proven, the empirical win is not.
+    pub recall: RecallConfig,
     pub code: CodeConfig,
     /// [shell] — SANDBOXED SHELL / TERMINAL (#43, shell.rs): the HIGHEST-RISK
     /// capability (arbitrary command execution). `enabled` SHIPS ON (full-power
@@ -849,6 +867,10 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "spotlight_max_candidates",
         ],
     ),
+    // [recall] — MNEMOSYNE fact-recall depth (recall.rs). One opt-in key today:
+    // `whole_store` ranks the whole scoped store (bounded) instead of the 200
+    // most-recent. Listed so it never reads as a typo.
+    ("recall", &["whole_store"]),
     // [code] — CODE INTELLIGENCE (code.rs): code_explain (grounded answers over the
     // docsearch code index, CITED) + code_propose_diff (a PROPOSE-ONLY reviewable
     // unified diff written to state/code/proposals/<ts>/ — it NEVER edits the user's
@@ -2807,6 +2829,19 @@ impl Default for DocSearchConfig {
             spotlight_max_candidates: 64,
         }
     }
+}
+
+/// [recall] — MNEMOSYNE fact-recall depth (recall.rs). See the field doc on
+/// `Config::recall`. One opt-in gate today; kept as its own section so future
+/// recall-depth knobs (candidate bounds, prefilter mix) land here.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct RecallConfig {
+    /// Rank the WHOLE scoped fact store (bounded) instead of the 200 most-recent.
+    /// OFF by default (`bool::default()`) — a strict candidate-set superset, but
+    /// shipped off until a real-corpus win is measured, mirroring
+    /// `hybrid_retrieval`.
+    pub whole_store: bool,
 }
 
 /// [code] — CODE INTELLIGENCE (code.rs): the read-only `code_explain` (a grounded,
@@ -4898,6 +4933,7 @@ impl Config {
             interpret: section(&table, "interpret", &mut issues),
             captions: section(&table, "captions", &mut issues),
             docsearch: section(&table, "docsearch", &mut issues),
+            recall: section(&table, "recall", &mut issues),
             code: section(&table, "code", &mut issues),
             shell: section(&table, "shell", &mut issues),
             ui_automation: section(&table, "ui_automation", &mut issues),

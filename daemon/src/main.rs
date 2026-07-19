@@ -2186,6 +2186,7 @@ async fn main() -> Result<()> {
     anthropic::init_reranker(cfg.inference.reranker);
     anthropic::init_hybrid(cfg.docsearch.hybrid_retrieval);
     anthropic::init_apps_agent_tools(cfg.apps.agent_tools);
+    anthropic::init_whole_store(cfg.recall.whole_store);
     // CUSTOMS // EGRESS gate ([boundary].enabled ships ON as a neutral PREVIEW,
     // default_trim ships "none" == the identity): wire it ONCE so the cloud path
     // (complete_with_tools) reads one process-global to decide whether to build +
