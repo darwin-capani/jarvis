@@ -879,8 +879,10 @@ export interface HudState {
    *  at all), no comparison yet, and a matching space (no pill in all three). */
   docSearchReindexNeeded: boolean;
   /** The self-distillation pipeline's honest state (distill.status): armed/
-   *  inert, examples ready, last run — and that adapters are NEVER auto-
-   *  promoted. Null until the first frame. REVIEW-ONLY. */
+   *  inert, examples ready, last run, and the MEASURED-GATED promotion state
+   *  (adapterLive/adapterPointer — an adapter goes live only on a strict
+   *  held-out win over base, reversibly). Null until the first frame.
+   *  REVIEW-ONLY. */
   distill: DistillStatus | null;
   /** The federated-sync pipeline's honest state (sync.status): armed/inert,
    *  syncable-fact count, key present, pending conflicts. Null until the first

@@ -6638,19 +6638,34 @@ export function parseCapabilityMap(data: Record<string, unknown>): CapabilityMap
  * inert on-device LoRA pipeline (daemon distill.rs, audit-snapshot cadence). *
  * SHIPS OFF; the device dependency (Apple Silicon + mlx-lm) is UNVERIFIABLE  *
  * from the daemon, so `depVerified` is always false — never a fabricated     *
- * "ready". A trained adapter is STAGED, NEVER auto-promoted (`neverPromotes` *
- * pins that, and any last run's `promoted` is shown). SECRET-FREE: counts +  *
- * the base-model id + coarse status, never an example's text.                *
+ * "ready". PROMOTION IS MEASURED-GATED (`gatedPromotion` pins that): a       *
+ * trained adapter goes LIVE only on a strict held-out win over base (via a   *
+ * deliberate promote, or the ships-OFF auto_promote chain), reversibly.      *
+ * `adapterLive`/`adapterPointer` carry the daemon-VERIFIED liveness state    *
+ * (never a guess: a pointer the server would refuse, or one whose fusing an  *
+ * explicit quant decides at load time, is NOT reported live). SECRET-FREE:   *
+ * counts + the base-model id + coarse status + the measured held-out losses, *
+ * never an example's text.                                                   *
  * ------------------------------------------------------------------------ */
 
-/** The most-recent run's secret-free summary. */
+/** A run's (or the live adapter's) secret-free summary. */
 export interface DistillRun {
   created: string;
   baseModel: string;
   exampleCount: number;
   status: "prepared" | "trained" | "failed";
   promoted: boolean;
+  /** The MEASURED held-out losses from the promotion eval (null until it ran). */
+  heldOutBaseLoss: number | null;
+  heldOutAdapterLoss: number | null;
 }
+
+/** The promoted-pointer state (mirrors daemon promoted_pointer_state). */
+export type DistillPointer =
+  | "none"
+  | "live"
+  | "installed-mismatch"
+  | "installed-quant-undecided";
 
 /** The self-distillation pipeline status. */
 export interface DistillStatus {
@@ -6660,13 +6675,26 @@ export interface DistillStatus {
   examplesReady: number;
   minExamples: number;
   readyToTrain: boolean;
-  neverPromotes: boolean;
+  /** Pinned true: an adapter goes live ONLY on a measured held-out win. */
+  gatedPromotion: boolean;
+  /** Daemon-VERIFIED live adapter (pointer valid for the resident, quant
+   *  determinable). Literal-true read AND requires adapterPointer === "live". */
+  adapterLive: boolean;
+  adapterPointer: DistillPointer;
   lastRun: DistillRun | null;
+  /** The VERIFIED-live adapter's summary (with its measured losses), or null. */
+  promoted: DistillRun | null;
 }
 
-/** Coerce the last-run object, or null. `promoted` reads only a literal true;
- *  status coerces an unknown token to "failed" (the conservative reading —
- *  never over-claims a trained/promoted adapter). */
+/** A finite number or null (losses are optional measured floats). */
+function distillLoss(o: Record<string, unknown>, key: string): number | null {
+  const v = o[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/** Coerce a run/live-adapter object, or null. `promoted` reads only a literal
+ *  true; status coerces an unknown token to "failed" (the conservative reading
+ *  — never over-claims a trained/promoted adapter). */
 function coerceDistillRun(o: unknown): DistillRun | null {
   if (!isPlainObject(o)) return null;
   const st = str(o, "status");
@@ -6676,14 +6704,25 @@ function coerceDistillRun(o: unknown): DistillRun | null {
     exampleCount: nonNegInt(o, "example_count"),
     status: st === "prepared" || st === "trained" ? st : "failed",
     promoted: bool(o, "promoted") === true,
+    heldOutBaseLoss: distillLoss(o, "held_out_base_loss"),
+    heldOutAdapterLoss: distillLoss(o, "held_out_adapter_loss"),
   };
 }
 
 /** Parse a `distill.status` payload. NEVER returns null / never throws; a
- *  malformed frame degrades to the honest off/inert state. `depVerified` and
- *  `readyToTrain` only read a literal true (the daemon never fabricates device
- *  readiness), and `neverPromotes` is pinned true — a payload can't un-say it. */
+ *  malformed frame degrades to the honest off/inert state. `depVerified`,
+ *  `readyToTrain`, and `adapterLive` only read a literal true (the daemon never
+ *  fabricates readiness or liveness); `adapterLive` ADDITIONALLY requires the
+ *  pointer state to be "live" (a frame claiming live with a non-live pointer is
+ *  refused); an unknown pointer token degrades to "none" (conservative — the
+ *  HUD then claims nothing is live); `gatedPromotion` is pinned true — a
+ *  payload can't un-say the measured gate. */
 export function parseDistillStatus(data: Record<string, unknown>): DistillStatus {
+  const ptr = str(data, "adapter_pointer");
+  const pointer: DistillPointer =
+    ptr === "live" || ptr === "installed-mismatch" || ptr === "installed-quant-undecided"
+      ? ptr
+      : "none";
   return {
     enabled: bool(data, "enabled") === true,
     depVerified: bool(data, "dep_verified") === true,
@@ -6691,8 +6730,11 @@ export function parseDistillStatus(data: Record<string, unknown>): DistillStatus
     examplesReady: nonNegInt(data, "examples_ready"),
     minExamples: nonNegInt(data, "min_examples"),
     readyToTrain: bool(data, "ready_to_train") === true,
-    neverPromotes: true,
+    gatedPromotion: true,
+    adapterLive: bool(data, "adapter_live") === true && pointer === "live",
+    adapterPointer: pointer,
     lastRun: coerceDistillRun(data["last_run"]),
+    promoted: coerceDistillRun(data["promoted"]),
   };
 }
 

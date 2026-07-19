@@ -472,23 +472,20 @@ fn install_promotion(
     let tmp = staging.join(format!("promoting-{}", manifest.created.replace([':', '.'], "-")));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp)?;
-    // Copy the adapter file(s) mlx_lm writes: the weights + its adapter_config.
-    let mut copied_weights = false;
+    // Copy the adapter files mlx_lm writes. BOTH are REQUIRED: mlx_lm's
+    // load_adapters needs adapter_config.json beside the weights — a promoted
+    // dir without it would always fail to fuse (the server would silently serve
+    // base while the pointer read "live"), so fail CLOSED here instead.
     for name in ["adapters.safetensors", "adapter_config.json"] {
         let src = run_dir.join(name);
-        if src.exists() {
-            std::fs::copy(&src, tmp.join(name))?;
-            if name == "adapters.safetensors" {
-                copied_weights = true;
-            }
+        if !src.exists() {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("the staged run is missing {name}; refusing to promote an unloadable adapter"),
+            ));
         }
-    }
-    if !copied_weights {
-        let _ = std::fs::remove_dir_all(&tmp);
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "no adapter weights to promote",
-        ));
+        std::fs::copy(&src, tmp.join(name))?;
     }
     std::fs::write(
         tmp.join("manifest.json"),
@@ -508,6 +505,16 @@ pub fn clear_promotion(root: &std::path::Path) -> std::io::Result<bool> {
     let promoted = promoted_dir(root);
     if promoted.exists() {
         std::fs::remove_dir_all(&promoted)?;
+        // The run manifest (last.json + the run dir's copy) recorded
+        // promoted=true; after a rollback that adapter is NOT live any more, so
+        // flip it — otherwise the status/HUD would keep showing a "promoted"
+        // last run with nothing live (best-effort, like every manifest write).
+        if let Some(mut m) = read_last_manifest(root) {
+            if m.promoted {
+                m.promoted = false;
+                write_manifest(root, std::path::Path::new(&m.staging_dir.clone()), &m);
+            }
+        }
         return Ok(true);
     }
     Ok(false)
@@ -531,7 +538,12 @@ enum PromotedPointer {
     /// the server serves base, certainly.
     None,
     /// Valid pointer whose base matches the resident `[models].llm` under
-    /// quant="auto": the server fuses it, certainly.
+    /// quant="auto": the server fuses it at its next model load. The one
+    /// residual divergence is a server-side LOAD FAILURE (corrupt/unloadable
+    /// weights) — the server then serves base and says so itself
+    /// (`_adapter_note` + a None per-turn stamp); the daemon cannot observe
+    /// that without a loaded server, so this state means "verified installed
+    /// + valid", not a weights-integrity guarantee.
     Live,
     /// Valid pointer, base mismatch under quant="auto": the server refuses it
     /// and serves base, certainly.
@@ -672,8 +684,11 @@ where
 ///                      "installed-mismatch" (server refuses it; base serves) |
 ///                      "installed-quant-undecided" (explicit [inference].quant;
 ///                      the server resolves the load id at load time)
-///   adapter_live     — true ONLY for a daemon-VERIFIED live adapter (the
-///                      "live" pointer state); never a guess
+///   adapter_live     — true ONLY when every daemon-verifiable check passes
+///                      (the "live" pointer state). A server-side load FAILURE
+///                      on unloadable weights is the one residual divergence —
+///                      the server reports that itself (op=lora_status note +
+///                      None per-turn stamps)
 ///   gated_promotion  — always true: an adapter goes live ONLY on a measured win
 pub fn status_payload(
     enabled: bool,
@@ -1387,6 +1402,7 @@ mod tests {
         let run_dir = staging_root(&root.0).join("run-x");
         std::fs::create_dir_all(&run_dir).unwrap();
         std::fs::write(run_dir.join("adapters.safetensors"), b"weights").unwrap();
+        std::fs::write(run_dir.join("adapter_config.json"), b"{}").unwrap();
         std::fs::write(run_dir.join("test.jsonl"), "{}\n").unwrap();
         let manifest = Manifest {
             created: "2026-07-13T10-00-00Z".into(),
@@ -1454,6 +1470,7 @@ mod tests {
         let run_dir = staging_root(&root.0).join("run-v2");
         std::fs::create_dir_all(&run_dir).unwrap();
         std::fs::write(run_dir.join("adapters.safetensors"), b"v2").unwrap();
+        std::fs::write(run_dir.join("adapter_config.json"), b"{}").unwrap();
         let v2 = Manifest {
             created: "2026-07-13T10-00-00Z".into(),
             base_model: cfg.distill.base_model.clone(),
@@ -1511,6 +1528,7 @@ mod tests {
             let run_dir = staging_root(root).join("run-v2");
             std::fs::create_dir_all(&run_dir).unwrap();
             std::fs::write(run_dir.join("adapters.safetensors"), b"v2").unwrap();
+            std::fs::write(run_dir.join("adapter_config.json"), b"{}").unwrap();
             let m = Manifest {
                 created: "2026-07-13T10-00-00Z".into(),
                 base_model: base_model.to_string(),

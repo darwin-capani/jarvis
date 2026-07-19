@@ -1513,7 +1513,7 @@ EMBED_CHUNK_WASTE_FACTOR = 2
 #     values (a stable user choice; validated by validate_embedder).
 #   - The id EMITTED on the wire as the vector-space stamp is the CONFIG value
 #     for the Core ML path (one pinned model), but for the mean-pool path it is
-#     MODEL-DERIVED (`_meanpool_space_id`: llm-meanpool:<llm_id>:<quant>), because
+#     MODEL-DERIVED (`_meanpool_space_id`: llm-meanpool:<llm_id>:<quant>[:<adapter>]), because
 #     that path mean-pools WHATEVER [models].llm loads — a fixed string would
 #     keep matching across an LLM/quant swap while the space silently changed, so
 #     the stamp must reflect the resident model.
@@ -3102,9 +3102,13 @@ class InferenceEngine:
     def reload_lora(self):
         """Drop the resident LLM so the NEXT generate reloads with the CURRENT
         state/lora/promoted/ pointer — fusing a freshly-promoted personal adapter,
-        or serving base after a rollback. Held under the GPU lock so it never
-        races an in-flight decode; the reload itself is lazy (next _ensure_llm),
-        so this call is cheap. The daemon calls it right after a promote/rollback.
+        or serving base after a rollback. Held under the GPU lock; in-flight
+        work is safe either way — ops that hold the lock serialize with this,
+        and the deliberately lock-SLICED consolidate pass captures its own
+        model reference at op start, so it completes coherently on the weights
+        it began with (the reload applies from the next op). The reload itself
+        is lazy (next _ensure_llm), so this call is cheap. The daemon calls it
+        right after a promote/rollback.
 
         EVERY holder of the old model object is evicted, not just self._model —
         otherwise converse / the uncached + speculative generate paths keep
@@ -3128,6 +3132,12 @@ class InferenceEngine:
             # (warm EXTRAS are untouched — the adapter fuses into base only).
             self.local_manager.resident.pop(self.llm_id, None)
             self.local_manager.resident.pop(self.local_manager.base_id, None)
+            # AGENT-PERSONA converse KV caches were prefilled by the OLD
+            # weights — decoding the reloaded model against them would condition
+            # every agent-persona reply on pre-reload activations (the tokenizer
+            # is unchanged, so the seam-trim can't catch it). Drop them all;
+            # they rebuild lazily on each agent's next turn.
+            self._agent_gen_caches.clear()
             # The classifier aliases the main LLM when no dedicated classifier
             # model is configured — drop the alias (and its prompt cache) so it
             # rebinds to the reloaded model instead of pinning the old copy.
@@ -3926,8 +3936,16 @@ class InferenceEngine:
 
         with self._lock:
             self._ensure_llm()
-            prompt_tokens = self._tokenizer.encode(self._render_chat(user_text, system=system))
-            cache = make_prompt_cache(self._model)
+            # Capture the model/tokenizer refs ONCE: the slices below release
+            # the lock between chunks (fairness), so a concurrent reload_lora
+            # may null self._model mid-pass. Holding our own reference means
+            # this pass completes COHERENTLY on the weights it started with
+            # (never a crash, never a mixed-weight cache); the reload applies
+            # from the next op on.
+            model = self._model
+            tokenizer = self._tokenizer
+            prompt_tokens = tokenizer.encode(self._render_chat(user_text, system=system))
+            cache = make_prompt_cache(model)
         # Chunked prefill of all but the last prompt token; stream_generate
         # below receives that final token as its prompt, so its own internal
         # prefill is a single step.
@@ -3936,7 +3954,7 @@ class InferenceEngine:
         while pos < n:
             stop = min(pos + prefill_chunk, n)
             with self._lock:
-                logits = self._model(mx.array(prompt_tokens[pos:stop])[None], cache=cache)
+                logits = model(mx.array(prompt_tokens[pos:stop])[None], cache=cache)
                 mx.eval(logits)
             pos = stop
             # threading.Lock has no fairness: without this yield the loop
@@ -3946,8 +3964,8 @@ class InferenceEngine:
             time.sleep(0.002)
         pieces = []
         gen = stream_generate(
-            self._model,
-            self._tokenizer,
+            model,
+            tokenizer,
             prompt=prompt_tokens[n:],
             max_tokens=max_tokens,
             prompt_cache=cache,
@@ -4211,11 +4229,17 @@ class InferenceEngine:
         while the vectors moved to a different space; deriving the id from the
         resident model means any swap changes the stamp, so a store from the old
         model is correctly treated as a different space (never silently cosine-
-        compared). `_quant_loaded` is set once the LLM is loaded; before that it
-        falls back to the requested quant (only reachable on an empty batch,
-        which indexes nothing)."""
+        compared). A FUSED PERSONAL ADAPTER changes the decoder weights too —
+        the very stack the mean-pool forwards through — so the ACTIVE adapter
+        stamp is part of the id: a promote (or rollback) moves the space and the
+        stamp moves with it, exactly like a quant swap. `_quant_loaded` /
+        `_active_adapter` are set once the LLM is loaded; before that they fall
+        back to the requested quant / no adapter (only reachable on an empty
+        batch, which indexes nothing — the returned id for a real batch is read
+        AFTER the forward)."""
         quant = self._quant_loaded or self.quant or "auto"
-        return f"llm-meanpool:{self.llm_id}:{quant}"
+        base = f"llm-meanpool:{self.llm_id}:{quant}"
+        return f"{base}:{self._active_adapter}" if self._active_adapter else base
 
     def embed_with_meta(self, texts):
         """Return (vectors, embedder_id, dim, fell_back) for op=embed — the batch
