@@ -688,7 +688,13 @@ pub async fn emit_status(cfg: &crate::config::Config, memory: &crate::memory::Me
         0
     };
     let last = read_last_manifest(root);
-    let promoted = read_promoted_manifest(root);
+    // adapter_live means the adapter IS the live generation model — the same
+    // validity condition the server applies (base_model must match the
+    // configured base; a mismatched pointer is refused and base is served), so
+    // the status and the server agree by construction. A stale pointer reports
+    // adapter_live=false, never a false "live".
+    let promoted = read_promoted_manifest(root)
+        .filter(|m| m.base_model == cfg.distill.base_model);
     crate::telemetry::emit(
         "system",
         "distill.status",
