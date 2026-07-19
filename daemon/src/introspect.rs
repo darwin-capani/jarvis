@@ -564,8 +564,12 @@ fn child_pids() -> &'static Mutex<HashMap<String, u32>> {
     M.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Record the fingerprint of the profile just written for `name`. Called from
-/// `apps.rs::write_profile` after a successful write.
+/// Record the fingerprint of the profile just generated for `name`. Called from
+/// `apps.rs::write_profile`. NOTE: the app is launched with the profile passed
+/// INLINE to `sandbox-exec -p`, so this fingerprint guards the on-disk AUDIT
+/// COPY — the drift sentinel flags tampering of that record, an integrity
+/// signal, not a widening of the running sandbox (which is compiled from the
+/// in-memory string and cannot be altered on disk).
 pub fn record_profile(name: &str, profile: &str) {
     if let Ok(mut m) = expected_profiles().lock() {
         m.insert(name.to_string(), sbpl_fingerprint(profile));

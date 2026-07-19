@@ -59,7 +59,7 @@ describe("inference-perf folding (events.ts)", () => {
       quant: null,
       throttle: null,
       tps: null,
-      peakMemGib: null,
+      peakMemGb: null,
     });
   });
 
@@ -295,7 +295,7 @@ describe("reducer model.tier inference-perf folding", () => {
 
   it("the perf surface starts at the honest resting state on a fresh connect", () => {
     const s = connected();
-    expect(s.inferencePerf).toEqual({ speculative: null, quant: null, throttle: null, tps: null, peakMemGib: null });
+    expect(s.inferencePerf).toEqual({ speculative: null, quant: null, throttle: null, tps: null, peakMemGb: null });
   });
 
   /* ---------------------------------------------- Wave A: decode metrics */
@@ -312,7 +312,7 @@ describe("reducer model.tier inference-perf folding", () => {
       quant: "int4",
     });
     expect(after.tps).toBe(61.3);
-    expect(after.peakMemGib).toBe(2.44);
+    expect(after.peakMemGb).toBe(2.44);
     expect(after.speculative).toBe(false);
     expect(after.quant).toBe("int4");
     expect(after.throttle).toEqual({ reason: "thermal", tierPref: "fast", deferHeavy: true });
@@ -322,14 +322,14 @@ describe("reducer model.tier inference-perf folding", () => {
     const first = applyInferenceDecode(inferencePerfInitial(), { generation_tps: 60, peak_memory_gb: 2.4 });
     const second = applyInferenceDecode(first, { speculative: true }); // no numbers this turn
     expect(second.tps).toBe(60);
-    expect(second.peakMemGib).toBe(2.4);
+    expect(second.peakMemGb).toBe(2.4);
     expect(second.speculative).toBe(true);
   });
 
   it("ignores a non-finite / non-number decode figure (honest: never a fabricated readout)", () => {
     const p1 = applyInferenceDecode(inferencePerfInitial(), { generation_tps: "fast", peak_memory_gb: Infinity });
     expect(p1.tps).toBeNull();
-    expect(p1.peakMemGib).toBeNull();
+    expect(p1.peakMemGb).toBeNull();
   });
 
 });
@@ -349,7 +349,7 @@ describe("InferencePerfPanel", () => {
     const html = renderPanel(perf);
     expect(html).toContain("DECODE");
     expect(html).toContain("60.9 tok/s");
-    expect(html).toContain("2.44 GiB peak");
+    expect(html).toContain("2.44 GB peak");
     // The measured number is honestly labelled, not a device-gated estimate.
     expect(html).toMatch(/Measured by mlx_lm/i);
   });

@@ -5308,16 +5308,16 @@ export interface InferencePerfStatus {
    *  that reported it; null before any measured turn. Never estimated — the
    *  speculative/uncached single-shot paths report nothing and leave this null. */
   tps: number | null;
-  /** Peak GPU memory (GiB) for the last measured on-device turn; null before any.
+  /** Peak GPU memory (GB, decimal — the server-reported mx.get_peak_memory value) for the last measured on-device turn; null before any.
    *  The server's mx.get_peak_memory reading, never fabricated. */
-  peakMemGib: number | null;
+  peakMemGb: number | null;
 }
 
 /** The resting inference-perf status before any answered turn: nothing reported
  *  yet (awaiting), no throttle (the OFF/neutral default). Used as the reducer seed
  *  so the panel renders the honest resting state. */
 export function inferencePerfInitial(): InferencePerfStatus {
-  return { speculative: null, quant: null, throttle: null, tps: null, peakMemGib: null };
+  return { speculative: null, quant: null, throttle: null, tps: null, peakMemGb: null };
 }
 
 /** Narrow an untrusted string to a known ThrottleReason, or null. */
@@ -5393,10 +5393,10 @@ export function applyInferenceDecode(
   const tpsRaw = data["generation_tps"];
   const memRaw = data["peak_memory_gb"];
   const tps = typeof tpsRaw === "number" && Number.isFinite(tpsRaw) ? tpsRaw : prev.tps;
-  const peakMemGib = typeof memRaw === "number" && Number.isFinite(memRaw) ? memRaw : prev.peakMemGib;
+  const peakMemGb = typeof memRaw === "number" && Number.isFinite(memRaw) ? memRaw : prev.peakMemGb;
   const speculative = bool(data, "speculative") ?? prev.speculative;
   const quant = str(data, "quant") ?? prev.quant;
-  return { ...prev, speculative, quant, tps, peakMemGib };
+  return { ...prev, speculative, quant, tps, peakMemGb };
 }
 
 /** Short uppercase label for the speculative-decoding state: ON (it actually ran

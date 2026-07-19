@@ -2355,16 +2355,22 @@ async fn local_model_for_turn(cfg: &Config, class: &Classification) -> Option<St
     if !tel.multi_resident {
         return None;
     }
-    // BATTERY/THERMAL THROTTLE (#38): the device-gated power reading is consulted
-    // ONLY when [power].adaptive is on; with the flag OFF (the default) the plan
-    // is NEUTRAL (Auto sub-tier, defer nothing) and this is byte-for-byte the
-    // prior AUTO-by-difficulty behavior. A throttled plan biases the sub-choice
-    // toward the cheaper Fast warm model to save battery/heat — but a HARD turn
-    // still collapses to the capable base inside select_local_model (Fast falls
-    // back to base when no extra is warm OR when difficulty wants Capable under
-    // Auto), so a throttle can never degrade a genuinely hard offline turn.
+    // BATTERY/THERMAL THROTTLE (#38): the LIVE (TTL-cached) power reading is
+    // consulted when [power].adaptive is on (the SHIPPED DEFAULT — so the default
+    // config does read live power on a local turn, bounded by the 15s cache);
+    // with the flag OFF the plan is NEUTRAL (Auto sub-tier, defer nothing),
+    // byte-for-byte the prior AUTO-by-difficulty behavior. A throttled plan
+    // biases the sub-choice toward the cheaper Fast warm model to save
+    // battery/heat — but ONLY on an easy turn: throttled_sub_tier keeps AUTO on
+    // a hard/low-confidence turn, so select_local_model keeps the capable base
+    // and a throttle can NEVER degrade a genuinely hard offline turn.
     let plan = power_throttle_plan(cfg).await;
-    let sub = crate::model_tier::throttled_sub_tier(&plan);
+    let sub = crate::model_tier::throttled_sub_tier(
+        &plan,
+        &class.complexity,
+        class.confidence,
+        cfg.router.cloud_confidence_threshold,
+    );
     let chosen = crate::model_tier::select_local_model(
         &tel.planned,
         sub,

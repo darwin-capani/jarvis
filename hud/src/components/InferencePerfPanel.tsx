@@ -61,7 +61,7 @@ export default function InferencePerfPanel({
     perf.quant !== null ||
     perf.throttle !== null ||
     perf.tps !== null ||
-    perf.peakMemGib !== null;
+    perf.peakMemGb !== null;
   if (!hasReadout) return null;
 
   return (
@@ -87,12 +87,13 @@ export default function InferencePerfPanel({
 }
 
 /** DECODE — the mlx_lm-MEASURED decode throughput (tok/s) + peak GPU memory
- *  (GiB) of the last on-device turn that reported them. A real measurement, not
+ *  (GB, decimal — the server's mx.get_peak_memory / 1e9, NOT binary GiB) of the
+ *  last on-device turn that reported them. A real measurement, not
  *  a device-gated estimate: renders nothing until a measured turn arrives, and
  *  each figure independently blanks when the server reported none (the
  *  speculative/uncached single-shot paths measure nothing). */
 function DecodeRow({ perf }: { perf: InferencePerfStatus }) {
-  if (perf.tps === null && perf.peakMemGib === null) return null;
+  if (perf.tps === null && perf.peakMemGb === null) return null;
   return (
     <div className="infperf-row">
       <div className="infperf-row-head">
@@ -106,12 +107,12 @@ function DecodeRow({ perf }: { perf: InferencePerfStatus }) {
             {perf.tps.toFixed(1)} tok/s
           </span>
         )}
-        {perf.peakMemGib !== null && (
+        {perf.peakMemGb !== null && (
           <span
             className="infperf-sub"
             title="peak GPU memory for the last measured turn (mx.get_peak_memory)"
           >
-            {perf.peakMemGib.toFixed(2)} GiB peak
+            {perf.peakMemGb.toFixed(2)} GB peak
           </span>
         )}
       </div>

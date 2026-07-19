@@ -1750,10 +1750,14 @@ async fn run_once(
         }
     };
 
-    // Generate + write the seatbelt profile.
-    if let Err(e) = write_profile(manifest, &registry.project_root, &interp, app_dir, socket_path, profile_path) {
-        return RunResult::LaunchFailed(e);
-    }
+    // Generate the seatbelt profile (also writes the on-disk AUDIT copy). The
+    // returned string is the EXEC source, passed inline to `sandbox-exec -p`
+    // below so no on-disk file is re-read at exec time (closes the write->exec
+    // TOCTOU — a same-UID swap of the audit copy can't alter the running sandbox).
+    let profile = match write_profile(manifest, &registry.project_root, &interp, app_dir, socket_path, profile_path) {
+        Ok(p) => p,
+        Err(e) => return RunResult::LaunchFailed(e),
+    };
     // Ensure the fs_write dirs exist (the app's own state dir) so first write
     // does not fail inside the sandbox.
     ensure_write_dirs(&registry.project_root, manifest);
@@ -1782,10 +1786,14 @@ async fn run_once(
     // stop a same-UID attacker who can chmod — that is outside the trust model.
     restrict_socket_perms(socket_path);
 
-    // Spawn the sandboxed child: sandbox-exec -f <profile> <interp> <entry...>.
+    // Spawn the sandboxed child: sandbox-exec -p <profile-string> <interp> <entry...>.
+    // The profile is passed INLINE (not `-f <file>`) so the compiled policy is the
+    // daemon's in-memory string — a same-UID edit of the on-disk audit copy cannot
+    // widen the running sandbox (no file is re-read at exec time). The SBPL names
+    // paths only (no secret), so it is safe in argv.
     let argv = registry.child_argv(manifest, &interp);
     let mut cmd = Command::new(SANDBOX_EXEC);
-    cmd.arg("-f").arg(profile_path);
+    cmd.arg("-p").arg(&profile);
     for a in &argv {
         cmd.arg(a);
     }
@@ -2443,6 +2451,26 @@ where
 }
 
 /// Write the seatbelt profile to disk (creating its dir).
+/// Sequence counter for unique temp-profile names (so a same-UID pre-plant can
+/// never sit at the exact temp path we `create_new`).
+static PROFILE_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Generate the seatbelt profile, RETURN it (the exec source — see below), and
+/// write an on-disk AUDIT COPY that the introspect sentinel monitors for
+/// integrity. Returns the profile string so the launcher can pass it to
+/// `sandbox-exec -p` INLINE.
+///
+/// TOCTOU: the EXECUTED policy is the returned in-memory string, handed to
+/// `sandbox-exec -p <profile>` on the command line — so a same-UID edit of the
+/// on-disk copy between this write and the exec CANNOT widen (or alter) the
+/// running sandbox (there is no file for the launcher to re-read at exec time).
+/// The on-disk copy at `profile_path` is therefore an AUDIT ARTIFACT, not the
+/// exec source: it is written atomically to an owner-only (0600) unique temp via
+/// `create_new` (so a pre-planted symlink or looser-mode file at the temp path
+/// cannot hijack the write) and renamed into place, and its fingerprint is
+/// recorded so the introspect drift sentinel can flag any later tampering of the
+/// record. (The SBPL is not secret — it names paths, no token/key — so passing
+/// it in argv is fine; argv carries no secret, per the launch's env-only rule.)
 fn write_profile(
     manifest: &AppManifest,
     project_root: &Path,
@@ -2450,25 +2478,22 @@ fn write_profile(
     app_dir: &Path,
     socket_path: &Path,
     profile_path: &Path,
-) -> Result<()> {
+) -> Result<String> {
     let profile = generate_sbpl(manifest, project_root, interp, app_dir, socket_path);
     let parent = profile_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("profile path has no parent dir"))?;
     std::fs::create_dir_all(parent)
         .with_context(|| format!("creating profile dir {}", parent.display()))?;
-    // ATOMIC + MODE-RESTRICTED write to close the write->exec TOCTOU: a same-UID
-    // edit of the seatbelt profile between our write and the `sandbox-exec -f`
-    // could previously widen the sandbox in the window between the two. Write to
-    // a sibling temp file created 0600 (owner-only), flush it, then atomically
-    // rename it over the final path. `sandbox-exec` therefore only ever sees a
-    // fully-written, owner-only profile that appeared in one rename step; there
-    // is no partially-written or world-writable intermediate to race.
-    let tmp_path = parent.join(format!(".{}.sb.tmp", manifest.name()));
+    // Owner-only atomic write of the audit copy via a UNIQUE temp + create_new
+    // (O_EXCL: never follows a symlink, fails on any pre-existing path) so no
+    // same-UID pre-plant can redirect or loosen it; then rename into place.
+    let seq = PROFILE_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp_path = parent.join(format!(".{}.{}.{}.sb.tmp", manifest.name(), std::process::id(), seq));
     {
         use std::io::Write;
         let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
+        opts.write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
@@ -2483,13 +2508,13 @@ fn write_profile(
     }
     std::fs::rename(&tmp_path, profile_path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp_path); // don't leak the temp on failure
-        anyhow::anyhow!("atomically installing profile {}: {e}", profile_path.display())
+        anyhow::anyhow!("installing audit profile {}: {e}", profile_path.display())
     })?;
-    // Record the fingerprint of exactly what we just wrote so the introspect
-    // sentinel can detect post-launch tampering of the on-disk profile (a
-    // same-UID edit of state/apps/<name>/<name>.sb after the daemon wrote it).
+    // Fingerprint the audit copy so the introspect sentinel can flag later
+    // tampering of the record (the executed policy is the returned string, so
+    // this is an integrity signal on the audit artifact, not the exec source).
     crate::introspect::record_profile(manifest.name(), &profile);
-    Ok(())
+    Ok(profile)
 }
 
 /// Create the app's declared fs_write directories so the first write inside
