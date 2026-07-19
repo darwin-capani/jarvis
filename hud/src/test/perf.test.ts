@@ -3,6 +3,8 @@ import {
   COOLDOWN_MS,
   PERF_TIERS,
   PerfGovernor,
+  RECOVERY_BUDGET_MS,
+  RECOVERY_FRAMES,
   SUSTAIN_FRAMES,
 } from "../core/perf";
 
@@ -103,5 +105,73 @@ describe("PerfGovernor", () => {
     for (const tier of PERF_TIERS) {
       expect(tier.particles).toBeLessThanOrEqual(PERF_TIERS[0].particles);
     }
+  });
+
+  // -- BIDIRECTIONAL RECOVERY (the fix: a spike no longer degrades forever) --
+
+  it("RECOVERS a dropped tier under sustained headroom (was: degraded forever)", () => {
+    const g = new PerfGovernor();
+    // Drop one tier under load.
+    for (let i = 0; i < SUSTAIN_FRAMES + 60; i++) g.sample(30);
+    expect(g.tier).toBe(1);
+    // Now feed sustained comfortable headroom (<15ms) long enough to burn the
+    // cooldown AND accumulate RECOVERY_FRAMES — the tier must come BACK.
+    for (let i = 0; i < RECOVERY_FRAMES + Math.ceil(COOLDOWN_MS / 10) + 60; i++) g.sample(10);
+    expect(g.tier).toBe(0);
+  });
+
+  it("recovers only ONE tier per cooldown (no back-to-back restore chatter)", () => {
+    const g = new PerfGovernor();
+    // Drop to tier 2 (feed over-budget until it gets there).
+    let f = 0;
+    while (g.tier < 2 && f < 5000) { g.sample(30); f += 1; }
+    expect(g.tier).toBe(2);
+    // Recover exactly ONE tier (burns any residual cooldown, then RECOVERY_FRAMES).
+    let r = 0;
+    while (g.tier > 1 && r < 5000) { g.sample(10); r += 1; }
+    expect(g.tier).toBe(1);
+    // Immediately after a recovery a fresh COOLDOWN is running, so the NEXT frames
+    // cannot restore a second tier back-to-back — it must stay at 1 for a while.
+    for (let i = 0; i < 50; i++) g.sample(10);
+    expect(g.tier).toBe(1);
+    // Given enough further headroom it does eventually recover fully.
+    let r2 = 0;
+    while (g.tier > 0 && r2 < 20000) { g.sample(10); r2 += 1; }
+    expect(g.tier).toBe(0);
+  });
+
+  it("HYSTERESIS: frames in the 15..20ms band neither drop nor recover (no oscillation)", () => {
+    const g = new PerfGovernor();
+    for (let i = 0; i < SUSTAIN_FRAMES + 60; i++) g.sample(30); // drop to tier 1
+    expect(g.tier).toBe(1);
+    // Sit right in the guard band (17ms) for a long time: under FRAME_BUDGET (no
+    // further drop) but over RECOVERY_BUDGET (no recovery) -> tier stays put.
+    for (let i = 0; i < RECOVERY_FRAMES * 3; i++) g.sample(17);
+    expect(g.tier).toBe(1);
+  });
+
+  it("recovery never goes below tier 0", () => {
+    const g = new PerfGovernor();
+    for (let i = 0; i < RECOVERY_FRAMES * 3; i++) g.sample(8); // buttery smooth from the start
+    expect(g.tier).toBe(0);
+  });
+
+  it("drops FAST but recovers SLOW (recover conservatively)", () => {
+    // The recovery dwell must be longer than the drop dwell — a tier comes back
+    // only on durable headroom, never on a brief lull.
+    expect(RECOVERY_FRAMES).toBeGreaterThan(SUSTAIN_FRAMES);
+    expect(RECOVERY_BUDGET_MS).toBeLessThan(20); // the guard band exists
+  });
+
+  it("a load spike that recovers leaves the scene at FULL fidelity (end to end)", () => {
+    const g = new PerfGovernor();
+    // Transient spike drops a tier...
+    for (let i = 0; i < SUSTAIN_FRAMES + 30; i++) g.sample(35);
+    expect(g.tier).toBeGreaterThan(0);
+    const bloomLostDuringSpike = !g.current().bloom || g.current().particles < PERF_TIERS[0].particles;
+    expect(bloomLostDuringSpike).toBe(true);
+    // ...then the machine recovers and the full scene comes back.
+    for (let i = 0; i < RECOVERY_FRAMES * 2 + Math.ceil(COOLDOWN_MS / 10); i++) g.sample(10);
+    expect(g.current()).toEqual(PERF_TIERS[0]);
   });
 });
