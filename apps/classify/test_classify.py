@@ -113,6 +113,107 @@ def test_complete_lines_drain_and_partial_is_preserved():
     assert overflowed is False
 
 
+# -- the agent-tool request/response contract (SHARED shape; copy per app) ----
+# A classify.run op carrying a request `id` is answered with a type:"result" line
+# echoing that id; an op without one keeps the legacy uncorrelated type:"items"
+# line. handle() calls compute() with no sock_path override, so ContractProxy
+# patches main.GENERATE_SOCK to a canned proxy for the op's lifetime -> compute()
+# returns a non-error {"result": ...} and the reply's SHAPE is what's asserted.
+
+
+class FakeConn:
+    """Captures sendall payloads so handle() can be driven without a socket."""
+
+    def __init__(self):
+        self.lines = []
+
+    def sendall(self, raw):
+        self.lines.append(json.loads(raw.decode("utf-8").strip()))
+
+
+class ContractProxy:
+    """A generate proxy for the agent-tool contract tests: it accepts MANY
+    connections (handle() calls compute() once per op, with no sock_path
+    override) and patches main.GENERATE_SOCK to itself for its lifetime, so
+    compute() returns a non-error {"result": ...}. Each connection is answered
+    with the same canned reply."""
+
+    def __init__(self, reply):
+        self.reply = reply
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "generate.sock")
+
+    def __enter__(self):
+        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.srv.bind(self.path)
+        self.srv.listen(8)
+        self._stop = False
+        threading.Thread(target=self._serve, daemon=True).start()
+        self._saved = main.GENERATE_SOCK
+        main.GENERATE_SOCK = self.path
+        return self
+
+    def _serve(self):
+        while not self._stop:
+            try:
+                conn, _ = self.srv.accept()
+            except OSError:
+                return
+            buf = b""
+            while b"\n" not in buf:
+                c = conn.recv(4096)
+                if not c:
+                    break
+                buf += c
+            try:
+                conn.sendall((json.dumps(self.reply) + "\n").encode())
+            except OSError:
+                pass
+            conn.close()
+
+    def __exit__(self, *a):
+        self._stop = True
+        main.GENERATE_SOCK = self._saved
+        try:
+            self.srv.close()
+        except Exception:
+            pass
+
+
+def test_tool_op_with_id_answers_a_correlated_result():
+    conn = FakeConn()
+    with ContractProxy({"ok": True, "text": "positive"}):
+        main.handle(conn, {"type": "classify.run", "id": "req-7",
+                           "text": "I love this!", "labels": ["positive", "negative"]})
+    assert len(conn.lines) == 1
+    reply = conn.lines[0]
+    assert reply["type"] == "result", reply
+    assert reply["id"] == "req-7", "the request id is echoed verbatim"
+    assert reply["data"]["result"] == "positive", reply
+    assert reply["token"] == main.TOKEN
+
+
+def test_tool_op_without_id_keeps_the_legacy_items_line():
+    conn = FakeConn()
+    with ContractProxy({"ok": True, "text": "positive"}):
+        main.handle(conn, {"type": "classify.run",
+                           "text": "I love this!", "labels": ["positive", "negative"]})
+    assert len(conn.lines) == 1
+    reply = conn.lines[0]
+    assert reply["type"] == "items", "no id -> uncorrelated legacy line"
+    assert "id" not in reply
+    assert reply["data"]["result"] == "positive", reply
+
+
+def test_non_string_or_empty_id_is_treated_as_absent():
+    with ContractProxy({"ok": True, "text": "positive"}):
+        for bad_id in (7, "", None, ["x"]):
+            conn = FakeConn()
+            main.handle(conn, {"type": "classify.run", "id": bad_id,
+                               "text": "I love this!", "labels": ["positive", "negative"]})
+            assert conn.lines[0]["type"] == "items", f"id={bad_id!r} must not correlate"
+
+
 if __name__ == "__main__":
     # Script-style runs exercise the framing tests too — they are plain
     # functions the runner below would otherwise never call.
@@ -120,7 +221,8 @@ if __name__ == "__main__":
     test_oversized_frame_is_dropped_not_accumulated()
     test_complete_lines_drain_and_partial_is_preserved()
     print("framing: 3 checks ok")
-    for t in [test_build_prompt_pure, test_compute_via_mock_proxy, test_compute_proxy_error_never_raises, test_hostile_inputs_never_raise]:
+    for t in [test_build_prompt_pure, test_compute_via_mock_proxy, test_compute_proxy_error_never_raises, test_hostile_inputs_never_raise,
+              test_tool_op_with_id_answers_a_correlated_result, test_tool_op_without_id_keeps_the_legacy_items_line, test_non_string_or_empty_id_is_treated_as_absent]:
         t()
         print("ok:", t.__name__)
     print("ALL PASSED")

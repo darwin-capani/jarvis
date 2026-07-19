@@ -23,3 +23,14 @@ provides = ["port.lookup"]
 name          = "port.lookup"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Look up a well-known TCP/UDP port in a curated IANA + de-facto table: pass 'port' for the service(s) and range on that number, or 'service' to search service names (case-insensitive substring) for the matching ports. Call when identifying what runs on a port or which port a service uses."
+  [[tools.exposes.params]]
+  name        = "port"
+  kind        = "integer"
+  required    = false
+  description  = "Port number 0-65535 to resolve to its registered service(s) and range (system/registered/dynamic). Provide either this or 'service'."
+  [[tools.exposes.params]]
+  name        = "service"
+  kind        = "string"
+  required    = false
+  description  = "Service name to search for (case-insensitive substring over service names, e.g. 'ftp' or 'sql'), returning the matching ports. Provide either this or 'port'."

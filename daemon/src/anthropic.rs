@@ -448,6 +448,27 @@ pub fn hybrid_retrieval_enabled() -> bool {
     HYBRID_GATE.get().copied().unwrap_or(false)
 }
 
+/// The APPS-AS-AGENT-TOOLS gate (`[apps].agent_tools`, ships ON). When on, every
+/// micro-app's NON-consequential `[[tools.exposes]]` declaration joins the agent
+/// tool list as an `app__<tool>` def, dispatched into the app's sandbox via the
+/// correlated [`crate::apps::request_op`] round trip — the app's ACTUAL computed
+/// result returns to the model. Pure local compute only: a `consequential = true`
+/// declaration is NEVER exposed on this path (it can only ride the confirmation-
+/// gated flows). Falls back to `false` when init was never called (tests /
+/// pre-startup paths) so an unwired loop offers no app tools — fail safe.
+static APPS_AGENT_TOOLS_GATE: OnceLock<bool> = OnceLock::new();
+
+/// Wire the apps-as-agent-tools gate from the loaded config. Called once from
+/// `main()` alongside `init_reranker`. Idempotent.
+pub fn init_apps_agent_tools(enabled: bool) {
+    let _ = APPS_AGENT_TOOLS_GATE.set(enabled);
+}
+
+/// Whether micro-app tools are offered to (and dispatchable by) the agent loop.
+pub fn apps_agent_tools_enabled() -> bool {
+    APPS_AGENT_TOOLS_GATE.get().copied().unwrap_or(false)
+}
+
 /// Derive the bare agent id (e.g. `darwin`, `friday`) the MCP per-server allowlist
 /// keys on, from the active agent's memory namespace (`agent.<name>`). The cloud
 /// path carries the namespace, not the bare id; MCP's `agent_may_use` wants the
@@ -1852,6 +1873,253 @@ fn tools_for_agent_with_mcp(allowed: &[String], mcp_defs: &[Value]) -> Value {
     tools
 }
 
+/// Build ONE agent tool def for an exposed micro-app tool. The def name is the
+/// mangled `app__<tool>` id; the description names the owning app and its
+/// sandboxed/on-device nature HONESTLY (the model should know the tool is pure
+/// local compute); the input_schema is rendered faithfully from the manifest's
+/// declared params (an app declaring none gets an empty-properties object
+/// schema, same shape as the built-in read-only tools). PURE — unit-testable
+/// from a hand-built [`crate::apps::AgentTool`].
+fn app_tool_def(tool: &crate::apps::AgentTool) -> Value {
+    let what = if tool.decl.description.trim().is_empty() {
+        &tool.app_description
+    } else {
+        &tool.decl.description
+    };
+    let mut properties = serde_json::Map::new();
+    let mut required: Vec<Value> = Vec::new();
+    for p in &tool.decl.params {
+        properties.insert(
+            p.name.clone(),
+            json!({"type": p.kind, "description": p.description}),
+        );
+        if p.required {
+            required.push(Value::String(p.name.clone()));
+        }
+    }
+    let mut schema = json!({"type": "object", "properties": properties});
+    if !required.is_empty() {
+        schema["required"] = Value::Array(required);
+    }
+    json!({
+        "name": crate::apps::mangled_tool_name(&tool.decl.name),
+        "description": format!(
+            "{what} (micro-app '{}': sandboxed pure on-device compute — no network side effects, \
+             the result is the app's actual computed answer)",
+            tool.app
+        ),
+        "input_schema": schema,
+    })
+}
+
+/// The LIVE app tool defs for this turn: every non-consequential exposed
+/// micro-app tool, rendered via [`app_tool_def`]. Empty when the gate is off,
+/// the app runtime is not up, OR the agent is not the wildcard orchestrator.
+///
+/// WILDCARD-ONLY (offered == usable): `app__<tool>` names are never in a
+/// specialist agent's hand-maintained allowlist and — unlike MCP flat names —
+/// get no allowlist bypass in [`execute_tool`], so only a `["*"]` agent can
+/// actually invoke them. Offering them to a narrower agent would dangle a tool
+/// it would be refused at dispatch (a wasted call). So we OFFER them exactly to
+/// the agents that can USE them: the orchestrator. (Granting a specific
+/// specialist a curated app-tool subset is a clean future extension.)
+async fn app_tool_defs_live(allowed: &[String]) -> Vec<Value> {
+    if !apps_agent_tools_enabled() {
+        return Vec::new();
+    }
+    if !allowed.iter().any(|t| t == TOOLS_WILDCARD) {
+        return Vec::new();
+    }
+    let Some(registry) = crate::apps::global_registry() else {
+        return Vec::new();
+    };
+    registry
+        .agent_tools()
+        .await
+        .iter()
+        .map(app_tool_def)
+        .collect()
+}
+
+/// The agent-facing name prefix for micro-app tools (`app__jwtpeek_decode`).
+const APP_TOOL_PREFIX: &str = "app__";
+
+/// Cap on the app-tool result string handed back to the model. An app answer is
+/// already bounded on the wire (1 MiB relay line), but a tool_result that large
+/// would blow the turn's token budget; truncate with an honest marker instead.
+const APP_TOOL_RESULT_MAX_BYTES: usize = 32 * 1024;
+
+/// Truncate `s` to [`APP_TOOL_RESULT_MAX_BYTES`] on a char boundary, appending
+/// an honest truncation marker when anything was dropped.
+fn cap_app_tool_result(s: String) -> String {
+    if s.len() <= APP_TOOL_RESULT_MAX_BYTES {
+        return s;
+    }
+    let mut cut = APP_TOOL_RESULT_MAX_BYTES;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}\n… [result truncated at {} bytes]", &s[..cut], APP_TOOL_RESULT_MAX_BYTES)
+}
+
+/// Dispatch one `app__<tool>` agent call into the owning micro-app and return
+/// the app's ACTUAL computed result. Flow: gate -> resolve the mangled name
+/// against the live non-consequential tool set -> build the op line (`type` =
+/// the dotted tool id; the model's args ride as TOP-LEVEL fields per the
+/// micro-app compute contract; reserved envelope keys are REFUSED, never
+/// silently dropped) -> idempotent app start -> correlated
+/// [`crate::apps::request_op`] round trip -> render. A compute-contract error
+/// (`{"error": ...}`) surfaces as a tool error so the model sees the failure
+/// honestly. Every outcome emits a secret-free `app.tool_invoked` breadcrumb.
+async fn app_tool_dispatch(name: &str, input: &Value) -> Result<String> {
+    if !apps_agent_tools_enabled() {
+        return Err(anyhow!("micro-app tools are disabled ([apps].agent_tools = false)"));
+    }
+    let Some(registry) = crate::apps::global_registry() else {
+        return Err(anyhow!("the micro-app runtime isn't up, so '{name}' can't run"));
+    };
+    let tools = registry.agent_tools().await;
+    let Some(tool) = tools
+        .iter()
+        .find(|t| crate::apps::mangled_tool_name(&t.decl.name) == name)
+    else {
+        return Err(anyhow!("unknown micro-app tool '{name}'"));
+    };
+    let mut op = serde_json::Map::new();
+    op.insert("type".to_string(), Value::String(tool.decl.name.clone()));
+    if let Some(args) = input.as_object() {
+        for (k, v) in args {
+            if crate::plugin_sdk::RESERVED_PARAM_NAMES.contains(&k.as_str()) {
+                return Err(anyhow!("argument {k:?} is reserved by the app wire protocol"));
+            }
+            op.insert(k.clone(), v.clone());
+        }
+    }
+    crate::apps::start(&registry, &tool.app).await?;
+    let t0 = std::time::Instant::now();
+    let outcome = crate::apps::request_op(
+        &registry,
+        &tool.app,
+        Value::Object(op),
+        crate::apps::APP_REQUEST_TIMEOUT,
+    )
+    .await;
+    crate::telemetry::emit(
+        "system",
+        "app.tool_invoked",
+        json!({
+            "app": tool.app,
+            "tool": tool.decl.name,
+            "ok": outcome.is_ok(),
+            "ms": t0.elapsed().as_millis() as u64,
+        }),
+    );
+    let data = outcome?;
+    if let Some(err) = data.get("error").and_then(Value::as_str) {
+        // Cap the error string too — an app's `error` rides the same 1 MiB relay
+        // line as a success payload, so a buggy/hostile app could otherwise blow
+        // the turn's token budget through the error field, defeating the cap the
+        // success path enforces. Same bound, both paths.
+        return Err(anyhow!(
+            "micro-app '{}' reported: {}",
+            tool.app,
+            cap_app_tool_result(err.to_string())
+        ));
+    }
+    Ok(cap_app_tool_result(serde_json::to_string_pretty(&data)?))
+}
+
+#[cfg(test)]
+mod app_tools_tests {
+    use super::{app_tool_def, cap_app_tool_result, APP_TOOL_RESULT_MAX_BYTES};
+    use crate::apps::{AgentTool, ToolDecl, ToolParam};
+
+    fn tool(name: &str, description: &str, params: Vec<ToolParam>) -> AgentTool {
+        AgentTool {
+            app: "jwtpeek".to_string(),
+            app_description: "Decode JWTs on-device".to_string(),
+            decl: ToolDecl {
+                name: name.to_string(),
+                scopes: vec![],
+                consequential: false,
+                description: description.to_string(),
+                params,
+            },
+        }
+    }
+
+    /// The def renders the manifest faithfully: mangled name, the tool's own
+    /// description (app fallback only when empty), and a JSON schema built from
+    /// the declared params with the required list.
+    #[test]
+    fn def_renders_name_description_and_schema() {
+        let d = app_tool_def(&tool(
+            "jwtpeek.decode",
+            "Decode a JWT without verifying",
+            vec![
+                ToolParam {
+                    name: "jwt".into(),
+                    kind: "string".into(),
+                    required: true,
+                    description: "the raw token".into(),
+                },
+                ToolParam {
+                    name: "pretty".into(),
+                    kind: "boolean".into(),
+                    required: false,
+                    description: "indent output".into(),
+                },
+            ],
+        ));
+        assert_eq!(d["name"], "app__jwtpeek_decode");
+        let desc = d["description"].as_str().unwrap();
+        assert!(desc.starts_with("Decode a JWT without verifying"), "{desc}");
+        assert!(desc.contains("jwtpeek"), "names the owning app: {desc}");
+        assert!(desc.contains("sandboxed"), "honest sandbox label: {desc}");
+        assert_eq!(d["input_schema"]["type"], "object");
+        assert_eq!(d["input_schema"]["properties"]["jwt"]["type"], "string");
+        assert_eq!(
+            d["input_schema"]["properties"]["pretty"]["description"],
+            "indent output"
+        );
+        assert_eq!(d["input_schema"]["required"], serde_json::json!(["jwt"]));
+    }
+
+    /// A tool with no description falls back to the APP's description; a tool
+    /// with no params gets the empty-properties schema (same shape as the
+    /// built-in read-only tools) with NO required array.
+    #[test]
+    fn def_falls_back_to_app_description_and_empty_schema() {
+        let d = app_tool_def(&tool("jwtpeek.decode", "", vec![]));
+        assert!(d["description"]
+            .as_str()
+            .unwrap()
+            .starts_with("Decode JWTs on-device"));
+        assert_eq!(
+            d["input_schema"]["properties"],
+            serde_json::json!({}),
+            "no params -> empty properties"
+        );
+        assert!(d["input_schema"].get("required").is_none(), "no empty required array");
+    }
+
+    /// Result capping: under the cap passes through untouched; over the cap is
+    /// cut on a char boundary with the honest truncation marker.
+    #[test]
+    fn result_cap_truncates_on_char_boundary_with_marker() {
+        let small = "x".repeat(100);
+        assert_eq!(cap_app_tool_result(small.clone()), small);
+        // Multibyte flood: € is 3 bytes and the cap (32768) is not a multiple
+        // of 3, so the cut genuinely lands mid-char and must back up to a
+        // boundary instead of panicking (a 2-byte char on an even cap would
+        // land ON a boundary and never exercise the back-up loop).
+        let big = "€".repeat(APP_TOOL_RESULT_MAX_BYTES);
+        let capped = cap_app_tool_result(big);
+        assert!(capped.len() < APP_TOOL_RESULT_MAX_BYTES + 100);
+        assert!(capped.contains("[result truncated"), "honest marker");
+    }
+}
+
 /// Add an Anthropic prompt-cache breakpoint to the tool-definitions array.
 ///
 /// Tools render BEFORE `system` in the cache prefix (order is tools → system →
@@ -2082,7 +2350,19 @@ pub async fn complete_with_tools(
     } else {
         crate::mcp::global().tool_defs_for_agent(agent_id)
     };
-    let tools = tools_with_cache(tools_for_agent_with_mcp(allowed_tools, &mcp_defs));
+    // Micro-app tools ride the same dynamic-append seam as MCP defs (after them,
+    // so the byte-stable built-in prefix the prompt cache keys on is unchanged).
+    // Withheld from guests like MCP: a guest agent never drives the app runtime.
+    let app_defs = if guest_active {
+        Vec::new()
+    } else {
+        app_tool_defs_live(allowed_tools).await
+    };
+    let mut tools = tools_for_agent_with_mcp(allowed_tools, &mcp_defs);
+    if let Some(arr) = tools.as_array_mut() {
+        arr.extend(app_defs);
+    }
+    let tools = tools_with_cache(tools);
     let brain = CloudBrain { api_key };
     match tokio::time::timeout(
         TOOL_LOOP_BUDGET,
@@ -7498,6 +7778,20 @@ async fn dispatch_tool(
             Ok(outcome) => render_mcp_outcome(outcome),
             Err(e) => {
                 warn!(tool = name, error = %e, "mcp replay dispatch failed");
+                (e.to_string(), true)
+            }
+        };
+    }
+
+    // MICRO-APP TOOL: an `app__<tool>` id dispatches into the owning app's
+    // sandbox via the correlated request/response round trip and returns the
+    // app's ACTUAL computed result (unlike the fire-and-forget send_op paths).
+    if name.starts_with(APP_TOOL_PREFIX) {
+        let result = app_tool_dispatch(name, input).await;
+        return match result {
+            Ok(outcome) => (outcome, false),
+            Err(e) => {
+                warn!(tool = name, error = %e, "app tool dispatch failed");
                 (e.to_string(), true)
             }
         };

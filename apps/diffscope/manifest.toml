@@ -23,3 +23,14 @@ provides = ["diffscope.unified"]
 name          = "diffscope.unified"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Compute a read-only unified line-diff between two texts 'a' and 'b', returning the diff text (capped at 200 lines) plus added/removed line counts. Call it to compare two versions of a snippet or file."
+[[tools.exposes.params]]
+name        = "a"
+kind        = "string"
+required    = false
+description  = "The original / left-hand text (missing or null is treated as empty)."
+[[tools.exposes.params]]
+name        = "b"
+kind        = "string"
+required    = false
+description  = "The updated / right-hand text (missing or null is treated as empty)."

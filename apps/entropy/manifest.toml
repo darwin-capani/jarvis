@@ -23,3 +23,10 @@ provides = ["entropy.assess"]
 name          = "entropy.assess"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Estimate the strength of a candidate password/secret: returns its length, character-set size, Shannon entropy in bits, and a strength class (very weak..very strong). Call when the user asks how strong or guessable a password is. Read-only; returns only aggregate stats, never the input text."
+
+[[tools.exposes.params]]
+name        = "text"
+kind        = "string"
+required    = false
+description  = "The candidate password/secret to assess. Only its character classes and length are read; the text is never echoed back."

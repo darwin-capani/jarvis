@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Plain tests for entropy.compute -- real cases plus hostile/empty inputs."""
+import json
 import math
 
 from main import compute
@@ -113,6 +114,51 @@ def test_complete_lines_drain_and_partial_is_preserved():
     assert lines == [b'{"a":1}', b'{"b":2}']
     assert buf == b'{"c":3'
     assert overflowed is False
+
+
+# -- the agent-tool request/response contract (SHARED shape; copy per app) ----
+# entropy.assess carrying a request `id` is answered with a type:"result" line
+# echoing that id; the same op with no id keeps the legacy uncorrelated
+# type:"items" line (voice/refresh paths depend on it byte-for-byte).
+import main as _contract_mod  # noqa: E402 — after the app's own imports
+
+
+class FakeConn:
+    """Captures sendall payloads so handle() can be driven without a socket."""
+
+    def __init__(self):
+        self.lines = []
+
+    def sendall(self, raw):
+        self.lines.append(json.loads(raw.decode("utf-8").strip()))
+
+
+def test_tool_op_with_id_answers_a_correlated_result():
+    conn = FakeConn()
+    _contract_mod.handle(conn, {"type": "entropy.assess", "id": "req-7", "text": "password"})
+    assert len(conn.lines) == 1
+    reply = conn.lines[0]
+    assert reply["type"] == "result", reply
+    assert reply["id"] == "req-7", "the request id is echoed verbatim"
+    assert reply["data"]["length"] == 8
+    assert reply["token"] == _contract_mod.TOKEN
+
+
+def test_tool_op_without_id_keeps_the_legacy_items_line():
+    conn = FakeConn()
+    _contract_mod.handle(conn, {"type": "entropy.assess", "text": "password"})
+    assert len(conn.lines) == 1
+    reply = conn.lines[0]
+    assert reply["type"] == "items", "no id -> uncorrelated legacy line"
+    assert "id" not in reply
+    assert reply["data"]["length"] == 8
+
+
+def test_non_string_or_empty_id_is_treated_as_absent():
+    for bad_id in (7, "", None, ["x"]):
+        conn = FakeConn()
+        _contract_mod.handle(conn, {"type": "entropy.assess", "id": bad_id, "text": "password"})
+        assert conn.lines[0]["type"] == "items", f"id={bad_id!r} must not correlate"
 
 
 if __name__ == "__main__":

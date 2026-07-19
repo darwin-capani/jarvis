@@ -181,9 +181,55 @@ def test_complete_lines_drain_and_partial_is_preserved():
     assert overflowed is False
 
 
+# -- the agent-tool request/response contract (SHARED shape; copy per app) ----
+
+
+class FakeConn:
+    """Captures sendall payloads so handle() can be driven without a socket."""
+
+    def __init__(self):
+        import json as _json
+        self._json = _json
+        self.lines = []
+
+    def sendall(self, raw):
+        self.lines.append(self._json.loads(raw.decode("utf-8").strip()))
+
+
+def test_tool_op_with_id_answers_a_correlated_result():
+    conn = FakeConn()
+    _frame_mod.handle(conn, {"type": "subnet.plan", "cidr": "192.168.1.0/24", "id": "req-7"})
+    assert len(conn.lines) == 1
+    reply = conn.lines[0]
+    assert reply["type"] == "result", reply
+    assert reply["id"] == "req-7", "the request id is echoed verbatim"
+    assert reply["data"]["version"] == 4
+    assert reply["token"] == _frame_mod.TOKEN
+
+
+def test_tool_op_without_id_keeps_the_legacy_items_line():
+    conn = FakeConn()
+    _frame_mod.handle(conn, {"type": "subnet.plan", "cidr": "192.168.1.0/24"})
+    assert len(conn.lines) == 1
+    reply = conn.lines[0]
+    assert reply["type"] == "items", "no id -> uncorrelated legacy line"
+    assert "id" not in reply
+    assert reply["data"]["version"] == 4
+
+
+def test_non_string_or_empty_id_is_treated_as_absent():
+    for bad_id in (7, "", None, ["x"]):
+        conn = FakeConn()
+        _frame_mod.handle(conn, {"type": "subnet.plan", "cidr": "192.168.1.0/24", "id": bad_id})
+        assert conn.lines[0]["type"] == "items", f"id={bad_id!r} must not correlate"
+
+
 if __name__ == "__main__":
     test_max_frame_bytes_is_8_mib()
     test_oversized_frame_is_dropped_not_accumulated()
     test_complete_lines_drain_and_partial_is_preserved()
-    print("framing: 3 checks ok")
+    test_tool_op_with_id_answers_a_correlated_result()
+    test_tool_op_without_id_keeps_the_legacy_items_line()
+    test_non_string_or_empty_id_is_treated_as_absent()
+    print("framing + contract: 6 checks ok")
     main()

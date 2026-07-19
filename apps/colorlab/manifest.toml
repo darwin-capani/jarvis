@@ -23,3 +23,10 @@ provides = ["colorlab.analyze"]
 name          = "colorlab.analyze"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Analyze a single color: normalize it to hex/rgb/hsl and compute its WCAG relative luminance plus contrast ratios against white and black with AA/AAA pass flags. Call it to check color legibility or convert a color between hex and rgb/hsl."
+
+[[tools.exposes.params]]
+name        = "color"
+kind        = "string"
+required    = true
+description  = "The color to analyze, as a hex string ('#rgb' or '#rrggbb') or a comma-separated 'r,g,b' triplet of 0-255 integers."

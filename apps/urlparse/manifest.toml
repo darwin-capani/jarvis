@@ -23,3 +23,9 @@ provides = ["url.dissect"]
 name          = "url.dissect"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Dissect an RFC-3986 URL/URI string into its parts (scheme, host, port with scheme-default inference, path, query, fragment, parsed query params, IDN/punycode host, a normalized form, and security warnings). Parsing only — never fetches the URL. Call to inspect or explain the structure of a URL without visiting it."
+[[tools.exposes.params]]
+name        = "url"
+kind        = "string"
+required    = true
+description  = "The URL or URI string to dissect (e.g. \"https://user@host:8443/path?a=1#frag\"). A scheme-less string still parses. Must be a non-empty string."

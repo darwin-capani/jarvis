@@ -23,3 +23,16 @@ provides = ["csvlens.profile"]
 name          = "csvlens.profile"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Profile CSV text: return row and column counts, header names, and per-column non-empty/empty cell tallies. Call to inspect, summarize, or validate the shape of raw CSV content."
+
+[[tools.exposes.params]]
+name        = "csv"
+kind        = "string"
+required    = true
+description  = "The raw CSV document text to profile; must be a non-empty string."
+
+[[tools.exposes.params]]
+name        = "delimiter"
+kind        = "string"
+required    = false
+description  = "Single-character field delimiter (defaults to a comma)."

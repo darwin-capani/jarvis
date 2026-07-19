@@ -19,7 +19,22 @@ telemetry_topics = ["hashkit.status"]
 [intents]
 provides = ["hashkit.digest"]
 
+# THE AGENT-TOOL CONTRACT: a non-consequential declaration here is OFFERED TO THE
+# AGENT LOOP as an invocable app__<tool> def ([apps].agent_tools, ships ON), so
+# every declared tool MUST be served by handle() with the request-id echo (see
+# main.py reply_result) — a declared-but-unserved tool would be offered to the
+# model and time out. `description` becomes the model-facing tool description
+# verbatim; each [[tools.exposes.params]] renders into the def's input_schema
+# (name/kind/required/description; kind is a JSON-Schema primitive; the reserved
+# envelope names `type`/`op`/`id`/`token` are rejected at validation).
 [[tools.exposes]]
 name          = "hashkit.digest"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Compute the MD5, SHA1, and SHA256 hex digests of a text string plus its UTF-8 byte length. Call when the user wants a one-way cryptographic digest or fingerprint of some text."
+
+[[tools.exposes.params]]
+name        = "text"
+kind        = "string"
+required    = false
+description  = "The input text to digest. Omitted or non-string is treated as the empty string (digests of zero bytes)."

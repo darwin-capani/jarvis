@@ -19,7 +19,28 @@ telemetry_topics = ["explain.status"]
 [intents]
 provides = ["explain.run"]
 
+# THE AGENT-TOOL CONTRACT: a non-consequential declaration here is OFFERED TO
+# THE AGENT LOOP as an invocable app__<tool> def ([apps].agent_tools, ships ON),
+# so every declared tool MUST be served by handle() with the request-id echo
+# (see main.py reply_result) — a declared-but-unserved tool would be offered to
+# the model and time out. `description` becomes the model-facing tool description
+# verbatim; each [[tools.exposes.params]] renders into the def's input_schema
+# (name/kind/required/description; kind is a JSON-Schema primitive; `type`/`op`/
+# `id`/`token` are reserved by the wire envelope and rejected at validation).
 [[tools.exposes]]
 name          = "explain.run"
 scopes        = ["generate"]
 consequential = false
+description   = "Explain what a code snippet does in plain English using the on-device LLM: given a code string, returns a concise 1-4 sentence description of its purpose, inputs, and outputs. Call when the user wants to understand what a piece of code does."
+
+[[tools.exposes.params]]
+name        = "code"
+kind        = "string"
+required    = true
+description = "The source code snippet to explain (required, non-empty)."
+
+[[tools.exposes.params]]
+name        = "language"
+kind        = "string"
+required    = false
+description = "Optional language of the snippet (e.g. python, sql) used only to tag the fenced code block in the prompt."

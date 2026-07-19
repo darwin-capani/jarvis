@@ -122,6 +122,68 @@ def test_complete_lines_drain_and_partial_is_preserved():
     assert overflowed is False
 
 
+# --- the agent-tool request/response contract (SHARED shape; adapted per app) -
+# A domain op carrying a request `id` is answered with a type:"result" line
+# echoing that id (main.reply_result); an op without one keeps the legacy
+# uncorrelated type:"items" line. keywords.run's payload flows through compute(),
+# which needs the generate proxy, so we point main.GENERATE_SOCK at a one-shot
+# MockProxy (cribbing the passing case from test_compute_via_mock_proxy) so the
+# reply's data is a real {"result": ...} dict rather than an error.
+
+
+class FakeConn:
+    """Captures sendall payloads so handle() can be driven without a real socket."""
+
+    def __init__(self):
+        self.lines = []
+
+    def sendall(self, raw):
+        self.lines.append(json.loads(raw.decode("utf-8").strip()))
+
+
+# A minimal VALID payload build_prompt accepts (from test_compute_via_mock_proxy).
+_VALID = {"text": "Rust is a systems language focused on safety and speed.", "count": 3}
+
+
+def _drive(msg):
+    """Run handle() for one keywords.run op against a one-shot mock generate proxy
+    (main.GENERATE_SOCK repointed at it) and return the captured reply lines."""
+    with MockProxy({"ok": True, "text": "  canned answer  "}) as mp:
+        saved = main.GENERATE_SOCK
+        main.GENERATE_SOCK = mp.path
+        try:
+            conn = FakeConn()
+            main.handle(conn, msg)
+        finally:
+            main.GENERATE_SOCK = saved
+    return conn.lines
+
+
+def test_tool_op_with_id_answers_a_correlated_result():
+    lines = _drive({"type": "keywords.run", "id": "req-7", **_VALID})
+    assert len(lines) == 1
+    reply = lines[0]
+    assert reply["type"] == "result", reply
+    assert reply["id"] == "req-7", "the request id is echoed verbatim"
+    assert reply["data"] == {"result": "canned answer"}, reply
+    assert reply["token"] == main.TOKEN
+
+
+def test_tool_op_without_id_keeps_the_legacy_items_line():
+    lines = _drive({"type": "keywords.run", **_VALID})
+    assert len(lines) == 1
+    reply = lines[0]
+    assert reply["type"] == "items", "no id -> uncorrelated legacy line"
+    assert "id" not in reply
+    assert reply["data"] == {"result": "canned answer"}, reply
+
+
+def test_non_string_or_empty_id_is_treated_as_absent():
+    for bad_id in (7, "", None, ["x"]):
+        lines = _drive({"type": "keywords.run", "id": bad_id, **_VALID})
+        assert lines[0]["type"] == "items", f"id={bad_id!r} must not correlate"
+
+
 if __name__ == "__main__":
     # Script-style runs exercise the framing tests too — they are plain
     # functions the runner below would otherwise never call.
@@ -129,7 +191,8 @@ if __name__ == "__main__":
     test_oversized_frame_is_dropped_not_accumulated()
     test_complete_lines_drain_and_partial_is_preserved()
     print("framing: 3 checks ok")
-    for t in [test_build_prompt_pure, test_compute_via_mock_proxy, test_compute_proxy_error_never_raises, test_hostile_inputs_never_raise]:
+    for t in [test_build_prompt_pure, test_compute_via_mock_proxy, test_compute_proxy_error_never_raises, test_hostile_inputs_never_raise,
+              test_tool_op_with_id_answers_a_correlated_result, test_tool_op_without_id_keeps_the_legacy_items_line, test_non_string_or_empty_id_is_treated_as_absent]:
         t()
         print("ok:", t.__name__)
     print("ALL PASSED")

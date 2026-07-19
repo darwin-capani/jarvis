@@ -575,7 +575,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // each tick from on-device signals through the SAME restrict-only path (it can
     // only narrow further, never broaden).
     ("focus", &["profile", "auto"]),
-    ("apps", &["autostart"]),
+    ("apps", &["autostart", "agent_tools"]),
     // [introspect] — the READ-ONLY micro-app introspection sentinel
     // (introspect.rs): SBPL profile-drift + per-app RSS/CPU anomaly surfacing.
     // `enabled` SHIPS ON (full-power default); it only observes darwind's own
@@ -3845,10 +3845,30 @@ impl Default for PrecogConfig {
 /// lists micro-app names darwind launches at startup; it defaults to EMPTY —
 /// nothing is autostarted unless the operator opts in. Names that do not match
 /// a registered manifest are skipped with a telemetry warning at startup.
-#[derive(Debug, Clone, Default, Deserialize)]
+///
+/// `agent_tools` (ships ON) offers every micro-app's NON-consequential
+/// `[[tools.exposes]]` declaration to the agent loop as an invocable tool: the
+/// model calls `app__<tool>`, the daemon round-trips the op through the app's
+/// sandbox, and the app's actual computed result returns to the model. Pure
+/// local compute only — a `consequential = true` declaration is never exposed
+/// on this path, and the app's seatbelt sandbox constrains it exactly as it
+/// does every other launch. OFF removes the defs and refuses dispatch.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct AppsConfig {
     pub autostart: Vec<String>,
+    pub agent_tools: bool,
+}
+
+impl Default for AppsConfig {
+    fn default() -> Self {
+        AppsConfig {
+            autostart: Vec::new(),
+            // Armed by default: sandboxed pure compute, gated per action by the
+            // manifest's own consequential flag.
+            agent_tools: true,
+        }
+    }
 }
 
 /// [introspect] — the READ-ONLY micro-app introspection sentinel (introspect.rs).

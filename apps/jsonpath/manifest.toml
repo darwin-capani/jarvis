@@ -23,3 +23,16 @@ provides = ["jsonpath.query"]
 name          = "jsonpath.query"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Parse a JSON document and return the value at a dotted/bracket path (e.g. \"a.b[0].c\", ['quoted key'], negative indices). Call to extract a specific field or element from JSON text; returns {value,type} or an {error} for bad JSON / bad path / missing key / out-of-range index. An empty path returns the whole document."
+
+[[tools.exposes.params]]
+name        = "json"
+kind        = "string"
+required    = true
+description  = "The JSON document to query, as a string (parsed with a strict JSON parser)."
+
+[[tools.exposes.params]]
+name        = "path"
+kind        = "string"
+required    = false
+description  = "The path to walk, e.g. \"a.b[0].c\" or \"list[-1]\" or \"['quoted.key']\". A leading '$' or '.' is tolerated. Omit or pass an empty string to return the whole document."

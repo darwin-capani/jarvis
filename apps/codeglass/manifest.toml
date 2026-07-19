@@ -23,3 +23,10 @@ provides = ["codeglass.metrics"]
 name          = "codeglass.metrics"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Compute read-only line-metrics for a pasted code snippet: total/blank/comment/code line counts, longest-line length, and TODO/FIXME/XXX marker count. Call when the user wants a quick size/comment/work-item breakdown of a snippet."
+
+[[tools.exposes.params]]
+name        = "code"
+kind        = "string"
+required    = false
+description  = "The source-code snippet to measure; each embedded newline separates a line. Missing or non-string is treated as an empty snippet (all-zero metrics)."

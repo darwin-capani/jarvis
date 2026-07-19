@@ -23,3 +23,16 @@ provides = ["classify.run"]
 name          = "classify.run"
 scopes        = ["generate"]
 consequential = false
+description   = "Classify a piece of text into exactly ONE of the caller-provided labels using the on-device LLM; call when you need to bucket free-form text into a fixed label set and want just the chosen label back."
+
+[[tools.exposes.params]]
+name        = "text"
+kind        = "string"
+required    = true
+description  = "The text to classify. Must be a non-empty string."
+
+[[tools.exposes.params]]
+name        = "labels"
+kind        = "array"
+required    = true
+description  = "The candidate labels to choose from — a non-empty list of non-empty strings. The model picks exactly one of these."

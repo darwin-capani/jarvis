@@ -112,9 +112,20 @@ fn scope_backed_by_permissions(scope: &str, p: &PermissionsSection) -> Result<()
     }
 }
 
-/// Validate ONE exposed tool's declaration: non-empty well-formed name, and every
-/// requested scope is (1) in [`ALLOWED_SCOPES`] and (2) backed by the permission
-/// set. Returns a precise error naming the offending tool/scope.
+/// The JSON-Schema primitive types a tool param may declare — what the agent
+/// tool loop can faithfully render into an input_schema.
+pub const ALLOWED_PARAM_KINDS: &[&str] =
+    &["string", "number", "integer", "boolean", "object", "array"];
+
+/// Param names an op line reserves for the wire protocol itself: `type`/`op`
+/// select the handler, `id` correlates request/response, `token` authenticates
+/// app->host lines. A tool param shadowing one would corrupt the envelope.
+pub const RESERVED_PARAM_NAMES: &[&str] = &["type", "op", "id", "token"];
+
+/// Validate ONE exposed tool's declaration: non-empty well-formed name, every
+/// requested scope (1) in [`ALLOWED_SCOPES`] and (2) backed by the permission
+/// set, and every declared param non-reserved with an allowed kind. Returns a
+/// precise error naming the offending tool/scope/param.
 fn validate_tool(tool: &ToolDecl, perms: &PermissionsSection) -> Result<(), String> {
     if tool.name.trim().is_empty() {
         return Err("a [[tools.exposes]] entry has an empty name".to_string());
@@ -134,6 +145,30 @@ fn validate_tool(tool: &ToolDecl, perms: &PermissionsSection) -> Result<(), Stri
         }
         scope_backed_by_permissions(scope, perms)
             .map_err(|e| format!("tool {:?}: {e}", tool.name))?;
+    }
+    let mut seen_params = std::collections::HashSet::new();
+    for param in &tool.params {
+        if param.name.trim().is_empty() {
+            return Err(format!("tool {:?} declares a param with an empty name", tool.name));
+        }
+        if RESERVED_PARAM_NAMES.contains(&param.name.as_str()) {
+            return Err(format!(
+                "tool {:?} param {:?} shadows a reserved op-envelope field (reserved: {:?})",
+                tool.name, param.name, RESERVED_PARAM_NAMES
+            ));
+        }
+        if !ALLOWED_PARAM_KINDS.contains(&param.kind.as_str()) {
+            return Err(format!(
+                "tool {:?} param {:?} has unknown kind {:?} (allowed: {:?})",
+                tool.name, param.name, param.kind, ALLOWED_PARAM_KINDS
+            ));
+        }
+        if !seen_params.insert(param.name.as_str()) {
+            return Err(format!(
+                "tool {:?} declares param {:?} twice",
+                tool.name, param.name
+            ));
+        }
     }
     Ok(())
 }
@@ -293,6 +328,61 @@ mod tests {
         assert_eq!(m.intents.provides, vec!["example.status".to_string()]);
         assert_eq!(m.tools.exposes.len(), 1);
         assert_eq!(m.tools.exposes[0].name, "example.read_status");
+    }
+
+    // -- tool params (the agent-tool input contract) -------------------------
+
+    /// Declared params validate: reserved envelope names, unknown kinds, empty
+    /// names, and duplicates are each rejected with a precise error; a
+    /// well-formed param list passes.
+    #[test]
+    fn validate_tool_params_reserved_kind_and_dup_rules() {
+        let with_params = |params: &str| {
+            format!(
+                "{}\n[[tools.exposes.params]]\n{}",
+                good_for("example-plugin"),
+                params
+            )
+        };
+        // Well-formed passes and parses.
+        let m = validate_manifest(
+            &with_params("name = \"jwt\"\nkind = \"string\"\nrequired = true\ndescription = \"raw token\""),
+            "example-plugin",
+        )
+        .expect("well-formed param validates");
+        assert_eq!(m.tools.exposes[0].params.len(), 1);
+        assert_eq!(m.tools.exposes[0].params[0].kind, "string");
+
+        // Reserved envelope field names are refused.
+        for reserved in RESERVED_PARAM_NAMES {
+            let err = validate_manifest(
+                &with_params(&format!("name = \"{reserved}\"\nkind = \"string\"")),
+                "example-plugin",
+            )
+            .expect_err("reserved param must be rejected");
+            assert!(err.contains("reserved"), "{err}");
+        }
+        // Unknown kind refused.
+        let err = validate_manifest(
+            &with_params("name = \"x\"\nkind = \"tuple\""),
+            "example-plugin",
+        )
+        .expect_err("unknown kind rejected");
+        assert!(err.contains("unknown kind"), "{err}");
+        // Empty name refused.
+        let err = validate_manifest(
+            &with_params("name = \"\"\nkind = \"string\""),
+            "example-plugin",
+        )
+        .expect_err("empty param name rejected");
+        assert!(err.contains("empty name"), "{err}");
+        // Duplicate param refused.
+        let raw = format!(
+            "{}\n[[tools.exposes.params]]\nname = \"x\"\nkind = \"string\"\n[[tools.exposes.params]]\nname = \"x\"\nkind = \"number\"",
+            good_for("example-plugin")
+        );
+        let err = validate_manifest(&raw, "example-plugin").expect_err("dup param rejected");
+        assert!(err.contains("twice"), "{err}");
     }
 
     /// A manifest with NO [intents]/[tools] (an existing app-style manifest) still

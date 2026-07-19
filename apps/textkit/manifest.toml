@@ -23,3 +23,10 @@ provides = ["textkit.stats"]
 name          = "textkit.stats"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Compute read-only statistics for a passage of text: character/word/sentence counts, average and longest word, unique-word count, and a words-per-sentence readability proxy. Call to measure or analyze a piece of text."
+
+[[tools.exposes.params]]
+name        = "text"
+kind        = "string"
+required    = false
+description  = "The text to analyze. Words are whitespace-delimited tokens; sentences are counted by .!? terminators. Absent or empty yields zeroed statistics."

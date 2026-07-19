@@ -83,6 +83,62 @@ def test_hostile_inputs_never_raise():
     assert "error" in main.compute([1, 2, 3])
 
 
+# -- the agent-tool request/response contract (SHARED shape; copy per app) ----
+# A domain op carrying a request `id` is answered with a type:"result" line
+# echoing that id; an op without one keeps the legacy uncorrelated type:"items"
+# line. explain.run drives compute()->generate(), so GENERATE_SOCK is pointed at
+# a one-shot mock proxy to take compute()'s success path (crib of the case above).
+
+
+class FakeConn:
+    """Captures sendall payloads so handle() can be driven without a socket."""
+
+    def __init__(self):
+        self.lines = []
+
+    def sendall(self, raw):
+        self.lines.append(json.loads(raw.decode("utf-8").strip()))
+
+
+def _run_handle(msg, reply=None):
+    """Drive handle() for one op with GENERATE_SOCK pointed at a one-shot mock
+    proxy, so compute() takes its non-error success path. Returns captured lines."""
+    conn = FakeConn()
+    with MockProxy(reply or {"ok": True, "text": "  canned answer  "}) as mp:
+        saved = main.GENERATE_SOCK
+        main.GENERATE_SOCK = mp.path
+        try:
+            main.handle(conn, msg)
+        finally:
+            main.GENERATE_SOCK = saved
+    return conn.lines
+
+
+def test_tool_op_with_id_answers_a_correlated_result():
+    lines = _run_handle({"type": "explain.run", "id": "req-7", "code": "def add(a,b): return a+b"})
+    assert len(lines) == 1
+    reply = lines[0]
+    assert reply["type"] == "result", reply
+    assert reply["id"] == "req-7", "the request id is echoed verbatim"
+    assert reply["data"]["result"] == "canned answer"
+    assert reply["token"] == main.TOKEN
+
+
+def test_tool_op_without_id_keeps_the_legacy_items_line():
+    lines = _run_handle({"type": "explain.run", "code": "def add(a,b): return a+b"})
+    assert len(lines) == 1
+    reply = lines[0]
+    assert reply["type"] == "items", "no id -> uncorrelated legacy line"
+    assert "id" not in reply
+    assert reply["data"]["result"] == "canned answer"
+
+
+def test_non_string_or_empty_id_is_treated_as_absent():
+    for bad_id in (7, "", None, ["x"]):
+        lines = _run_handle({"type": "explain.run", "id": bad_id, "code": "x = 1"})
+        assert lines[0]["type"] == "items", f"id={bad_id!r} must not correlate"
+
+
 # --- input-frame bounding (defense in depth) ---------------------------------
 # main()'s socket read loop routes every recv() chunk through main.drain_lines,
 # which DROPS a partial frame once it passes MAX_FRAME_BYTES with no newline, so a
@@ -120,7 +176,15 @@ if __name__ == "__main__":
     test_oversized_frame_is_dropped_not_accumulated()
     test_complete_lines_drain_and_partial_is_preserved()
     print("framing: 3 checks ok")
-    for t in [test_build_prompt_pure, test_compute_via_mock_proxy, test_compute_proxy_error_never_raises, test_hostile_inputs_never_raise]:
+    for t in [
+        test_build_prompt_pure,
+        test_compute_via_mock_proxy,
+        test_compute_proxy_error_never_raises,
+        test_hostile_inputs_never_raise,
+        test_tool_op_with_id_answers_a_correlated_result,
+        test_tool_op_without_id_keeps_the_legacy_items_line,
+        test_non_string_or_empty_id_is_treated_as_absent,
+    ]:
         t()
         print("ok:", t.__name__)
     print("ALL PASSED")

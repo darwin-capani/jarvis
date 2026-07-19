@@ -66,6 +66,17 @@ const MAX_APP_LINE_BYTES: usize = 1024 * 1024; // 1 MiB: app items/status/log re
 const MAX_RESTARTS: u32 = 3;
 const RESTART_WINDOW: Duration = Duration::from_secs(5 * 60);
 
+/// Cap on concurrently in-flight [`request_op`] waiters per app. The agent tool
+/// loop issues at most a handful per turn and every waiter is evicted on
+/// timeout/teardown; the cap is belt-and-braces so a bug can never grow the
+/// pending map without bound.
+const MAX_PENDING_REQUESTS: usize = 32;
+
+/// Default wall-clock budget for one [`request_op`] round trip. Generous enough
+/// to cover a cold app launch (spawn + sandbox + socket connect + start
+/// handshake) ahead of the compute itself; steady-state answers are ms.
+pub const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
 // ===========================================================================
 // Manifest
 // ===========================================================================
@@ -129,8 +140,36 @@ pub struct ToolDecl {
     pub scopes: Vec<String>,
     /// Whether the tool is side-effecting. A consequential tool still PARKS
     /// behind the cross-turn confirmation gate when invoked — declaring it here
-    /// only makes the contract auditable, it never bypasses the gate.
+    /// only makes the contract auditable, it never bypasses the gate. The agent
+    /// tool loop exposes ONLY consequential=false tools (pure local compute);
+    /// a consequential app tool is never auto-invocable.
     pub consequential: bool,
+    /// WHEN the model should call this tool — becomes the agent tool def's
+    /// description verbatim. Empty = the tool is declared but not self-
+    /// describing; the agent loop falls back to the app's description.
+    pub description: String,
+    /// The tool's input fields (`[[tools.exposes.params]]`) — becomes the agent
+    /// tool def's JSON input_schema. Empty = the tool takes no arguments.
+    /// Fields ride the op line as TOP-LEVEL siblings of `type`/`id` (the
+    /// micro-app compute contract), so `type`, `id`, `op`, and `token` are
+    /// reserved and rejected as param names (validated in plugin_sdk).
+    pub params: Vec<ToolParam>,
+}
+
+/// One declared input field of an exposed tool. `kind` is a JSON-Schema
+/// primitive type name (validated in plugin_sdk against an allowed set).
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ToolParam {
+    /// Field name as compute() reads it from the op object.
+    pub name: String,
+    /// JSON-Schema type: "string" | "number" | "integer" | "boolean" |
+    /// "object" | "array".
+    pub kind: String,
+    /// Whether the model must supply it.
+    pub required: bool,
+    /// What the field means (shown to the model in the input_schema).
+    pub description: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -1119,6 +1158,13 @@ struct AppEntry {
     /// the duration of a connection and return it on reconnect.
     op_tx: mpsc::UnboundedSender<String>,
     op_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<String>>>>,
+    /// In-flight [`request_op`] waiters keyed by request id. A token-verified
+    /// `type:"result"` line whose `id` matches hands its `data` to the waiting
+    /// oneshot; every app-terminal path (stop, crash, launch-fail) DRAINS this
+    /// map so waiters fail fast with an honest error instead of dangling until
+    /// timeout. Shared (Arc) because relay_line resolves it under its own
+    /// registry lock while request_op holds a clone across its await.
+    pending: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>>,
 }
 
 /// The host's registry of installed micro-apps, keyed by name. One per daemon.
@@ -1148,6 +1194,30 @@ pub struct AppInfo {
     /// The app's first EXPOSED tool name (`[[tools.exposes]]`), or "" when it
     /// declares none. Manifest metadata only — SECRET-FREE. Drives the App Deck.
     pub tool: String,
+}
+
+/// One AGENT-INVOCABLE micro-app tool: an app's non-consequential
+/// `[[tools.exposes]]` declaration plus the app identity the dispatcher needs.
+/// Produced by [`AppRegistry::agent_tools`]; consumed by the agent loop's def
+/// assembly + dispatch (anthropic.rs).
+#[derive(Debug, Clone)]
+pub struct AgentTool {
+    /// The app that owns (and answers) the tool.
+    pub app: String,
+    /// The app's `[app].description` — the def-description fallback when the
+    /// tool declares none of its own.
+    pub app_description: String,
+    /// The manifest declaration: name, description, params, scopes.
+    pub decl: ToolDecl,
+}
+
+/// The agent-facing tool name for an exposed micro-app tool: `app__` +
+/// the dotted tool id with dots flattened to underscores (Claude tool names
+/// admit only `[a-zA-Z0-9_-]`). E.g. `jwtpeek.decode` -> `app__jwtpeek_decode`.
+/// NOT injective ("a.b_c" and "a_b.c" collide) — [`AppRegistry::agent_tools`]
+/// dedupes, so a collision drops the later declaration instead of misrouting.
+pub fn mangled_tool_name(decl_name: &str) -> String {
+    format!("app__{}", decl_name.replace('.', "_"))
 }
 
 impl AppRegistry {
@@ -1222,6 +1292,7 @@ impl AppRegistry {
                                 stop_notify: Arc::new(tokio::sync::Notify::new()),
                                 op_tx,
                                 op_rx: Arc::new(Mutex::new(Some(op_rx))),
+                                pending: Arc::new(Mutex::new(HashMap::new())),
                             },
                         );
                         info!(app = name, "micro-app manifest registered");
@@ -1272,6 +1343,55 @@ impl AppRegistry {
             })
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// The micro-app tools the AGENT LOOP may invoke: every `[[tools.exposes]]`
+    /// across the registry that is `consequential = false` AND whose owning app
+    /// grants NO network (`net_hosts` empty). Pure LOCAL compute only:
+    ///   * a consequential (side-effecting) declaration is NEVER agent-invocable
+    ///     — it can only ride the confirmation-gated paths;
+    ///   * a NETWORK-capable app's tools are withheld too, so the def's promise
+    ///     to the model ("no network side effects") is TRUE BY CONSTRUCTION and
+    ///     model-supplied args can never reach a tool that could egress them.
+    ///     (Exposing a net-capable app's tool is a future EXPLICIT opt-in, never
+    ///     a silent mislabel.)
+    ///
+    /// Sorted by (app, tool) and DEDUPED by mangled agent-tool name (first wins,
+    /// later collisions dropped with a warning) so the def list is deterministic
+    /// and never offers two tools the dispatcher can't tell apart.
+    pub async fn agent_tools(&self) -> Vec<AgentTool> {
+        let apps = self.apps.lock().await;
+        let mut out: Vec<AgentTool> = Vec::new();
+        let mut names: Vec<&String> = apps.keys().collect();
+        names.sort();
+        for name in names {
+            let entry = &apps[name];
+            // The "no network side effects" promise is enforced here, not merely
+            // asserted in the def text: a net-capable app is skipped wholesale.
+            if !entry.manifest.permissions.net_hosts.is_empty() {
+                continue;
+            }
+            for decl in &entry.manifest.tools.exposes {
+                if decl.consequential {
+                    continue;
+                }
+                out.push(AgentTool {
+                    app: name.clone(),
+                    app_description: entry.manifest.app.description.clone(),
+                    decl: decl.clone(),
+                });
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|t| {
+            let mangled = mangled_tool_name(&t.decl.name);
+            let fresh = seen.insert(mangled.clone());
+            if !fresh {
+                warn!(app = %t.app, tool = %t.decl.name, "agent tool name collision; dropping later declaration");
+            }
+            fresh
+        });
         out
     }
 
@@ -1537,6 +1657,9 @@ pub async fn stop(registry: &Arc<AppRegistry>, name: &str) -> Result<()> {
         entry.nonce.clear();
         entry.stop_notify.clone()
     };
+    // Fail in-flight request_op waiters NOW — the token is dead, no answer can
+    // ever verify, so waiting out the timeout would just be dishonest latency.
+    fail_pending(registry, name).await;
     // Wake the lifecycle task out of its blocking select!.
     notify.notify_waiters();
     Ok(())
@@ -1574,6 +1697,115 @@ pub async fn send_op(registry: &Arc<AppRegistry>, name: &str, op_line: &str) -> 
         .send(op_line.to_string())
         .map_err(|_| anyhow!("micro-app {name:?} op queue is closed"))?;
     Ok(())
+}
+
+/// Monotonic request-id source for [`request_op`]. Predictability is fine: the
+/// only peer on the app socket is the daemon-launched sandboxed child, already
+/// authenticated by socket ownership (host->app) and the HMAC token (app->host);
+/// the id exists for CORRELATION, not authentication.
+static REQ_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// HOST -> APP -> HOST: send one structured op to a RUNNING micro-app and await
+/// its correlated answer — the REQUEST/RESPONSE sibling of the fire-and-forget
+/// [`send_op`]. This is the seam that lets the agent tool loop invoke a
+/// micro-app's exposed tool and hand the app's ACTUAL result back to the model
+/// (send_op can only report "queued").
+///
+/// Wire contract: the daemon injects `"id":"req-<n>"` into `op` (an object) and
+/// forwards it like any op line. A TOOL-INVOCABLE app answers the op with a
+/// token-stamped `{"type":"result","id":<same id>,"data":<result>}` line; the
+/// relay routes that `data` here by id. Apps that predate the contract (no id
+/// echo) simply time out — an honest failure, never a mis-correlated answer.
+///
+/// Failure semantics (all HONEST, none silent):
+///   * app unknown / not running / queue closed -> immediate Err (from send_op's
+///     checks — the request is never queued for a future launch);
+///   * `timeout` elapses -> Err AND the waiter is evicted, so a late result is
+///     dropped by the relay's stale-id path instead of leaking to a later call;
+///   * the app stops/crashes/fails to launch while we wait -> the teardown path
+///     drains the pending map, our oneshot sender drops, and this returns a
+///     fast "app went away" Err instead of dangling until timeout;
+///   * more than [`MAX_PENDING_REQUESTS`] already in flight -> immediate Err.
+pub async fn request_op(
+    registry: &Arc<AppRegistry>,
+    name: &str,
+    mut op: Value,
+    timeout: Duration,
+) -> Result<Value> {
+    let obj = op
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("request_op needs a JSON object op"))?;
+    let id = format!(
+        "req-{}",
+        REQ_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    obj.insert("id".to_string(), Value::String(id.clone()));
+    let op_line = serde_json::to_string(&op)?;
+
+    // Register the waiter and queue the op under ONE registry lock scope so a
+    // teardown can never slip between "queued" and "registered" and leave a
+    // waiter no terminal path knows about.
+    let (rx, pending) = {
+        let apps = registry.apps.lock().await;
+        let entry = apps
+            .get(name)
+            .ok_or_else(|| anyhow!("no micro-app named {name:?}"))?;
+        if !entry.running {
+            bail!("micro-app {name:?} is not running; cannot request");
+        }
+        let mut pending = entry.pending.lock().await;
+        if pending.len() >= MAX_PENDING_REQUESTS {
+            bail!("micro-app {name:?} has too many requests in flight");
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
+        pending.insert(id.clone(), tx);
+        drop(pending);
+        entry
+            .op_tx
+            .send(op_line)
+            .map_err(|_| anyhow!("micro-app {name:?} op queue is closed"))?;
+        (rx, entry.pending.clone())
+    };
+
+    match tokio::time::timeout(timeout, rx).await {
+        Ok(Ok(data)) => Ok(data),
+        // Sender dropped: a terminal path drained the pending map.
+        Ok(Err(_)) => bail!("micro-app {name:?} went away before answering"),
+        Err(_) => {
+            // Evict the waiter so a LATE result is dropped as stale instead of
+            // being delivered to nobody (or worse, kept forever).
+            pending.lock().await.remove(&id);
+            bail!(
+                "micro-app {name:?} did not answer within {}s",
+                timeout.as_secs()
+            )
+        }
+    }
+}
+
+/// Drain every in-flight [`request_op`] waiter for `name`, dropping the senders
+/// so the waiters resolve to an honest "app went away" error immediately.
+/// Called from every app-terminal path (stop, crash give-up, launch failure,
+/// restart) — after a restart the token has rotated and any in-flight answer
+/// would fail verification anyway, so failing fast is strictly more honest
+/// than letting waiters dangle until timeout.
+async fn fail_pending(registry: &Arc<AppRegistry>, name: &str) {
+    let pending = {
+        let apps = registry.apps.lock().await;
+        match apps.get(name) {
+            Some(entry) => entry.pending.clone(),
+            None => return,
+        }
+    };
+    let drained: usize = {
+        let mut map = pending.lock().await;
+        let n = map.len();
+        map.clear();
+        n
+    };
+    if drained > 0 {
+        warn!(app = name, drained, "failed in-flight app requests on teardown");
+    }
 }
 
 /// One app's supervised lifecycle: bind its socket, spawn the sandboxed child,
@@ -1628,11 +1860,16 @@ async fn lifecycle(registry: Arc<AppRegistry>, name: String) {
         .await
         {
             RunResult::StoppedByHost => {
+                fail_pending(&registry, &name).await;
                 cleanup_socket(&socket_path);
                 telemetry::emit("system", "app.stopped", json!({"name": name}));
                 return;
             }
             RunResult::ChildExited => {
+                // The child died: any in-flight request is unanswerable (an op
+                // already written died with it; a late answer fails the rotated
+                // token). Fail waiters fast on EVERY exit path, restart or not.
+                fail_pending(&registry, &name).await;
                 let now = Instant::now();
                 if governor.should_restart(now) {
                     governor.record_restart(now);
@@ -1672,6 +1909,7 @@ async fn lifecycle(registry: Arc<AppRegistry>, name: String) {
                 }
             }
             RunResult::LaunchFailed(e) => {
+                fail_pending(&registry, &name).await;
                 error!(app = %name, error = %e, "micro-app launch failed");
                 {
                     let mut apps = registry.apps.lock().await;
@@ -2130,6 +2368,11 @@ enum RelayDecision {
     /// modules: an app's in-proc dyld loaded-module report — attested against a
     /// trust-on-first-use baseline in introspect.rs (defensive, observability-only).
     Modules { modules: Vec<crate::introspect::Module> },
+    /// result: the correlated answer to a [`request_op`] — routed to the waiting
+    /// oneshot by id, NOT relayed to telemetry (the payload goes to the
+    /// requester; telemetry gets only a secret-free breadcrumb). A result line
+    /// with a missing/empty/non-string id is malformed -> Drop.
+    ToolResult { id: String, payload: Value },
     /// Malformed JSON, an unknown message type, or an empty line — drop it.
     Drop,
 }
@@ -2166,6 +2409,13 @@ fn classify_inbound_line(manifest: &AppManifest, default_topic: &str, raw: &str)
         }
         "modules" => RelayDecision::Modules {
             modules: crate::introspect::parse_module_report(&data),
+        },
+        "result" => match value.get("id").and_then(Value::as_str) {
+            Some(id) if !id.is_empty() => RelayDecision::ToolResult {
+                id: id.to_string(),
+                payload: data,
+            },
+            _ => RelayDecision::Drop,
         },
         _ => RelayDecision::Drop,
     }
@@ -2318,6 +2568,36 @@ async fn relay_line(
                     }
                 }
             }
+        }
+        RelayDecision::ToolResult { id, payload } => {
+            // Deliver the correlated answer to its request_op waiter. The
+            // payload rides ONLY the oneshot (it is the tool result, returned
+            // to the requester); telemetry gets a secret-free breadcrumb so the
+            // HUD/audit can see THAT a tool answered without echoing WHAT.
+            let waiter = {
+                let apps = registry.apps.lock().await;
+                match apps.get(name) {
+                    Some(entry) => entry.pending.lock().await.remove(&id),
+                    None => None,
+                }
+            };
+            let delivered = match waiter {
+                // send fails only if the requester gave up (timeout evicted +
+                // dropped the receiver between our remove and this send) —
+                // dropping the result then is exactly right.
+                Some(tx) => tx.send(payload).is_ok(),
+                None => {
+                    // Stale/unknown id: the waiter timed out and was evicted,
+                    // or the app answered an id it invented. Drop the payload.
+                    warn!(app = name, id = %id, "app result for no live request; dropping");
+                    false
+                }
+            };
+            telemetry::emit(
+                "system",
+                "app.result",
+                json!({"name": name, "id": id, "delivered": delivered}),
+            );
         }
         RelayDecision::Drop => {
             warn!(app = name, "app sent an unhandled/empty line; dropping");
@@ -3520,6 +3800,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn inbound_result_classifies_by_id_and_malformed_results_drop() {
+        let m = sample_manifest();
+        // A well-formed result: id + data route to the ToolResult arm.
+        let line = r#"{"token":"x","type":"result","id":"req-7","data":{"answer":42}}"#;
+        match classify_inbound_line(&m, "feed", line) {
+            RelayDecision::ToolResult { id, payload } => {
+                assert_eq!(id, "req-7");
+                assert_eq!(payload["answer"], 42);
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+        // Missing, empty, and non-string ids are malformed -> Drop (a result
+        // that can't be correlated must never be delivered anywhere).
+        for bad in [
+            r#"{"token":"x","type":"result","data":{"answer":42}}"#,
+            r#"{"token":"x","type":"result","id":"","data":{}}"#,
+            r#"{"token":"x","type":"result","id":7,"data":{}}"#,
+        ] {
+            assert_eq!(
+                classify_inbound_line(&m, "feed", bad),
+                RelayDecision::Drop,
+                "should drop: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn mangled_tool_names_flatten_dots() {
+        assert_eq!(mangled_tool_name("jwtpeek.decode"), "app__jwtpeek_decode");
+        assert_eq!(mangled_tool_name("subnet.plan"), "app__subnet_plan");
+        // Not injective — agent_tools() dedupes; this test just pins the shape.
+        assert_eq!(mangled_tool_name("a.b_c"), mangled_tool_name("a_b.c"));
+    }
+
     // -- hermetic socket + token handshake + relay + stop integration ---
     //
     // ONE integration test, hermetic and fast: a tempdir project root and a
@@ -3706,6 +4021,326 @@ mod tests {
             "token is dead after stop (nonce cleared)"
         );
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The REQUEST/RESPONSE primitive end-to-end over the real host socket:
+    /// request_op injects a correlation id and forwards the op; a token-stamped
+    /// `result` line with the SAME id resolves the waiter with the payload; a
+    /// WRONG-id result is dropped as stale (never mis-delivered); an
+    /// unanswered request times out AND evicts its waiter; stop() fails any
+    /// still-pending request fast (no dangling until timeout). Same hermetic
+    /// harness as the round-trip test above (in-process peer plays the app).
+    #[tokio::test]
+    async fn request_op_correlates_times_out_and_fails_fast_on_stop() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
+
+        if !(Path::new(SANDBOX_EXEC).exists() && Path::new(BSD_BASE_PROFILE).exists()) {
+            eprintln!("skipping: sandbox-exec / bsd.sb not present on this host");
+            return;
+        }
+
+        let root = PathBuf::from(format!(
+            "/private/tmp/jrv-req-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                % 1_000_000
+        ));
+        let app_dir = root.join("apps/echo-app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::create_dir_all(root.join("state/ipc/apps")).unwrap();
+        std::fs::create_dir_all(root.join("state/apps")).unwrap();
+        std::fs::write(
+            app_dir.join("manifest.toml"),
+            r#"
+            [app]
+            name = "echo-app"
+            version = "0.1.0"
+            description = "hermetic request/response echo app"
+            entry = "apps/echo-app/main.py"
+            runtime = "python"
+            [permissions]
+            fs_write = ["state/apps/echo-app"]
+            [[tools.exposes]]
+            name = "echo.compute"
+            scopes = []
+            consequential = false
+            "#,
+        )
+        .unwrap();
+
+        let mut registry = AppRegistry::discover(&root);
+        Arc::get_mut(&mut registry).unwrap().interpreter_override =
+            Some(PathBuf::from("/bin/sleep"));
+        start(&registry, "echo-app").await.unwrap();
+
+        let sock_path = root.join("state/ipc/apps/echo-app.sock");
+        let mut waited = 0;
+        while !sock_path.exists() && waited < 60 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            waited += 1;
+        }
+        assert!(sock_path.exists(), "host bound the app socket");
+        let good_token = {
+            let apps = registry.apps.lock().await;
+            apps.get("echo-app").unwrap().token.clone()
+        };
+
+        let stream = UnixStream::connect(&sock_path).await.expect("connect");
+        let (read_half, mut write_half) = stream.into_split();
+        let mut reader = TokioBufReader::new(read_half);
+        let mut start_line = String::new();
+        tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut start_line))
+            .await
+            .expect("start command promptly")
+            .expect("read start");
+
+        // 1) CORRELATION: fire the request, then (as the app) answer a WRONG id
+        //    first — it must be dropped as stale — then the REAL id.
+        let reg = registry.clone();
+        let pending_req = tokio::spawn(async move {
+            request_op(
+                &reg,
+                "echo-app",
+                serde_json::json!({"type": "echo.compute", "x": 41}),
+                Duration::from_secs(10),
+            )
+            .await
+        });
+        let mut op_line = String::new();
+        tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut op_line))
+            .await
+            .expect("op forwarded promptly")
+            .expect("read op");
+        let op: Value = serde_json::from_str(op_line.trim()).unwrap();
+        assert_eq!(op["type"], "echo.compute", "op type forwarded");
+        assert_eq!(op["x"], 41, "op args ride top-level");
+        let req_id = op["id"].as_str().expect("request_op injected an id").to_string();
+        assert!(req_id.starts_with("req-"), "correlation id shape");
+
+        let stale = serde_json::json!({
+            "token": good_token, "type": "result", "id": "req-999999", "data": {"answer": -1}
+        });
+        let real = serde_json::json!({
+            "token": good_token, "type": "result", "id": req_id, "data": {"answer": 42}
+        });
+        write_half
+            .write_all(format!("{stale}\n{real}\n").as_bytes())
+            .await
+            .unwrap();
+        write_half.flush().await.unwrap();
+
+        let answer = pending_req.await.unwrap().expect("request answered");
+        assert_eq!(answer["answer"], 42, "the CORRELATED payload, not the stale one");
+
+        // 2) TIMEOUT + EVICTION: an unanswered request errs and leaves no waiter.
+        let err = request_op(
+            &registry,
+            "echo-app",
+            serde_json::json!({"type": "echo.compute"}),
+            Duration::from_millis(200),
+        )
+        .await
+        .expect_err("no answer -> timeout");
+        assert!(err.to_string().contains("did not answer"), "honest timeout error: {err}");
+        {
+            let apps = registry.apps.lock().await;
+            let pending = apps.get("echo-app").unwrap().pending.clone();
+            assert!(pending.lock().await.is_empty(), "timed-out waiter evicted");
+        }
+        // Drain the two op lines the timed-out request + this check produced.
+        let mut drain = String::new();
+        let _ = tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut drain)).await;
+
+        // 3) STOP FAILS PENDING FAST: a request in flight when the app stops
+        //    errs immediately with the teardown error, well before its timeout.
+        let reg = registry.clone();
+        let pending_req = tokio::spawn(async move {
+            request_op(
+                &reg,
+                "echo-app",
+                serde_json::json!({"type": "echo.compute"}),
+                Duration::from_secs(30),
+            )
+            .await
+        });
+        // Let the request register its waiter before stopping.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let t0 = Instant::now();
+        stop(&registry, "echo-app").await.unwrap();
+        let err = pending_req.await.unwrap().expect_err("stop fails the pending request");
+        assert!(
+            err.to_string().contains("went away"),
+            "honest teardown error: {err}"
+        );
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "failed FAST on stop, not at the 30s timeout"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// FLEET LOCKSTEP: every SHIPPED manifest under the repo's real apps/ tree
+    /// parses through the actual loader (deny_unknown_fields) AND validates
+    /// through the plugin-SDK contract, and every tool-exposing PYTHON app's
+    /// main.py both defines the reply_result correlation helper and serves
+    /// every non-consequential declared op. This pins the agent-tool contract
+    /// repo-wide: a manifest typo, a declared-but-unserved tool (a live
+    /// 15s-timeout trap for the model), or a missing id-echo helper fails CI
+    /// here instead of surfacing as a runtime timeout.
+    #[test]
+    fn shipped_manifests_all_validate_and_declared_tools_are_served() {
+        let apps_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../apps");
+        assert!(apps_root.is_dir(), "repo apps/ tree present");
+        let mut tool_decls = 0usize;
+        let mut checked_apps = 0usize;
+        for entry in std::fs::read_dir(&apps_root).unwrap() {
+            let dir = entry.unwrap().path();
+            let manifest_path = dir.join("manifest.toml");
+            if !manifest_path.is_file() {
+                continue;
+            }
+            let dir_name = dir.file_name().unwrap().to_str().unwrap().to_string();
+            let raw = std::fs::read_to_string(&manifest_path).unwrap();
+            // The REAL loader contract (deny_unknown_fields) + the SDK contract.
+            let manifest = crate::plugin_sdk::validate_manifest(&raw, &dir_name)
+                .unwrap_or_else(|e| panic!("apps/{dir_name}/manifest.toml invalid: {e}"));
+            checked_apps += 1;
+            if manifest.tools.exposes.is_empty() {
+                continue;
+            }
+            if manifest.app.runtime != Runtime::Python {
+                continue; // compiled apps serve ops in their own runtimes
+            }
+            let main_py = dir.join("main.py");
+            let src = std::fs::read_to_string(&main_py)
+                .unwrap_or_else(|_| panic!("apps/{dir_name}: tool-exposing app has no main.py"));
+            for decl in &manifest.tools.exposes {
+                if decl.consequential {
+                    continue;
+                }
+                tool_decls += 1;
+                // Look for the SERVING COMPARISON (`op == "<name>"`), not just the
+                // quoted name anywhere: every app also emits its tool name in the
+                // start-status line `{"tool":"<name>",...}`, so a bare-name
+                // substring would pass even for a declared-but-UNSERVED tool (the
+                // exact 15s-timeout trap this test exists to catch). The `==`
+                // comparison is how every app dispatches its op.
+                assert!(
+                    src.contains(&format!("== \"{}\"", decl.name)),
+                    "apps/{dir_name}: declared tool {:?} has no `op == \"{}\"` serving branch \
+                     in main.py (a declared-but-unserved tool is offered to the model and times out)",
+                    decl.name,
+                    decl.name
+                );
+                // And that branch must answer via the id-echo helper.
+                assert!(
+                    src.contains("def reply_result") && src.contains("reply_result(conn, msg"),
+                    "apps/{dir_name}: main.py lacks the reply_result id-echo helper or never calls it"
+                );
+                assert!(
+                    !decl.description.trim().is_empty(),
+                    "apps/{dir_name}: tool {:?} needs a model-facing description",
+                    decl.name
+                );
+            }
+        }
+        assert!(checked_apps >= 30, "the fleet registered ({checked_apps} apps)");
+        assert!(tool_decls >= 30, "the agent-tool surface is live ({tool_decls} tools)");
+    }
+
+    /// agent_tools() offers ONLY consequential=false declarations, sorted by
+    /// app, deduped by mangled name — the exact set the agent loop may invoke.
+    #[tokio::test]
+    async fn agent_tools_filters_consequential_and_dedupes() {
+        let root = PathBuf::from(format!(
+            "/private/tmp/jrv-agtools-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                % 1_000_000
+        ));
+        for (dir, manifest) in [
+            (
+                "alpha",
+                r#"
+                [app]
+                name = "alpha"
+                version = "0.1.0"
+                description = "alpha app"
+                entry = "apps/alpha/main.py"
+                runtime = "python"
+                [[tools.exposes]]
+                name = "alpha.calc"
+                consequential = false
+                description = "compute a thing"
+                [[tools.exposes.params]]
+                name = "x"
+                kind = "number"
+                required = true
+                description = "input"
+                [[tools.exposes]]
+                name = "alpha.publish"
+                consequential = true
+                "#,
+            ),
+            (
+                "beta",
+                r#"
+                [app]
+                name = "beta"
+                version = "0.1.0"
+                description = "beta app"
+                entry = "apps/beta/main.py"
+                runtime = "python"
+                [[tools.exposes]]
+                name = "alpha.calc"
+                consequential = false
+                "#,
+            ),
+            (
+                "gamma",
+                r#"
+                [app]
+                name = "gamma"
+                version = "0.1.0"
+                description = "network-capable app"
+                entry = "apps/gamma/main.py"
+                runtime = "python"
+                [permissions]
+                net_hosts = ["example.com"]
+                [[tools.exposes]]
+                name = "gamma.fetch"
+                scopes = ["net"]
+                consequential = false
+                "#,
+            ),
+        ] {
+            let d = root.join("apps").join(dir);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("manifest.toml"), manifest).unwrap();
+        }
+        let registry = AppRegistry::discover(&root);
+        let tools = registry.agent_tools().await;
+        // alpha.publish (consequential) is filtered; beta's alpha.calc collides
+        // with alpha's (same mangled name) and is dropped (alpha sorts first);
+        // gamma.fetch is withheld because gamma grants network (the "no network
+        // side effects" promise stays true by construction).
+        assert_eq!(tools.len(), 1, "one invocable tool: {tools:?}");
+        assert_eq!(tools[0].app, "alpha");
+        assert_eq!(tools[0].decl.name, "alpha.calc");
+        assert_eq!(tools[0].decl.params.len(), 1);
+        assert_eq!(tools[0].decl.params[0].name, "x");
+        assert!(
+            !tools.iter().any(|t| t.app == "gamma"),
+            "a network-capable app's tools are never auto-exposed"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

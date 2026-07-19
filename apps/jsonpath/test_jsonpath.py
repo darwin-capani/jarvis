@@ -159,6 +159,54 @@ def test_complete_lines_drain_and_partial_is_preserved():
     assert overflowed is False
 
 
+# -- the agent-tool request/response contract (SHARED shape; copy per app) ----
+# A jsonpath.query op carrying a request `id` is answered with a type:"result"
+# line echoing that id (the daemon's request_op routes it back to the caller); an
+# op without one keeps the legacy uncorrelated type:"items" line. A minimal valid
+# payload (json + path) is used so compute() returns a non-error {value,...} dict.
+# The app module is already imported above as `_frame_mod` (this file's own
+# top-level `main` is a test-runner function, so we reach the module via that alias).
+
+
+class FakeConn:
+    """Captures sendall payloads so handle() can be driven without a socket."""
+
+    def __init__(self):
+        self.lines = []
+
+    def sendall(self, raw):
+        import json as _json
+        self.lines.append(_json.loads(raw.decode("utf-8").strip()))
+
+
+def test_tool_op_with_id_answers_a_correlated_result():
+    conn = FakeConn()
+    _frame_mod.handle(conn, {"type": "jsonpath.query", "id": "req-7", "json": '{"a": 1}', "path": "a"})
+    assert len(conn.lines) == 1
+    reply = conn.lines[0]
+    assert reply["type"] == "result", reply
+    assert reply["id"] == "req-7", "the request id is echoed verbatim"
+    assert reply["data"]["value"] == 1
+    assert reply["token"] == _frame_mod.TOKEN
+
+
+def test_tool_op_without_id_keeps_the_legacy_items_line():
+    conn = FakeConn()
+    _frame_mod.handle(conn, {"type": "jsonpath.query", "json": '{"a": 1}', "path": "a"})
+    assert len(conn.lines) == 1
+    reply = conn.lines[0]
+    assert reply["type"] == "items", "no id -> uncorrelated legacy line"
+    assert "id" not in reply
+    assert reply["data"]["value"] == 1
+
+
+def test_non_string_or_empty_id_is_treated_as_absent():
+    for bad_id in (7, "", None, ["x"]):
+        conn = FakeConn()
+        _frame_mod.handle(conn, {"type": "jsonpath.query", "id": bad_id, "json": '{"a": 1}', "path": "a"})
+        assert conn.lines[0]["type"] == "items", f"id={bad_id!r} must not correlate"
+
+
 if __name__ == "__main__":
     # Script-style runs exercise the framing tests too — they are plain
     # functions the runner below would otherwise never call.
@@ -166,4 +214,8 @@ if __name__ == "__main__":
     test_oversized_frame_is_dropped_not_accumulated()
     test_complete_lines_drain_and_partial_is_preserved()
     print("framing: 3 checks ok")
+    test_tool_op_with_id_answers_a_correlated_result()
+    test_tool_op_without_id_keeps_the_legacy_items_line()
+    test_non_string_or_empty_id_is_treated_as_absent()
+    print("agent-tool contract: 3 checks ok")
     main()

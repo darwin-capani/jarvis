@@ -19,7 +19,28 @@ telemetry_topics = ["keywords.status"]
 [intents]
 provides = ["keywords.run"]
 
+# THE AGENT-TOOL CONTRACT: a non-consequential declaration here is OFFERED TO THE
+# AGENT LOOP as an invocable app__<tool> def ([apps].agent_tools, ships ON), so
+# every declared tool MUST be served by handle() with the request-id echo (see
+# main.py reply_result) — a declared-but-unserved tool would be offered to the
+# model and time out. `description` becomes the model-facing tool description
+# verbatim; each [[tools.exposes.params]] renders into the def's input_schema
+# (name/kind/required/description; kind is a JSON-Schema primitive; `type`/`op`/
+# `id`/`token` are reserved by the wire envelope and rejected at validation).
 [[tools.exposes]]
 name          = "keywords.run"
 scopes        = ["generate"]
 consequential = false
+description   = "Extract the most important keywords or tags from a block of text using the on-device LLM, returned as one ranked comma-separated line; call when you need to distill a document or passage into its main topic keywords."
+
+[[tools.exposes.params]]
+name        = "text"
+kind        = "string"
+required    = true
+description  = "The source text to pull keywords from (must be a non-empty string)."
+
+[[tools.exposes.params]]
+name        = "count"
+kind        = "integer"
+required    = false
+description  = "How many keywords to return, ranked most important first (default 5; values above 50 are clamped to 50)."

@@ -23,3 +23,22 @@ provides = ["subnet.plan"]
 name          = "subnet.plan"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Compute an IPv4/IPv6 CIDR subnet plan: network, netmask, wildcard, broadcast, usable host range and counts; optionally split the network into equal subnets (split_count) or VLSM subnets sized for a usable-host target (split_hosts). Call when the user needs subnet math for a CIDR or bare IP."
+
+[[tools.exposes.params]]
+name        = "cidr"
+kind        = "string"
+required    = true
+description  = "An IPv4/IPv6 network in CIDR notation or a bare host, e.g. \"192.168.1.0/24\", \"10.0.0.5/32\", \"8.8.8.8\", \"2001:db8::/32\". Host bits are tolerated and normalized to the network address."
+
+[[tools.exposes.params]]
+name        = "split_count"
+kind        = "integer"
+required    = false
+description  = "Split the network into this many equal subnets. Must be a power of 2 and no finer than the address space. Mutually exclusive with split_hosts."
+
+[[tools.exposes.params]]
+name        = "split_hosts"
+kind        = "integer"
+required    = false
+description  = "VLSM: split into the smallest equal subnets that each hold at least this many usable hosts (>= 1). Mutually exclusive with split_count."

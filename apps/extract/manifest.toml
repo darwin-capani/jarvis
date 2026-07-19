@@ -19,7 +19,28 @@ telemetry_topics = ["extract.status"]
 [intents]
 provides = ["extract.run"]
 
+# THE AGENT-TOOL CONTRACT: a non-consequential declaration here is OFFERED TO THE
+# AGENT LOOP as an invocable app__<tool> def ([apps].agent_tools, ships ON), so
+# every declared tool MUST be served by handle() with the request-id echo (see
+# main.py reply_result) — a declared-but-unserved tool would be offered to the
+# model and time out. `description` becomes the model-facing tool description
+# verbatim; each [[tools.exposes.params]] renders into the def's input_schema
+# (name/kind/required/description; kind is a JSON-Schema primitive; `type`/`op`/
+# `id`/`token` are reserved by the wire envelope and rejected at validation).
 [[tools.exposes]]
 name          = "extract.run"
 scopes        = ["generate"]
 consequential = false
+description   = "Extract requested named fields from a block of unstructured text and return them as a JSON object, using the on-device LLM; call when you need specific structured values (e.g. name, date, amount) pulled out of free-form text."
+
+[[tools.exposes.params]]
+name        = "text"
+kind        = "string"
+required    = true
+description  = "The unstructured source text to extract field values from (must be non-empty)."
+
+[[tools.exposes.params]]
+name        = "fields"
+kind        = "array"
+required    = true
+description  = "The list of field names (strings) to extract from the text; each becomes a key in the returned JSON object."

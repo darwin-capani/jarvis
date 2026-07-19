@@ -22,6 +22,21 @@ def send(conn, obj):
     conn.sendall((json.dumps(obj) + "\n").encode("utf-8"))
 
 
+def reply_result(conn, msg, data):
+    """Answer one domain op, correlated when the host asked for correlation.
+
+    THE AGENT-TOOL CONTRACT: a request carrying a non-empty string `id` (the
+    daemon's request_op) is answered with a `type:"result"` line ECHOING that id
+    so the host can route the payload back to the waiting caller. A request
+    without an id (the voice router / legacy paths) keeps the uncorrelated
+    `type:"items"` telemetry line — byte-identical to the pre-contract wire."""
+    rid = msg.get("id")
+    if isinstance(rid, str) and rid:
+        send(conn, {"type": "result", "id": rid, "data": data})
+    else:
+        send(conn, {"type": "items", "data": data})
+
+
 def _b64url_json(segment):
     """Decode one base64url JWT segment to a JSON value. Returns (value, error)."""
     # segment is guaranteed a non-empty str by the caller.
@@ -51,7 +66,7 @@ def _b64url_json(segment):
 def compute(payload):
     """PURE, offline, no I/O, never raises.
 
-    Reads payload["token"] (string): a JWT of the form header.payload.signature.
+    Reads payload["jwt"] (string): a JWT of the form header.payload.signature.
     Splits on ".", requires exactly 3 parts, base64url-decodes and json.loads the
     header (part 0) and payload (part 1), and reports whether a signature is present.
     The signature is NEVER decoded or verified and NO secret is ever handled.
@@ -61,14 +76,18 @@ def compute(payload):
         if not isinstance(payload, dict):
             return {"error": "payload must be a mapping"}
 
-        token = payload.get("token", "")
-        if isinstance(token, bool) or not isinstance(token, str):
-            return {"error": "token must be a string"}
-        token = token.strip()
-        if not token:
-            return {"error": "token is empty"}
+        # The agent-tool contract delivers the JWT under the non-reserved param
+        # name "jwt"; the wire envelope reserves "token" (plugin_sdk
+        # RESERVED_PARAM_NAMES), so it can never be a declared param — accept it
+        # only as a legacy fallback for any pre-contract caller.
+        jwt = payload["jwt"] if "jwt" in payload else payload.get("token", "")
+        if isinstance(jwt, bool) or not isinstance(jwt, str):
+            return {"error": "jwt must be a string"}
+        jwt = jwt.strip()
+        if not jwt:
+            return {"error": "jwt is empty"}
 
-        parts = token.split(".")
+        parts = jwt.split(".")
         if len(parts) != 3:
             return {"error": "malformed JWT: expected 3 dot-separated parts, got %d" % len(parts)}
 
@@ -100,7 +119,7 @@ def handle(conn, msg):
     elif op == "refresh":
         send(conn, {"type": "items", "data": {"status": "ok"}})
     elif op == "jwtpeek.decode":
-        send(conn, {"type": "items", "data": compute(msg)})
+        reply_result(conn, msg, compute(msg))
     elif op == "stop":
         raise SystemExit(0)
 

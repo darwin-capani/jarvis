@@ -103,6 +103,9 @@ def main():
         test_hostile_and_empty_inputs_never_raise,
         test_catastrophic_pattern_times_out_not_hangs,
         test_oversized_inputs_return_error,
+        test_tool_op_with_id_answers_a_correlated_result,
+        test_tool_op_without_id_keeps_the_legacy_items_line,
+        test_non_string_or_empty_id_is_treated_as_absent,
     ]
     for t in tests:
         t()
@@ -139,6 +142,52 @@ def test_complete_lines_drain_and_partial_is_preserved():
     assert lines == [b'{"a":1}', b'{"b":2}']
     assert buf == b'{"c":3'
     assert overflowed is False
+
+
+# -- the agent-tool request/response contract (SHARED shape; copy per app) ----
+# A domain op carrying a request `id` is answered with a type:"result" line
+# echoing that id (via main.reply_result); an op without one keeps the legacy
+# uncorrelated type:"items" line. handle() is driven directly, no socket.
+import json  # noqa: E402 — used by the FakeConn/contract tests below
+
+
+class FakeConn:
+    """Captures sendall payloads so handle() can be driven without a socket."""
+
+    def __init__(self):
+        self.lines = []
+
+    def sendall(self, raw):
+        self.lines.append(json.loads(raw.decode("utf-8").strip()))
+
+
+def test_tool_op_with_id_answers_a_correlated_result():
+    conn = FakeConn()
+    _frame_mod.handle(conn, {"type": "regexpad.test", "id": "req-7", "pattern": r"\d+", "text": "a1 b22 c333"})
+    assert len(conn.lines) == 1
+    reply = conn.lines[0]
+    assert reply["type"] == "result", reply
+    assert reply["id"] == "req-7", "the request id is echoed verbatim"
+    assert "error" not in reply["data"], reply
+    assert reply["data"]["count"] == 3, reply
+    assert reply["token"] == _frame_mod.TOKEN
+
+
+def test_tool_op_without_id_keeps_the_legacy_items_line():
+    conn = FakeConn()
+    _frame_mod.handle(conn, {"type": "regexpad.test", "pattern": r"\d+", "text": "a1 b22 c333"})
+    assert len(conn.lines) == 1
+    reply = conn.lines[0]
+    assert reply["type"] == "items", "no id -> uncorrelated legacy line"
+    assert "id" not in reply
+    assert reply["data"]["count"] == 3, reply
+
+
+def test_non_string_or_empty_id_is_treated_as_absent():
+    for bad_id in (7, "", None, ["x"]):
+        conn = FakeConn()
+        _frame_mod.handle(conn, {"type": "regexpad.test", "id": bad_id, "pattern": r"\d+", "text": "a1 b22 c333"})
+        assert conn.lines[0]["type"] == "items", f"id={bad_id!r} must not correlate"
 
 
 if __name__ == "__main__":

@@ -23,3 +23,19 @@ provides = ["regexpad.test"]
 name          = "regexpad.test"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Test a regular expression against a block of text and report every match with its start/end offsets and capture groups (up to 50 matches, with a total count). Call this to check whether a pattern matches, see what it captures, or validate regex syntax offline."
+[[tools.exposes.params]]
+name        = "pattern"
+kind        = "string"
+required    = false
+description  = "The regular expression (Python re syntax) to compile and search with. Defaults to the empty pattern (which matches at every position) when omitted; max 2000 chars."
+[[tools.exposes.params]]
+name        = "text"
+kind        = "string"
+required    = false
+description  = "The input text to search over with finditer. Defaults to empty when omitted; max 100000 chars."
+[[tools.exposes.params]]
+name        = "ignmatchcase"
+kind        = "boolean"
+required    = false
+description  = "When true, compile the pattern case-insensitively (re.IGNORECASE). Defaults to false."

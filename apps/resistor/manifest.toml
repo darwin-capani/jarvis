@@ -19,7 +19,28 @@ telemetry_topics = ["resistor.status"]
 [intents]
 provides = ["resistor.decode"]
 
+# THE AGENT-TOOL CONTRACT: a non-consequential declaration here is OFFERED TO
+# THE AGENT LOOP as an invocable app__<tool> def ([apps].agent_tools, ships ON),
+# so every declared tool MUST be served by handle() with the request-id echo
+# (see main.py reply_result) — a declared-but-unserved tool would be offered to
+# the model and time out. `description` becomes the model-facing tool
+# description verbatim; each [[tools.exposes.params]] renders into the def's
+# input_schema (name/kind/required/description; kind is a JSON-Schema
+# primitive; `type`/`op`/`id`/`token` are reserved by the wire envelope).
 [[tools.exposes]]
 name          = "resistor.decode"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Decode a resistor's value: given color bands ('bands', a 3/4/5/6-name list) return ohms/display/tolerance/tempco; or given a resistance ('ohms', a positive number) return the nearest E24/E96 standard values and 4-band colors. Provide exactly one of the two."
+
+[[tools.exposes.params]]
+name        = "bands"
+kind        = "array"
+required    = false
+description  = "Ordered color-band names (3, 4, 5, or 6 of black/brown/red/orange/yellow/green/blue/violet/grey/white plus gold/silver) to decode into a resistance."
+
+[[tools.exposes.params]]
+name        = "ohms"
+kind        = "number"
+required    = false
+description  = "A positive resistance in ohms to resolve to the nearest E24/E96 standard value and its 4-band color code."

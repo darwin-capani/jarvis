@@ -23,3 +23,9 @@ provides = ["cidr.aggregate"]
 name          = "cidr.aggregate"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Aggregate a list of IPv4/IPv6 CIDRs (or bare IPs) into the minimal covering prefix set and report every subnet/supernet overlap pair plus per-family address totals. Call to collapse or de-duplicate a set of network ranges or to check whether ranges contain one another."
+[[tools.exposes.params]]
+name        = "cidrs"
+kind        = "array"
+required    = true
+description  = "Non-empty list of CIDR strings and/or bare IP strings (mixed IPv4/IPv6 allowed), e.g. [\"10.0.0.0/8\", \"10.1.0.0/16\", \"8.8.8.8\"]."

@@ -19,7 +19,28 @@ telemetry_topics = ["summarize.status"]
 [intents]
 provides = ["summarize.run"]
 
+# THE AGENT-TOOL CONTRACT: a non-consequential declaration here is OFFERED TO
+# THE AGENT LOOP as an invocable app__<tool> def ([apps].agent_tools, ships ON),
+# so every declared tool MUST be served by handle() with the request-id echo
+# (see main.py reply_result) — a declared-but-unserved tool would be offered to
+# the model and time out. `description` becomes the model-facing tool description
+# verbatim; each [[tools.exposes.params]] renders into the def's input_schema
+# (name/kind/required/description; kind is a JSON-Schema primitive; the reserved
+# envelope names type/op/id/token are rejected at validation).
 [[tools.exposes]]
 name          = "summarize.run"
 scopes        = ["generate"]
 consequential = false
+description   = "Summarize a block of text into a short, faithful summary using the on-device LLM; call when the user wants long text condensed to a few sentences."
+
+  [[tools.exposes.params]]
+  name        = "text"
+  kind        = "string"
+  required    = true
+  description = "The source text to summarize; must be a non-empty string."
+
+  [[tools.exposes.params]]
+  name        = "sentences"
+  kind        = "integer"
+  required    = false
+  description = "Approximate number of sentences for the summary (integer >= 1, default 3)."

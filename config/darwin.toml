@@ -365,6 +365,14 @@ port = 7177   # WebSocket server hosted by darwind on 127.0.0.1
 # adding their name here. Names with no matching manifest are skipped with a
 # startup telemetry warning. Example: autostart = ["global-scan"]
 autostart = []
+# Apps as agent tools (ships ON). Every micro-app's NON-consequential
+# [[tools.exposes]] declaration is offered to the agent loop as an invocable
+# app__<tool> def; the daemon round-trips the call through the app's seatbelt
+# sandbox and the app's ACTUAL computed result returns to the model. Pure local
+# compute only: consequential declarations never ride this path, and the app
+# runs under exactly the sandbox its manifest grants. false removes the defs
+# and refuses dispatch.
+agent_tools = true
 
 [introspect]
 # Micro-app introspection sentinel (introspect.rs, docs/INTROSPECT.md). A slow,

@@ -23,3 +23,10 @@ provides = ["cronwise.explain"]
 name          = "cronwise.explain"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Explain a standard 5-field cron expression in plain English: describe each field (minute, hour, day-of-month, month, day-of-week) and return a validity check. Call when the user asks what a cron string means or wants a cron schedule validated."
+
+[[tools.exposes.params]]
+name        = "cron"
+kind        = "string"
+required    = true
+description  = "The standard 5-field cron expression to explain, e.g. \"*/5 * * * *\" or \"30 9-17 * * 1-5\" (minute hour day-of-month month day-of-week)."

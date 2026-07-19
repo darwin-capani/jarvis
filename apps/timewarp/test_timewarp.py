@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Tests for timewarp.compute — real cases plus hostile/empty input that must not raise."""
+import json
+
+import main
 from main import compute
 
 
@@ -95,6 +98,51 @@ def test_complete_lines_drain_and_partial_is_preserved():
     assert overflowed is False
 
 
+# -- the agent-tool request/response contract (SHARED shape; copy per app) ----
+# The declared tool timewarp.convert is offered to the agent loop; a request
+# carrying a `id` must be answered with a type:"result" line echoing that id,
+# while an id-less op keeps the legacy uncorrelated type:"items" line. {"epoch": 0}
+# is a minimal payload compute() answers with a non-error dict (1970-01-01 UTC).
+
+
+class FakeConn:
+    """Captures sendall payloads so handle() can be driven without a socket."""
+
+    def __init__(self):
+        self.lines = []
+
+    def sendall(self, raw):
+        self.lines.append(json.loads(raw.decode("utf-8").strip()))
+
+
+def test_tool_op_with_id_answers_a_correlated_result():
+    conn = FakeConn()
+    main.handle(conn, {"type": "timewarp.convert", "id": "req-7", "epoch": 0})
+    assert len(conn.lines) == 1
+    reply = conn.lines[0]
+    assert reply["type"] == "result", reply
+    assert reply["id"] == "req-7", "the request id is echoed verbatim"
+    assert reply["data"]["year"] == 1970
+    assert reply["token"] == main.TOKEN
+
+
+def test_tool_op_without_id_keeps_the_legacy_items_line():
+    conn = FakeConn()
+    main.handle(conn, {"type": "timewarp.convert", "epoch": 0})
+    assert len(conn.lines) == 1
+    reply = conn.lines[0]
+    assert reply["type"] == "items", "no id -> uncorrelated legacy line"
+    assert "id" not in reply
+    assert reply["data"]["year"] == 1970
+
+
+def test_non_string_or_empty_id_is_treated_as_absent():
+    for bad_id in (7, "", None, ["x"]):
+        conn = FakeConn()
+        main.handle(conn, {"type": "timewarp.convert", "id": bad_id, "epoch": 0})
+        assert conn.lines[0]["type"] == "items", f"id={bad_id!r} must not correlate"
+
+
 if __name__ == "__main__":
     # Script-style runs exercise the framing tests too — they are plain
     # functions the runner below would otherwise never call.
@@ -102,4 +150,8 @@ if __name__ == "__main__":
     test_oversized_frame_is_dropped_not_accumulated()
     test_complete_lines_drain_and_partial_is_preserved()
     print("framing: 3 checks ok")
+    test_tool_op_with_id_answers_a_correlated_result()
+    test_tool_op_without_id_keeps_the_legacy_items_line()
+    test_non_string_or_empty_id_is_treated_as_absent()
+    print("contract: 3 checks ok")
     run()

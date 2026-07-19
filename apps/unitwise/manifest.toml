@@ -23,3 +23,22 @@ provides = ["unit.convert"]
 name          = "unit.convert"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Convert a numeric value between two units of the same dimensional category (length/mass/time/data/pressure/energy/power/force/angle) or across temperature (C/F/K); call it whenever a unit conversion is needed. Unit symbols are case-sensitive (kB != KB != Kbit)."
+
+[[tools.exposes.params]]
+name        = "value"
+kind        = "number"
+required    = true
+description = "The finite numeric quantity to convert."
+
+[[tools.exposes.params]]
+name        = "from"
+kind        = "string"
+required    = true
+description = "Source unit symbol, case-sensitive (e.g. km, kg, KiB, C, deg)."
+
+[[tools.exposes.params]]
+name        = "to"
+kind        = "string"
+required    = true
+description = "Target unit symbol, case-sensitive and in the same category as `from`."

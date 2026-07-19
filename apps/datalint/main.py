@@ -14,6 +14,21 @@ def send(conn, obj):
     conn.sendall((json.dumps(obj) + "\n").encode("utf-8"))
 
 
+def reply_result(conn, msg, data):
+    """Answer one domain op, correlated when the host asked for correlation.
+
+    THE AGENT-TOOL CONTRACT: a request carrying a non-empty string `id` (the
+    daemon's request_op) is answered with a `type:"result"` line ECHOING that id
+    so the host can route the payload back to the waiting caller. A request
+    without an id (the voice router / legacy paths) keeps the uncorrelated
+    `type:"items"` telemetry line — byte-identical to the pre-contract wire."""
+    rid = msg.get("id")
+    if isinstance(rid, str) and rid:
+        send(conn, {"type": "result", "id": rid, "data": data})
+    else:
+        send(conn, {"type": "items", "data": data})
+
+
 def _root_type(value):
     # bool must be checked before int: in Python bool is a subclass of int.
     if value is None:
@@ -93,7 +108,7 @@ def handle(conn, msg):
     elif op == "refresh":
         send(conn, {"type": "items", "data": {"status": "ok"}})
     elif op == "datalint.inspect":
-        send(conn, {"type": "items", "data": compute(msg)})
+        reply_result(conn, msg, compute(msg))
     elif op == "stop":
         raise SystemExit(0)
 

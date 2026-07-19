@@ -23,3 +23,24 @@ provides = ["ohm.solve"]
 name          = "ohm.solve"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Solve an Ohm's-law + power circuit: supply EXACTLY two of voltage/current/resistance/power (each a number in base SI units, or an SI-unit string like '12V', '10mA', '2.2kohm', '0.25W') and get all four values plus the formulas used. Call to compute the missing electrical quantities of a resistive circuit."
+[[tools.exposes.params]]
+name        = "voltage"
+kind        = "number"
+required    = false
+description  = "Voltage across the element, in volts (or an SI string like '12V', '5kV'). Provide exactly two of voltage/current/resistance/power."
+[[tools.exposes.params]]
+name        = "current"
+kind        = "number"
+required    = false
+description  = "Current through the element, in amperes (or an SI string like '10mA', '470uA'). Provide exactly two of voltage/current/resistance/power."
+[[tools.exposes.params]]
+name        = "resistance"
+kind        = "number"
+required    = false
+description  = "Resistance, in ohms (or an SI string like '2.2kohm', '2kΩ'); must be non-negative. Provide exactly two of voltage/current/resistance/power."
+[[tools.exposes.params]]
+name        = "power"
+kind        = "number"
+required    = false
+description  = "Power dissipated, in watts (or an SI string like '0.25W'); must be non-negative. Provide exactly two of voltage/current/resistance/power."

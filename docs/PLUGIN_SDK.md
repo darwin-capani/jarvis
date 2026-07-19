@@ -127,11 +127,34 @@ handshake. See `SANDBOX.md` → *Capability tokens*.
 ## The reference plugin
 
 `apps/example-plugin/` is a minimal plugin: `manifest.toml` declares one intent
-(`example.status`) and two read-only tools (`example.read_status` with `fs_read`,
-`example.summarize` with `generate`), and `main.py` is a tiny JSONL handler that
-runs under the seatbelt profile and carries its capability token on every line.
+(`example.status`) and one read-only tool (`example.read_status` with `fs_read`),
+and `main.py` is a tiny JSONL handler that runs under the seatbelt profile and
+carries its capability token on every line.
 The test `plugin_sdk::tests::the_example_plugin_manifest_validates` proves the
 shipped manifest validates against this contract.
+
+## Tools are AGENT-INVOCABLE (the request/response contract)
+
+Every **non-consequential** `[[tools.exposes]]` declaration is offered to the
+agent loop as an invocable `app__<tool>` def (`[apps].agent_tools`, ships ON).
+The daemon sends the op as `{"type": "<tool name>", "id": "req-N", ...args}`
+and the app MUST answer a token-stamped
+`{"type": "result", "id": "<same id>", "data": <result>}` — the id echo is how
+the daemon routes the payload back to the waiting caller (`apps::request_op`).
+A request without an id keeps the legacy uncorrelated `items` line, so voice
+and refresh paths are unchanged. Consequences:
+
+- a DECLARED tool must be SERVED by `handle()` — a declaration with no serving
+  branch would be offered to the model and time out; declaration-only entries
+  are no longer inert documentation;
+- each entry should carry a model-facing `description` and
+  `[[tools.exposes.params]]` (`name`/`kind`/`required`/`description`, `kind` a
+  JSON-Schema primitive) matching exactly what `compute()` reads — they render
+  into the def's `input_schema`;
+- `type`, `op`, `id`, and `token` are reserved by the wire envelope and are
+  rejected as param names at validation;
+- a `consequential = true` declaration is NEVER agent-invocable — it can only
+  ride the confirmation-gated flows.
 
 ## Config
 

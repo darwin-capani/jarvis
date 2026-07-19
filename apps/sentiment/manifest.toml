@@ -19,7 +19,22 @@ telemetry_topics = ["sentiment.status"]
 [intents]
 provides = ["sentiment.run"]
 
+# THE AGENT-TOOL CONTRACT: a non-consequential declaration here is OFFERED TO
+# THE AGENT LOOP as an invocable app__<tool> def, so every declared tool MUST be
+# served by handle() with the request-id echo (see main.py reply_result) — a
+# declared-but-unserved tool would be offered to the model and time out.
+# `description` becomes the model-facing tool description verbatim; each
+# [[tools.exposes.params]] renders into the def's input_schema (name/kind/
+# required/description; kind is a JSON-Schema primitive; `type`/`op`/`id`/
+# `token` are reserved by the wire envelope and rejected at validation).
 [[tools.exposes]]
 name          = "sentiment.run"
 scopes        = ["generate"]
 consequential = false
+description   = "Classify a piece of text's overall sentiment as positive, negative, or neutral with a one-line reason, using the on-device LLM. Call when the user wants the emotional tone or leaning of some text judged."
+
+[[tools.exposes.params]]
+name        = "text"
+kind        = "string"
+required    = true
+description  = "The text whose sentiment should be classified (a non-empty string)."

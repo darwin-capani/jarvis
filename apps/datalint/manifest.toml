@@ -23,3 +23,10 @@ provides = ["datalint.inspect"]
 name          = "datalint.inspect"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Inspect a JSON string and report its structure: whether it parses (or the parse error), the root type, top-level key/element count, total node count, and maximum nesting depth. Call it to validate JSON text or gauge how big/deep a JSON document is."
+
+[[tools.exposes.params]]
+name        = "json"
+kind        = "string"
+required    = true
+description  = "The JSON text to parse and inspect. An empty or unparseable string is reported back as {valid:false, error}."

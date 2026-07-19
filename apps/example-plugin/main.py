@@ -4,15 +4,18 @@
 A minimal micro-app illustrating the capability-module contract. It runs under
 the daemon-generated default-deny seatbelt profile (docs/SANDBOX.md), connects
 to its own per-app JSONL socket, and includes its per-launch capability token on
-EVERY line — exactly like global-scan. It exposes the two READ-ONLY tools its
-manifest declares:
+EVERY line — exactly like global-scan. It SERVES the READ-ONLY tool its manifest
+declares:
 
   - example.read_status : reports a tiny status object (no side effect).
-  - example.summarize   : a MANIFEST-CONTRACT declaration only — this reference
-                          handler does NOT yet serve it. When implemented it would
-                          ask the daemon-mediated generate proxy for a neutral
-                          one-line summary (op=generate ONLY; the proxy structurally
-                          refuses any other op — see docs/SANDBOX.md finding #4).
+
+THE AGENT-TOOL CONTRACT (the canonical reference): a non-consequential
+[[tools.exposes]] declaration is offered to the agent loop as an invocable
+app__<tool> def, so a declared tool MUST be served by handle() — and a request
+carrying an `id` MUST be answered with a `type:"result"` line echoing that id
+(see reply_result below) so the daemon's request_op can route the payload back
+to the caller. A declared-but-unserved tool would be offered to the model and
+time out; declaration-only entries are no longer inert documentation.
 
 This handler is intentionally tiny: the SDK's value is the VALIDATED CONTRACT
 (daemon/src/plugin_sdk.rs) and the sandbox, not the handler. It has NO
@@ -48,6 +51,26 @@ def send(conn, obj):
     conn.sendall((json.dumps(obj) + "\n").encode("utf-8"))
 
 
+def reply_result(conn, msg, data):
+    """Answer one domain op, correlated when the host asked for correlation.
+
+    THE AGENT-TOOL CONTRACT: a request carrying a non-empty string `id` (the
+    daemon's request_op) is answered with a `type:"result"` line ECHOING that id
+    so the host can route the payload back to the waiting caller. A request
+    without an id (the voice router / legacy paths) keeps the uncorrelated
+    `type:"items"` telemetry line — byte-identical to the pre-contract wire."""
+    rid = msg.get("id")
+    if isinstance(rid, str) and rid:
+        send(conn, {"type": "result", "id": rid, "data": data})
+    else:
+        send(conn, {"type": "items", "data": data})
+
+
+def read_status():
+    """example.read_status — a tiny, side-effect-free status object."""
+    return {"status": "ok", "uptime_note": "example plugin alive"}
+
+
 def handle(conn, msg):
     """Dispatch one host->app op. Only the manifest-declared tools are handled."""
     op = msg.get("type")
@@ -62,8 +85,10 @@ def handle(conn, msg):
             except Exception:  # noqa: BLE001 — never break the plugin over telemetry
                 pass
     elif op == "refresh":
-        # example.read_status — a tiny, side-effect-free status object.
-        send(conn, {"type": "items", "data": {"status": "ok", "uptime_note": "example plugin alive"}})
+        send(conn, {"type": "items", "data": read_status()})
+    elif op == "example.read_status":
+        # The declared tool, served: correlated when the host sent an id.
+        reply_result(conn, msg, read_status())
     elif op == "stop":
         raise SystemExit(0)
 

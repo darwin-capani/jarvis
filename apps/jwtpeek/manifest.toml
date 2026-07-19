@@ -23,3 +23,10 @@ provides = ["jwtpeek.decode"]
 name          = "jwtpeek.decode"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Decode a JWT for inspection: base64url-decode and JSON-parse the header (part 0) and claims payload (part 1) of a header.payload.signature token, and report whether a signature segment is present. Does NOT verify the signature and handles no secret. Call when the user wants to read or inspect the contents of a JSON Web Token."
+
+[[tools.exposes.params]]
+name        = "jwt"
+kind        = "string"
+required    = true
+description  = "The JWT to decode: a header.payload.signature string of three dot-separated base64url segments, e.g. \"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2ln\"."

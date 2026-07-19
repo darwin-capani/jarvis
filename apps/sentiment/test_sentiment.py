@@ -76,6 +76,66 @@ def test_hostile_inputs_never_raise():
     assert "error" in main.compute([1, 2, 3])
 
 
+# -- the agent-tool request/response contract (SHARED shape; copy per app) ----
+# A sentiment.run op carrying a request `id` is answered with a type:"result"
+# line echoing that id (main.reply_result); an op WITHOUT one keeps the legacy
+# uncorrelated type:"items" line. compute() runs for real against a mock
+# generate proxy wired in as the global proxy socket, so the served branch
+# returns a genuine non-error {"result": ...} dict.
+
+
+class FakeConn:
+    """Captures sendall payloads so handle() can be driven without a socket."""
+
+    def __init__(self):
+        self.lines = []
+
+    def sendall(self, raw):
+        self.lines.append(json.loads(raw.decode("utf-8").strip()))
+
+
+_VALID_PAYLOAD = {"text": "This is the best day ever!"}
+
+
+def _run_sentiment_op(msg):
+    """Drive handle() for one sentiment.run op with a mock generate proxy wired
+    in as the global proxy socket, and return the captured host->app lines."""
+    conn = FakeConn()
+    with MockProxy({"ok": True, "text": "positive\nReason: clearly upbeat."}) as mp:
+        saved = main.GENERATE_SOCK
+        main.GENERATE_SOCK = mp.path
+        try:
+            main.handle(conn, msg)
+        finally:
+            main.GENERATE_SOCK = saved
+    return conn.lines
+
+
+def test_tool_op_with_id_answers_a_correlated_result():
+    lines = _run_sentiment_op({"type": "sentiment.run", "id": "req-7", **_VALID_PAYLOAD})
+    assert len(lines) == 1
+    reply = lines[0]
+    assert reply["type"] == "result", reply
+    assert reply["id"] == "req-7", "the request id is echoed verbatim"
+    assert "result" in reply["data"], reply  # compute() returned a non-error dict
+    assert reply["token"] == main.TOKEN
+
+
+def test_tool_op_without_id_keeps_the_legacy_items_line():
+    lines = _run_sentiment_op({"type": "sentiment.run", **_VALID_PAYLOAD})
+    assert len(lines) == 1
+    reply = lines[0]
+    assert reply["type"] == "items", "no id -> uncorrelated legacy line"
+    assert "id" not in reply
+    assert "result" in reply["data"], reply
+
+
+def test_non_string_or_empty_id_is_treated_as_absent():
+    for bad_id in (7, "", None, ["x"]):
+        lines = _run_sentiment_op({"type": "sentiment.run", "id": bad_id, **_VALID_PAYLOAD})
+        assert lines[0]["type"] == "items", f"id={bad_id!r} must not correlate"
+
+
 # --- input-frame bounding (defense in depth) ---------------------------------
 # main()'s socket read loop routes every recv() chunk through main.drain_lines,
 # which DROPS a partial frame once it passes MAX_FRAME_BYTES with no newline, so a
@@ -113,7 +173,8 @@ if __name__ == "__main__":
     test_oversized_frame_is_dropped_not_accumulated()
     test_complete_lines_drain_and_partial_is_preserved()
     print("framing: 3 checks ok")
-    for t in [test_build_prompt_pure, test_compute_via_mock_proxy, test_compute_proxy_error_never_raises, test_hostile_inputs_never_raise]:
+    for t in [test_build_prompt_pure, test_compute_via_mock_proxy, test_compute_proxy_error_never_raises, test_hostile_inputs_never_raise,
+              test_tool_op_with_id_answers_a_correlated_result, test_tool_op_without_id_keeps_the_legacy_items_line, test_non_string_or_empty_id_is_treated_as_absent]:
         t()
         print("ok:", t.__name__)
     print("ALL PASSED")

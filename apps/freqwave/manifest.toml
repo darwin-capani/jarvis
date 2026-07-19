@@ -23,3 +23,46 @@ provides = ["wave.solve"]
 name          = "wave.solve"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Solve wave / RF / resonance relations: EM frequency<->wavelength with period and photon energy (mode 'em'), LC resonant frequency or the missing L/C (mode 'lc'), and RC time-constant + cutoff frequency (mode 'rc'). Call for radio, antenna, and passive-filter math; inputs accept plain numbers or SI-prefixed strings like '2.4GHz', '100pF', '10uH', '1kohm'."
+
+[[tools.exposes.params]]
+name        = "mode"
+kind        = "string"
+required    = false
+description = "Which solver to run: 'em' (electromagnetic wave), 'lc' (LC resonant circuit), or 'rc' (RC filter). Optional — defaults to 'em' when frequency or wavelength is supplied."
+
+[[tools.exposes.params]]
+name        = "frequency"
+kind        = "number"
+required    = false
+description = "Frequency in Hz (or an SI string like '2.4GHz'). em: give exactly one of frequency/wavelength. lc: supply with one of inductance/capacitance to solve for the other."
+
+[[tools.exposes.params]]
+name        = "wavelength"
+kind        = "number"
+required    = false
+description = "Wavelength in metres (or an SI string like '0.125m'). em only — give exactly one of frequency or wavelength."
+
+[[tools.exposes.params]]
+name        = "velocity_factor"
+kind        = "number"
+required    = false
+description = "em only: propagation speed as a fraction of c, 0 < vf <= 1 (defaults to 1 for free space; e.g. 0.66 for coax)."
+
+[[tools.exposes.params]]
+name        = "inductance"
+kind        = "number"
+required    = false
+description = "Inductance in henries (or an SI string like '10uH'). lc only: with capacitance for resonant frequency, or with frequency to solve capacitance."
+
+[[tools.exposes.params]]
+name        = "capacitance"
+kind        = "number"
+required    = false
+description = "Capacitance in farads (or an SI string like '100pF'). Used by lc (resonance / solve inductance) and rc (time constant / cutoff)."
+
+[[tools.exposes.params]]
+name        = "resistance"
+kind        = "number"
+required    = false
+description = "Resistance in ohms (or an SI string like '1kohm'). rc only — combined with capacitance for the time constant and cutoff frequency."

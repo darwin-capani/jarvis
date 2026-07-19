@@ -23,3 +23,16 @@ provides = ["numbase.convert"]
 name          = "numbase.convert"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Parse an integer written in a given source base (2-36) and render it in binary, octal, decimal, and hexadecimal. Call to convert a number between bases or to see its bin/oct/dec/hex forms."
+
+[[tools.exposes.params]]
+name        = "value"
+kind        = "string"
+required    = true
+description  = "The integer to convert, as digits valid in from_base with an optional leading sign (e.g. \"FF\", \"-42\", \"1010\")."
+
+[[tools.exposes.params]]
+name        = "from_base"
+kind        = "integer"
+required    = false
+description  = "Base the value is written in, 2-36; defaults to 10."

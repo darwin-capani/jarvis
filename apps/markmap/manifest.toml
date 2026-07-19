@@ -23,3 +23,10 @@ provides = ["markmap.outline"]
 name          = "markmap.outline"
 scopes        = ["fs_read"]
 consequential = false
+description   = "Extract the ATX heading outline (a table of contents) from a Markdown document: returns each heading's level and text plus a total count; call it to see the structure of Markdown text."
+
+[[tools.exposes.params]]
+name        = "markdown"
+kind        = "string"
+required    = false
+description  = "The Markdown document text to scan for ATX headings; when omitted or empty an empty outline is returned."
