@@ -2185,6 +2185,7 @@ async fn main() -> Result<()> {
     // unavailable; the method label stays Embedding unless the rerank actually ran.
     anthropic::init_reranker(cfg.inference.reranker);
     anthropic::init_hybrid(cfg.docsearch.hybrid_retrieval);
+    anthropic::init_hyde(cfg.docsearch.hyde);
     anthropic::init_apps_agent_tools(cfg.apps.agent_tools);
     anthropic::init_whole_store(cfg.recall.whole_store);
     // CUSTOMS // EGRESS gate ([boundary].enabled ships ON as a neutral PREVIEW,

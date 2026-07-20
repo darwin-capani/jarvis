@@ -166,6 +166,36 @@ fn batch_space(batch: &EmbeddedBatch) -> String {
         .unwrap_or_else(|| EMBEDDER_ID_UNSPECIFIED.to_string())
 }
 
+/// The HyDE search vector from a query-batch: the element-wise MEAN of all
+/// vectors in the batch. With HyDE off the batch is `[query]` and this returns
+/// the query vector unchanged; with HyDE on it is `[query, hypothetical]` and
+/// this returns their average — hedging the raw query signal WITH the answer
+/// sketch (rather than replacing the query, which would fully trust a possibly-
+/// drifting hypothetical). Same-space by construction (one embed call), and
+/// cosine normalizes magnitude, so a non-unit mean is fine. Pure + total: an
+/// empty batch yields an empty vector (the caller already guards non-empty),
+/// mismatched lengths (never produced by one embed call) truncate to the min.
+fn hyde_combine(vectors: &[Vec<f64>]) -> Vec<f64> {
+    match vectors.len() {
+        0 => Vec::new(),
+        1 => vectors[0].clone(),
+        n => {
+            let dim = vectors.iter().map(|v| v.len()).min().unwrap_or(0);
+            let mut mean = vec![0.0f64; dim];
+            for v in vectors {
+                for (i, m) in mean.iter_mut().enumerate() {
+                    *m += v[i];
+                }
+            }
+            let n = n as f64;
+            for m in mean.iter_mut() {
+                *m /= n;
+            }
+            mean
+        }
+    }
+}
+
 /// Read the store's raw vector-space stamp (`doc_meta["embedder"]`), or `None`
 /// when the store is unstamped.
 fn read_embedder_tag(conn: &Connection) -> Option<String> {
@@ -2194,8 +2224,30 @@ impl DocIndex {
         let mut reindex_needed = false;
         let all_embedded = corpus.meta.iter().all(|m| m.vector.is_some());
         if all_embedded {
-            if let Ok(batch) = embedder.embed_with_space(&[query.to_string()]).await {
-                if batch.vectors.len() == 1 && !batch.vectors[0].is_empty() {
+            // HyDE (opt-in): expand the query into a hypothetical answer passage
+            // and embed it ALONGSIDE the raw query in ONE batch (same space by
+            // construction), then average the vectors so the search point reflects
+            // an answer, not just the sparse query terms. On expansion failure the
+            // batch is the query alone — honest, never a fabricated expansion.
+            // NOTE: the expansion runs BEFORE the space guard below, so on a
+            // stale-space store (reindex_needed) the generation is spent then
+            // discarded with the neural result. Avoiding it would need embedding
+            // the query first to learn the space — not worth splitting the single
+            // same-space batch for a rare, opt-in, already-degraded state.
+            let mut q_texts = vec![query.to_string()];
+            if embedder.hyde_enabled() {
+                if let Some(hypo) = embedder.hyde_expand(query).await {
+                    let hypo = hypo.trim().to_string();
+                    if !hypo.is_empty() {
+                        q_texts.push(hypo);
+                        crate::telemetry::emit("docsearch", "hyde", serde_json::json!({"expanded": true}));
+                    }
+                }
+            }
+            if let Ok(batch) = embedder.embed_with_space(&q_texts).await {
+                if batch.vectors.len() == q_texts.len()
+                    && batch.vectors.iter().all(|v| !v.is_empty())
+                {
                     let active = batch_space(&batch);
                     // THE SPACE GUARD (search leg). `corpus.embedder` is the
                     // store's RESOLVED space and is always `Some` on this path
@@ -2217,7 +2269,10 @@ impl DocIndex {
                         }
                         _ => {
                             record_space_observation(corpus.embedder.as_deref(), false);
-                            let qvec = &batch.vectors[0];
+                            // The search vector: the query alone, or (HyDE)
+                            // the mean of the query + hypothetical-answer vectors.
+                            let combined = hyde_combine(&batch.vectors);
+                            let qvec = &combined;
                             // BELT-AND-BRACES dim check: even under a same-space
                             // stamp, a stored vector whose LENGTH differs from
                             // the query's scores 0.0 — [`cosine_similarity`]
@@ -2562,6 +2617,55 @@ mod tests {
         assert!(!with_zero.iter().any(|(i, _)| *i == 9), "a 0-score item is unranked");
     }
 
+    /// The HyDE search vector: the element-wise MEAN of the query batch (identity
+    /// on a single vector = HyDE off; the mean of query + hypothetical = HyDE on).
+    #[test]
+    fn hyde_combine_is_the_mean_and_the_identity_on_a_single_vector() {
+        // Single vector (HyDE off) -> unchanged.
+        assert_eq!(hyde_combine(&[vec![0.0, 0.0, 1.0]]), vec![0.0, 0.0, 1.0]);
+        // Two vectors (HyDE on) -> element-wise mean.
+        assert_eq!(
+            hyde_combine(&[vec![0.0, 0.0, 1.0], vec![1.0, 0.0, 0.0]]),
+            vec![0.5, 0.0, 0.5]
+        );
+        // Empty -> empty (the caller already guards non-empty).
+        assert!(hyde_combine(&[]).is_empty());
+    }
+
+    /// MECHANISM: a query that shares NO keyword with the doc has zero cosine
+    /// with it, so a bare-query search misses it — but HyDE expands the query
+    /// into a hypothetical answer whose vector points at the doc, and averaging
+    /// it in recalls the doc. Uses the deterministic keyword-vector mock (no real
+    /// generation): the same directional proof the reranker/hybrid tests use.
+    #[tokio::test]
+    async fn hyde_recalls_a_doc_the_bare_query_vector_misses() {
+        let t = TempTree::new("hyde-recall");
+        t.write("docs/car.md", "I drive a blue Subaru Outback on weekends");
+        let idx = DocIndex::open(&t.db_path()).unwrap();
+        let bounds = IndexBounds::default();
+        idx.reindex(&roots_of(&t, "docs"), &bounds, &KeywordEmbedder)
+            .await
+            .unwrap();
+
+        // The query shares no keyword with the doc, so its bare vector ([0,0,1])
+        // is orthogonal to the car doc ([1,0,0]) — a plain-query search misses it.
+        let bare = idx.search("what possession did i mention", 5, &KeywordEmbedder).await;
+        assert!(
+            !bare.hits.iter().any(|h| h.file_path.ends_with("car.md")),
+            "the bare query vector cannot recall the car doc (no keyword overlap): {:?}",
+            bare.hits.iter().map(|h| &h.file_path).collect::<Vec<_>>()
+        );
+
+        // With HyDE the hypothetical answer ("subaru car") pulls the search
+        // vector toward the doc, so it is recalled.
+        let hyde = idx.search("what possession did i mention", 5, &HydeKeywordEmbedder).await;
+        assert!(
+            hyde.hits.iter().any(|h| h.file_path.ends_with("car.md")),
+            "HyDE expands the query into an answer sketch that recalls the doc: {:?}",
+            hyde.hits.iter().map(|h| &h.file_path).collect::<Vec<_>>()
+        );
+    }
+
     /// MECHANISM EVAL (measure-first, honest): construct a corpus where the
     /// relevant chunk for a query is findable by BM25 (an exact rare keyword) but
     /// BURIED by dense cosine (paraphrase distance), below the reranker's
@@ -2733,6 +2837,25 @@ mod tests {
         }
         fn hybrid_enabled(&self) -> bool {
             true
+        }
+    }
+
+    /// The KeywordEmbedder with HyDE ON: hyde_expand returns a fixed hypothetical
+    /// answer ("a subaru car outback") whose keyword vector is the CAR one-hot —
+    /// so a query that shares no keyword with the car doc is pulled toward it
+    /// once the hypothetical is averaged in. Same metadata-less space as the
+    /// store (default embed_with_space), so the space guard passes.
+    struct HydeKeywordEmbedder;
+    impl Embedder for HydeKeywordEmbedder {
+        fn embed<'a>(&'a self, texts: &'a [String]) -> crate::recall::EmbedFuture<'a> {
+            let vecs = keyword_vectors(texts);
+            Box::pin(async move { Ok(vecs) })
+        }
+        fn hyde_enabled(&self) -> bool {
+            true
+        }
+        fn hyde_expand<'a>(&'a self, _query: &'a str) -> crate::recall::HydeFuture<'a> {
+            Box::pin(async move { Some("a subaru car outback".to_string()) })
         }
     }
 

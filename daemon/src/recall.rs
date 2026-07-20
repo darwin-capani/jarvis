@@ -623,6 +623,29 @@ pub trait Embedder: Send + Sync {
         let _ = (query, passages);
         Box::pin(async { Ok(RerankOutcome::unavailable()) })
     }
+
+    /// HyDE gate (`[docsearch].hyde`): whether the docsearch neural path expands
+    /// a terse query into a HYPOTHETICAL answer passage (via the on-device LLM)
+    /// and embeds THAT alongside the query, so the search vector reflects what an
+    /// ANSWER looks like — closing the query/document asymmetry a bare keyword
+    /// query has with a full document. DEFAULT `false` so mocks + any embed-only
+    /// caller keep today's query-only recall; the LIVE inference-socket embedder
+    /// overrides this from the daemon's HyDE gate.
+    fn hyde_enabled(&self) -> bool {
+        false
+    }
+
+    /// Generate a short HYPOTHETICAL answer passage for `query` (the on-device
+    /// LLM's op=generate). The caller embeds it alongside the raw query and
+    /// averages the vectors. Returns `None` on any failure OR an empty result —
+    /// the caller then searches with the raw query alone (honest fallback, never
+    /// a fabricated expansion). The provided default returns `None` (no
+    /// expansion); the live socket embedder overrides it. Only ever called when
+    /// [`Self::hyde_enabled`] is true.
+    fn hyde_expand<'a>(&'a self, query: &'a str) -> HydeFuture<'a> {
+        let _ = query;
+        Box::pin(async { None })
+    }
 }
 
 /// The boxed future [`Embedder::embed`] returns, kept object-safe for `&dyn`.
@@ -638,6 +661,11 @@ pub type EmbedSpaceFuture<'a> =
 /// (same pattern as [`EmbedFuture`]).
 pub type RerankFuture<'a> =
     std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<RerankOutcome>> + Send + 'a>>;
+
+/// The boxed future [`Embedder::hyde_expand`] returns: the hypothetical answer
+/// passage, or `None` on failure/empty. Object-safe for `&dyn`.
+pub type HydeFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>>;
 
 /// One op=rerank round trip: one relevance score per passage (INPUT order, higher
 /// = more relevant) plus which cross-encoder produced them + the honest-fallback

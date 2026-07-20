@@ -451,6 +451,26 @@ pub fn hybrid_retrieval_enabled() -> bool {
     HYBRID_GATE.get().copied().unwrap_or(false)
 }
 
+/// The HyDE gate (`[docsearch].hyde`). When on, docsearch expands a terse query
+/// into a HYPOTHETICAL answer passage via the on-device LLM and embeds it
+/// alongside the query, averaging the vectors — so recall matches on what an
+/// ANSWER looks like, not just the sparse query terms. Falls back to `false`
+/// (query-only, today's behavior) when init was never called — any test or a
+/// pre-startup path — so retrieval fails safe.
+static HYDE_GATE: OnceLock<bool> = OnceLock::new();
+
+/// Wire the HyDE gate from the loaded config. Called once from `main()`
+/// alongside `init_hybrid`. Idempotent.
+pub fn init_hyde(enabled: bool) {
+    let _ = HYDE_GATE.set(enabled);
+}
+
+/// Whether HyDE query expansion is enabled. Falls back to `false` (query-only)
+/// when unset, so the retrieval paths fail safe.
+pub fn hyde_retrieval_enabled() -> bool {
+    HYDE_GATE.get().copied().unwrap_or(false)
+}
+
 /// The APPS-AS-AGENT-TOOLS gate (`[apps].agent_tools`, ships ON). When on, every
 /// micro-app's NON-consequential `[[tools.exposes]]` declaration joins the agent
 /// tool list as an `app__<tool>` def, dispatched into the app's sandbox via the
@@ -9995,7 +10015,43 @@ impl crate::recall::Embedder for InferenceEmbedder {
             })
         })
     }
+
+    /// HyDE gate: the daemon's [`HYDE_GATE`] (`[docsearch].hyde`). When on,
+    /// docsearch expands the query into a hypothetical answer passage via
+    /// [`Self::hyde_expand`] and embeds it alongside the query.
+    fn hyde_enabled(&self) -> bool {
+        hyde_retrieval_enabled()
+    }
+
+    /// The LIVE HyDE expansion: ask the on-device LLM (op=generate) to write a
+    /// short passage that ANSWERS the query, bounded to HYDE_MAX_TOKENS. Any
+    /// error (server down / no generate op) OR an empty/whitespace result yields
+    /// `None`, so the caller searches with the raw query alone — honest, never a
+    /// fabricated expansion. Runtime/MLX-gated (tests use the trait default of
+    /// "no expansion").
+    fn hyde_expand<'a>(&'a self, query: &'a str) -> crate::recall::HydeFuture<'a> {
+        Box::pin(async move {
+            let prompt = format!(
+                "Write a short, factual passage (2-3 sentences) that directly answers \
+                 this question, as if it were an excerpt from a document. Do not add \
+                 preamble or say you are unsure — just write the passage.\n\nQuestion: {query}"
+            );
+            let mut client = crate::inference::InferenceClient::new(self.socket_path.clone());
+            match client
+                .generate(&prompt, HYDE_MAX_TOKENS, &[], &[], None, None)
+                .await
+            {
+                Ok(passage) if !passage.trim().is_empty() => Some(passage),
+                _ => None,
+            }
+        })
+    }
 }
+
+/// Token cap on the HyDE hypothetical-answer generation. A HyDE passage is a
+/// short 2-3 sentence answer sketch — its VECTOR is what matters, not its prose,
+/// so a tight cap keeps the extra per-search generation cheap.
+const HYDE_MAX_TOKENS: u32 = 128;
 
 /// The LIVE on-device embedder, boxed for callers outside this module (the
 /// docsearch index trigger in router.rs). It is the SAME runtime/MLX-gated socket

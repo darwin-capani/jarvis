@@ -863,6 +863,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "build_graph",
             "graph_extractor",
             "hybrid_retrieval",
+            "hyde",
             "spotlight",
             "spotlight_max_candidates",
         ],
@@ -2774,6 +2775,18 @@ pub struct DocSearchConfig {
     /// measurement that it wins on your data (unlike the reranker, which earned
     /// its default-on with one). Turn it on to fuse; measure on your own corpus.
     pub hybrid_retrieval: bool,
+    /// HyDE (Hypothetical Document Embeddings): when true, docsearch's neural
+    /// path expands a terse query into a short HYPOTHETICAL answer passage via
+    /// the on-device LLM, embeds it ALONGSIDE the raw query, and averages the two
+    /// vectors before ranking — so recall matches on what an answer looks like,
+    /// closing the query/document asymmetry. SHIPS OFF (opt-in): it adds ONE LLM
+    /// generation per search (real latency), and it is a TRADEOFF, not a strict
+    /// win — a hypothetical answer helps an underspecified/vague query but can
+    /// DRIFT and hurt a precise keyword query, and there is no committed
+    /// real-corpus measurement that it wins on your data. On generation failure it
+    /// falls back to the raw query, honestly. Turn it on to expand; measure on
+    /// your own corpus.
+    pub hyde: bool,
     /// SPOTLIGHT BRIDGE (spotlight.rs): when true, a file search ALSO asks macOS
     /// Spotlight (READ-ONLY `mdfind`, always `-onlyin` per allowlisted root —
     /// never an unrestricted query) for candidate files, absorbed through the
@@ -2820,6 +2833,7 @@ impl Default for DocSearchConfig {
             build_graph: true,
             graph_extractor: "deterministic".to_string(),
             hybrid_retrieval: false,
+            hyde: false,
             // SHIPS ON (full-power default) — INERT WITHOUT ROOTS: the Spotlight
             // bridge is READ-ONLY (mdfind/mdls only) and root-confined; with no
             // allowlisted root it never issues a query at all.
