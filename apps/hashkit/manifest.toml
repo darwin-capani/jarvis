@@ -9,7 +9,7 @@ runtime     = "python"
 audio     = false
 gpu       = false
 net_hosts = []
-fs_read   = ["apps/hashkit"]
+fs_read   = ["apps/hashkit", "apps/_sdk"]
 fs_write  = ["state/apps/hashkit"]
 
 [ui]

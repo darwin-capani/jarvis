@@ -9,7 +9,7 @@ runtime     = "python"
 audio     = false
 gpu       = false
 net_hosts = []
-fs_read   = ["apps/csvlens"]
+fs_read   = ["apps/csvlens", "apps/_sdk"]
 fs_write  = ["state/apps/csvlens"]
 
 [ui]

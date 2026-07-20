@@ -9,7 +9,7 @@ runtime     = "python"
 audio     = false
 gpu       = false
 net_hosts = []
-fs_read   = ["apps/unitwise"]
+fs_read   = ["apps/unitwise", "apps/_sdk"]
 fs_write  = ["state/apps/unitwise"]
 
 [ui]

@@ -9,7 +9,7 @@ runtime     = "python"
 audio     = false
 gpu       = false
 net_hosts = []
-fs_read   = ["apps/portref"]
+fs_read   = ["apps/portref", "apps/_sdk"]
 fs_write  = ["state/apps/portref"]
 
 [ui]

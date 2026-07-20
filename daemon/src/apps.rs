@@ -3181,6 +3181,33 @@ mod tests {
     }
 
     #[test]
+    fn sbpl_grants_read_of_the_shared_sdk_harness_when_declared() {
+        // Every standard micro-app now imports the shared apps/_sdk harness. That
+        // read is only permitted if the manifest grants `apps/_sdk` fs_read AND
+        // the generated seatbelt profile turns that grant into a file-read subpath
+        // — else `import harness` fails at LAUNCH (uncaught by the Python tests,
+        // which don't run under the sandbox). This pins the profile-level grant so
+        // the sandbox can actually read the harness.
+        let raw = r#"
+            [app]
+            name = "global-scan"
+            version = "0.1.0"
+            description = "x"
+            entry = "apps/global-scan/main.py"
+            runtime = "python"
+            [permissions]
+            fs_read = ["apps/global-scan", "apps/_sdk"]
+            fs_write = ["state/apps/global-scan"]
+        "#;
+        let m = AppManifest::parse(raw, "global-scan").expect("valid");
+        let p = gen_profile(&m);
+        assert!(
+            p.contains("(allow file-read* (subpath \"/Users/test/darwin/apps/_sdk\"))"),
+            "the seatbelt profile must grant reading the shared apps/_sdk harness"
+        );
+    }
+
+    #[test]
     fn sbpl_fs_read_unix_socket_gets_af_unix_connect_grant() {
         // Finding #4 fix (SBPL side): a declared fs_read entry that IS a Unix
         // socket needs an AF_UNIX network-outbound literal grant IN ADDITION to
@@ -4210,6 +4237,26 @@ mod tests {
             let manifest = crate::plugin_sdk::validate_manifest(&raw, &dir_name)
                 .unwrap_or_else(|e| panic!("apps/{dir_name}/manifest.toml invalid: {e}"));
             checked_apps += 1;
+
+            // HARNESS GRANT — checked for EVERY python app that imports the shared
+            // apps/_sdk harness, regardless of whether it exposes tools: the
+            // import is a HARD launch dependency, and reading apps/_sdk is only
+            // permitted if the manifest grants it (else a ModuleNotFoundError
+            // crash at launch, uncaught by the Python tests which don't run under
+            // the sandbox). Not coupled to the tool-exposition checks below, so a
+            // future harness-using app with no tools is still guarded.
+            if manifest.app.runtime == Runtime::Python {
+                let main_py = dir.join("main.py");
+                if let Ok(src) = std::fs::read_to_string(&main_py) {
+                    if src.contains("from harness import") {
+                        assert!(
+                            manifest.permissions.fs_read.iter().any(|p| p == "apps/_sdk"),
+                            "apps/{dir_name}: imports the apps/_sdk harness but its manifest fs_read does not grant \"apps/_sdk\" (import would ModuleNotFoundError-crash at launch)"
+                        );
+                    }
+                }
+            }
+
             if manifest.tools.exposes.is_empty() {
                 continue;
             }
@@ -4237,11 +4284,15 @@ mod tests {
                     decl.name,
                     decl.name
                 );
-                // And that branch must answer via the id-echo helper.
+                // And that branch must answer via the shared harness id-echo
+                // helper: the app IMPORTS reply_result from apps/_sdk (the socket
+                // loop lives in ONE place now) and CALLS it in a serving branch.
                 assert!(
-                    src.contains("def reply_result") && src.contains("reply_result(conn, msg"),
-                    "apps/{dir_name}: main.py lacks the reply_result id-echo helper or never calls it"
+                    src.contains("from harness import") && src.contains("reply_result(conn, msg"),
+                    "apps/{dir_name}: main.py must import the apps/_sdk harness and answer via reply_result(conn, msg, ...)"
                 );
+                // (The apps/_sdk fs_read grant is enforced above for EVERY
+                // harness-importing python app, not just tool-exposing ones.)
                 assert!(
                     !decl.description.trim().is_empty(),
                     "apps/{dir_name}: tool {:?} needs a model-facing description",

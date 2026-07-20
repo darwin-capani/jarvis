@@ -9,7 +9,7 @@ runtime     = "python"
 audio     = false
 gpu       = false
 net_hosts = []
-fs_read   = ["apps/subnetcalc"]
+fs_read   = ["apps/subnetcalc", "apps/_sdk"]
 fs_write  = ["state/apps/subnetcalc"]
 
 [ui]

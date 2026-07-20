@@ -9,7 +9,7 @@ runtime     = "python"
 audio     = false
 gpu       = false
 net_hosts = []
-fs_read   = ["apps/codeglass"]
+fs_read   = ["apps/codeglass", "apps/_sdk"]
 fs_write  = ["state/apps/codeglass"]
 
 [ui]

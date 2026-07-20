@@ -9,7 +9,7 @@ runtime     = "python"
 audio     = false
 gpu       = false
 net_hosts = []
-fs_read   = ["state/ipc/apps/generate.sock", "apps/explain"]
+fs_read   = ["state/ipc/apps/generate.sock", "apps/explain", "apps/_sdk"]
 fs_write  = ["state/apps/explain"]
 
 [ui]
