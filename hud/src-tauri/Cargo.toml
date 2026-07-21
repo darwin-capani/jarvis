@@ -45,10 +45,11 @@ tokio = { version = "1", features = ["process", "fs", "io-util"] }
 # unaffected by the cpal version on either side.
 cpal = "0.18"
 # Pin: time 0.3.48–0.3.52 added impls that conflict (E0119) with blanket `From`
-# impls in cookie 0.18.1 / older tauri-utils; 0.3.53 + tauri-utils 2.9.3 compile
-# together. Kept as an exact pin so a stray `cargo update` can't reintroduce a
-# conflicting point release; bump deliberately.
-time = "=0.3.53"
+# impls in cookie 0.18.1 / older tauri-utils; 0.3.53 and 0.3.54 (verified 2026-07-21)
+# compile together with the current tauri-utils. Kept as an exact pin so a stray
+# `cargo update` can't reintroduce a conflicting point release; bump deliberately
+# and re-check `cargo check` for E0119 before advancing.
+time = "=0.3.54"
 
 # macOS kiosk presentation-options for the DEVICE-GATED takeover (hide Dock /
 # menu bar). These are NOT new heavy deps: tao (Tauri's windowing layer) already
