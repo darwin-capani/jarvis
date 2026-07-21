@@ -391,6 +391,28 @@ fn validate_permissions(name: &str, p: &PermissionsSection) -> Result<()> {
             bail!("over-broad permission: net_hosts entry {:?} is not a bare hostname", h);
         }
     }
+    // fetch_hosts (the daemon-mediated fetch-proxy allow-list) gets the SAME
+    // count + bare-hostname ceiling as net_hosts. A forged app may declare it
+    // (the proxy is strictly safer than direct egress — https-only, exact-host,
+    // SSRF/rebind-guarded), but never a malformed or over-broad list.
+    if p.fetch_hosts.len() > MAX_NET_HOSTS {
+        bail!(
+            "over-broad permission: fetch_hosts requests {} hosts (max {} for a forged app)",
+            p.fetch_hosts.len(),
+            MAX_NET_HOSTS
+        );
+    }
+    for h in &p.fetch_hosts {
+        let h = h.trim();
+        if h.is_empty()
+            || h.contains('/')
+            || h.contains(':')
+            || h.contains(' ')
+            || h.contains("..")
+        {
+            bail!("over-broad permission: fetch_hosts entry {:?} is not a bare hostname", h);
+        }
+    }
     Ok(())
 }
 
@@ -518,8 +540,8 @@ fn render_report(
 ) -> String {
     let p = &manifest.permissions;
     let perms = format!(
-        "audio={}, gpu={}, camera={}, screen={}, net_hosts={:?}, fs_read={:?}, fs_write={:?}",
-        p.audio, p.gpu, p.camera, p.screen, p.net_hosts, p.fs_read, p.fs_write
+        "audio={}, gpu={}, camera={}, screen={}, net_hosts={:?}, fetch_hosts={:?}, fs_read={:?}, fs_write={:?}",
+        p.audio, p.gpu, p.camera, p.screen, p.net_hosts, p.fetch_hosts, p.fs_read, p.fs_write
     );
     let file_list = files
         .iter()
@@ -1449,6 +1471,14 @@ mod tests {
         assert!(validate_permissions("tool", &perms(|p| p.net_hosts = many)).is_err());
         assert!(validate_permissions("tool", &perms(|p| p.net_hosts = vec!["http://x.com".into()])).is_err());
         assert!(validate_permissions("tool", &perms(|p| p.net_hosts = vec!["x.com:443".into()])).is_err());
+
+        // fetch_hosts gets the SAME ceiling: a bare-hostname list is accepted, a
+        // malformed entry or an over-long list is rejected.
+        assert!(validate_permissions("tool", &perms(|p| p.fetch_hosts = vec!["api.example.com".into()])).is_ok());
+        let many_fetch: Vec<String> = (0..MAX_NET_HOSTS + 1).map(|i| format!("f{i}.example.com")).collect();
+        assert!(validate_permissions("tool", &perms(|p| p.fetch_hosts = many_fetch)).is_err());
+        assert!(validate_permissions("tool", &perms(|p| p.fetch_hosts = vec!["https://x.com".into()])).is_err());
+        assert!(validate_permissions("tool", &perms(|p| p.fetch_hosts = vec!["x.com:443".into()])).is_err());
     }
 
     #[test]

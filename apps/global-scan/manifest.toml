@@ -2,11 +2,15 @@
 # Schema: docs/SANDBOX.md. Aggregates & summarizes PUBLIC, non-paywalled RSS
 # feeds and renders them in the HUD; no prediction, no surveillance.
 #
-# net_hosts lists EXACTLY the feed hostnames apps/global-scan/feeds.toml polls
-# (every URL there was verified to return a parseable RSS/Atom feed). The
-# seatbelt profile darwind generates allows outbound network only to these
-# hosts; the daemon-mediated generate proxy socket is the app's one extra grant
-# (it never reaches the raw inference.sock — see docs/SANDBOX.md finding #4).
+# fetch_hosts lists EXACTLY the feed hostnames apps/global-scan/feeds.toml polls
+# (every URL there was verified to return a parseable RSS/Atom feed). The app has
+# NO direct network: net_hosts is EMPTY, so darwind's seatbelt profile is a flat
+# (deny network*). Feeds are fetched THROUGH the daemon-mediated fetch proxy
+# (state/ipc/apps/fetch.sock) — the daemon resolves, SSRF/rebind-guards, follows
+# redirects within the allow-list, and returns the body — collapsing the two
+# INHERENT SBPL network caveats (coarse host filtering + DNS exfil, docs/
+# SANDBOX.md → the Phase-4 fetch proxy). LLM summaries still ride the separate
+# generate proxy socket; neither reaches the raw inference.sock (finding #4).
 
 [app]
 name        = "global-scan"
@@ -18,8 +22,12 @@ runtime     = "python"
 [permissions]
 audio     = false
 gpu       = false
+# NO direct network — the app fetches feeds through the daemon-mediated fetch
+# proxy (fetch_hosts below), so its SBPL profile is a flat (deny network*).
+net_hosts = []
 # Exactly the feed hostnames in feeds.toml — keep the two lists in lockstep.
-net_hosts = [
+# The fetch proxy authorizes each URL against this list (https-only, exact host).
+fetch_hosts = [
   "feeds.npr.org",          # NPR — world/national news
   "feeds.bbci.co.uk",       # BBC — world news
   "feeds.arstechnica.com",  # Ars Technica — technology
@@ -31,6 +39,7 @@ net_hosts = [
   "feeds.content.dowjones.io", # MarketWatch top stories (post-redirect host) — markets
 ]
 fs_read   = [
+  "state/ipc/apps/fetch.sock",    # daemon-mediated fetch proxy (feed bodies; NO direct net)
   "state/ipc/apps/generate.sock", # op-restricted generate proxy (NOT raw inference.sock)
   "apps/_sdk",                     # shared READ-ONLY dyld module-report stub (docs/INTROSPECT.md)
 ]

@@ -137,7 +137,23 @@ These were surfaced by an isolation review of `daemon/src/apps.rs`. The first th
 - **Coarse host-name network filtering — INHERENT.** `(allow network-outbound (remote tcp (host-name ...)))` matches the *connect-time name*, not the resolved IP. A feed host on a shared CDN can therefore share its allow with unrelated co-tenant names on that CDN. It is a meaningful narrowing, not an IP allow-list.
 - **DNS exfiltration channel — INHERENT (bar raised, not closed).** Permitting DNS at all lets a malicious app encode data in query labels to an attacker-controlled authoritative nameserver, fully bypassing the `net_hosts` allow-list. The generator pins DNS to the *system resolver address(es)* from `/etc/resolv.conf` (rather than `*:53`) to raise the bar, but the resolver still forwards, so the channel is not closed.
 
-Both inherent network caveats are the **headline justification for the Phase-4 daemon-mediated fetch proxy**: the app declares the URLs it needs, the daemon fetches them and returns the bodies over the app socket, and the app is granted **no direct network or DNS at all** — which collapses both channels.
+Both caveats remain inherent to SBPL egress *as a mechanism* — but as of the daemon-mediated **fetch proxy** (below), **no shipped micro-app uses SBPL egress at all**: every formerly net-declaring app fetches through the daemon and is granted **no direct network or DNS whatsoever**, which collapses both channels for the fleet.
+
+### Direct app egress — CLOSED (daemon-mediated fetch proxy)
+
+**Was:** Global-Scan (the only shipped net-declaring app) held `net_hosts = [9 RSS hosts]`, compiled to `(system-network)` + pinned DNS + per-host `(remote tcp (host-name …))` allows — subject to both inherent caveats above (CDN co-tenant bleed; DNS-label exfiltration).
+
+**Now:** the daemon fronts app fetches with a **daemon-mediated fetch proxy** (`daemon/src/fetchproxy.rs`), a sibling of the generate proxy on its own socket `state/ipc/apps/fetch.sock` (`0600`, parent `0700`). Global-Scan's manifest declares `fetch_hosts = [the same 9 hosts]` and `net_hosts = []` — its SBPL is now a **flat `(deny network*)` with no `(system-network)`, no DNS, and no host-name allows at all**. The proxy enforces, daemon-side:
+
+- **Only `op=fetch`, structurally** (no other op has a code path to a fetch); token-gated via the same `AppRegistry::verify_token` machinery; per-app rate limit (60/60 s); bounded request lines.
+- **Exact-host allowlist** from the app's own manifest `fetch_hosts`: https-only, case-insensitive exact host match (no subdomains/wildcards), no userinfo, port 443 only, IP literals rejected.
+- **SSRF/rebinding guard:** the host is resolved first and every address must be public (loopback/private/link-local/ULA/etc. refused); the verified address is **pinned** for the actual request, so DNS rebinding between check and connect is closed.
+- **Redirects re-validated:** at most 3 hops, each re-authorized against the same allowlist; a cross-host or non-listed redirect is refused.
+- **Bounded bodies:** responses stream with a hard 2 MiB cap; errors are secret-free kinds (never the URL or body).
+
+The **agent-tool surface invariant is preserved by construction**: `agent_tools` skips any app with non-empty `net_hosts` **or** non-empty `fetch_hosts`, so a tool offered to the model still provably has no network side effects.
+
+**Residual (honest register):** the daemon (the trust root) now performs the fetches, so a compromised daemon fetches as before — same single-UID boundary as everything above. The declared `fetch_hosts` are trusted to be the operator's intent (the manifest is reviewed, not judged, exactly like `net_hosts` was); a hostile *feed server* can still return hostile *content*, which the app must treat as untrusted data (unchanged from direct egress). `net_hosts` remains supported as a mechanism for a future app with a genuine direct-socket need, but the shipped fleet no longer uses it.
 
 ### Confused-deputy via the inference socket — CLOSED (daemon-mediated generate proxy)
 

@@ -197,6 +197,19 @@ pub enum Runtime {
 pub struct PermissionsSection {
     pub audio: bool,
     pub net_hosts: Vec<String>,
+    /// Hostnames the app may fetch THROUGH the daemon-mediated fetch proxy
+    /// (`fetchproxy.rs`), which the app reaches over `state/ipc/apps/fetch.sock`.
+    /// UNLIKE `net_hosts`, this grants NO direct network or DNS: the app declares
+    /// the hosts it needs, the daemon fetches each URL (https-only, exact-host,
+    /// SSRF/rebind-guarded, redirect-bounded, body-capped) and returns the body.
+    /// An app can therefore keep a flat `(deny network*)` SBPL profile while still
+    /// reaching declared hosts — collapsing the two INHERENT network caveats
+    /// (coarse host filtering + DNS exfil, docs/SANDBOX.md). Validated with the
+    /// SAME bare-DNS-name/count ceiling as `net_hosts`, and bound into the
+    /// capability token (see `canonical_permissions`). `#[serde(default)]` (=>
+    /// empty) so EVERY existing manifest that omits the key parses unchanged and
+    /// stays fetch-denied for everything.
+    pub fetch_hosts: Vec<String>,
     pub fs_read: Vec<String>,
     pub fs_write: Vec<String>,
     pub gpu: bool,
@@ -346,6 +359,23 @@ impl AppManifest {
                 bail!("over-broad permission: net_hosts entry {h:?} is not a bare hostname");
             }
         }
+        // fetch_hosts (the daemon-mediated fetch proxy allow-list) is ceiling-
+        // checked IDENTICALLY to net_hosts: bounded count, each a bare DNS name
+        // (no scheme / path / port / whitespace / `..`). The proxy re-validates
+        // each URL at fetch time, but this stops a NEW/edited manifest from
+        // declaring a malformed or over-broad fetch allow-list at discovery.
+        if p.fetch_hosts.len() > MAX_APP_NET_HOSTS {
+            bail!(
+                "over-broad permission: fetch_hosts declares {} hosts (max {MAX_APP_NET_HOSTS})",
+                p.fetch_hosts.len()
+            );
+        }
+        for h in &p.fetch_hosts {
+            let h = h.trim();
+            if h.is_empty() || h.contains('/') || h.contains(':') || h.contains(' ') || h.contains("..") {
+                bail!("over-broad permission: fetch_hosts entry {h:?} is not a bare hostname");
+            }
+        }
         Ok(())
     }
 
@@ -378,8 +408,11 @@ pub fn canonical_permissions(p: &PermissionsSection) -> String {
     // suffix. The session HMAC key is regenerated every daemon boot and tokens
     // are minted per launch from THIS function, so widening the canonical string
     // does not strand any persisted token — there are none across a restart.
+    // fetch_hosts (the fetch-proxy allow-list) is bound too, appended LAST for the
+    // same reason: a manifest that widens the hosts it can proxy-fetch after a
+    // token was minted must fail verification.
     format!(
-        "audio={};gpu={};{};{};{};camera={};screen={};jit={}",
+        "audio={};gpu={};{};{};{};camera={};screen={};jit={};{}",
         p.audio,
         p.gpu,
         joined("net_hosts", &p.net_hosts),
@@ -388,6 +421,7 @@ pub fn canonical_permissions(p: &PermissionsSection) -> String {
         p.camera,
         p.screen,
         p.jit,
+        joined("fetch_hosts", &p.fetch_hosts),
     )
 }
 
@@ -415,6 +449,9 @@ pub fn capability_summary(p: &PermissionsSection) -> String {
     }
     if !p.net_hosts.is_empty() {
         parts.push(format!("net({})", p.net_hosts.len()));
+    }
+    if !p.fetch_hosts.is_empty() {
+        parts.push(format!("fetch({})", p.fetch_hosts.len()));
     }
     if !p.fs_read.is_empty() {
         parts.push(format!("fs_read({})", p.fs_read.len()));
@@ -1348,12 +1385,16 @@ impl AppRegistry {
 
     /// The micro-app tools the AGENT LOOP may invoke: every `[[tools.exposes]]`
     /// across the registry that is `consequential = false` AND whose owning app
-    /// grants NO network (`net_hosts` empty). Pure LOCAL compute only:
+    /// grants NO network — neither direct (`net_hosts` empty) NOR proxied
+    /// (`fetch_hosts` empty). Pure LOCAL compute only:
     ///   * a consequential (side-effecting) declaration is NEVER agent-invocable
     ///     — it can only ride the confirmation-gated paths;
     ///   * a NETWORK-capable app's tools are withheld too, so the def's promise
     ///     to the model ("no network side effects") is TRUE BY CONSTRUCTION and
     ///     model-supplied args can never reach a tool that could egress them.
+    ///     This covers BOTH egress paths: an app with direct `net_hosts` AND an
+    ///     app that can reach hosts through the daemon-mediated fetch proxy
+    ///     (`fetch_hosts`) — either can move model-supplied args onto the wire.
     ///     (Exposing a net-capable app's tool is a future EXPLICIT opt-in, never
     ///     a silent mislabel.)
     ///
@@ -1369,7 +1410,13 @@ impl AppRegistry {
             let entry = &apps[name];
             // The "no network side effects" promise is enforced here, not merely
             // asserted in the def text: a net-capable app is skipped wholesale.
-            if !entry.manifest.permissions.net_hosts.is_empty() {
+            // BOTH egress surfaces count — direct net_hosts AND the daemon-
+            // mediated fetch proxy allow-list (fetch_hosts) — so an app that can
+            // reach hosts through the proxy is withheld exactly like a direct-net
+            // one, keeping the promise true by construction.
+            if !entry.manifest.permissions.net_hosts.is_empty()
+                || !entry.manifest.permissions.fetch_hosts.is_empty()
+            {
                 continue;
             }
             for decl in &entry.manifest.tools.exposes {
@@ -1480,6 +1527,21 @@ impl AppRegistry {
             &entry.nonce,
             presented,
         )
+    }
+
+    /// The hostnames a registered app may fetch THROUGH the daemon-mediated fetch
+    /// proxy (`fetchproxy.rs`), read from its manifest `[permissions].fetch_hosts`.
+    /// The proxy authorizes every URL against THIS list (exact host, case-
+    /// insensitive, no subdomain/wildcard). Returns `None` if the app is not
+    /// registered; `Some(vec![])` (or an empty list) means the app may fetch
+    /// NOTHING — url_not_permitted for every URL.
+    ///
+    /// `pub(crate)` so the fetch proxy shares the registry's single source of
+    /// truth for the allow-list rather than re-reading the manifest.
+    pub(crate) async fn fetch_hosts_for(&self, name: &str) -> Option<Vec<String>> {
+        let apps = self.apps.lock().await;
+        apps.get(name)
+            .map(|e| e.manifest.permissions.fetch_hosts.clone())
     }
 
     /// Test-only: rotate a registered app's nonce and mint+store a VALID token
@@ -2965,6 +3027,32 @@ mod tests {
     }
 
     #[test]
+    fn ceiling_rejects_a_non_bare_or_overlong_fetch_hosts() {
+        // fetch_hosts gets the SAME ceiling as net_hosts: a URL / path / port /
+        // space in an entry is refused (must be a bare DNS name).
+        for bad in ["https://evil.com", "evil.com/path", "host:8080", "a b"] {
+            assert!(
+                manifest_with_perms(&format!(
+                    "audio=false\ngpu=false\nfetch_hosts=[\"{bad}\"]\nfs_read=[]\nfs_write=[]"
+                ))
+                .is_err(),
+                "fetch_host {bad:?} must be rejected"
+            );
+        }
+        // A bare hostname is fine.
+        assert!(manifest_with_perms(
+            "audio=false\ngpu=false\nfetch_hosts=[\"feeds.npr.org\"]\nfs_read=[]\nfs_write=[]"
+        )
+        .is_ok());
+        // Over the count ceiling (>16) is refused.
+        let many = (0..17).map(|i| format!("\"h{i}.example\"")).collect::<Vec<_>>().join(",");
+        assert!(manifest_with_perms(&format!(
+            "audio=false\ngpu=false\nfetch_hosts=[{many}]\nfs_read=[]\nfs_write=[]"
+        ))
+        .is_err());
+    }
+
+    #[test]
     fn ceiling_does_not_ban_first_party_elevated_permissions() {
         // audio/gpu/camera are LEGITIMATE for first-party apps (nexus/vision) —
         // the runtime ceiling bounds path/host SHAPE, not these declarations.
@@ -3112,25 +3200,35 @@ mod tests {
         let m = AppManifest::load(&path).expect("shipped global-scan manifest must parse");
         assert_eq!(m.name(), "global-scan");
         assert_eq!(m.app.runtime, Runtime::Python);
-        // The manifest's net_hosts MUST be exactly the feed hostnames (the
-        // contract requires lockstep with feeds.toml).
-        assert!(m.permissions.net_hosts.contains(&"feeds.npr.org".to_string()));
-        assert!(m.permissions.net_hosts.contains(&"hnrss.org".to_string()));
+        // Global-Scan has NO direct network: net_hosts is empty; it fetches feeds
+        // through the daemon-mediated fetch proxy, so the feed hostnames live in
+        // fetch_hosts (still lockstep with feeds.toml).
+        assert!(m.permissions.net_hosts.is_empty(), "no direct network egress");
+        assert!(m.permissions.fetch_hosts.contains(&"feeds.npr.org".to_string()));
+        assert!(m.permissions.fetch_hosts.contains(&"hnrss.org".to_string()));
+        // It is granted the fetch-proxy socket (its only path to a feed).
+        assert!(m.permissions.fs_read.contains(&"state/ipc/apps/fetch.sock".to_string()));
         assert_eq!(m.permissions.fs_write, vec!["state/apps/global-scan"]);
         assert_eq!(m.ui.telemetry_topics, vec!["feed"]);
     }
 
-    /// Lockstep: every hostname in the manifest's net_hosts must appear as a
-    /// URL host in feeds.toml, and vice versa — the seatbelt allow-list and the
-    /// feed list cannot drift.
+    /// Lockstep: every hostname in the manifest's fetch_hosts (the fetch-proxy
+    /// allow-list) must appear as a URL host in feeds.toml, and vice versa — the
+    /// proxy allow-list and the feed list cannot drift. (net_hosts is empty now
+    /// that all egress goes through the daemon fetch proxy.)
     #[test]
-    fn manifest_net_hosts_match_feeds_toml_hosts() {
+    fn manifest_fetch_hosts_match_feeds_toml_hosts() {
         let base = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("apps")
             .join("global-scan");
         let m = AppManifest::load(&base).unwrap();
-        let mut manifest_hosts: Vec<String> = m.permissions.net_hosts.clone();
+        // No direct network egress — the app fetches ONLY through the proxy.
+        assert!(
+            m.permissions.net_hosts.is_empty(),
+            "global-scan must have no direct net_hosts (egress goes through the fetch proxy)"
+        );
+        let mut manifest_hosts: Vec<String> = m.permissions.fetch_hosts.clone();
         manifest_hosts.sort();
 
         let feeds_raw = std::fs::read_to_string(base.join("feeds.toml")).unwrap();
@@ -3150,7 +3248,7 @@ mod tests {
 
         assert_eq!(
             manifest_hosts, feed_hosts,
-            "manifest net_hosts and feeds.toml hosts must be identical"
+            "manifest fetch_hosts and feeds.toml hosts must be identical"
         );
     }
 
@@ -3365,6 +3463,22 @@ mod tests {
     }
 
     #[test]
+    fn sbpl_fetch_hosts_grant_no_direct_network() {
+        // The load-bearing invariant of the fetch proxy: declaring fetch_hosts
+        // grants the app NOTHING in the SBPL network layer. With net_hosts empty
+        // the profile stays a FLAT (deny network*) — no (system-network), no DNS,
+        // and no host-name filter — EVEN THOUGH fetch_hosts is non-empty. All that
+        // egress rides the daemon over the fetch.sock AF_UNIX literal instead.
+        let mut m = sample_manifest();
+        m.permissions.net_hosts.clear();
+        m.permissions.fetch_hosts = vec!["feeds.npr.org".into(), "www.nasa.gov".into()];
+        let p = gen_profile(&m);
+        assert!(p.contains("(deny network*)"), "fetch_hosts must not open direct network");
+        assert!(!p.contains("(system-network)"), "no IP network stack for a proxy-only app");
+        assert!(!p.contains("host-name"), "a fetch_hosts entry is never an SBPL host-name grant");
+    }
+
+    #[test]
     fn sbpl_denies_mic_and_gpu_by_default_and_grants_nothing_stray() {
         let p = gen_profile(&sample_manifest());
         assert!(p.contains("(deny device-microphone)"), "audio=false denies mic");
@@ -3525,11 +3639,13 @@ mod tests {
         assert!(p.contains("(allow process-exec* (literal \"/Users/op/darwin/.venv/bin/python3\"))"));
         assert!(!p.contains("(allow process-exec* (subpath \"/opt/homebrew\"))"));
         assert!(!p.contains("(allow process-exec* (subpath \"/usr/local\"))"));
-        // Reads: the app dir, the venv (read prefix), and its one declared
-        // fs_read — the daemon-mediated generate PROXY socket, NOT the raw
-        // inference.sock (finding #4 fix); writes: only its own app state dir.
+        // Reads: the app dir, the venv (read prefix), and its declared fs_read —
+        // the daemon-mediated FETCH proxy socket AND the generate PROXY socket,
+        // NOT the raw inference.sock (finding #4 fix); writes: only its own app
+        // state dir.
         assert!(p.contains("(allow file-read* (subpath \"/Users/op/darwin/.venv\"))"));
         assert!(p.contains("(allow file-read* (subpath \"/Users/op/darwin/apps/global-scan\"))"));
+        assert!(p.contains("(allow file-read* (subpath \"/Users/op/darwin/state/ipc/apps/fetch.sock\"))"));
         assert!(p.contains("(allow file-read* (subpath \"/Users/op/darwin/state/ipc/apps/generate.sock\"))"));
         // The raw inference socket is NO LONGER reachable by the app.
         assert!(
@@ -3539,16 +3655,24 @@ mod tests {
         assert!(p.contains("(allow file-write* (subpath \"/Users/op/darwin/state/apps/global-scan\"))"));
         // Connects to its own host socket...
         assert!(p.contains("(allow network-outbound (literal \"/Users/op/darwin/state/ipc/apps/global-scan.sock\"))"));
-        // ...and gets the AF_UNIX connect() grant for the .sock fs_read entry
+        // ...and gets the AF_UNIX connect() grant for BOTH .sock fs_read entries
         // (file-read alone does not permit connect() on this macOS).
+        assert!(p.contains("(allow network-outbound (literal \"/Users/op/darwin/state/ipc/apps/fetch.sock\"))"));
         assert!(p.contains("(allow network-outbound (literal \"/Users/op/darwin/state/ipc/apps/generate.sock\"))"));
-        // Network is deny-then-allow-listed: every feed host is granted, and
-        // nothing else. Assert all nine declared hosts are host-filtered.
+        // NO direct network: net_hosts is empty, so the profile is a FLAT
+        // (deny network*) with NO (system-network) and NO host-name filters at
+        // all — all feed egress now flows through the fetch proxy. This is the
+        // Phase-4 collapse of both inherent SBPL network caveats.
+        assert!(m.permissions.net_hosts.is_empty(), "shipped global-scan must declare no direct net_hosts");
         assert!(p.contains("(deny network*)"));
-        for host in &m.permissions.net_hosts {
+        assert!(!p.contains("(system-network)"), "no direct IP network stack");
+        assert!(!p.contains("host-name"), "no host-name filter survives an empty net_hosts");
+        // Not even the declared FETCH hosts leak into the SBPL as host filters —
+        // they are the proxy's allow-list, never a seatbelt network grant.
+        for host in &m.permissions.fetch_hosts {
             assert!(
-                p.contains(&format!("(remote tcp (host-name \"{host}\")))")),
-                "missing host-filter for {host}"
+                !p.contains(&format!("host-name \"{host}\"")),
+                "a fetch_hosts entry ({host}) must never become an SBPL host-name grant"
             );
         }
         // No write grant outside the declared app dir.
@@ -3648,6 +3772,7 @@ mod tests {
             screen: false,
             jit: true,
             net_hosts: vec!["a.com".into(), "b.com".into()],
+            fetch_hosts: vec![],
             fs_read: vec!["state/x".into()],
             fs_write: vec![],
         };
@@ -3656,6 +3781,17 @@ mod tests {
         assert!(!s.contains("a.com"), "must not leak the actual hosts");
         assert!(!s.contains("gpu"), "an ungranted cap is omitted");
         assert!(!s.contains("fs_write"), "an empty list is omitted");
+
+        // fetch_hosts surfaces as a secret-free fetch(N) count, right after net().
+        let f = PermissionsSection {
+            net_hosts: vec![],
+            fetch_hosts: vec!["feeds.npr.org".into(), "hnrss.org".into(), "www.nasa.gov".into()],
+            fs_read: vec!["state/ipc/apps/fetch.sock".into()],
+            ..Default::default()
+        };
+        let fs = capability_summary(&f);
+        assert_eq!(fs, "fetch(3), fs_read(1)");
+        assert!(!fs.contains("feeds.npr.org"), "must not leak the actual fetch hosts");
     }
 
     #[test]
@@ -3672,6 +3808,23 @@ mod tests {
         assert!(
             !verify_token_with_key(TEST_KEY, "algo-core", &jit, "nonce-A", &t),
             "flipping jit on must invalidate a token minted without it"
+        );
+    }
+
+    #[test]
+    fn token_is_bound_to_fetch_hosts() {
+        // fetch_hosts joins the bound set exactly like net_hosts: a manifest that
+        // WIDENS the hosts it can proxy-fetch after a token was minted must fail
+        // verification — so a silent widening of the fetch-proxy allow-list is
+        // detectable, not free.
+        let base = perms(&["feeds.npr.org"]);
+        let t = compute_token(TEST_KEY, "global-scan", &base, "nonce-A");
+        assert!(verify_token_with_key(TEST_KEY, "global-scan", &base, "nonce-A", &t));
+        let mut widened = base.clone();
+        widened.fetch_hosts = vec!["evil.example".into()];
+        assert!(
+            !verify_token_with_key(TEST_KEY, "global-scan", &widened, "nonce-A", &t),
+            "widening fetch_hosts must invalidate a token minted without it"
         );
     }
 
@@ -4379,6 +4532,23 @@ mod tests {
                 consequential = false
                 "#,
             ),
+            (
+                "delta",
+                r#"
+                [app]
+                name = "delta"
+                version = "0.1.0"
+                description = "fetch-proxy-capable app"
+                entry = "apps/delta/main.py"
+                runtime = "python"
+                [permissions]
+                fetch_hosts = ["example.com"]
+                fs_read = ["state/ipc/apps/fetch.sock"]
+                [[tools.exposes]]
+                name = "delta.pull"
+                consequential = false
+                "#,
+            ),
         ] {
             let d = root.join("apps").join(dir);
             std::fs::create_dir_all(&d).unwrap();
@@ -4388,8 +4558,10 @@ mod tests {
         let tools = registry.agent_tools().await;
         // alpha.publish (consequential) is filtered; beta's alpha.calc collides
         // with alpha's (same mangled name) and is dropped (alpha sorts first);
-        // gamma.fetch is withheld because gamma grants network (the "no network
-        // side effects" promise stays true by construction).
+        // gamma.fetch is withheld because gamma grants DIRECT network; delta.pull
+        // is withheld because delta can egress THROUGH the fetch proxy (non-empty
+        // fetch_hosts) — the "no network side effects" promise stays true by
+        // construction for BOTH egress paths.
         assert_eq!(tools.len(), 1, "one invocable tool: {tools:?}");
         assert_eq!(tools[0].app, "alpha");
         assert_eq!(tools[0].decl.name, "alpha.calc");
@@ -4397,7 +4569,11 @@ mod tests {
         assert_eq!(tools[0].decl.params[0].name, "x");
         assert!(
             !tools.iter().any(|t| t.app == "gamma"),
-            "a network-capable app's tools are never auto-exposed"
+            "a direct-network app's tools are never auto-exposed"
+        );
+        assert!(
+            !tools.iter().any(|t| t.app == "delta"),
+            "a fetch-proxy-capable app's tools are never auto-exposed"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

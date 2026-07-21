@@ -120,6 +120,7 @@ mod es;
 mod eval;
 mod explain;
 mod exposure;
+mod fetchproxy;
 mod fleet;
 mod focus;
 mod forecast;
@@ -2698,6 +2699,21 @@ async fn main() -> Result<()> {
         let inference_sock = sock_path.clone();
         tokio::spawn(async move {
             genproxy::serve(registry, generate_sock, inference_sock).await;
+        });
+    }
+    // Daemon-mediated FETCH proxy (Phase-4, docs/SANDBOX.md → Honest limitations):
+    // a SEPARATE, op-restricted socket the app reaches instead of holding direct
+    // network egress. Only op=fetch, token-gated, host-allow-listed, SSRF/rebind
+    // guarded, redirect-bounded, body-capped, and rate-limited — so no micro-app
+    // has direct network access and both INHERENT SBPL network caveats (coarse
+    // host filtering + DNS exfil) collapse. Started before autostart so it is
+    // listening when the first app launches. The fetch.sock path is built exactly
+    // like generate.sock above.
+    {
+        let fetch_sock = root.join("state").join("ipc").join("apps").join("fetch.sock");
+        let registry = app_registry.clone();
+        tokio::spawn(async move {
+            fetchproxy::serve(registry, fetch_sock).await;
         });
     }
     // HUD -> daemon COMMAND CHANNEL (the first inbound surface): a local-only,

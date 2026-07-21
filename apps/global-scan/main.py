@@ -38,24 +38,24 @@ unauthorized, rate_limited, inference_unavailable) OR an unreachable proxy the
 app falls back to extractive summaries exactly as before. The app is granted
 ONLY this proxy socket — it can no longer reach the multiplexed inference.sock.
 
-Stdlib only — no feedparser, no heavy deps, no torch. urllib for HTTPS and
-xml.etree for parsing. The poll loop runs in a worker thread so the socket
-reader can deliver host commands without blocking on the network.
+Stdlib only — no feedparser, no heavy deps, no torch. The app has NO direct
+network: it fetches every feed THROUGH the daemon-mediated fetch proxy over
+state/ipc/apps/fetch.sock (op=fetch, token-gated, https-only, host-allow-listed,
+SSRF/rebind-guarded, redirect-bounded, body-capped) and parses the returned body
+with xml.etree. The poll loop runs in a worker thread so the socket reader can
+deliver host commands without blocking on a fetch.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
 import html
-import http.client
 import json
 import os
 import re
 import socket
 import sys
 import threading
-import urllib.error
-import urllib.request
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -85,9 +85,13 @@ except Exception:  # pragma: no cover - best-effort, never blocks the app
 # Tunables.
 REFRESH_INTERVAL_S = 10 * 60       # ~10 min between cycles
 TOP_N = 20                         # items kept and emitted per cycle
-FETCH_TIMEOUT_S = 12               # per-feed HTTP timeout
-MAX_FEED_BYTES = 4 * 1024 * 1024   # cap on one feed body (guards OOM / drip-feed)
-USER_AGENT = "DARWIN-GlobalScan/0.1 (+micro-app; RSS reader)"
+# Daemon-mediated FETCH proxy (feed bodies). The app has NO direct network: it
+# asks the daemon to fetch each URL and returns the body. The proxy enforces the
+# per-fetch timeout (20s), the 2 MiB body cap, https-only, the host allow-list,
+# the SSRF/rebind guard, and redirect bounds — so none of those are the app's job.
+FETCH_SOCKET = PROJECT_ROOT / "state" / "ipc" / "apps" / "fetch.sock"
+FETCH_CONNECT_TIMEOUT_S = 1.5
+FETCH_READ_TIMEOUT_S = 25.0        # > the daemon's 20s per-fetch timeout
 # Daemon-mediated generate PROXY (NOT the raw inference.sock): op-restricted,
 # token-gated, 256-token-capped, rate-limited. This is the ONLY socket the app
 # is granted (manifest fs_read), closing security finding #4.
@@ -101,7 +105,7 @@ LLM_BRIEF_MAX_TOKENS = 90
 ATOM = "{http://www.w3.org/2005/Atom}"
 
 # Built-in default feeds: used only if feeds.toml is missing/unreadable. These
-# mirror feeds.toml exactly and every host is in the manifest's net_hosts.
+# mirror feeds.toml exactly and every host is in the manifest's fetch_hosts.
 DEFAULT_FEEDS = {
     "world": [
         "https://feeds.npr.org/1001/rss.xml",
@@ -418,13 +422,63 @@ def _mk_item(title, link, published_raw, source, category, descr) -> dict:
     }
 
 
-def fetch_feed(feed_url: str, category: str, link: "HostLink | None") -> list[dict]:
-    req = urllib.request.Request(feed_url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_S) as resp:
-        body = resp.read(MAX_FEED_BYTES + 1)
-    if len(body) > MAX_FEED_BYTES:
-        raise ValueError(f"feed body exceeded {MAX_FEED_BYTES} bytes")
-    return parse_feed(feed_url, body, category)
+class FeedFetchClient:
+    """Minimal JSONL client for the daemon-mediated FETCH proxy (op=fetch ONLY),
+    at state/ipc/apps/fetch.sock.
+
+    Mirrors InferenceClient exactly: every request stamps this app's name + the
+    DARWIN_APP_TOKEN capability token the daemon minted for this launch; the proxy
+    verifies the token, authorizes the URL against the app's fetch_hosts allow-list
+    (https-only, exact host), guards against SSRF/DNS-rebinding, follows redirects
+    within the allow-list, caps the body at 2 MiB, and returns the text. The app
+    has NO direct network — this proxy is its ONLY path to a feed. Best-effort: any
+    connect/read/parse failure — or an ok=false reply (op_not_permitted,
+    unauthorized, rate_limited, url_not_permitted, host_resolves_private,
+    redirect_denied, too_many_redirects, body_too_large, fetch_failed) — raises so
+    the caller treats the feed as failed (the app already tolerates per-feed
+    failures). Stdlib only."""
+
+    def __init__(self, sock_path: Path, name: str, token: str) -> None:
+        self._sock_path = str(sock_path)
+        self._name = name
+        self._token = token
+
+    def fetch(self, url: str) -> str:
+        # Proxy request shape (CONTRACT part B): name + token + op=fetch + url.
+        # The daemon does the actual HTTPS GET; we never touch the network.
+        req = {
+            "name": self._name,
+            "token": self._token,
+            "op": "fetch",
+            "url": url,
+        }
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(FETCH_CONNECT_TIMEOUT_S)
+        try:
+            s.connect(self._sock_path)
+            s.settimeout(FETCH_READ_TIMEOUT_S)
+            s.sendall((json.dumps(req) + "\n").encode("utf-8"))
+            rfile = s.makefile("r", encoding="utf-8", newline="\n")
+            line = rfile.readline()
+            if not line:
+                raise OSError("empty response from fetch proxy")
+            resp = json.loads(line)
+            # ok=false (any error) -> raise so the caller marks the feed failed.
+            if not resp.get("ok"):
+                raise OSError(resp.get("error", "fetch proxy rejected the request"))
+            return resp.get("body") or ""
+        finally:
+            s.close()
+
+
+def fetch_feed(feed_url: str, category: str, client: "FeedFetchClient") -> list[dict]:
+    # No direct egress: ask the daemon fetch proxy for the body, then parse it.
+    body = client.fetch(feed_url)
+    if not body:
+        raise ValueError("empty feed body from fetch proxy")
+    # parse_feed takes bytes (it honors the XML encoding declaration); the proxy
+    # returns a lossy-UTF-8 string, so re-encode to UTF-8 bytes.
+    return parse_feed(feed_url, body.encode("utf-8"), category)
 
 
 # --------------------------------------------------------------------------- #
@@ -567,6 +621,15 @@ def run_cycle(feeds: dict[str, list[str]], link: "HostLink | None") -> dict:
     """Fetch all feeds, dedupe, rank, enhance, and (if linked) emit to host.
 
     Returns a result dict (also returned for the in-process self-test)."""
+    # Feeds are fetched THROUGH the daemon-mediated fetch proxy (the app has no
+    # direct network). Name + capability token come from the launch env; under
+    # --selftest neither is set, so the proxy rejects every request as
+    # unauthorized and each feed honestly fails — there is no direct-egress
+    # fallback by design (that egress is exactly what this migration removes).
+    app_name = os.environ.get("DARWIN_APP_NAME", APP_NAME)
+    app_token = os.environ.get("DARWIN_APP_TOKEN", "")
+    fetch_client = FeedFetchClient(FETCH_SOCKET, app_name, app_token)
+
     collected: list[dict] = []
     feeds_ok = 0
     feeds_failed = 0
@@ -575,10 +638,10 @@ def run_cycle(feeds: dict[str, list[str]], link: "HostLink | None") -> dict:
     for category, urls in feeds.items():
         for url in urls:
             try:
-                items = fetch_feed(url, category, link)
+                items = fetch_feed(url, category, fetch_client)
                 collected.extend(items)
                 feeds_ok += 1
-            except (urllib.error.URLError, http.client.HTTPException, ET.ParseError, OSError, ValueError) as exc:
+            except (ET.ParseError, OSError, ValueError, json.JSONDecodeError) as exc:
                 feeds_failed += 1
                 errors.append(f"{_host_of(url)}: {exc}")
                 if link is not None:
