@@ -32,6 +32,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use crate::optimize::redact;
+use crate::recall::{self, Embedder, Fact, LexicalProvider};
 
 // ===========================================================================
 // ContextEntry — one redacted on-screen OCR snapshot in the ring.
@@ -123,22 +124,21 @@ impl ScreenContextRing {
             .collect()
     }
 
-    /// Recall the entries whose redacted text contains `query` (case-insensitive),
-    /// bounded to the most-recent `n` matches (newest LAST). PURE; an empty result
-    /// when nothing matches (recall never invents a match). READ-ONLY.
+    /// Recall the entries most relevant to `query`, RANKED by lexical (BM25)
+    /// relevance — MOST-RELEVANT FIRST, bounded to `n`. Reuses recall.rs's BM25
+    /// ranker (the same one the semantic pasteboard + aperture rings use), so a
+    /// natural multi-word query ("the terminal cargo build error") now surfaces the
+    /// entries that share its TERMS instead of requiring the exact phrase to appear
+    /// as a verbatim substring. An entry with ZERO query-term overlap scores 0 and
+    /// is DROPPED — recall never invents a match, so a no-match query returns an
+    /// empty vec. An empty query falls back to the plain recent recall. PURE +
+    /// READ-ONLY.
     pub fn recall_matching(&self, query: &str, n: usize) -> Vec<ContextEntry> {
-        let q = query.trim().to_lowercase();
-        if q.is_empty() {
+        if query.trim().is_empty() {
             return self.recall_recent(n);
         }
-        let matches: Vec<ContextEntry> = self
-            .entries
-            .iter()
-            .filter(|e| e.redacted_text.to_lowercase().contains(&q))
-            .cloned()
-            .collect();
-        let take = n.min(matches.len());
-        matches[matches.len() - take..].to_vec()
+        let entries: Vec<ContextEntry> = self.entries.iter().cloned().collect();
+        rank_entries_lexical(query, &entries, n)
     }
 
     /// Render a bounded, redacted, HONEST recall string from the most-recent `n`
@@ -165,6 +165,39 @@ impl ScreenContextRing {
     pub fn clear(&mut self) {
         self.entries.clear();
     }
+}
+
+// ===========================================================================
+// Ranked recall — bring screen context to parity with the semantic pasteboard
+// + aperture rings (which already rank a transient in-RAM ring by relevance
+// rather than plain substring/recency). PURE; reuses recall.rs's ranker.
+// ===========================================================================
+
+/// Build one ranking [`Fact`] per ring entry, carrying the entry's already-redacted
+/// text as the value (the key is a low-signal constant so it never skews the
+/// ranker). PARALLEL to `entries` — a hit's `index` maps straight back to its
+/// entry. Mirrors the semantic pasteboard's `build_recall_facts`.
+fn build_recall_facts(entries: &[ContextEntry]) -> Vec<Fact> {
+    entries
+        .iter()
+        .map(|e| Fact {
+            key: "screen".to_string(),
+            value: e.redacted_text.clone(),
+        })
+        .collect()
+}
+
+/// PURE lexical (BM25) ranking of `entries` by relevance to `query`, returning up
+/// to `k` entries MOST-RELEVANT FIRST. Reuses recall.rs's `LexicalProvider` +
+/// `rank` over the parallel facts, mapping each hit's index back to its entry. An
+/// entry with ZERO query-term overlap scores 0 and is DROPPED by `rank` (honest
+/// no-match — recall never invents a hit); a no-match query returns an empty vec.
+fn rank_entries_lexical(query: &str, entries: &[ContextEntry], k: usize) -> Vec<ContextEntry> {
+    let facts = build_recall_facts(entries);
+    recall::rank(query, &facts, k, &LexicalProvider::default())
+        .into_iter()
+        .map(|h| entries[h.index].clone())
+        .collect()
 }
 
 // ===========================================================================
@@ -279,10 +312,11 @@ pub fn global_render_recall(n: usize) -> String {
     }
 }
 
-/// Render a SUBJECT-aware recall from the process-global ring: the most-recent `n`
-/// entries whose redacted text contains `query` (case-insensitive). When `query`
-/// is empty this is the plain recent recall. An empty result is the honest "no
-/// recent screen context" — recall NEVER invents a match. READ-ONLY.
+/// Render a SUBJECT-aware recall from the process-global ring: the `n` entries most
+/// RELEVANT to `query`, ranked by lexical (BM25) relevance most-relevant first (via
+/// [`ScreenContextRing::recall_matching`]). When `query` is empty this is the plain
+/// recent recall. An empty result is the honest "no recent screen context" — recall
+/// NEVER invents a match (a zero-overlap query yields nothing). READ-ONLY.
 pub fn global_render_recall_matching(query: &str, n: usize) -> String {
     let guard = RING.lock().unwrap_or_else(|e| e.into_inner());
     let hits = match guard.as_ref() {
@@ -310,6 +344,51 @@ pub fn global_render_recall_matching(query: &str, n: usize) -> String {
         out.push_str(e.redacted_text.trim());
     }
     out
+}
+
+/// Render a RUNTIME-SELECTED recall over the live ring — the `screen_recall` TOOL
+/// surface. Prefers NEURAL on-device embeddings (via the injected `embedder`, the
+/// same on-device inference socket the other recall tools use) and FALLS BACK to
+/// lexical BM25 when it is unavailable, NAMING whichever method actually ran (so a
+/// caller never claims neural on a fallback). It NEVER fabricates: an empty/un-fed
+/// ring or a no-match query is reported honestly. READ-ONLY — it ranks the
+/// transient in-RAM ring and mutates nothing.
+///
+/// The ring is snapshotted under the lock and the guard is DROPPED before the async
+/// embed call — the `std::sync::Mutex` is never held across an `.await`.
+pub async fn global_rank_render_runtime(query: &str, k: usize, embedder: &dyn Embedder) -> String {
+    let entries: Vec<ContextEntry> = {
+        let guard = RING.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(ring) => ring.recall_recent(ring.len()),
+            None => Vec::new(),
+        }
+    };
+    if entries.is_empty() {
+        return "I have no recent screen context yet, sir — nothing's been captured \
+                since screen context was enabled."
+            .to_string();
+    }
+    let facts = build_recall_facts(&entries);
+    let recall = recall::rank_runtime_selected(query, &facts, k, embedder).await;
+    let method = recall.method_status;
+    if recall.hits.is_empty() {
+        return format!(
+            "I have no recent screen context that bears on \"{}\", sir. \
+             (Recall method: {method})",
+            query.trim()
+        );
+    }
+    let lines: Vec<String> = recall
+        .hits
+        .iter()
+        .map(|h| format!("• {}", entries[h.index].redacted_text.trim()))
+        .collect();
+    format!(
+        "Here's what I have on your recent screen that bears on that, most relevant \
+         first:\n{}\n(Recall method: {method})",
+        lines.join("\n")
+    )
 }
 
 /// The current number of entries held in the process-global ring (0 when un-fed) —
@@ -555,6 +634,72 @@ mod tests {
         assert!(hits.iter().all(|e| e.redacted_text.to_lowercase().contains("inbox")));
     }
 
+    // -- RANKED recall: BM25 relevance, not whole-phrase substring ----------
+
+    #[test]
+    fn recall_matching_ranks_by_term_overlap_most_relevant_first() {
+        let mut ring = ScreenContextRing::new(100);
+        ring.push(1, "terminal cargo build succeeded", "screen");
+        ring.push(2, "browser reading the cargo docs", "screen");
+        ring.push(3, "inbox lunch plans", "screen");
+        // "cargo build" — entry 1 has BOTH terms, entry 2 shares only "cargo",
+        // entry 3 shares neither (dropped). Most-relevant FIRST.
+        let hits = ring.recall_matching("cargo build", 10);
+        assert_eq!(hits.len(), 2, "the zero-overlap entry is dropped, not returned");
+        assert_eq!(hits[0].redacted_text, "terminal cargo build succeeded");
+        assert_eq!(hits[1].redacted_text, "browser reading the cargo docs");
+        assert!(
+            !hits.iter().any(|e| e.redacted_text.contains("lunch")),
+            "an entry with no shared term must never be fabricated into the recall"
+        );
+    }
+
+    #[test]
+    fn recall_matching_matches_terms_not_the_verbatim_phrase() {
+        // The value over the OLD substring filter: a natural multi-word query
+        // whose words are SCATTERED (not a contiguous substring) still recalls.
+        let mut ring = ScreenContextRing::new(100);
+        ring.push(1, "the cargo build failed with an error", "screen");
+        // "build error" is NOT a substring of the entry (the words are apart), so
+        // the old `.contains("build error")` filter returned NOTHING. BM25 matches
+        // on the shared terms and recalls it.
+        let hits = ring.recall_matching("build error", 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].redacted_text, "the cargo build failed with an error");
+    }
+
+    #[test]
+    fn recall_matching_zero_overlap_is_empty_never_fabricated() {
+        let mut ring = ScreenContextRing::new(100);
+        ring.push(1, "editor writing the report", "screen");
+        ring.push(2, "calendar standup at ten", "screen");
+        // Nothing shares a term with "quarterly taxes" -> honest empty.
+        assert!(ring.recall_matching("quarterly taxes", 10).is_empty());
+    }
+
+    #[test]
+    fn recall_matching_bounds_to_k_by_relevance() {
+        let mut ring = ScreenContextRing::new(100);
+        ring.push(1, "cargo build cargo build cargo", "screen"); // most "cargo"
+        ring.push(2, "cargo build once", "screen");
+        ring.push(3, "a single cargo mention", "screen");
+        let hits = ring.recall_matching("cargo", 2);
+        assert_eq!(hits.len(), 2, "bounded to k");
+        assert_eq!(hits[0].redacted_text, "cargo build cargo build cargo");
+    }
+
+    #[test]
+    fn build_recall_facts_is_parallel_and_carries_the_redacted_text() {
+        let entries = vec![
+            ContextEntry { ts: 1, redacted_text: "alpha one".into(), source_tag: "screen".into() },
+            ContextEntry { ts: 2, redacted_text: "beta two".into(), source_tag: "screen".into() },
+        ];
+        let facts = build_recall_facts(&entries);
+        assert_eq!(facts.len(), entries.len());
+        assert_eq!(facts[0].value, "alpha one");
+        assert_eq!(facts[1].value, "beta two");
+    }
+
     #[test]
     fn empty_ring_render_is_honest_never_fabricated() {
         let ring = ScreenContextRing::new(10);
@@ -770,6 +915,123 @@ mod tests {
         // Forget wipes it — recall is honest-empty again.
         assert!(global_clear(), "a fed ring is forgettable");
         assert!(global_render_recall(5).to_lowercase().contains("no recent screen context"));
+        global_reset_for_test();
+    }
+
+    // -- RUNTIME-SELECTED recall (the `screen_recall` TOOL surface) ---------
+    //
+    // Hermetic mock embedders (deterministic keyword->vector, mirroring the
+    // docsearch/recall mock pattern) drive the neural path; a "down" embedder
+    // drives the BM25 fallback. The report must NAME whichever method ran.
+
+    /// axis 0 = terminal/cargo/build/compile, axis 1 = inbox/email/meeting/budget,
+    /// axis 2 = other — so a query's keyword pins which entry is "near".
+    fn keyword_vectors(texts: &[String]) -> Vec<Vec<f64>> {
+        texts
+            .iter()
+            .map(|t| {
+                let l = t.to_lowercase();
+                let dev = l.contains("terminal")
+                    || l.contains("cargo")
+                    || l.contains("build")
+                    || l.contains("compile");
+                let mail = l.contains("inbox")
+                    || l.contains("email")
+                    || l.contains("meeting")
+                    || l.contains("budget");
+                if dev {
+                    vec![1.0, 0.0, 0.0]
+                } else if mail {
+                    vec![0.0, 1.0, 0.0]
+                } else {
+                    vec![0.0, 0.0, 1.0]
+                }
+            })
+            .collect()
+    }
+
+    /// A deterministic mock [`Embedder`] — the neural path ranks by keyword cosine.
+    struct KeywordEmbedder;
+    impl Embedder for KeywordEmbedder {
+        fn embed<'a>(&'a self, texts: &'a [String]) -> crate::recall::EmbedFuture<'a> {
+            let vecs = keyword_vectors(texts);
+            Box::pin(async move { Ok(vecs) })
+        }
+    }
+
+    /// The inference socket is DOWN — `embed` errors, so `rank_runtime_selected`
+    /// falls back to lexical BM25 and must NAME that (never claim neural).
+    struct DownEmbedder;
+    impl Embedder for DownEmbedder {
+        fn embed<'a>(&'a self, _texts: &'a [String]) -> crate::recall::EmbedFuture<'a> {
+            Box::pin(async move { Err(anyhow::anyhow!("inference socket down")) })
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_recall_empty_ring_is_honest_never_fabricated() {
+        let _g = serial();
+        global_reset_for_test();
+        let out = global_rank_render_runtime("anything", 5, &KeywordEmbedder).await;
+        assert!(
+            out.to_lowercase().contains("no recent screen context"),
+            "an un-fed ring must be honest, not fabricated: {out}"
+        );
+        global_reset_for_test();
+    }
+
+    #[tokio::test]
+    async fn runtime_recall_ranks_neurally_and_names_the_method() {
+        let _g = serial();
+        global_reset_for_test();
+        global_push(10, 1, "terminal cargo build succeeded", "screen");
+        global_push(10, 2, "inbox budget meeting notes", "screen");
+        // A car/dev-axis query — neural cosine surfaces the terminal entry and
+        // DROPS the orthogonal inbox entry (cosine 0).
+        let out = global_rank_render_runtime("the cargo compile output", 5, &KeywordEmbedder).await;
+        assert!(out.contains("terminal cargo build"), "neural should rank the dev entry: {out}");
+        assert!(!out.contains("inbox budget"), "an orthogonal entry must be dropped: {out}");
+        let lo = out.to_lowercase();
+        assert!(
+            lo.contains("neural") || lo.contains("embedding"),
+            "the method must be named as neural/embedding: {out}"
+        );
+        global_reset_for_test();
+    }
+
+    #[tokio::test]
+    async fn runtime_recall_falls_back_to_bm25_and_names_it() {
+        let _g = serial();
+        global_reset_for_test();
+        global_push(10, 1, "terminal cargo build succeeded", "screen");
+        global_push(10, 2, "inbox budget meeting notes", "screen");
+        // Socket down -> lexical BM25. "cargo build" shares terms with entry 1 only.
+        let out = global_rank_render_runtime("cargo build", 5, &DownEmbedder).await;
+        assert!(out.contains("terminal cargo build"), "bm25 should recall the shared-term entry: {out}");
+        assert!(!out.contains("inbox budget"), "no shared term -> dropped: {out}");
+        let lo = out.to_lowercase();
+        // The honest fallback status NAMES BM25/lexical. (It may reference "neural"
+        // only to say it is NOT that — the recall.rs status literally reads "not by
+        // a neural embedding model" — so the honesty check is the POSITIVE presence
+        // of bm25/lexical, not the absence of the word "neural".)
+        assert!(
+            lo.contains("bm25") || lo.contains("lexical"),
+            "fallback must be named honestly as BM25/lexical: {out}"
+        );
+        global_reset_for_test();
+    }
+
+    #[tokio::test]
+    async fn runtime_recall_no_match_is_honest() {
+        let _g = serial();
+        global_reset_for_test();
+        global_push(10, 1, "terminal cargo build succeeded", "screen");
+        // Nothing shares a keyword/term with the query -> honest no-match.
+        let out = global_rank_render_runtime("quarterly tax filing", 5, &DownEmbedder).await;
+        assert!(
+            out.to_lowercase().contains("no recent screen context"),
+            "a no-match query is honest, not fabricated: {out}"
+        );
         global_reset_for_test();
     }
 }

@@ -1936,6 +1936,16 @@ const CANONICAL_ROSTER: &[(&str, &str, &str, u16, &[&str])] = &[
             // ([aperture].enabled=false); with it off / nothing recorded, recall
             // honestly returns no activity.
             "aperture_recall",
+            // SCREEN CONTEXT: screen_recall is READ-ONLY recall over the owner's
+            // private, PII-redacted, bounded, TRANSIENT in-RAM ring of recent
+            // on-screen OCR text ("what was that error I saw earlier"). It RANKS the
+            // recent snapshots by relevance via the SAME recall.rs path her other
+            // recall tools use, stores/persists nothing, sends nothing — so it never
+            // touches integrations::gate(). Squarely her recollective remit. Screen
+            // context ships ON ([screen_context].enabled) but is INERT without
+            // Screen-Recording TCC consent; with nothing captured / nothing matching,
+            // recall honestly returns no recent screen context.
+            "screen_recall",
             // The file-RAG WRITE/FORGET triggers (the local intents the classifier
             // emits for "index my documents"/"reindex" and "forget my file index").
             // Both are CONFINED to the user's OWN allowlisted folders + the local
