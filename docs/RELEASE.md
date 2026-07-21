@@ -10,10 +10,17 @@ notarized, auto-updatable DARWIN HUD `.app`/`.dmg`.
 > *Developer ID Application* certificate, and the auto-updater requires a private
 > updater key you generate and keep secret. **No private key or secret is in this
 > repo** — the workflow reads everything from CI secrets (`${{ secrets.* }}`), and
-> `tauri.conf.json` ships a public-key **placeholder**. Until you add your
-> secrets, the release workflow fails at the signing step (honestly), and the
-> in-app updater reports `not_configured` and does nothing. The moment you add
-> your secrets + publish a release, both light up with no code changes.
+> `tauri.conf.json` ships the owner's **public** updater key (safe to publish;
+> only the matching **private** half is a secret). Until you add your CI secrets,
+> the release workflow fails at the signing step (honestly). The moment you add
+> your secrets + publish a release, signing and auto-update light up with no code
+> changes.
+>
+> **Rotating the updater key:** if you don't have the private half of the
+> committed public key, generate a fresh pair (`npm run tauri signer generate`)
+> and paste the new **public** key into `tauri.conf.json` → `plugins.updater.pubkey`
+> (this is safe — no signed release depends on the old key until one is published),
+> then set the new private key as the `TAURI_SIGNING_PRIVATE_KEY` secret.
 
 ---
 
@@ -25,7 +32,7 @@ notarized, auto-updatable DARWIN HUD `.app`/`.dmg`.
 | `hud/src-tauri/entitlements.plist` (hardened-runtime entitlements) | Apple ID + app-specific password + Team ID |
 | `hud/src-tauri/Info.plist` (TCC usage strings) | The **private** Tauri updater key + its password |
 | `tauri.conf.json` signing config (`signingIdentity: "-"`, `hardenedRuntime`, updater endpoint) | The updater **public** key (you paste it into `tauri.conf.json`) |
-| The updater **public-key placeholder** `REPLACE_WITH_TAURI_UPDATER_PUBLIC_KEY` | — |
+| The updater **public** key (committed in `tauri.conf.json`; rotate if you lack the private half) | — |
 
 `signingIdentity: "-"` is the **ad-hoc / unsigned** default so a local
 `tauri build` (no Apple account) still produces a runnable app. CI overrides it
@@ -74,7 +81,7 @@ This prints (and writes) two things:
 - a **public key** (a base64 blob) — this is safe to publish.
 
 Paste the **public key** into `hud/src-tauri/tauri.conf.json`, replacing the
-placeholder:
+currently-committed `pubkey` blob:
 
 ```jsonc
 "plugins": {
@@ -82,14 +89,15 @@ placeholder:
     "endpoints": [
       "https://github.com/darwin-capani/darwin/releases/latest/download/latest.json"
     ],
-    "pubkey": "PASTE_YOUR_PUBLIC_KEY_HERE"   // was REPLACE_WITH_TAURI_UPDATER_PUBLIC_KEY
+    "pubkey": "PASTE_YOUR_PUBLIC_KEY_HERE"
   }
 }
 ```
 
-> Keep the `updates.rs` tripwire happy: it only checks that the committed config
-> still carries the placeholder *until* you swap it. Once you paste a real key,
-> the in-app check stops short-circuiting and starts hitting the endpoint.
+> The `updates.rs` tripwire (`PUBKEY_PLACEHOLDER` / empty check) short-circuits to
+> `not_configured` only if the committed key regresses to the placeholder sentinel
+> or empty. Any real key (the one shipped, or your rotated one) leaves the in-app
+> check armed to hit the endpoint.
 
 ### 3. Add the CI secrets
 
