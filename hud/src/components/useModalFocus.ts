@@ -53,11 +53,16 @@ export default function useModalFocus(
 
     // (2) Autofocus: the designated initial control when given, else the first
     // control, else the container itself (made programmatically focusable so
-    // focus genuinely ENTERS the dialog).
+    // focus genuinely ENTERS the dialog). The designated element counts ONLY
+    // while it is genuinely focusable — i.e. present in the focusables() set
+    // (visible AND not disabled). A visibility-only check once picked the
+    // deck's DISABLED-while-busy input; .focus() on a disabled control is a
+    // silent no-op, so focus never entered and the trap never engaged.
+    const els = focusables();
     const designated = initialFocus
       ? container.querySelector<HTMLElement>(initialFocus)
       : null;
-    const first = (designated && designated.getClientRects().length > 0 ? designated : null) ?? focusables()[0];
+    const first = designated && els.includes(designated) ? designated : els[0];
     if (first) {
       first.focus();
     } else {
