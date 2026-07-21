@@ -74,7 +74,8 @@ public struct ScreenReadMeta: Sendable, Equatable {
     /// handwriting reads (document detection does not apply). When the scanner
     /// found NO page this is false and the readout is honestly empty.
     public let documentDetected: Bool?
-    /// SCREEN GROUNDING: the frontmost APP the snapshot came from ("Terminal"),
+    /// SCREEN GROUNDING: the FRONTMOST app at the capture instant ("Terminal") —
+    /// the whole-display OCR may include other visible windows' text alongside it,
     /// read AX-free (NSWorkspace + the capture's own Screen-Recording consent —
     /// see FrontmostReader). nil = honestly unknown (headless/unattributed),
     /// NEVER fabricated. Applies to screen reads only; camera/file reads carry
@@ -271,7 +272,7 @@ public enum VisionEvent: Sendable {
                 d["document_detected"] = documentDetected
             }
             // SCREEN GROUNDING (additive, the sanctioned VisionEvent extension
-            // pattern): which app/window the snapshot came from. Omitted when
+            // pattern): which app/window was FRONTMOST at capture. Omitted when
             // unknown — absence is honest, a key is never fabricated. The title
             // may be sensitive; the daemon redacts before store (like `text`).
             if let sourceApp = meta.sourceApp { d["source_app"] = sourceApp }

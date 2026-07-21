@@ -130,7 +130,7 @@ struct VisionApp {
 
         // SCREEN GROUNDING: inject the real frontmost app/window reader (AX-free
         // — NSWorkspace + the capture's own Screen-Recording consent) so screen
-        // reads/context snapshots self-describe which app they came from. Same
+        // reads/context snapshots self-describe which app was frontmost at capture. Same
         // seam discipline as the factory above: the default is nil-attributing.
         await pipeline.useFrontmostProvider(FrontmostReader.read)
 

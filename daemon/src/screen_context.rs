@@ -136,8 +136,8 @@ impl ScreenContextRing {
         self.push_attributed(ts, raw_text, source_tag, None, None);
     }
 
-    /// [`Self::push`] with SCREEN-GROUNDING attribution: which frontmost app +
-    /// window the snapshot came from. The app name is length-BOUNDED; the window
+    /// [`Self::push`] with SCREEN-GROUNDING attribution: which app + window
+    /// was FRONTMOST at the capture instant. The app name is length-BOUNDED; the window
     /// title is REDACTED (same redactor as the text — titles carry subject
     /// lines/doc names) and bounded. Empty strings normalize to None (absence is
     /// honest; an empty label is never stored as a fake attribution).
