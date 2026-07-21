@@ -35,7 +35,7 @@ cc = "1"
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
-cpal = "0.17"
+cpal = "0.18"
 # Direct handles on crates already in the tree (via zip + pdf-extract) — no new
 # downloads, pinned to the existing lock versions. Used ONLY by docsearch's PDF
 # decompression-bomb guard: `lopdf` parses the PDF STRUCTURE (correct /Length stream
