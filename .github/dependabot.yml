@@ -1,7 +1,14 @@
 # Dependabot: weekly, conservative update PRs for every dependency ecosystem in
-# the tree. Kept deliberately low-volume (3 open PRs per ecosystem) — CI runs
-# only on v* tags, so every bump PR must be verified locally before merge (see
-# docs / MEMORY: local checks are the only merge gate).
+# the tree. Kept deliberately low-volume — CI runs only on v* tags, so every bump
+# PR must be verified locally before merge (see docs / MEMORY: local checks are
+# the only merge gate).
+#
+# GROUPING (added 2026-07-21): routine minor + patch bumps for an ecosystem are
+# batched into ONE grouped PR, so the three lockfile domains resolve consistently
+# in a single verify-once pass instead of many conflicting single-dep PRs (the
+# manual batch that became PR #129). MAJOR bumps are deliberately LEFT UNGROUPED —
+# a breaking change (or a deliberate exact pin like `time = "=x"`) deserves its
+# own PR + `cargo check` / full-gate scrutiny, never hidden inside a batch.
 #
 # NOTE: version pins elsewhere in the repo are deliberate (e.g. the fast/heavy
 # Claude model pins in config are product choices, not dependencies) — only the
@@ -14,6 +21,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    groups:
+      daemon-cargo-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   # Tauri shell of the HUD.
   - package-ecosystem: cargo
@@ -21,6 +33,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    groups:
+      hud-tauri-cargo-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   # React/TS HUD frontend.
   - package-ecosystem: npm
@@ -28,6 +45,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    groups:
+      hud-npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   # GitHub Actions (SHA-pinned with `# vX.Y.Z` comments — Dependabot understands
   # this format and bumps the SHA + comment together).
@@ -36,3 +58,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    groups:
+      github-actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
