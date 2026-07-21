@@ -23,7 +23,12 @@
      shadowed layering so the cyan reads with depth instead of a single flat hue. */
   --cyan: #1ad6ff;
   --cyan-bright: #7df3ff;
-  --cyan-dim: rgba(26, 214, 255, 0.55);
+  /* a11y (WCAG AA, measured over --panel-bg composited on --bg-void):
+     --cyan-dim 0.55 alpha rendered text at 4.03:1 (fails AA 4.5:1); 0.65
+     yields ~5.2:1 while keeping the dim look. --ice-faint replaces the
+     hardcoded #51707f secondary text (3.74:1, fail) at 6.0:1. */
+  --cyan-dim: rgba(26, 214, 255, 0.65);
+  --ice-faint: #6e93a6;
   --cyan-deep: #0c93b8;
   --stroke: rgba(26, 214, 255, 0.42);
 
@@ -438,6 +443,14 @@ body,
 
 .frame-title .t {
   white-space: nowrap;
+  /* .t is a real <h2> (a11y: named sections + heading nav) styled by the
+     title bar; neutralize the UA heading defaults so it renders exactly as
+     the span it replaced. */
+  margin: 0;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
 }
 
 .frame-title .tag {
@@ -761,7 +774,7 @@ svg.tri circle {
 .link-offline .small {
   font-size: 10px;
   letter-spacing: 0.2em;
-  color: #51707f;
+  color: var(--ice-faint);
 }
 
 @keyframes offlinePulse {
@@ -1502,7 +1515,7 @@ svg.tri circle {
 }
 
 .dim-note {
-  color: #51707f;
+  color: var(--ice-faint);
   font-family: var(--mono);
   font-size: 11px;
 }
@@ -1572,7 +1585,7 @@ svg.tri circle {
 .gs-ph-small {
   font-size: 10px;
   letter-spacing: 0.18em;
-  color: #51707f;
+  color: var(--ice-faint);
 }
 
 .gs-brief {
@@ -1662,7 +1675,7 @@ svg.tri circle {
 .gs-time {
   margin-left: auto;
   flex: none;
-  color: #51707f;
+  color: var(--ice-faint);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1722,7 +1735,7 @@ svg.tri circle {
 .sc-ph-small {
   font-size: 10px;
   letter-spacing: 0.18em;
-  color: #51707f;
+  color: var(--ice-faint);
 }
 
 .sc-body {
@@ -1772,7 +1785,7 @@ svg.tri circle {
   margin-left: auto;
   font-size: 9px;
   letter-spacing: 0.1em;
-  color: #51707f;
+  color: var(--ice-faint);
   white-space: nowrap;
 }
 
@@ -2122,7 +2135,7 @@ svg.tri circle {
 .vi-ph-small {
   font-size: 10px;
   letter-spacing: 0.18em;
-  color: #51707f;
+  color: var(--ice-faint);
 }
 
 .vi-body {
@@ -2172,7 +2185,7 @@ svg.tri circle {
   margin-left: auto;
   font-size: 9px;
   letter-spacing: 0.1em;
-  color: #51707f;
+  color: var(--ice-faint);
   white-space: nowrap;
 }
 
@@ -2217,7 +2230,7 @@ svg.tri circle {
 .img-ph-small {
   font-size: 10px;
   letter-spacing: 0.18em;
-  color: #51707f;
+  color: var(--ice-faint);
 }
 
 .img-body {
@@ -2261,7 +2274,7 @@ svg.tri circle {
   margin-left: auto;
   font-size: 9px;
   letter-spacing: 0.1em;
-  color: #51707f;
+  color: var(--ice-faint);
   white-space: nowrap;
 }
 
@@ -3200,7 +3213,7 @@ svg.tri circle {
 .nx-ph-small {
   font-size: 10px;
   letter-spacing: 0.18em;
-  color: #51707f;
+  color: var(--ice-faint);
 }
 
 .nx-body {
@@ -3250,7 +3263,7 @@ svg.tri circle {
   margin-left: auto;
   font-size: 9px;
   letter-spacing: 0.1em;
-  color: #51707f;
+  color: var(--ice-faint);
   white-space: nowrap;
 }
 
@@ -3602,7 +3615,7 @@ svg.tri circle {
 .mf-ph-small {
   font-size: 10px;
   letter-spacing: 0.18em;
-  color: #51707f;
+  color: var(--ice-faint);
 }
 
 .mf-body {
@@ -4007,7 +4020,7 @@ svg.tri circle {
 }
 
 .latency .idle-note {
-  color: #51707f;
+  color: var(--ice-faint);
   letter-spacing: 0.15em;
 }
 
@@ -4152,7 +4165,7 @@ svg.tri circle {
 .kv-note {
   font-family: var(--mono);
   font-size: 10.5px;
-  color: #51707f;
+  color: var(--ice-faint);
   line-height: 1.5;
 }
 
@@ -10400,3 +10413,20 @@ body,
   overflow-wrap: anywhere;
 }
 .changeq-foot { margin-top: 2px; line-height: 1.4; }
+
+/* ------------------------------------------------------------------ a11y -- */
+
+/* Visually-hidden-but-announced text (the standard sr-only recipe): used for
+   the app-level <h1> landmark heading. Kept out of the visual layout entirely
+   while remaining in the accessibility tree. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

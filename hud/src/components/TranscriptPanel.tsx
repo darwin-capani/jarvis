@@ -26,7 +26,16 @@ export default function TranscriptPanel({
       title="COMMS // TRANSCRIPT"
       tag={lines.length > 0 ? `${lines.length} LN` : "—"}
     >
-      <div className="transcript-scroll" ref={scroller}>
+      {/* a11y: role="log" (implicit polite live region announcing ADDITIONS
+          only) — lines land COMPLETE via pushTranscript, one per finished
+          utterance, so this is exactly the chat-log semantics and never
+          re-announces the whole history. */}
+      <div
+        className="transcript-scroll"
+        ref={scroller}
+        role="log"
+        aria-label="Conversation transcript"
+      >
         {lines.length === 0 && (
           <div className="line">
             <span className="text dim-note">awaiting first exchange…</span>

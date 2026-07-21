@@ -569,7 +569,9 @@ export default function App() {
       <div className="hud-backdrop" aria-hidden="true">
         <div className="watermark" />
       </div>
-      <div className="core-layer">
+      {/* a11y: the WebGL core is purely decorative — hide the bare <canvas>
+          from the accessibility tree like every sibling decorative layer. */}
+      <div className="core-layer" aria-hidden="true">
         <CoreScene
           coreState={state.coreState}
           agentHue={state.activeAgent ? state.activeAgent.hue : null}
@@ -619,9 +621,13 @@ export default function App() {
         onDismiss={() => dispatch({ type: "alert.dismiss" })}
       />
 
-      <div
+      {/* a11y: the panel layer is the app's <main> landmark, headed by a
+          visually-hidden <h1> — with Frame's per-panel <h2>s this gives a
+          screen reader a real landmark + heading outline to navigate. */}
+      <main
         className={`panel-layer${bootPlaying && !revealed ? " pre-reveal" : ""}`}
       >
+        <h1 className="sr-only">D.A.R.W.I.N. heads-up display</h1>
         <ErrorBoundary label="status bar" resetKeys={[state.connected]}><StatusBar
           connected={state.connected}
           coreState={state.coreState}
@@ -762,7 +768,7 @@ export default function App() {
           <ProcPanel proc={state.processes} />
         </div></ErrorBoundary>
         <Waveform connected={state.connected} />
-      </div>
+      </main>
 
       {/* ENTER TAKEOVER — the EXPLICIT operator trigger. Nothing auto-enters
           takeover; this is the only entry point and it ships visible-but-idle.

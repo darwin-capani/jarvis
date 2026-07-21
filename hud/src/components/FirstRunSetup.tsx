@@ -1,10 +1,11 @@
-import { useCallback, useReducer } from "react";
+import { useCallback, useReducer, useRef } from "react";
 import { openSetupInstall } from "../tauri/bridge";
 import {
   SETUP_COPY,
   setupScreenInitial,
   setupScreenReduce,
 } from "../core/firstRunSetup";
+import useModalFocus from "./useModalFocus";
 
 /* ======================================================================== *
  * FIRST-RUN SETUP — the install gate for a freshly-downloaded DARWIN app.    *
@@ -57,6 +58,11 @@ export default function FirstRunSetup({ connected }: FirstRunSetupProps) {
   // un-mounts this screen automatically — the auto-dismiss is owned there, never
   // faked here. Until then the waiting UI below reflects `connected` directly.
 
+  // a11y: trap + autofocus. NO Escape — this gate is deliberately
+  // non-dismissable (the App gate un-mounts it when the daemon connects).
+  const modalRef = useRef<HTMLDivElement>(null);
+  useModalFocus(modalRef);
+
   return (
     <div className="syscfg-confirm-backdrop first-run-setup-backdrop">
       <div
@@ -64,6 +70,7 @@ export default function FirstRunSetup({ connected }: FirstRunSetupProps) {
         role="dialog"
         aria-modal="true"
         aria-label="Finish setting up DARWIN"
+        ref={modalRef}
       >
         {waiting ? (
           <>

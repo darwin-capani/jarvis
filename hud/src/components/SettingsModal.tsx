@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Frame from "./Frame";
+import useModalFocus from "./useModalFocus";
 import SystemSettingsPanel from "./SystemSettingsPanel";
 import SystemAccessPanel from "./SystemAccessPanel";
 import {
@@ -208,9 +209,25 @@ export default function SettingsModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // a11y: trap + autofocus + focus-restore (Escape stays on the window
+  // listener above — see useModalFocus's double-fire note).
+  const modalRef = useRef<HTMLDivElement>(null);
+  useModalFocus(modalRef);
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
+      {/* a11y: real dialog semantics + a real focus trap (autofocus, Tab
+          cycle, focus restore) via useModalFocus. Escape is NOT wired here —
+          the window-level listener above already closes; both would
+          double-fire. */}
+      <div
+        className="modal settings-modal"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        ref={modalRef}
+      >
         <Frame
           title={
             tab === "system"

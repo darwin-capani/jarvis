@@ -16,6 +16,7 @@ import {
   type PendingSnapshot,
 } from "../tauri/command";
 import Frame from "./Frame";
+import useModalFocus from "./useModalFocus";
 
 /**
  * COMMAND DECK — the interactive Iron-Man holotable command surface. The first
@@ -64,6 +65,12 @@ export default function CommandDeck({
   const [input, setInput] = useState("");
   const [target, setTarget] = useState<string>(AUTO_ROUTE);
   const logRef = useRef<HTMLDivElement>(null);
+
+  // a11y: trap + autofocus (lands on the agent select / input) + focus-restore;
+  // Escape closes the deck. The deck stays MOUNTED while closed, so the trap
+  // keys off `open`.
+  const deckRef = useRef<HTMLDivElement>(null);
+  useModalFocus(deckRef, onClose, open);
 
   // Auto-scroll the log to the newest line.
   useEffect(() => {
@@ -182,7 +189,7 @@ export default function CommandDeck({
   const trayActive = hasPending(state.pending);
 
   return (
-    <div className="command-deck" role="dialog" aria-label="Command Deck">
+    <div className="command-deck" role="dialog" aria-label="Command Deck" aria-modal="true" ref={deckRef}>
       <Frame className="cmd-deck-frame" title="COMMAND DECK" tag="HOLOTABLE">
         <div className="cmd-deck-body">
           <div className="cmd-deck-head">

@@ -47,7 +47,10 @@ export default function AgentPanel({ active }: { active: ActiveAgent | null }) {
           );
         })}
       </div>
-      <div className={`agent-handling ${active ? "on" : ""}`}>
+      {/* a11y: role="status" — which agent is HANDLING the turn is announced
+          politely when it changes (an SR user otherwise never learns who
+          answered). */}
+      <div className={`agent-handling ${active ? "on" : ""}`} role="status">
         {active ? (
           <>
             <span className="ah-label">HANDLING</span>

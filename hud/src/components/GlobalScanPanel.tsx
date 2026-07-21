@@ -68,7 +68,9 @@ export default function GlobalScanPanel({
               <span className="gs-brief-text">{feed.brief}</span>
             </div>
           ) : null}
-          <div className="gs-scroll">
+          {/* a11y: role="log" — intel items append newest-batch, announce
+              additions only (chat-log semantics, like the transcript). */}
+          <div className="gs-scroll" role="log" aria-label="Intel feed">
             {items.length === 0 && (
               <div className="gs-empty dim-note">acquiring feeds…</div>
             )}

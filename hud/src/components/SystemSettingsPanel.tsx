@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import {
   AUTONOMY_OPTIONS,
   CatalogEntry,
@@ -30,6 +30,7 @@ import {
 } from "../tauri/bridge";
 import { sendCommand } from "../tauri/command";
 import { isAutoUpdateOn, setAutoUpdateOn } from "../core/autoUpdate";
+import useModalFocus from "./useModalFocus";
 
 /**
  * The EXACT spoken voice-id management phrases the enrollment controls send over
@@ -1180,9 +1181,20 @@ function ApplyConfirm({
   onConfirm: () => void;
 }) {
   const hasDanger = confirm.dangerous.length > 0;
+  // a11y: trap + autofocus + focus-restore; Escape cancels, inert while the
+  // apply is in flight (mirrors the busy-aware backdrop).
+  const modalRef = useRef<HTMLDivElement>(null);
+  useModalFocus(modalRef, busy ? undefined : onCancel);
   return (
     <div className="syscfg-confirm-backdrop" onClick={busy ? undefined : onCancel}>
-      <div className="syscfg-confirm" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Confirm apply">
+      <div
+        className="syscfg-confirm"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Confirm apply"
+        ref={modalRef}
+      >
         <div className="syscfg-confirm-title">APPLY {confirm.changes.length} CHANGE{confirm.changes.length === 1 ? "" : "S"} // RESTART DARWIN</div>
         <div className="kv-note">
           This writes config/darwin.toml in place (comments + structure preserved) and then runs

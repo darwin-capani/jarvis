@@ -1,6 +1,7 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { checkForUpdates } from "../tauri/bridge";
 import { aboutCheckView, type AboutCheckView } from "../core/about";
+import useModalFocus from "./useModalFocus";
 
 /* ======================================================================== *
  * ABOUT PANEL — the custom "About D.A.R.W.I.N." panel.                       *
@@ -54,6 +55,11 @@ export default function AboutPanel({ version, onClose, onUpdateAvailable }: Abou
     setView(v);
   }, [busy, onUpdateAvailable]);
 
+  // a11y: trap + autofocus + focus-restore; Escape closes, busy-aware like
+  // the backdrop click (inert mid-check so a check is never orphaned).
+  const modalRef = useRef<HTMLDivElement>(null);
+  useModalFocus(modalRef, busy ? undefined : onClose);
+
   return (
     <div className="syscfg-confirm-backdrop about-backdrop" onClick={busy ? undefined : onClose}>
       <div
@@ -62,6 +68,7 @@ export default function AboutPanel({ version, onClose, onUpdateAvailable }: Abou
         role="dialog"
         aria-modal="true"
         aria-label="About D.A.R.W.I.N."
+        ref={modalRef}
       >
         {/* A compact, self-contained reactor glyph (no CoreScene dependency). */}
         <div className="about-orb" aria-hidden="true">

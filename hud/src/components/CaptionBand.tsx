@@ -46,6 +46,11 @@ export default function CaptionBand({ captions }: { captions: CaptionEntry[] }) 
 
   return (
     <Frame className="captions" title="COMMS // LIVE CAPTIONS" tag={`${captions.length} LN`}>
+      {/* a11y: DELIBERATELY NOT a live region. The caption rows duplicate what
+          the transcript log (role="log") already announces — a second live
+          region speaking the same content would double-announce every
+          exchange (WAI-ARIA anti-pattern). The band stays in the a11y tree as
+          readable static text (visual live captions are its whole point). */}
       <div className="captions-scroll" ref={scroller}>
         {captions.map((c) => {
           const unknown = c.speaker === CAPTION_UNKNOWN_SPEAKER;

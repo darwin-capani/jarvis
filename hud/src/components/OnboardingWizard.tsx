@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Frame from "./Frame";
+import useModalFocus from "./useModalFocus";
 import {
   ONBOARDING_STEPS,
   ONBOARDING_STEP_COUNT,
@@ -57,6 +58,11 @@ export default function OnboardingWizard({
   const back = useCallback(() => setIndex((i) => clampStep(i - 1)), []);
   const next = useCallback(() => setIndex((i) => clampStep(i + 1)), []);
 
+  // a11y: trap + autofocus + focus-restore (Escape stays on the window
+  // listener above — wiring both would double-dismiss).
+  const modalRef = useRef<HTMLDivElement>(null);
+  useModalFocus(modalRef);
+
   // Primary action for a routing step: open the existing surface AND dismiss the
   // wizard (App opens SettingsModal on the right tab + sets the seen flag).
   const route = useCallback(() => {
@@ -71,6 +77,7 @@ export default function OnboardingWizard({
         aria-modal="true"
         aria-label="DARWIN first-run setup"
         onClick={(e) => e.stopPropagation()}
+        ref={modalRef}
       >
         <Frame title="WELCOME // FIRST-RUN SETUP" tag="ARMED · GATED">
           <div className="onboarding-body">

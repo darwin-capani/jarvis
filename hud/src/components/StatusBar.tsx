@@ -545,13 +545,20 @@ export default function StatusBar({
           {lockdown?.locked ? "🔒 LOCKED" : "⛔ PANIC"}
         </button>
       )}
-      <button className="icon-btn" onClick={onOpenDeck} title="Command Deck (C)">
+      {/* a11y: icon-only buttons need real accessible names — `title` alone
+          leaves a screen reader announcing the bare glyph. */}
+      <button className="icon-btn" onClick={onOpenDeck} title="Command Deck (C)" aria-label="Open Command Deck">
         ◎
       </button>
-      <button className="icon-btn" onClick={() => void toggleFullscreen()} title="Fullscreen (F11)">
+      <button
+        className="icon-btn"
+        onClick={() => void toggleFullscreen()}
+        title="Fullscreen (F11)"
+        aria-label="Toggle fullscreen"
+      >
         ⛶
       </button>
-      <button className="icon-btn" onClick={onOpenSettings} title="Settings">
+      <button className="icon-btn" onClick={onOpenSettings} title="Settings" aria-label="Open Settings">
         ⚙
       </button>
     </header>

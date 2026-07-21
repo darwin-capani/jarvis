@@ -46,8 +46,14 @@ export default function ReticleDial({
   const hot = cpuPercent !== null && cpuPercent > 85;
 
   return (
-    <div className={`reticle ${coreState === "offline" ? "offline" : ""}`} aria-label="CPU dial">
-      <svg viewBox="0 0 160 160" className="reticle-svg">
+    <div
+      className={`reticle ${coreState === "offline" ? "offline" : ""}`}
+      // a11y: a labeled div carries no role — role="img" makes the label land,
+      // and the label carries the REAL reading (or the honest absence of one).
+      role="img"
+      aria-label={cpuPercent === null ? "CPU dial: no reading" : `CPU dial: ${Math.round(pct)} percent`}
+    >
+      <svg viewBox="0 0 160 160" className="reticle-svg" aria-hidden="true">
         {/* concentric rings */}
         <circle cx="80" cy="80" r="74" className="rt-ring faint" />
         <circle cx="80" cy="80" r="62" className="rt-ring" />

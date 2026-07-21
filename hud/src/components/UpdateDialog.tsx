@@ -1,10 +1,11 @@
-import { useCallback, useReducer, useState } from "react";
+import { useCallback, useReducer, useRef, useState } from "react";
 import { checkForUpdates, relaunchApp } from "../tauri/bridge";
 import {
   setAutoUpdateOn,
   updateDialogInitial,
   updateDialogReduce,
 } from "../core/autoUpdate";
+import useModalFocus from "./useModalFocus";
 
 /* ======================================================================== *
  * UPDATE DIALOG — the launch "Update available" modal.                       *
@@ -97,6 +98,11 @@ export default function UpdateDialog({ version, onClose }: UpdateDialogProps) {
   const installed = state.phase === "installed";
   const errored = state.phase === "error";
 
+  // a11y: trap + autofocus + focus-restore; Escape = Cancel (onCancel is
+  // already busy-aware, so Escape is inert mid-install like the backdrop).
+  const modalRef = useRef<HTMLDivElement>(null);
+  useModalFocus(modalRef, onCancel);
+
   return (
     <div
       className="syscfg-confirm-backdrop"
@@ -108,6 +114,7 @@ export default function UpdateDialog({ version, onClose }: UpdateDialogProps) {
         role="dialog"
         aria-modal="true"
         aria-label="Update available"
+        ref={modalRef}
       >
         <div className="syscfg-confirm-title">UPDATE AVAILABLE</div>
 
