@@ -14,7 +14,7 @@
     "@react-three/fiber": "^9.6.1",
     "@react-three/postprocessing": "^3.0.4",
     "@tauri-apps/api": "^2.11.1",
-    "postprocessing": "^6.39.2",
+    "postprocessing": "^6.39.3",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "three": "^0.185.1"
