@@ -95,7 +95,10 @@ describe("live regions: the conversation is announced, captions are not doubled"
     expect(html).toContain('aria-label="Conversation transcript"');
   });
 
-  it("the intel feed is a role=log with a name", () => {
+  it("the intel feed is DELIBERATELY not a live region (wholesale-replaced list)", () => {
+    // REGRESSION PIN (review-caught): the reducer REPLACES the gs item list
+    // each poll and the rows are index-keyed, so a live region here would
+    // re-announce the whole feed every cycle. The feed must stay non-live.
     const html = renderToStaticMarkup(
       createElement(GlobalScanPanel, {
         feed: {
@@ -107,8 +110,9 @@ describe("live regions: the conversation is announced, captions are not doubled"
         running: true,
       }),
     );
-    expect(html).toContain('role="log"');
-    expect(html).toContain('aria-label="Intel feed"');
+    expect(html).toContain("gs-scroll");
+    expect(html).not.toContain('role="log"');
+    expect(html).not.toContain("aria-live");
   });
 
   it("the HANDLING agent line is a role=status (announced on change)", () => {
@@ -163,5 +167,23 @@ describe("dialogs render real dialog semantics", () => {
     expect(html).toContain('role="dialog"');
     expect(html).toContain('aria-modal="true"');
     expect(html).toContain('aria-label="Update available"');
+  });
+
+  it("CommandDeck: modal overlay claims aria-modal; INLINE (takeover) does not", async () => {
+    // REGRESSION PIN (review-caught): TakeoverStage mounts the deck inline
+    // among live sibling panels — aria-modal there would falsely hide the rest
+    // of the stage from a screen reader, so inline renders a named REGION.
+    const { default: CommandDeck } = await import("../components/CommandDeck");
+    const overlay = renderToStaticMarkup(
+      createElement(CommandDeck, { open: true, onClose: () => {} }),
+    );
+    expect(overlay).toContain('role="dialog"');
+    expect(overlay).toContain('aria-modal="true"');
+    const inline = renderToStaticMarkup(
+      createElement(CommandDeck, { open: true, onClose: () => {}, inline: true }),
+    );
+    expect(inline).toContain('role="region"');
+    expect(inline).not.toContain("aria-modal");
+    expect(inline).toContain('aria-label="Command Deck"');
   });
 });

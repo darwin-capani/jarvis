@@ -68,9 +68,12 @@ export default function GlobalScanPanel({
               <span className="gs-brief-text">{feed.brief}</span>
             </div>
           ) : null}
-          {/* a11y: role="log" — intel items append newest-batch, announce
-              additions only (chat-log semantics, like the transcript). */}
-          <div className="gs-scroll" role="log" aria-label="Intel feed">
+          {/* a11y: DELIBERATELY NOT a live region. The reducer REPLACES the
+              item list wholesale each poll (index-keyed rows all remount when
+              one headline shifts), so role="log" would re-announce the entire
+              20-item feed every cycle — announcement spam, not a chat log.
+              The feed stays readable static content inside its named panel. */}
+          <div className="gs-scroll">
             {items.length === 0 && (
               <div className="gs-empty dim-note">acquiring feeds…</div>
             )}

@@ -1181,10 +1181,17 @@ function ApplyConfirm({
   onConfirm: () => void;
 }) {
   const hasDanger = confirm.dangerous.length > 0;
-  // a11y: trap + autofocus + focus-restore; Escape cancels, inert while the
-  // apply is in flight (mirrors the busy-aware backdrop).
+  // a11y: trap + autofocus + focus-restore; Escape cancels JUST the confirm,
+  // inert while the apply is in flight. The handler is ALWAYS defined (guard
+  // inside) so the hook always claims Escape here — an undefined-while-busy
+  // handler would let the keydown bubble to SettingsModal's window listener
+  // and tear down the WHOLE settings modal mid-apply.
   const modalRef = useRef<HTMLDivElement>(null);
-  useModalFocus(modalRef, busy ? undefined : onCancel);
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  useModalFocus(modalRef, () => {
+    if (!busyRef.current) onCancel();
+  });
   return (
     <div className="syscfg-confirm-backdrop" onClick={busy ? undefined : onCancel}>
       <div

@@ -76,7 +76,7 @@ export default function TakeoverStage({
         {/* Center: the SAME CommandDeck holotable, mounted open. Reused verbatim
             — the takeover desktop IS the command surface. */}
         <div className="takeover-col takeover-col-center">
-          <CommandDeck open onClose={onExit} />
+          <CommandDeck open onClose={onExit} inline />
         </div>
 
         <div className="takeover-col takeover-col-right">

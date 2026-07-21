@@ -9046,22 +9046,25 @@ textarea:focus-visible,
     opacity 0.5s var(--ease-out),
     transform 0.5s var(--ease-out);
 }
-.panel-layer > *:nth-child(1) {
+/* Child 1 is the sr-only <h1> (visually hidden — no stagger slot); the six
+   revealed regions are children 2-7: statusbar -> latency -> left-col ->
+   center-col -> right-col -> waveform, top-to-bottom. */
+.panel-layer > *:nth-child(2) {
   transition-delay: 0.02s;
 }
-.panel-layer > *:nth-child(2) {
+.panel-layer > *:nth-child(3) {
   transition-delay: 0.1s;
 }
-.panel-layer > *:nth-child(3) {
+.panel-layer > *:nth-child(4) {
   transition-delay: 0.18s;
 }
-.panel-layer > *:nth-child(4) {
+.panel-layer > *:nth-child(5) {
   transition-delay: 0.26s;
 }
-.panel-layer > *:nth-child(5) {
+.panel-layer > *:nth-child(6) {
   transition-delay: 0.34s;
 }
-.panel-layer > *:nth-child(6) {
+.panel-layer > *:nth-child(7) {
   transition-delay: 0.42s;
 }
 .panel-layer.pre-reveal > * {

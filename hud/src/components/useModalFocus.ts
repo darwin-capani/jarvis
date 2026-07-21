@@ -26,6 +26,11 @@ export default function useModalFocus(
    *  `open` prop, e.g. the Command Deck): pass `open` so the trap engages when
    *  the dialog actually appears. Conditionally-mounted dialogs omit it. */
   active: boolean = true,
+  /** CSS selector for the control that should receive the INITIAL focus when
+   *  the dialog's natural first focusable is the wrong landing spot (e.g. a ✕
+   *  close button ahead of the primary input — Space/Enter would instantly
+   *  close). Falls back to the first focusable when absent/not found. */
+  initialFocus?: string,
 ) {
   // The latest onEscape without re-running the trap effect (re-running would
   // re-autofocus mid-session every time a busy flag flips the callback).
@@ -46,9 +51,13 @@ export default function useModalFocus(
         (el) => el.getClientRects().length > 0,
       );
 
-    // (2) Autofocus: first control, else the container itself (made
-    // programmatically focusable so focus genuinely ENTERS the dialog).
-    const first = focusables()[0];
+    // (2) Autofocus: the designated initial control when given, else the first
+    // control, else the container itself (made programmatically focusable so
+    // focus genuinely ENTERS the dialog).
+    const designated = initialFocus
+      ? container.querySelector<HTMLElement>(initialFocus)
+      : null;
+    const first = (designated && designated.getClientRects().length > 0 ? designated : null) ?? focusables()[0];
     if (first) {
       first.focus();
     } else {
@@ -57,18 +66,27 @@ export default function useModalFocus(
     }
 
     // (3) Trap Tab + handle Escape while focus is inside the dialog (the trap
-    // itself guarantees it stays inside).
+    // itself guarantees it stays inside). A handled key is STOPPED as well as
+    // prevented: with NESTED dialogs (ApplyConfirm inside SettingsModal) both
+    // containers hold this listener on the same bubble path — without
+    // stopPropagation the OUTER trap re-fires on the same keydown and yanks
+    // focus out of the inner dialog (and a handled Escape would bubble on to a
+    // window-level close listener and tear down the whole outer modal). The
+    // innermost dialog under the event owns the key; an UNHANDLED Escape (no
+    // onEscape) still bubbles so an outer/window listener can close.
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.key === "Escape") {
         const close = onEscapeRef.current;
         if (close) {
           ev.preventDefault();
+          ev.stopPropagation();
           close();
         }
         return;
       }
       if (ev.key !== "Tab") return;
       ev.preventDefault();
+      ev.stopPropagation();
       const els = focusables();
       const current = els.indexOf(document.activeElement as HTMLElement);
       const next = nextTrapIndex(els.length, current, ev.shiftKey);
@@ -83,5 +101,5 @@ export default function useModalFocus(
     };
     // Runs for the dialog's VISIBLE lifetime: conditionally-mounted dialogs
     // mount/unmount (active stays true), always-mounted ones flip `active`.
-  }, [active, ref]);
+  }, [active, ref, initialFocus]);
 }
