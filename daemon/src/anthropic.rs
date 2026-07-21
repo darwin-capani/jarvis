@@ -1384,6 +1384,18 @@ fn tool_defs() -> &'static Value {
                 }
             },
             {
+                "name": "screen_recall",
+                "description": "Recall from SCREEN CONTEXT — DARWIN's private, owner-gated, ON-DEVICE, TRANSIENT record of recent on-screen TEXT (OCR glyphs). READ-ONLY: it RANKS the recent redacted on-screen snapshots by relevance to a query and returns the most relevant, most-relevant first. It stores nothing new, sends nothing to the cloud, and changes nothing. Call this when the user asks about something they SAW on their screen recently ('what was that error I saw', 'what did the terminal say earlier', 'what was on that page about the invoice'). HONEST ABOUT SCOPE: the record is a bounded, IN-RAM, TRANSIENT ring of recent OCR text ONLY — it holds no screenshots/pixels and NEVER persists to disk (it lives only for this session and 'forget my screen context' wipes it). PRIVACY + HONESTY: screen context only fills once Screen-Recording consent is granted — when nothing has been captured, or nothing matches, it honestly says there's no recent screen context; do NOT invent one. Every snapshot was PII-REDACTED at capture (emails/secrets/card+phone numbers stripped), so a recalled line may show '[redacted]' spans. Ranking is RUNTIME-SELECTED: neural on-device embeddings when the inference server is up, else lexical BM25 — the report NAMES whichever actually ran; report it the same way and never claim neural on fallback.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "What to recall from the recent on-screen text — the topic or phrase, in the user's own words."},
+                        "k": {"type": "integer", "description": "Max number of screen snapshots to return (default 5; capped). The most relevant come first."}
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
                 "name": "pasteboard_put",
                 "description": "Place text on the user's macOS clipboard (a pasteboard SET) so they can paste it. CONSEQUENTIAL but BENIGN: it ONLY sets the clipboard — it never types a keystroke, mutates a file, or reaches the network. It defaults to a DRY-RUN PREVIEW and copies nothing. Set confirm=true ONLY after the user has explicitly approved copying THIS exact text — never on your own initiative. Even with confirm=true it still will NOT copy unless the operator has separately enabled consequential actions; otherwise it returns a preview. Call this when the user asks you to copy / put something on their clipboard for them to paste.",
                 "input_schema": {
@@ -4021,6 +4033,21 @@ struct ApertureRecallArgs {
     k: Option<usize>,
 }
 
+// -- SCREEN CONTEXT tool args (crate::screen_context) ---------------------------
+// screen_recall is READ-ONLY: rank the bounded, PII-redacted, TRANSIENT in-RAM
+// ring of recent on-screen OCR text by relevance to `query` and return the top
+// `k`. Ranking is RUNTIME-SELECTED (neural on-device embeddings when the inference
+// server is up, else lexical BM25), and the report names whichever ran. Nothing is
+// stored/changed; nothing leaves the device; nothing is ever persisted.
+#[derive(Deserialize)]
+struct ScreenRecallArgs {
+    /// What to recall from recent on-screen text — the topic in the user's words.
+    query: String,
+    /// Max number of snapshots to return. Default 5; clamped to a safe ceiling.
+    #[serde(default)]
+    k: Option<usize>,
+}
+
 // pasteboard_put is CONSEQUENTIAL but BENIGN: it SETS the clipboard (a pasteboard
 // set only — never a keystroke/file/network). It defaults to a DryRun preview;
 // `confirm` (only ever set by the confirmation replay) gates the real set.
@@ -6117,6 +6144,7 @@ fn tool_carries_citation(name: &str) -> bool {
             | "episodic_recall"
             | "pasteboard_recall"
             | "aperture_recall"
+            | "screen_recall"
             | "web_search"
             | "open_url"
             | "karen_triage"
@@ -6149,6 +6177,7 @@ fn citation_for_tool(name: &str, input: &Value, outcome: &str) -> Option<(String
         "episodic_recall" => "past episodes".to_string(),
         "pasteboard_recall" => "clipboard history".to_string(),
         "aperture_recall" => "activity timeline".to_string(),
+        "screen_recall" => "recent screen context".to_string(),
         "karen_triage" => "comms triage".to_string(),
         "web_search" | "open_url" => input
             .get("url")
@@ -6187,6 +6216,7 @@ fn is_empty_retrieval(outcome: &str) -> bool {
         "i have nothing in your clipboard history", // pasteboard_recall no-match
         "i have no activity recorded", // aperture_recall empty / no-match subject
         "i have no record of", // aperture_recall no activity in the asked-about window
+        "i have no recent screen context", // screen_recall empty (un-fed) / no-match
         "tell me what to search",  // unified_search empty query
         "no comms surfaces were available", // karen_triage all-disconnected
     ];
@@ -8467,6 +8497,22 @@ async fn dispatch_tool(
                 Ok(crate::aperture::global_render_recall_text(&args.query, &chrono::Local::now(), k))
             }
             Err(e) => Err(anyhow!("invalid aperture_recall arguments: {e}")),
+        },
+        // -- SCREEN CONTEXT (crate::screen_context) ---------------------------
+        // screen_recall is READ-ONLY: rank the bounded, PII-redacted, TRANSIENT
+        // in-RAM ring of recent on-screen OCR text by relevance and return the top
+        // matches. Nothing is stored/sent/persisted — so it never touches
+        // integrations::gate(). Ranking is RUNTIME-SELECTED (neural on-device
+        // embeddings via the LOCAL inference socket when up, else lexical BM25);
+        // the report names whichever ran. When screen context is un-fed / empty /
+        // nothing matches, it honestly says so — never a fabricated snapshot.
+        "screen_recall" => match serde_json::from_value::<ScreenRecallArgs>(input.clone()) {
+            Ok(args) => {
+                let k = args.k.unwrap_or(MNEMOSYNE_DEFAULT_K).clamp(1, MNEMOSYNE_MAX_K);
+                let embedder = InferenceEmbedder::over_inference_socket();
+                Ok(crate::screen_context::global_rank_render_runtime(&args.query, k, &embedder).await)
+            }
+            Err(e) => Err(anyhow!("invalid screen_recall arguments: {e}")),
         },
         // pasteboard_put SETS the clipboard — CONSEQUENTIAL but BENIGN (a pasteboard
         // set only, never a keystroke/file/network). It is in CONSEQUENTIAL_TOOLS,
@@ -14876,6 +14922,7 @@ mod tests {
                 "mnemosyne_recall",
                 "pasteboard_recall",
                 "aperture_recall",
+                "screen_recall",
                 "pasteboard_put",
                 "episodic_recall",
                 "doc_search",
