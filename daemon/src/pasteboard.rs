@@ -178,13 +178,19 @@ impl PasteboardStore {
 /// Build [`recall::Fact`] rows from `clips`, PARALLEL to the input slice (fact `i`
 /// is clip `i`). The RANKING-QUERY-CONSTRUCTION seam: each clip becomes a Fact
 /// whose VALUE is the redacted clip text, so recall.rs ranks clips by MEANING
-/// against a query. The key is the constant `"clipboard"` (low-signal, so it never
-/// dominates BM25); the value carries the searchable content. Pure.
+/// against a query. The key is EMPTY — deliberately, not a `"clipboard"` constant:
+/// `Fact::searchable()` ranks over `"{key} {value}"`, so a constant key is a token
+/// present in EVERY clip, and this surface's own natural query vocabulary ("the
+/// thing on my CLIPBOARD about the lease") would then give every clip a positive
+/// BM25 score from the injected key alone (an all-docs term still has IDF > 0),
+/// defeating [`recall::rank`]'s zero-overlap drop and surfacing unrelated clips as
+/// "matches". An empty key means only the clip's OWN text is ever ranked. Pure.
+/// (The screen-context ring carried the identical `"screen"` bug, fixed the same way.)
 pub fn build_recall_facts(clips: &[Clip]) -> Vec<Fact> {
     clips
         .iter()
         .map(|c| Fact {
-            key: "clipboard".to_string(),
+            key: String::new(),
             value: c.text.clone(),
         })
         .collect()
@@ -760,7 +766,37 @@ mod tests {
         let facts = build_recall_facts(&clips);
         assert_eq!(facts.len(), 2, "one fact per clip, parallel");
         assert_eq!(facts[0].value, clips[0].text, "fact value is the clip text");
-        assert_eq!(facts[0].key, "clipboard", "low-signal constant key");
+        // The key is EMPTY on purpose — a constant key is an all-docs token that
+        // would let a query naming the surface ("clipboard") match every clip.
+        assert_eq!(facts[0].key, "", "empty key: only the clip's own text is ranked");
+    }
+
+    #[test]
+    fn the_word_clipboard_in_a_query_never_resurrects_zero_overlap_clips() {
+        // REGRESSION (mirrors screen_context's the_word_screen_in_a_query...): the
+        // ranking facts once carried the constant key "clipboard", which
+        // Fact::searchable() prepends to EVERY clip — so any query using this
+        // surface's own vocabulary ("the thing on my CLIPBOARD about X") scored
+        // every clip positive from the injected key alone and fabricated matches
+        // out of unrelated clips. The key is now empty; this pins that a
+        // "clipboard"-bearing query with zero REAL overlap stays an honest empty.
+        let clips = vec![
+            Clip { text: "the office lease renews in March".into(), ts: 1 },
+            Clip { text: "buy oat milk and coffee".into(), ts: 2 },
+            Clip { text: "call the dentist about the appointment".into(), ts: 3 },
+        ];
+        // "the thing on my clipboard about the mortgage" shares NO real term with
+        // any clip (mortgage != lease; "clipboard"/"thing"/"the"/"about" carry no
+        // clip content) -> honest empty, not every clip surfaced.
+        let ranked = rank_clips_lexical("the thing on my clipboard about the mortgage", &clips, 5);
+        assert!(
+            ranked.is_empty(),
+            "a 'clipboard'-bearing zero-overlap query must recall nothing, got {ranked:?}"
+        );
+        // And with REAL overlap present, only the genuinely-overlapping clip surfaces.
+        let hit = rank_clips_lexical("the clipboard clip about the lease", &clips, 5);
+        assert_eq!(hit.len(), 1, "only the lease clip, not all three: {hit:?}");
+        assert!(hit[0].text.contains("lease"), "the overlapping clip: {:?}", hit[0]);
     }
 
     #[test]
